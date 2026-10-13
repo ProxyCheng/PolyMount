@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Xml.Linq;
+using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -86,6 +87,7 @@ internal sealed class SvnClient
 
     public void CatToFile(long rev, string rel, string dest)
     {
+        using var request = RequestDiagnostics.Begin("SVN.cat", UrlFor(rel, rev));
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
         var tmp = dest + ".part-" + Guid.NewGuid().ToString("N");
 
@@ -101,16 +103,18 @@ internal sealed class SvnClient
         psi.ArgumentList.Add(UrlFor(rel, rev));
 
         using var proc = Process.Start(psi)!;
+        request?.Stage($"waiting subprocess pid={proc.Id} timeoutMs=120000");
         var stderrTask = proc.StandardError.ReadToEndAsync();
         try
         {
             using var fs = File.Create(tmp);
             var copy = proc.StandardOutput.BaseStream.CopyToAsync(fs);
             if (!Task.WhenAll(copy, proc.WaitForExitAsync()).Wait(TimeSpan.FromSeconds(120)))
-            { proc.Kill(entireProcessTree: true); throw new TimeoutException("svn cat timed out after 120 seconds"); }
+            { request?.Stage("timeout"); proc.Kill(entireProcessTree: true); throw new TimeoutException("svn cat timed out after 120 seconds"); }
         }
         catch { if (!proc.HasExited) proc.Kill(entireProcessTree: true); TryDelete(tmp); throw; }
         var stderr = stderrTask.GetAwaiter().GetResult();
+        request?.Stage($"exitCode={proc.ExitCode}");
 
         if (proc.ExitCode != 0)
         {
@@ -124,6 +128,8 @@ internal sealed class SvnClient
 
     private (int Code, string Stdout, string Stderr) RunText(string[] args)
     {
+        // Only operation arguments are traced, never AddCommon credentials.
+        using var request = RequestDiagnostics.Begin("SVN." + args[0], args[0] == "list" ? args[2] : args[1]);
         var psi = new ProcessStartInfo(Exe)
         {
             RedirectStandardOutput = true,
@@ -137,12 +143,14 @@ internal sealed class SvnClient
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var proc = Process.Start(psi)!;
+        request?.Stage($"waiting subprocess pid={proc.Id} timeoutMs=30000");
         var stdoutTask = proc.StandardOutput.ReadToEndAsync();
         var stderrTask = proc.StandardError.ReadToEndAsync();
         if (!Task.WhenAll(stdoutTask, stderrTask, proc.WaitForExitAsync()).Wait(TimeSpan.FromSeconds(30)))
-        { proc.Kill(entireProcessTree: true); throw new TimeoutException("svn metadata request timed out after 30 seconds"); }
+        { request?.Stage("timeout"); proc.Kill(entireProcessTree: true); throw new TimeoutException("svn metadata request timed out after 30 seconds"); }
         var stdout = stdoutTask.GetAwaiter().GetResult();
         var stderr = stderrTask.GetAwaiter().GetResult();
+        request?.Stage($"exitCode={proc.ExitCode}");
         return (proc.ExitCode, stdout, stderr);
     }
 

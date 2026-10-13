@@ -6,11 +6,13 @@ public sealed class SvnLayer : ILayer, IRevisionSource
 {
     private readonly SvnClient _svn;
     private readonly string _pinPath;
-    private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new();
+    private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, VfsEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
 
     private long _rev;
     private DateTime _pinMtime = DateTime.MinValue;
     private readonly object _gate = new();
+    private long _nextPinCheck;
 
     private SvnLayer(SvnClient svn, string pinPath)
     {
@@ -36,6 +38,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
             _rev = rev;
             _pinMtime = File.GetLastWriteTimeUtc(_pinPath);
             _memo.Clear();
+            _entries.Clear();
         }
     }
 
@@ -43,6 +46,12 @@ public sealed class SvnLayer : ILayer, IRevisionSource
     {
         get
         {
+            // Generation is consulted for every cache lookup. Poll external pin
+            // changes at most four times per second rather than stat per object.
+            long now = Environment.TickCount64;
+            long next = Volatile.Read(ref _nextPinCheck);
+            if (now < next || Interlocked.CompareExchange(ref _nextPinCheck, now + 250, next) != next)
+                return Interlocked.Read(ref _rev);
             try
             {
                 var mtime = File.GetLastWriteTimeUtc(_pinPath);
@@ -53,14 +62,14 @@ public sealed class SvnLayer : ILayer, IRevisionSource
                     {
                         lock (_gate)
                         {
-                            if (r != _rev) { _rev = r; _memo.Clear(); }
+                            if (r != _rev) { _rev = r; _memo.Clear(); _entries.Clear(); }
                             _pinMtime = mtime;
                         }
                     }
                 }
             }
             catch { }
-            return _rev;
+            return Interlocked.Read(ref _rev);
         }
     }
 
@@ -76,21 +85,29 @@ public sealed class SvnLayer : ILayer, IRevisionSource
             return true;
         }
 
-        var name = VfsPath.Name(rel);
-        foreach (var child in ListOwn(VfsPath.Parent(rel)))
+        string key = Generation + "|" + rel;
+        lock (_gate)
         {
-            if (string.Equals(child.Name, name, StringComparison.OrdinalIgnoreCase))
-            {
-                entry = child;
-                return true;
-            }
+            if (_entries.TryGetValue(key, out entry!)) return true;
         }
-        return false;
+        ListOwn(VfsPath.Parent(rel));
+        lock (_gate) return _entries.TryGetValue(key, out entry!);
     }
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel)
     {
-        var key = Generation + "|" + rel;
+        // WinFsp and shell probes are case-insensitive; SVN URLs are not. Resolve
+        // every component to the spelling advertised by its parent listing.
+        string canonical = "";
+        foreach (string component in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!TryGetEntry(VfsPath.Child(canonical, component), out var header) || !header.IsDir)
+                return Array.Empty<VfsEntry>();
+            canonical = VfsPath.Child(canonical, header.Name);
+        }
+        rel = canonical;
+        var generation = Generation;
+        var key = generation + "|" + rel;
         lock (_gate)
         {
             if (_memo.TryGetValue(key, out var cached)) return cached;
@@ -105,7 +122,11 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         }
         catch (SvnNotFoundException) { list = Array.Empty<VfsEntry>(); }
 
-        lock (_gate) { _memo[key] = list; }
+        lock (_gate)
+        {
+            _memo[key] = list;
+            foreach (var child in list) _entries[generation + "|" + VfsPath.Child(rel, child.Name)] = child;
+        }
         return list;
     }
 
@@ -116,7 +137,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
 
         var tmp = Path.Combine(Path.GetTempPath(), "PolyMount-svn-" + Guid.NewGuid().ToString("N") + ".tmp");
         _svn.CatToFile(Revision, rel, tmp);
-        stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read,
+        stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
             128 * 1024, FileOptions.DeleteOnClose);
         return true;
     }

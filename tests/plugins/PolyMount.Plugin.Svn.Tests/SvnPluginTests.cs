@@ -47,6 +47,17 @@ public sealed class SvnPluginTests : IPluginTestProvider
                     Username = context.Parameters.GetValueOrDefault("svn.username"), Password = context.Parameters.GetValueOrDefault("svn.password") }, context.WorkingDirectory);
                 if (!((IObjectLayer)layer).TryReadObject("", out var root) || !root.Header.IsDir || root.Children == null)
                     throw new Exception("Repository root did not produce a directory object");
+                foreach (var child in root.Children)
+                    if (!layer.TryGetEntry(child.Name.ToUpperInvariant(), out var header) || header.Name != child.Name)
+                        throw new Exception("Case-insensitive child header lookup failed");
+                var directory = root.Children.FirstOrDefault(c => c.IsDir);
+                if (directory != null)
+                {
+                    var canonical = layer.ListOwn(directory.Name);
+                    var alternate = layer.ListOwn(directory.Name.ToUpperInvariant());
+                    if (!canonical.Select(c => c.Name).SequenceEqual(alternate.Select(c => c.Name)))
+                        throw new Exception("Case-insensitive directory listing failed");
+                }
             });
         else results.Add(new(PluginName, "repository-integration", PluginTestOutcome.Skipped, "Set svn.repository to enable network testing"));
         return Task.FromResult<IReadOnlyList<PluginTestResult>>(results);
