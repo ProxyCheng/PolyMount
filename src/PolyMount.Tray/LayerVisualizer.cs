@@ -13,6 +13,9 @@ internal sealed class LayerVisualizer : QWidget
     private readonly QTimer _timer;
     private readonly LayerBoundaryView _diagram;
     private readonly QPushButton _release;
+    private readonly QComboBox _boundary;
+    private readonly QLabel _boundarySummary;
+    private bool _updatingBoundary;
     private Task<ControlResponse>? _pending;
     private ProbeResult? _probe;
     private readonly List<QWidget> _rows = new();
@@ -23,7 +26,7 @@ internal sealed class LayerVisualizer : QWidget
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
-        I18n.Bind(SetWindowTitle, "probe.title");
+        I18n.Bind(SetWindowTitle, "object.manageBoundary");
         Resize(700, 700);
         var root = new QVBoxLayout(WindowScrollArea.Create(this, 640, 680));
         root.SetContentsMargins(24, 24, 24, 20);
@@ -42,8 +45,20 @@ internal sealed class LayerVisualizer : QWidget
         root.AddWidget(legend);
         _diagram = new LayerBoundaryView();
         root.AddWidget(_diagram);
+        _boundary = new QComboBox();
+        _boundary.SetAccessibleName(I18n.T("object.boundaryPosition"));
+        _boundary.CurrentIndexChanged += index =>
+        {
+            if (!_updatingBoundary && index >= 0) _diagram.SetBoundary(index);
+        };
+        root.AddWidget(_boundary);
+        _boundarySummary = new QLabel();
+        _boundarySummary.SetObjectName("layerChain");
+        _boundarySummary.SetWordWrap(true);
+        _boundarySummary.SetTextFormat(Qt.TextFormat.PlainText);
+        root.AddWidget(_boundarySummary);
         _release = new QPushButton();
-        _diagram.BoundaryChanged += () => _release.SetEnabled(_pending == null && _diagram.Boundary > 0);
+        _diagram.BoundaryChanged += UpdateBoundary;
         I18n.Bind(_release.SetText, "object.releaseAbove");
         _release.SetObjectName("primary");
         _release.SetEnabled(false);
@@ -98,13 +113,13 @@ internal sealed class LayerVisualizer : QWidget
         {
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok || response.Probe == null) throw new InvalidOperationException(response.Error ?? "No probe data");
-        _probe = response.Probe;
+            _probe = response.Probe;
             _diagram.SetProbe(_probe);
-            _release.SetEnabled(_diagram.Boundary > 0);
+            PopulateBoundary();
             _status.SetText(I18n.T("refreshed"));
             Render();
         }
-        catch (Exception ex) { _status.SetText(I18n.T("probe.failed") + ex.Message); }
+        catch (Exception ex) { _status.SetText(I18n.T("probe.failed") + ex.Message); _boundary.SetEnabled(_probe != null); UpdateBoundary(); }
     }
 
     private void Render()
@@ -143,17 +158,42 @@ internal sealed class LayerVisualizer : QWidget
     public override void ChangeEvent(QEvent e)
     {
         base.ChangeEvent(e);
-        if (e.type() == QEvent.Type.LanguageChange && _rows != null) Render();
+        if (e.type() == QEvent.Type.LanguageChange && _boundary != null && _rows != null) { Render(); PopulateBoundary(); }
+    }
+
+    private void PopulateBoundary()
+    {
+        _updatingBoundary = true;
+        _boundary.Clear();
+        _boundary.AddItem(I18n.T("object.boundaryNone"));
+        if (_probe != null)
+            foreach (var layer in _probe.Layers) _boundary.AddItem(I18n.F("object.boundaryAfter", layer.Name));
+        _boundary.SetCurrentIndex(_diagram.Boundary);
+        _boundary.SetEnabled(_probe != null);
+        _updatingBoundary = false;
+        UpdateBoundary();
+    }
+
+    private void UpdateBoundary()
+    {
+        _updatingBoundary = true;
+        _boundary.SetCurrentIndex(_diagram.Boundary);
+        _updatingBoundary = false;
+        var affected = _probe?.Layers.Take(_diagram.Boundary).Where(l => l.Manageable).Select(l => l.Name).ToArray() ?? Array.Empty<string>();
+        _release.SetEnabled(_pending == null && affected.Length > 0);
+        _boundarySummary.SetText((affected.Length == 0 ? I18n.T("object.boundaryNone") : I18n.F("object.boundaryAffected", string.Join(" → ", affected))) +
+            "\n" + I18n.T("object.boundaryScope"));
     }
 
     private void Release()
     {
         if (_pending != null || _probe == null || _diagram.Boundary == 0) return;
-        if (QMessageBox.Question(this, I18n.T("confirm"), I18n.T("object.releaseConfirm"),
+        if (QMessageBox.Question(this, I18n.T("confirm"), _path + "\n\n" + _boundarySummary.Text + "\n\n" + I18n.T("object.releaseConfirm"),
             I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
         var request = new ControlRequest { Cmd = ControlCommands.ReleaseAbove, Path = _path,
             Boundary = _diagram.Boundary, ExpectedLayers = _probe.Layers.Select(l => l.Name).ToList() };
         _release.SetEnabled(false);
+        _boundary.SetEnabled(false);
         _status.SetText(I18n.T("working"));
         _pending = Task.Run(() => ControlClient.Send(request));
     }
@@ -172,6 +212,20 @@ internal sealed class LayerVisualizer : QWidget
         };
         layout.AddWidget(button);
     }
+
+    internal static void SmokeBoundary()
+    {
+        var view = new LayerBoundaryView();
+        try
+        {
+            view.SetProbe(new ProbeResult { Layers = new() { new() { Name = "ram", Manageable = true }, new() { Name = "source" } } });
+            view.SetBoundary(1);
+            if (view.Boundary != 1) throw new InvalidOperationException("Object boundary selection was not applied");
+            view.SetBoundary(99);
+            if (view.Boundary != 2) throw new InvalidOperationException("Object boundary escaped the layer chain");
+        }
+        finally { view.DeleteLater(); }
+    }
 }
 
 /// <summary>A draggable boundary across the actual provider records, not a fixed layer layout.</summary>
@@ -186,7 +240,11 @@ internal sealed class LayerBoundaryView : QWidget
     {
         SetMinimumHeight(180);
         SetMouseTracking(true);
-        I18n.Changed += Update;
+    }
+    public override void ChangeEvent(QEvent e)
+    {
+        base.ChangeEvent(e);
+        if (e.type() == QEvent.Type.LanguageChange) Update();
     }
     public void SetProbe(ProbeResult probe)
     {
@@ -195,10 +253,14 @@ internal sealed class LayerBoundaryView : QWidget
         SetFixedHeight(Top + probe.Layers.Count * Row + 28);
         Update();
     }
+    public void SetBoundary(int boundary)
+    {
+        Boundary = Math.Clamp(boundary, 0, _probe?.Layers.Count ?? 0);
+        Update(); BoundaryChanged?.Invoke();
+    }
     private void MoveBoundary(QMouseEvent e)
     {
-        Boundary = Math.Clamp((int)Math.Round((e.Position().Y() - Top) / Row), 0, _probe?.Layers.Count ?? 0);
-        Update(); BoundaryChanged?.Invoke();
+        SetBoundary((int)Math.Round((e.Position().Y() - Top) / Row));
     }
     public override void MousePressEvent(QMouseEvent e) { _dragging = true; MoveBoundary(e); }
     public override void MouseMoveEvent(QMouseEvent e) { if (_dragging) MoveBoundary(e); }

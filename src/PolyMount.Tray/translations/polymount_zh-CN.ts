@@ -2,6 +2,12 @@
 <TS version="2.1" language="zh-CN">
   <context>
     <name>PolyMount</name>
+    <message><source>object.manageBoundary</source><translation>管理缓存分界线…</translation></message>
+    <message><source>object.boundaryPosition</source><translation>缓存失效分界线</translation></message>
+    <message><source>object.boundaryNone</source><translation>保留所有层记录</translation></message>
+    <message><source>object.boundaryAfter</source><translation>分界线位于 {0} 之后</translation></message>
+    <message><source>object.boundaryAffected</source><translation>释放当前对象在以下层的记录：{0}</translation></message>
+    <message><source>object.boundaryScope</source><translation>仅作用于当前路径；选中文件夹时释放目录对象，不递归子项。分界线上方的本地修改也会被释放，不支持管理的来源层自动跳过。</translation></message>
     <message><source>picker.title</source><translation>添加层</translation></message>
     <message><source>picker.subtitle</source><translation>为当前层栈选择一个提供器，先了解用途与可配置属性，再确认添加。</translation></message>
     <message><source>picker.search</source><translation>搜索层名称、类型或用途…</translation></message>

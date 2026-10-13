@@ -2,6 +2,12 @@
 <TS version="2.1" language="en">
   <context>
     <name>PolyMount</name>
+    <message><source>object.manageBoundary</source><translation>Manage cache boundary…</translation></message>
+    <message><source>object.boundaryPosition</source><translation>Cache invalidation boundary</translation></message>
+    <message><source>object.boundaryNone</source><translation>Keep all layer records</translation></message>
+    <message><source>object.boundaryAfter</source><translation>Boundary after {0}</translation></message>
+    <message><source>object.boundaryAffected</source><translation>Release this object's records from: {0}</translation></message>
+    <message><source>object.boundaryScope</source><translation>Applies to this path only. For folders, this releases the folder object, not its descendants. Local changes above the boundary are also released; unmanaged source layers are skipped.</translation></message>
     <message><source>picker.title</source><translation>Add a layer</translation></message>
     <message><source>picker.subtitle</source><translation>Choose a provider for your stack. Preview its purpose and settings before adding it.</translation></message>
     <message><source>picker.search</source><translation>Search layer names, types or descriptions…</translation></message>

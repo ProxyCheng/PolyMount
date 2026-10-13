@@ -30,9 +30,11 @@ public static class ShellMenuInstaller
             shell.SetValue("Icon", $"\"{exePath}\"");
             shell.DeleteSubKeyTree("command", throwOnMissingSubKey: false);
             using var action = shell.CreateSubKey(@"shell\ManageObject");
-            action.SetValue(null, I18n.T("object.manage"));
+            action.SetValue(null, I18n.T("object.manageBoundary"));
+            action.SetValue("Icon", $"\"{exePath}\"");
+            action.SetValue("MultiSelectModel", "Document");
             using var cmd = action.CreateSubKey("command");
-            cmd.SetValue(null, $"\"{exePath}\" --probe \"%1\"");
+            cmd.SetValue(null, $"\"{exePath}\" --manage-cache \"%1\"");
         }
     }
 

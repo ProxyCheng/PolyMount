@@ -16,20 +16,29 @@ internal static class Program
         _app = new QApplication(args);
         I18n.Initialize();
 
+        if (Array.IndexOf(args, "--install-shell-menu") >= 0)
+        {
+            ShellMenuInstaller.Install(Environment.ProcessPath!);
+            Console.WriteLine("Explorer file/folder cache boundary menu registered.");
+            return 0;
+        }
+
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
         if (Array.IndexOf(args, "--ui-smoke") >= 0)
             return RunUiSmoke(args);
 
         // Launched from the Explorer context menu: show just the layer view, no tray.
-        int probeIdx = Array.IndexOf(args, "--probe");
+        int probeIdx = Array.IndexOf(args, "--manage-cache");
+        if (probeIdx < 0) probeIdx = Array.IndexOf(args, "--probe");
         if (probeIdx >= 0 && probeIdx + 1 < args.Length)
         {
-            var view = LayerVisualizer.Open(args[probeIdx + 1]);
-            return view ? _app.Exec() : 1;
+            foreach (string path in args.Skip(probeIdx + 1).Distinct(StringComparer.OrdinalIgnoreCase)) LayerVisualizer.Open(path);
+            return _app.Exec();
         }
 
         // Closing the dashboard must not quit the app; the tray keeps it alive.
         QApplication.SetQuitOnLastWindowClosed(false);
+        if (ShellMenuInstaller.IsInstalled()) ShellMenuInstaller.Install(Environment.ProcessPath!);
 
         _tray = new QSystemTrayIcon();
         _tray.SetIcon(TrayIcons.App);
@@ -129,6 +138,7 @@ internal static class Program
             }
             if (ticks == 20)
             {
+                try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
                 editor.SmokeInteractions();
                 dashboard.SmokeSilentUpdate();
                 try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
