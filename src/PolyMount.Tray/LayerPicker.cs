@@ -43,7 +43,7 @@ internal sealed class LayerPicker : QDialog
         browseLayout.SetSpacing(8);
         _count = Label("", "eyebrow");
         browseLayout.AddWidget(_count);
-        _list = new QListWidget();
+        _list = ContinuousScrolling.List();
         _list.SetObjectName("layerCatalog");
         _list.SetSpacing(6);
         _list.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);

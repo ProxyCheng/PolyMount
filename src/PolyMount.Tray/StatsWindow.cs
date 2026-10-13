@@ -50,7 +50,7 @@ internal sealed class StatsWindow : QWidget
         titles.AddWidget(Label("stats.subtitle", "muted"));
         header.AddLayout(titles);
         header.AddStretch(1);
-        _mount = new QComboBox();
+        _mount = ContinuousScrolling.Combo();
         _mount.SetMinimumWidth(180);
         _mount.AddItem(T("stats.all"));
         _mount.CurrentIndexChanged += _ => Render();
@@ -87,7 +87,7 @@ internal sealed class StatsWindow : QWidget
         access.AddWidget(_accessLegend, 1);
         root.AddLayout(access);
         root.AddWidget(Label("stats.layer", "sectionTitle"));
-        _table = new QTableWidget();
+        _table = ContinuousScrolling.Table();
         _table.SetColumnCount(7);
         _table.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
         _table.SetShowGrid(false);

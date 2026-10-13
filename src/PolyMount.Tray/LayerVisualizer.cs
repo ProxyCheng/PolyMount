@@ -46,7 +46,7 @@ internal sealed class LayerVisualizer : QWidget
         root.AddWidget(legend);
         _diagram = new LayerBoundaryView();
         root.AddWidget(_diagram);
-        _boundary = new QComboBox();
+        _boundary = ContinuousScrolling.Combo();
         _boundary.SetAccessibleName(I18n.T("object.boundaryPosition"));
         _boundary.CurrentIndexChanged += index =>
         {

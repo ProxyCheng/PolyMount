@@ -66,7 +66,7 @@ internal sealed class ConfigEditor : QWidget
         split.SetHandleWidth(14);
         split.SetChildrenCollapsible(false);
         // The internal selection model is retained for drafts; there is no all-instances UI.
-        _mountList = new QListWidget();
+        _mountList = ContinuousScrolling.List();
         _mountList.Hide();
         _mountList.CurrentRowChanged += OnMountSelected;
 
@@ -86,9 +86,11 @@ internal sealed class ConfigEditor : QWidget
         center.AddLayout(mountForm);
         center.AddWidget(Label("layer.stack", "sectionTitle"));
         center.AddWidget(Label("layer.hint", "muted"));
-        _layerList = new QListWidget();
+        _layerList = ContinuousScrolling.List();
         _layerList.SetDragDropMode(QAbstractItemView.DragDropMode.InternalMove);
         _layerList.SetDefaultDropAction(Qt.DropAction.MoveAction);
+        _layerList.SetAutoScroll(true);
+        _layerList.SetAutoScrollMargin(36);
         _layerList.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
         _layerList.SetSpacing(8);
         _layerList.SetMinimumHeight(285);
@@ -102,7 +104,7 @@ internal sealed class ConfigEditor : QWidget
         layerButtons.AddWidget(_removeLayer);
         center.AddLayout(layerButtons);
         var presetRow = new QHBoxLayout();
-        _presets = new QComboBox();
+        _presets = ContinuousScrolling.Combo();
         presetRow.AddWidget(_presets, 1);
         presetRow.AddWidget(Button("preset", ApplyPreset, "layers"));
         center.AddLayout(presetRow);
@@ -487,7 +489,7 @@ internal sealed class ConfigEditor : QWidget
             }
             else if (field.Kind == LayerFieldKind.Choice)
             {
-                var combo = new QComboBox();
+                var combo = ContinuousScrolling.Combo();
                 foreach (var choice in field.Choices) combo.AddItem(choice.Title.Resolve(I18n.Language));
                 combo.SetCurrentIndex(field.Choices.FindIndex(c => c.Value == value));
                 combo.CurrentIndexChanged += _ => Dirty();

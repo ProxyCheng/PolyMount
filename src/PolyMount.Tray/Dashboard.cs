@@ -64,7 +64,7 @@ internal sealed class Dashboard : QWidget
         nav.AddWidget(_stop);
         nav.AddSpacing(12);
         nav.AddWidget(Label("language", "sidebarMuted"));
-        _language = new QComboBox();
+        _language = ContinuousScrolling.Combo();
         _language.AddItem("简体中文");
         _language.AddItem("English");
         _language.SetCurrentIndex(I18n.Language == "zh-CN" ? 0 : 1);
@@ -118,12 +118,12 @@ internal sealed class Dashboard : QWidget
         _search.SetClearButtonEnabled(true);
         _search.TextChanged += _ => FillTable();
         tools.AddWidget(_search, 1);
-        _filter = new QComboBox();
+        _filter = ContinuousScrolling.Combo();
         UpdateFilters();
         _filter.CurrentIndexChanged += _ => FillTable();
         tools.AddWidget(_filter);
         list.AddLayout(tools);
-        _table = new QTableWidget();
+        _table = ContinuousScrolling.Table();
         _table.SetColumnCount(3);
         _table.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
         _table.SetSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);
