@@ -8,6 +8,28 @@ namespace PolyMount.Core.Tests;
 public sealed class ReadPredictionTests
 {
     [TestMethod]
+    public void Reset_erases_persisted_model_and_keeps_live_demand_accounting()
+    {
+        using var temp = new TempDir();
+        string model = temp.Sub("reset.json");
+        var vfs = new VirtualFileSystem(Array.Empty<ILayer>());
+        var options = new ReadPredictionOptions { IdleDelayMs = 100 };
+        using (var prediction = new ReadPrediction(vfs, options, model))
+        {
+            using (prediction.Demand("a")) { }
+            using (prediction.Demand("b")) { }
+            Assert.AreEqual(1, prediction.LearnedTransitions);
+            using (prediction.Demand("a")) prediction.Reset();
+            Assert.AreEqual(0, prediction.LearnedTransitions);
+            Assert.AreEqual("[]", File.ReadAllText(model));
+        }
+        using var restored = new ReadPrediction(vfs, options, model);
+        Assert.AreEqual(0, restored.LearnedTransitions);
+        Assert.AreEqual(PolyMount.Core.Ipc.ControlCommands.ClearCache,
+            LayerRegistry.Describe("prediction-cache").Actions.Single().Command);
+    }
+
+    [TestMethod]
     public async Task Directory_access_sequence_predicts_complete_listing_into_lower_cache()
     {
         using var temp = new TempDir();

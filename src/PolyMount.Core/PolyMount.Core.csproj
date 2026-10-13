@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Core\OriginPalette.inc" LogicalName="PolyMount.OriginPalette" />
+    <EmbeddedResource Include="Resources\layer-texts.json" LogicalName="PolyMount.LayerTexts" />
     <InternalsVisibleTo Include="PolyMount.Core.Tests" />
   </ItemGroup>
 

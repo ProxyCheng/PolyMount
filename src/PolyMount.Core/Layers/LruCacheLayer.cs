@@ -4,7 +4,7 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Immediate memory publication with best-effort background read-cache persistence.</summary>
-public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement, ILayerStorageUsage, IDisposable
+public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObjectManagement, ILayerStorageUsage, IDisposable
 {
     private sealed class Item(VirtualObject value, long bytes, CacheContent? content = null, ObjectDatabase.Record? record = null)
     {
@@ -51,9 +51,9 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             _storageCheck = new Timer(_ => ValidateStorage(), null, 1000, 1000);
     }
     private string Key(string path) => Generation + "|" + path;
-    public string Name => "cache";
-    public string Generation => _version();
-    public bool Writable => true;
+    public override string Name => "cache";
+    public override string Generation => _version();
+    public override bool Writable => true;
     public bool HasDurableWrites => _writes.Records.Count > 0;
     public long Capacity { get; }
     public long TotalBytes { get { lock (_gate) return _bytes; } }
@@ -116,7 +116,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         catch (Exception ex) { LastPersistenceError = ex.Message; }
         finally { Volatile.Write(ref _checkingStorage, 0); }
     }
-    public bool TryReadObject(string path, out VirtualObject value)
+    public override bool TryReadObject(string path, out VirtualObject value)
     {
         if (_writes.TryGet(path, out value)) return true;
         string key = Key(path);
@@ -127,7 +127,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             return found;
         }
     }
-    public bool TryApply(IReadOnlyList<ObjectChange> changes) { _writes.Apply(changes); return true; }
+    public override bool TryApply(IReadOnlyList<ObjectChange> changes) { _writes.Apply(changes); return true; }
     public void StoreObject(string path, VirtualObject value, Stream? content = null)
     {
         string key = Key(path);
@@ -244,10 +244,10 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             }
         }
     }
-    public bool TryGetEntry(string path, out VfsEntry entry)
+    public override bool TryGetEntry(string path, out VfsEntry entry)
     { bool found = TryReadObject(path, out var value); entry = found ? value.Header : null!; return found; }
-    public IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value) ? value.Children ?? Array.Empty<VfsEntry>() : Array.Empty<VfsEntry>();
-    public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
+    public override IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value) ? value.Children ?? Array.Empty<VfsEntry>() : Array.Empty<VfsEntry>();
+    public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
     {
         if (_writes.TryOpen(path, out var durable, out stream)) { entry = durable.Header; return true; }
         string key = Key(path);
@@ -299,6 +299,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     }
     public void Store(string path, string version, VfsEntry entry, Stream content) => StoreObject(path, new(entry), content);
     public void Invalidate() => Purge();
+    public override void Clear() => Purge();
     public void Purge()
     {
         lock (_persistGate)

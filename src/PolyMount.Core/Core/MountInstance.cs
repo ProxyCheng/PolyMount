@@ -145,8 +145,9 @@ public sealed class MountInstance : IDisposable
 
     public void ClearCache(string? layer = null)
     {
-        foreach (var cache in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<ICacheLayer>())
-            if (cache is MemoryCacheLayer memory) memory.Clear(); else cache.Invalidate();
+        foreach (var provider in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value))
+            if (provider is CacheLayer cache) cache.Clear();
+            else if (provider is ICacheLayer legacy) legacy.Invalidate();
     }
 
     public void ClearLocalChanges(string layer, string winFspBin)

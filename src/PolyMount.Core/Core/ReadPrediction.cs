@@ -26,6 +26,8 @@ public sealed class ReadPrediction : IDisposable
     private long _lastDemand;
     private int _activeDemand;
     private Task? _loading;
+    private long _epoch;
+    public int LearnedTransitions { get { lock (_gate) return _edges.Count; } }
     public long Predictions { get; private set; }
     public long Completed { get; private set; }
 
@@ -76,6 +78,7 @@ public sealed class ReadPrediction : IDisposable
             if (_stop.IsCancellationRequested || _activeDemand != 0 || _candidate == null ||
                 _loading is { IsCompleted: false } || Environment.TickCount64 - _lastDemand < _options.IdleDelayMs) return;
             string candidate = _candidate; _candidate = null; Predictions++;
+            long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _loading = Task.Run(() =>
             {
                 try
@@ -83,15 +86,30 @@ public sealed class ReadPrediction : IDisposable
                     if (_stop.IsCancellationRequested || !_vfs.TryLookup(candidate, out var entry) ||
                         (!entry.IsDir && entry.Size > _options.MaxFileBytes) || (entry.IsDir && _preload == null)) return;
                     if (_preload == null && _vfs.Layers.OfType<ICacheLayer>().Any(c => c.TryGetEntry(candidate, out _))) return;
-                    lock (_gate) if (_activeDemand != 0 || _stop.IsCancellationRequested) return;
+                    lock (_gate) if (_activeDemand != 0 || _stop.IsCancellationRequested || epoch != _epoch) return;
                     using var trace = RequestDiagnostics.Begin("Predict.Preload", candidate, _vfs.Diagnostics);
                     if (_preload != null) _preload(candidate);
                     else { using var stream = _vfs.OpenRead(candidate, out _, speculative: true); }
-                    lock (_gate) Completed++;
+                    lock (_gate) if (epoch == _epoch) Completed++;
                 }
                 catch (IOException) { }
                 catch (Exception ex) { using var trace = RequestDiagnostics.Begin("Predict.Failed", candidate, _vfs.Diagnostics); trace?.Stage(ex.GetType().Name); }
             });
+        }
+    }
+    public void Reset()
+    {
+        lock (_gate)
+        {
+            // Do not reset live demand counts or abort an already-started I/O.
+            // Queued candidates from the old model cannot begin after this reset.
+            _epoch++;
+            _edges.Clear(); _previous = null; _candidate = null;
+            Predictions = 0; Completed = 0;
+            Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
+            string temp = _modelPath + ".tmp";
+            File.WriteAllText(temp, "[]");
+            File.Move(temp, _modelPath, true);
         }
     }
     public void Dispose()

@@ -341,7 +341,6 @@ public sealed class VirtualFileSystem
         lock (_cacheUpdateGate)
         {
             Interlocked.Increment(ref _resolutionEpoch);
-            foreach (var layer in _layers.Select(l => l is NamedLayer named ? named.Inner : l).OfType<PolyMount.Layers.PredictionCacheLayer>()) layer.Clear();
             foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate();
         }
     }
@@ -350,7 +349,6 @@ public sealed class VirtualFileSystem
         lock (_cacheUpdateGate)
         {
             Interlocked.Increment(ref _resolutionEpoch);
-            foreach (var layer in _layers.Select(l => l is NamedLayer named ? named.Inner : l).OfType<PolyMount.Layers.PredictionCacheLayer>()) layer.Clear();
             int hit = _layers.IndexOf(target);
             for (int i = 0; i < _layers.Count; i++)
             {

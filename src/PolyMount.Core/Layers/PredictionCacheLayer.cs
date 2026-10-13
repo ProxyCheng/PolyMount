@@ -3,7 +3,7 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Sequence-learning preload driver. Read caches below it own all cache hits.</summary>
-public sealed class PredictionCacheLayer : ILayer, IDisposable
+public sealed class PredictionCacheLayer : CacheLayer, IDisposable
 {
     private readonly Func<string> _generation;
     private readonly long _capacity;
@@ -16,9 +16,9 @@ public sealed class PredictionCacheLayer : ILayer, IDisposable
         if (capacity < 1 || capacity > 256L * 1048576) throw new ArgumentException("Prediction temporary capacity must be 1–256 MiB");
         _capacity = capacity; _generation = generation; _options = options; _model = model;
     }
-    public string Name => "prediction-cache";
-    public string Generation => _generation();
-    public bool Writable => false;
+    public override string Name => "prediction-cache";
+    public override string Generation => _generation();
+    public override bool Writable => false;
     public long MemoryBytes => Interlocked.Read(ref _bytes);
     public void Attach(VirtualFileSystem lower)
     {
@@ -42,12 +42,17 @@ public sealed class PredictionCacheLayer : ILayer, IDisposable
         });
     }
     internal IDisposable? Observe(string path) => _predictor?.Demand(path);
-    public bool TryGetEntry(string path, out VfsEntry entry) { entry = null!; return false; }
-    public IReadOnlyList<VfsEntry> ListOwn(string path) => Array.Empty<VfsEntry>();
-    public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
+    public override bool TryGetEntry(string path, out VfsEntry entry) { entry = null!; return false; }
+    public override IReadOnlyList<VfsEntry> ListOwn(string path) => Array.Empty<VfsEntry>();
+    public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
     { entry = null!; stream = null!; return false; }
     // Content invalidation belongs to the owning lower cache. Its VFS generation
     // and visibility validation prevent stale speculative data from being served.
-    public void Clear() { }
+    public override void Clear() => ResetLearning();
+    public void ResetLearning()
+    {
+        if (_predictor != null) _predictor.Reset();
+        else if (File.Exists(_model)) File.Delete(_model);
+    }
     public void Dispose() => _predictor?.Dispose();
 }

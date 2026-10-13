@@ -3,7 +3,7 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Bounded LRU of directory snapshots and file blocks. Dirty blocks belong to a live staging stream.</summary>
-public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IDisposable
+public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IDisposable
 {
     private sealed class Page(string key, string path, long offset, byte[] bytes, Session session)
     {
@@ -44,10 +44,10 @@ public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStrea
             throw new ArgumentException("Memory cache requires a power-of-two block size from 4 KiB to 1 MiB and capacity >= block size");
         Capacity = capacityBytes; BlockSize = blockSize; _generation = generation ?? (() => "memory");
     }
-    public string Name => "memory-cache";
-    public string Generation => _generation();
+    public override string Name => "memory-cache";
+    public override string Generation => _generation();
     // Stream writes are buffered; namespace objects always pass to the next provider.
-    public bool Writable => false;
+    public override bool Writable => false;
     public long Capacity { get; }
     public int BlockSize { get; }
     public long Hits { get { lock (_gate) return _hits; } }
@@ -62,7 +62,7 @@ public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStrea
         foreach (var item in _directories.Values.ToArray()) Remove(item);
         _directoryGeneration = generation;
     }
-    public bool TryReadObject(string path, out VirtualObject value)
+    public override bool TryReadObject(string path, out VirtualObject value)
     {
         lock (_gate)
         {
@@ -76,14 +76,14 @@ public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStrea
             value = null!; return false;
         }
     }
-    public bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
-    public bool TryGetEntry(string path, out VfsEntry entry)
+    public override bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
+    public override bool TryGetEntry(string path, out VfsEntry entry)
     {
         bool found = TryReadObject(path, out var value); entry = found ? value.Header : null!; return found;
     }
-    public IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value)
+    public override IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value)
         ? value.Children! : Array.Empty<VfsEntry>();
-    public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream) { entry = null!; stream = null!; return false; }
+    public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream) { entry = null!; stream = null!; return false; }
     public void Store(string path, string version, VfsEntry entry, Stream content) { }
     public void StoreObject(string path, VirtualObject value, Stream? content = null)
     {
@@ -189,7 +189,7 @@ public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStrea
             foreach (var item in _directories.Values.ToArray()) Remove(item);
         }
     }
-    public void Clear()
+    public override void Clear()
     {
         lock (_gate)
         {
