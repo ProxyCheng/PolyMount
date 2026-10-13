@@ -36,6 +36,18 @@ void Run(string backend, string scenario, int threads, int repeat, long bytes, i
     var cpu = process.TotalProcessorTime;
     long allocated = GC.GetTotalAllocatedBytes();
     var watch = Stopwatch.StartNew();
+    long peakPrivate = process.PrivateMemorySize64;
+    int peakHandles = process.HandleCount;
+    using var resourceSampler = new Timer(_ =>
+    {
+        try
+        {
+            using var current = Process.GetCurrentProcess();
+            Interlocked.Exchange(ref peakPrivate, Math.Max(Interlocked.Read(ref peakPrivate), current.PrivateMemorySize64));
+            Interlocked.Exchange(ref peakHandles, Math.Max(Volatile.Read(ref peakHandles), current.HandleCount));
+        }
+        catch { }
+    }, null, 0, 50);
     int active = 0, peak = 0;
     void ExecuteWorker(int index)
     {
@@ -75,9 +87,11 @@ void Run(string backend, string scenario, int threads, int repeat, long bytes, i
         samples.Length / watch.Elapsed.TotalSeconds, samples.Length == 0 ? 0 : samples.Average(), Percentile(.50), Percentile(.95), Percentile(.99),
         samples.Length == 0 ? 0 : samples[^1], (process.TotalProcessorTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes() - allocated,
         process.PeakWorkingSet64, errors.ToArray());
-    result = result with { PeakConcurrentOperations = peak, SlowOperations = samples.Count(ms => ms >= 1000) };
+    result = result with { PeakConcurrentOperations = peak, SlowOperations = samples.Count(ms => ms >= 1000),
+        PeakPrivateBytes = peakPrivate, PeakHandles = peakHandles };
     results.Add(result);
     Console.WriteLine($"{backend,-10} {scenario,-18} threads={threads} run={repeat} {result.MBps:0.0} MB/s {result.OpsPerSecond:0.0} ops/s p95={result.P95Ms:0.000}ms errors={errors.Count}");
+    Console.WriteLine($"  resources: peakPrivate={result.PeakPrivateBytes / 1048576.0:0.0}MiB peakHandles={result.PeakHandles}");
 }
 
 try
@@ -215,5 +229,7 @@ internal sealed record RunResult(string Backend, string Scenario, int Workers, i
 {
     public int PeakConcurrentOperations { get; init; }
     public int SlowOperations { get; init; }
+    public long PeakPrivateBytes { get; init; }
+    public int PeakHandles { get; init; }
     public static RunResult Failure(string backend, string scenario, int workers, int repeat, string error) => new(backend, scenario, workers, repeat, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, new[] { error });
 }

@@ -45,7 +45,7 @@ internal sealed class EngineWorkload : IDisposable
         Console.WriteLine($"  {phase}: " + string.Join("; ", _timings.OrderBy(p => p.Key).Select(p => $"{p.Key} count={p.Value.Count} mean={p.Value.Ms / p.Value.Count:0.000}ms")));
         _timings.Clear();
         if (_source != null)
-            Console.WriteLine($"  source: metadata={Interlocked.Exchange(ref _source.Metadata, 0)}, listings={Interlocked.Exchange(ref _source.Listings, 0)}, opens={Interlocked.Exchange(ref _source.Opens, 0)}; cache objects={_cache!.Count}");
+            Console.WriteLine($"  source: metadata={Interlocked.Exchange(ref _source.Metadata, 0)}, listings={Interlocked.Exchange(ref _source.Listings, 0)}, opens={Interlocked.Exchange(ref _source.Opens, 0)}; cache objects={_cache!.Count} metadataMiB={_cache.EstimatedMetadataBytes / 1048576.0:0.0} pendingMiB={_cache.PendingBytes / 1048576.0:0.0} retainedHandles={_cache.RetainedReadHandles}");
     }
     public void PrewarmFully()
     {
