@@ -1,0 +1,130 @@
+using PolyMount.Core;
+
+namespace PolyMount.Plugins.Svn;
+
+public sealed class SvnLayer : ILayer
+{
+    private readonly SvnClient _svn;
+    private readonly string _pinPath;
+    private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new();
+
+    private long _rev;
+    private DateTime _pinMtime = DateTime.MinValue;
+    private readonly object _gate = new();
+
+    private SvnLayer(SvnClient svn, string pinPath)
+    {
+        _svn = svn;
+        _pinPath = pinPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(pinPath)!);
+    }
+
+    public static SvnLayer Create(string url, string trustFailures, string pinPath,
+        string? username = null, string? password = null)
+        => new(new SvnClient(url, trustFailures, username, password), pinPath);
+
+    public string Name => "svn";
+    public bool Writable => false;
+
+    public long HeadRevision() => _svn.GetHeadRevision();
+
+    public void SetRevision(long rev)
+    {
+        File.WriteAllText(_pinPath, rev.ToString());
+        lock (_gate)
+        {
+            _rev = rev;
+            _pinMtime = File.GetLastWriteTimeUtc(_pinPath);
+            _memo.Clear();
+        }
+    }
+
+    public long Revision
+    {
+        get
+        {
+            try
+            {
+                var mtime = File.GetLastWriteTimeUtc(_pinPath);
+                if (mtime != _pinMtime)
+                {
+                    var txt = File.ReadAllText(_pinPath).Trim();
+                    if (long.TryParse(txt, out var r) && r > 0)
+                    {
+                        lock (_gate)
+                        {
+                            if (r != _rev) { _rev = r; _memo.Clear(); }
+                            _pinMtime = mtime;
+                        }
+                    }
+                }
+            }
+            catch { }
+            return _rev;
+        }
+    }
+
+    public string Generation => Revision.ToString();
+
+    public bool IsDeleted(string rel) => false;
+
+    public bool TryGetEntry(string rel, out VfsEntry entry)
+    {
+        entry = null!;
+        if (rel.Length == 0)
+        {
+            entry = new VfsEntry { Name = string.Empty, IsDir = true };
+            return true;
+        }
+
+        var name = VfsPath.Name(rel);
+        foreach (var child in ListOwn(VfsPath.Parent(rel)))
+        {
+            if (string.Equals(child.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                entry = child;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public IReadOnlyList<VfsEntry> ListOwn(string rel)
+    {
+        var key = Generation + "|" + rel;
+        lock (_gate)
+        {
+            if (_memo.TryGetValue(key, out var cached)) return cached;
+        }
+
+        IReadOnlyList<VfsEntry> list;
+        try
+        {
+            list = _svn.List(Revision, rel)
+                .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc })
+                .ToList();
+        }
+        catch (SvnNotFoundException) { list = Array.Empty<VfsEntry>(); }
+
+        lock (_gate) { _memo[key] = list; }
+        return list;
+    }
+
+    public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)
+    {
+        stream = null!;
+        if (!TryGetEntry(rel, out entry) || entry.IsDir) return false;
+
+        var tmp = Path.Combine(Path.GetTempPath(), "PolyMount-svn-" + Guid.NewGuid().ToString("N") + ".tmp");
+        _svn.CatToFile(Revision, rel, tmp);
+        stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read,
+            128 * 1024, FileOptions.DeleteOnClose);
+        return true;
+    }
+
+    public Stream Create(string rel, out VfsEntry entry) => throw new NotSupportedException("svn layer is read-only");
+    public Stream OpenExistingWrite(string rel, out VfsEntry entry) =>         throw new NotSupportedException("svn layer is read-only");
+    public void CreateDirectory(string rel) =>         throw new NotSupportedException("svn layer is read-only");
+    public void Delete(string rel, bool shadowedBelow) =>         throw new NotSupportedException("svn layer is read-only");
+    public void Rename(string rel, string dst, bool replace, bool shadowedBelow) =>         throw new NotSupportedException("svn layer is read-only");
+}

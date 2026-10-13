@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>PolyMount</RootNamespace>
+    <AssemblyName>PolyMount.Core</AssemblyName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="winfsp-msil">
+      <HintPath>C:\Program Files (x86)\WinFsp\bin\winfsp-msil.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
