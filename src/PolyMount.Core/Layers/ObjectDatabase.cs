@@ -128,9 +128,7 @@ internal sealed class ObjectDatabase
 
     public void Apply(IReadOnlyList<ObjectChange> changes)
     {
-        lock (_gate)
-        {
-            EnsureAvailable();
+            lock (_gate) EnsureAvailable();
             var updates = new Dictionary<string, Record>(StringComparer.OrdinalIgnoreCase);
             var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var obsolete = new HashSet<string>();
@@ -139,7 +137,6 @@ internal sealed class ObjectDatabase
             {
                 foreach (var change in changes)
                 {
-                    if (_records.TryGetValue(change.Path, out var old) && old.Blob != null) obsolete.Add(old.Blob);
                     if (change.Object == null) { updates.Remove(change.Path); removed.Add(change.Path); continue; }
                     removed.Remove(change.Path);
                     var value = change.Object;
@@ -150,6 +147,12 @@ internal sealed class ObjectDatabase
                         if (change.Content == null) throw new ArgumentException("File update requires content");
                         blob = Guid.NewGuid().ToString("N") + ".blob";
                         created.Add(blob);
+                        if (!_compress && change.Content is CommitSnapshot prepared)
+                        {
+                            prepared.PublishTo(Path.Combine(_root, blob));
+                        }
+                        else
+                        {
                         using (var file = new FileStream(Path.Combine(_root, blob), FileMode.CreateNew, FileAccess.Write))
                         {
                             if (_compress)
@@ -160,12 +163,20 @@ internal sealed class ObjectDatabase
                             else change.Content.CopyTo(file);
                             file.Flush(true);
                         }
+                        }
                         stored = new FileInfo(Path.Combine(_root, blob)).Length;
                     }
                     else if (value.Children == null) throw new ArgumentException("Directory update requires a complete child list");
                     stored += JsonSerializer.SerializeToUtf8Bytes(value).Length;
                     updates[change.Path] = new(change.Path, value, blob, _compress && !value.Header.IsDir, stored, DateTime.UtcNow.Ticks);
                 }
+                // Blob copy/compression/fsync is independent per transaction and
+                // must not hold the metadata mutex during large-file preparation.
+                lock (_gate)
+                {
+                EnsureAvailable();
+                foreach (var change in changes)
+                    if (_records.TryGetValue(change.Path, out var old) && old.Blob != null) obsolete.Add(old.Blob);
                 using (var connection = Connect())
                 using (var transaction = connection.BeginTransaction())
                 {
@@ -195,6 +206,7 @@ internal sealed class ObjectDatabase
                         metadata -= CacheBudgets.Estimate(record.Path, record.Value);
                     }
                 }
+                }
             }
             catch
             {
@@ -202,7 +214,6 @@ internal sealed class ObjectDatabase
                 throw;
             }
             foreach (var blob in obsolete) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
-        }
     }
     public void Clear() => Apply(Records.Select(r => new ObjectChange(r.Path, null)).ToArray());
 }

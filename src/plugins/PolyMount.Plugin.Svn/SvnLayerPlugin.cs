@@ -10,10 +10,14 @@ public sealed class SvnLayerPlugin : ILayerPlugin
         LayerPresetRegistry.Register(new()
         {
             Id = "svn-workspace",
-            Titles = new() { ["zh-CN"] = "SVN + 缓存 + 本地修改", ["en"] = "SVN + cache + overlay" },
+            Titles = new() { ["zh-CN"] = "SVN + 读取缓存 + 预测预载 + 本地修改 + 内存缓存", ["en"] = "SVN + read cache + predictive preload + overlay + memory cache" },
             Layers = new()
             {
-                new() { Id = "overlay", Type = "overlay" }, new() { Id = "cache", Type = "cache" },
+                new() { Id = "memory-cache", Type = "memory-cache" },
+                new() { Id = "overlay", Type = "overlay" },
+                new() { Id = "predict", Type = "prediction-cache", Parameters = new()
+                    { ["CapacityBytes"] = System.Text.Json.JsonSerializer.SerializeToElement(16L * 1048576) } },
+                new() { Id = "cache", Type = "cache" },
                 new() { Id = "svn", Type = "svn", Source = new() { Type = "svn" } }
             }
         });

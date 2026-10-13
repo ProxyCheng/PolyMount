@@ -132,9 +132,8 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     {
         string key = Key(path);
         // Reserve bounded queue space before retaining/copying any file data.
-        long estimate = value.Header.IsDir
-            ? 256L + (value.Children?.Sum(c => 256L + c.Name.Length * 6L) ?? 0)
-            : value.Header.Size + 128;
+        var payload = value.Content;
+        long estimate = payload.PersistenceEstimate;
         long metadata = CacheBudgets.Estimate(key, value);
         lock (_gate)
         {
@@ -143,12 +142,10 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             CacheContent? captured = null;
             try
             {
-                if (!value.Header.IsDir)
-                {
-                    if (content == null || (captured = CacheContent.Capture(content)) == null) return;
-                }
+                captured = payload.RetainBytes(content);
+                if (payload is FileObjectContent && captured == null) return;
                 // Directory lists and headers are immutable snapshots for background work.
-                var snapshot = new VirtualObject(Clone(value.Header), value.Children?.Select(Clone).ToArray());
+                var snapshot = value.Snapshot();
                 var item = new Item(snapshot, estimate, captured) { Metadata = metadata };
                 if (!_queue.Writer.TryWrite((key, item))) { captured?.Dispose(); return; }
                 _items[key] = item; _bytes += estimate; _pendingBytes += estimate;
@@ -168,9 +165,6 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             }
         }
     }
-    private static VfsEntry Clone(VfsEntry entry) => new()
-        { Name = entry.Name, IsDir = entry.IsDir, Size = entry.Size, TimeUtc = entry.TimeUtc };
-
     private void Persist()
     {
         while (true)

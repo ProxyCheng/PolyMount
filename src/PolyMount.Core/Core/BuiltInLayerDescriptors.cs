@@ -22,9 +22,9 @@ internal static class BuiltInLayerDescriptors
 
     public static LayerDescriptor Memory() => new()
     {
-        Type = "memory-cache", Title = new("Memory block cache", "内存块缓存"),
-        Description = new("Small RAM LRU for repeated range reads and writes. Place above the writable layer. Flush/close writes through to durable storage.",
-            "加速文件片段的重复读写。请放在可写层上方；Flush/关闭时提交到持久层。"),
+        Type = "memory-cache", Title = new("Memory cache", "内存缓存"),
+        Description = new("Caches directory listings and repeated file range reads and writes. Place above the writable layer. Directory snapshots track committed writes; flush/close writes through to durable storage.",
+            "缓存目录清单并加速文件片段的重复读写。请放在可写层上方；目录清单随已提交修改更新，Flush/关闭时提交到持久层。"),
         Fields = new()
         {
             new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576, Minimum = 1,

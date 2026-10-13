@@ -2,8 +2,8 @@ using PolyMount.Core;
 
 namespace PolyMount.Layers;
 
-/// <summary>Bounded, block-granularity LRU. Dirty blocks belong to a live staging stream.</summary>
-public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IDisposable
+/// <summary>Bounded LRU of directory snapshots and file blocks. Dirty blocks belong to a live staging stream.</summary>
+public sealed class MemoryCacheLayer : ICacheLayer, IWriteAwareCache, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IDisposable
 {
     private sealed class Page(string key, string path, long offset, byte[] bytes, Session session)
     {
@@ -13,7 +13,7 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
         // Clean read pages must not retain closed streams (or their whole-file buffers).
         public readonly Session? Owner = session.Writable ? session : null;
         public bool Dirty;
-        public LinkedListNode<Page> Node = null!;
+        public LinkedListNode<object> Node = null!;
     }
     private sealed class Session(string key, string path, Stream backing, bool writable)
     {
@@ -24,7 +24,17 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
     }
     private readonly object _gate = new();
     private readonly Dictionary<string, Page> _pages = new();
-    private readonly LinkedList<Page> _lru = new();
+    private sealed class DirectorySnapshot(string path, VirtualObject value, long bytes)
+    {
+        public readonly string Path = path;
+        public readonly VirtualObject Value = value;
+        public readonly long Bytes = bytes;
+        public LinkedListNode<object> Node = null!;
+    }
+    private readonly Dictionary<string, DirectorySnapshot> _directories = new();
+    private readonly LinkedList<object> _lru = new();
+    private long _directoryBytes;
+    private string? _directoryGeneration;
     private readonly Func<string> _generation;
     private bool _disposed;
     private long _hits, _misses, _writeBacks;
@@ -43,13 +53,72 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
     public long Hits { get { lock (_gate) return _hits; } }
     public long Misses { get { lock (_gate) return _misses; } }
     public long WriteBacks { get { lock (_gate) return _writeBacks; } }
-    public long MemoryBytes { get { lock (_gate) return (long)_pages.Count * BlockSize; } }
-    public bool TryReadObject(string path, out VirtualObject value) { value = null!; return false; }
+    public long MemoryBytes { get { lock (_gate) return (long)_pages.Count * BlockSize + _directoryBytes; } }
+    private static string Normalize(string path) => VfsPath.Normalize(path).ToUpperInvariant();
+    private void CheckDirectoryGeneration()
+    {
+        string generation = Generation;
+        if (_directoryGeneration == generation) return;
+        foreach (var item in _directories.Values.ToArray()) Remove(item);
+        _directoryGeneration = generation;
+    }
+    public bool TryReadObject(string path, out VirtualObject value)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            CheckDirectoryGeneration();
+            if (_directories.TryGetValue(Normalize(path), out var item))
+            {
+                _lru.Remove(item.Node); _lru.AddFirst(item.Node);
+                value = item.Value; return true;
+            }
+            value = null!; return false;
+        }
+    }
     public bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
-    public bool TryGetEntry(string path, out VfsEntry entry) { entry = null!; return false; }
-    public IReadOnlyList<VfsEntry> ListOwn(string path) => Array.Empty<VfsEntry>();
+    public bool TryGetEntry(string path, out VfsEntry entry)
+    {
+        bool found = TryReadObject(path, out var value); entry = found ? value.Header : null!; return found;
+    }
+    public IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value)
+        ? value.Children! : Array.Empty<VfsEntry>();
     public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream) { entry = null!; stream = null!; return false; }
     public void Store(string path, string version, VfsEntry entry, Stream content) { }
+    public void StoreObject(string path, VirtualObject value, Stream? content = null)
+    {
+        if (!value.Header.IsDir) return;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            CheckDirectoryGeneration();
+            string key = Normalize(path);
+            if (_directories.TryGetValue(key, out var previous)) Remove(previous);
+            long bytes = CacheBudgets.Estimate(key, value);
+            if (bytes > Capacity) return;
+            while (MemoryBytes + bytes > Capacity || _directories.Count >= CacheBudgets.MaxObjects) RemoveOldest();
+            var snapshot = value.Snapshot();
+            var item = new DirectorySnapshot(key, snapshot, bytes);
+            item.Node = _lru.AddFirst(item); _directories.Add(key, item); _directoryBytes += bytes;
+        }
+    }
+    public void UpdateAfterWrite(IReadOnlyList<ObjectChange> changes)
+    {
+        lock (_gate)
+        {
+            CheckDirectoryGeneration();
+            foreach (var page in _pages.Values.Where(p => p.Owner == null).ToArray()) Remove(page);
+            foreach (var change in changes)
+            {
+                string key = Normalize(change.Path);
+                // Deleting/replacing a directory must also forget its cached descendants.
+                if (change.Object == null || !change.Object.Header.IsDir)
+                    foreach (var item in _directories.Values.Where(d => d.Path == key ||
+                        key.Length == 0 || d.Path.StartsWith(key + "/", StringComparison.Ordinal)).ToArray()) Remove(item);
+                else StoreObject(key, change.Object);
+            }
+        }
+    }
     public Stream WrapStream(string path, string version, Stream stream, bool writable)
     {
         lock (_gate)
@@ -73,6 +142,15 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
         WriteBack(page); // Failed writes retain the dirty page and propagate to the caller.
         _pages.Remove(page.Key); _lru.Remove(page.Node);
     }
+    private void Remove(DirectorySnapshot item)
+    {
+        _directories.Remove(item.Path); _lru.Remove(item.Node); _directoryBytes -= item.Bytes;
+    }
+    private void RemoveOldest()
+    {
+        if (_lru.Last!.Value is Page page) Remove(page);
+        else Remove((DirectorySnapshot)_lru.Last.Value);
+    }
     private Page GetPage(Session session, long offset, bool overwrite = false)
     {
         string key = session.Key + "|" + offset;
@@ -81,7 +159,7 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
             _hits++; _lru.Remove(page.Node); _lru.AddFirst(page.Node); return page;
         }
         _misses++;
-        while ((long)(_pages.Count + 1) * BlockSize > Capacity) Remove(_lru.Last!.Value);
+        while (MemoryBytes + BlockSize > Capacity) RemoveOldest();
         var bytes = new byte[BlockSize];
         if (!overwrite && offset < session.Backing.Length)
         {
@@ -105,21 +183,33 @@ public sealed class MemoryCacheLayer : ICacheLayer, IFileStreamLayer, ILayerStor
     }
     public void Invalidate()
     {
-        lock (_gate) foreach (var page in _pages.Values.Where(p => p.Owner == null).ToArray()) Remove(page);
+        lock (_gate)
+        {
+            foreach (var page in _pages.Values.Where(p => p.Owner == null).ToArray()) Remove(page);
+            foreach (var item in _directories.Values.ToArray()) Remove(item);
+        }
     }
     public void Clear()
     {
-        lock (_gate) foreach (var page in _pages.Values.ToArray()) Remove(page);
+        lock (_gate)
+        {
+            foreach (var page in _pages.Values.ToArray()) Remove(page);
+            foreach (var item in _directories.Values.ToArray()) Remove(item);
+        }
     }
     public void ReleaseObject(string path)
     {
         string normalized = VfsPath.Normalize(path).ToUpperInvariant();
-        lock (_gate) foreach (var page in _pages.Values.Where(p => p.Path == normalized).ToArray()) Remove(page);
+        lock (_gate)
+        {
+            foreach (var page in _pages.Values.Where(p => p.Path == normalized).ToArray()) Remove(page);
+            if (_directories.TryGetValue(normalized, out var item)) Remove(item);
+        }
     }
     public LayerStorageUsage GetStorageUsage()
     {
-        lock (_gate) return new(0, 0, _pages.Values.Select(p => p.Path).Distinct().Count(), 0,
-            CacheBytes: (long)_pages.Count * BlockSize, CacheCapacity: Capacity, MemoryBytes: (long)_pages.Count * BlockSize);
+        lock (_gate) return new(0, 0, _pages.Values.Select(p => p.Path).Distinct().Count(), _directories.Count,
+            CacheBytes: MemoryBytes, CacheCapacity: Capacity, MemoryBytes: MemoryBytes);
     }
     public void Dispose() { lock (_gate) { if (_disposed) return; Clear(); _disposed = true; } }
 

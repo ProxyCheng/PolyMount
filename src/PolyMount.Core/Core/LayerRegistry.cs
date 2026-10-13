@@ -10,6 +10,14 @@ public static class LayerRegistry
     static LayerRegistry()
     {
         Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
+        Register("prediction-cache", (c, ctx) => new PredictionCacheLayer(MemoryCapacity(c), ctx.LowerGeneration,
+            new ReadPredictionOptions { Enabled = true }, Path.Combine(ctx.State, "prediction.json")),
+            c => { if (MemoryCapacity(c) < 1 || MemoryCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
+            new LayerDescriptor { Type = "prediction-cache", Title = new("Predictive preload", "预测预载"),
+                Description = new("Learns object access order and warms a read cache below this layer; does not serve cache hits itself.",
+                    "学习文件与目录的访问顺序，提前加载到下方读取缓存；本层不提供读取命中。"),
+                Fields = new() { new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576,
+                    Minimum = 1, Maximum = 256, DefaultValue = "16", Title = new("Preload file budget (MiB)", "预载文件预算（MiB）") } } });
         Register("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
         Register("memory-cache", (c, ctx) => new MemoryCacheLayer(MemoryCapacity(c), MemoryBlockSize(c), ctx.LowerGeneration),

@@ -9,6 +9,7 @@ public sealed class VirtualFileSystem
     // Only mutations coordinate parent snapshot updates. Provider reads never
     // take this lock, including network-backed metadata and directory queries.
     private readonly object _mutationGate = new();
+    private readonly object _cacheUpdateGate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>> _resolutions = new();
     private long _resolutionEpoch;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
@@ -17,6 +18,7 @@ public sealed class VirtualFileSystem
     public bool Writable => _layers.Any(l => l.Writable);
     public MetricsCollector? Metrics { get; set; }
     public RequestDiagnostics? Diagnostics { get; set; }
+    public ReadPrediction? Prediction { get; set; }
     public string Generation => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
         System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
 
@@ -42,11 +44,14 @@ public sealed class VirtualFileSystem
     }
     private bool ResolveOwn(string path, out VirtualObject value, out int index, bool fill)
     {
+        long epoch = Interlocked.Read(ref _resolutionEpoch);
         for (index = 0; index < _layers.Count; index++)
         {
             using var request = RequestDiagnostics.Begin("Layer.ReadObject:" + _layers[index].Name, path);
             if (!((IObjectLayer)_layers[index]).TryReadObject(path, out value!)) continue;
-            if (fill && value.Header.IsDir) Fill(path, value, null, index);
+            if (fill && value.Header.IsDir)
+                lock (_cacheUpdateGate)
+                    if (epoch == Interlocked.Read(ref _resolutionEpoch)) Fill(path, value, null, index);
             return true;
         }
         value = null!;
@@ -61,7 +66,7 @@ public sealed class VirtualFileSystem
         foreach (string name in path.Split('/'))
         {
             if (!Resolve(current, out var directory, out _, fill) || !directory.Header.IsDir ||
-                !directory.Children!.Any(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase))) return false;
+                directory.Content is not DirectoryObjectContent members || !members.Contains(name)) return false;
             current = VfsPath.Child(current, name);
         }
         return true;
@@ -93,8 +98,18 @@ public sealed class VirtualFileSystem
         return Visible(path) && ResolveHeader(path, out entry, out _);
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
+    /// <summary>Read either payload kind through the same object-loading boundary.</summary>
+    public VirtualObject LoadObject(string path, bool speculative = false)
+    {
+        if (!TryLookup(path, out var header)) throw new VfsNotFoundException(path);
+        if (header.IsDir) return new VirtualObject(header, List(path, recordAccess: !speculative));
+        using var stream = OpenRead(path, out header, speculative);
+        return VirtualObject.WithContent(header, new FileObjectContent(header.Size,
+            () => OpenRead(path, out _, speculative: true)));
+    }
     public List<VfsEntry> List(string path, bool recordAccess = true)
     {
+        using var predictionDemand = recordAccess ? ObservePredictions(VfsPath.Normalize(path)) : null;
         using var request = RequestDiagnostics.Begin("VFS.List", path, Diagnostics);
         request?.Stage("resolving directory");
         path = VfsPath.Normalize(path);
@@ -107,8 +122,10 @@ public sealed class VirtualFileSystem
         if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
         return items;
     }
-    public Stream OpenRead(string path, out VfsEntry entry)
+    public Stream OpenRead(string path, out VfsEntry entry, bool speculative = false)
     {
+            using var demand = speculative ? null : Prediction?.Demand(VfsPath.Normalize(path));
+            using var layerDemand = speculative ? null : ObservePredictions(VfsPath.Normalize(path));
             using var request = RequestDiagnostics.Begin("VFS.OpenRead", path, Diagnostics);
             path = VfsPath.Normalize(path);
             if (_openFiles.TryGetValue(path, out var open) && open.TryAcquire(false, out var handle))
@@ -149,14 +166,23 @@ public sealed class VirtualFileSystem
         for (int i = hit - 1; i >= 0; i--)
         {
             if (_layers[i] is not IObjectCache cache) continue;
+            var inner = _layers[i] is NamedLayer wrapper ? wrapper.Inner : _layers[i];
             // Durable writes and read-through caches expose separate capabilities.
-            if (_layers.Skip(i + 1).Take(hit - i).Any(l =>
+            if (inner is not IWriteAwareCache && _layers.Skip(i + 1).Take(hit - i).Any(l =>
                 (l is NamedLayer named ? named.Inner : l) is PolyMount.Layers.LruCacheLayer lru ? lru.HasDurableWrites : l.Writable)) continue;
             long position = content?.Position ?? 0;
             try { cache.StoreObject(path, value, content); }
             finally { if (content != null) content.Position = position; }
         }
     }
+    private IDisposable ObservePredictions(string path)
+    {
+        var scopes = _layers.Select(l => l is NamedLayer named ? named.Inner : l)
+            .OfType<PolyMount.Layers.PredictionCacheLayer>().Select(l => l.Observe(path)).ToArray();
+        return new PredictionScopes(scopes);
+    }
+    private sealed class PredictionScopes(IDisposable?[] scopes) : IDisposable
+    { public void Dispose() { foreach (var scope in scopes) scope?.Dispose(); } }
     private List<VfsEntry> ParentChildren(string path)
     {
         string parent = VfsPath.Parent(path);
@@ -175,7 +201,7 @@ public sealed class VirtualFileSystem
         if (selected != null)
         {
             if (!((IObjectLayer)selected).TryApply(changes)) throw new IOException("The selected write handle no longer supports this operation");
-            InvalidateCaches();
+            UpdateCachesAfterWrite(changes, selected);
             return selected;
         }
         foreach (var layer in _layers)
@@ -183,7 +209,7 @@ public sealed class VirtualFileSystem
             foreach (var change in changes) if (change.Content != null) change.Content.Position = 0;
             if (!((IObjectLayer)layer).TryApply(changes)) continue;
             Metrics?.RecordWrite(layer.Name, watch.Elapsed, 0);
-            InvalidateCaches();
+            UpdateCachesAfterWrite(changes, layer);
             return layer;
         }
         throw new UnauthorizedAccessException("No provider accepts this write operation");
@@ -211,7 +237,16 @@ public sealed class VirtualFileSystem
                 }
                 entry = new VfsEntry { Name = VfsPath.Name(path), Size = scratch.Length, TimeUtc = DateTime.UtcNow };
                 ReplaceChild(children, entry);
-                var target = Apply(new ObjectChange[] { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
+                var firstWritable = _layers.FirstOrDefault(layer => layer.Writable);
+                var inner = firstWritable is NamedLayer named ? named.Inner : firstWritable;
+                // Existing durable files already have published content and membership.
+                // Opening without truncation must not rewrite the whole old blob before
+                // the caller has changed a single byte. Generic providers retain Apply.
+                bool reusePublished = !truncate &&
+                    inner is PolyMount.Layers.OverlayLayer &&
+                    firstWritable!.TryGetEntry(path, out var published) && !published.IsDir;
+                var target = reusePublished ? firstWritable! : Apply(new ObjectChange[]
+                    { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
                 scratch.Position = 0;
                 scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
                 var file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
@@ -303,8 +338,28 @@ public sealed class VirtualFileSystem
     }
     public void InvalidateCaches()
     {
-        Interlocked.Increment(ref _resolutionEpoch);
-        foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate();
+        lock (_cacheUpdateGate)
+        {
+            Interlocked.Increment(ref _resolutionEpoch);
+            foreach (var layer in _layers.Select(l => l is NamedLayer named ? named.Inner : l).OfType<PolyMount.Layers.PredictionCacheLayer>()) layer.Clear();
+            foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate();
+        }
+    }
+    private void UpdateCachesAfterWrite(IReadOnlyList<ObjectChange> changes, ILayer target)
+    {
+        lock (_cacheUpdateGate)
+        {
+            Interlocked.Increment(ref _resolutionEpoch);
+            foreach (var layer in _layers.Select(l => l is NamedLayer named ? named.Inner : l).OfType<PolyMount.Layers.PredictionCacheLayer>()) layer.Clear();
+            int hit = _layers.IndexOf(target);
+            for (int i = 0; i < _layers.Count; i++)
+            {
+                if (_layers[i] is not ICacheLayer cache) continue;
+                var inner = _layers[i] is NamedLayer named ? named.Inner : _layers[i];
+                if (i < hit && inner is IWriteAwareCache tracking) tracking.UpdateAfterWrite(changes);
+                else cache.Invalidate();
+            }
+        }
     }
     public List<LayerProbe> Probe(string path)
     {
@@ -371,7 +426,7 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
                 // Small file snapshots avoid a second temporary disk file. Admission
                 // is nonblocking and globally bounded to 32 x 64 KiB of payload.
                 snapshot = createSnapshot?.Invoke() ?? (memorySnapshot
-                    ? new MemoryStream(SmallSnapshotBytes) : PolyMount.Layers.ObjectDatabase.Scratch());
+                    ? new MemoryStream(SmallSnapshotBytes) : new PolyMount.Layers.CommitSnapshot());
                 lock (_gate)
                 {
                     version = _version;
@@ -379,7 +434,7 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
                     if (memorySnapshot && data.Length > SmallSnapshotBytes)
                     {
                         snapshot.Dispose();
-                        snapshot = PolyMount.Layers.ObjectDatabase.Scratch();
+                        snapshot = new PolyMount.Layers.CommitSnapshot();
                         MemorySnapshots.Release(); memorySnapshot = false;
                     }
                     data.Flush();
