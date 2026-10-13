@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
 
@@ -14,8 +16,10 @@ public sealed class MountManager
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
 
-    public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null)
+    private readonly ILogger<MountManager> _logger;
+    public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
     {
+        _logger = logger ?? NullLogger<MountManager>.Instance;
         _lifetime = lifetime;
         ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
@@ -270,12 +274,11 @@ public sealed class MountManager
         throw new InvalidOperationException("path is not under any PolyMount mount point: " + full);
     }
 
-    private static void Log(string message, Exception ex)
+    private void Log(string message, Exception ex)
     {
         try
         {
-            var path = Path.Combine(AppContext.BaseDirectory, "polymount-service.log");
-            File.AppendAllText(path, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}: {ex}\n");
+            _logger.LogError(ex, "Operation failed: {Operation}", message);
         }
         catch { }
     }

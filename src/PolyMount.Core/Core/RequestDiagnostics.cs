@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using Serilog;
+using Serilog.Core;
+using Serilog.Sinks.Async;
 
 namespace PolyMount.Core;
 
@@ -7,21 +10,21 @@ namespace PolyMount.Core;
 public sealed class RequestDiagnostics : IDisposable
 {
     private static readonly AsyncLocal<Scope?> Current = new();
-    private readonly ConcurrentQueue<string> _lines = new();
+    private readonly Logger _logger;
+    private readonly QueueMonitor _monitor = new();
     private readonly ConcurrentDictionary<long, Scope> _active = new();
     private sealed class Counter { public long Value; }
     private readonly ConcurrentDictionary<string, Counter> _counts = new();
-    private readonly object _writerGate = new();
-    private readonly string _path;
+    private readonly object _inspectionGate = new();
     private readonly Timer _timer;
     private long _sequence;
-    private int _queued, _dropped;
+    private long _lastDropped;
     private bool _disposed;
     private long _lastSummary;
 
     public RequestDiagnostics(string path)
     {
-        _path = path;
+        _logger = AsyncFileLog.Create(path, _monitor);
         _timer = new Timer(_ => Flush(), null, 1000, 1000);
     }
 
@@ -33,26 +36,24 @@ public sealed class RequestDiagnostics : IDisposable
         var scope = new Scope(diagnostics, parent, operation, path, processId);
         diagnostics._active[scope.Id] = scope;
         Current.Value = scope;
-        if (scope.Trace) diagnostics.Enqueue(scope.Line("BEGIN"));
+        if (scope.Trace) scope.Emit("BEGIN");
         if (operation.StartsWith("WinFsp.", StringComparison.Ordinal))
             Interlocked.Increment(ref diagnostics._counts.GetOrAdd($"pid={scope.ProcessId} op={operation}", _ => new Counter()).Value);
         return scope;
     }
 
-    private void Enqueue(string line)
+    public long DroppedMessages => _monitor.Inspector?.DroppedMessagesCount ?? _lastDropped;
+    public void Error(string operation, Exception exception) => _logger.Error(exception, "Operation failed: {Operation}", operation);
+    private sealed class QueueMonitor : IAsyncLogEventSinkMonitor
     {
-        if (Interlocked.Increment(ref _queued) > 4096)
-        {
-            Interlocked.Decrement(ref _queued);
-            Interlocked.Increment(ref _dropped);
-            return;
-        }
-        _lines.Enqueue(line);
+        public IAsyncLogEventSinkInspector? Inspector;
+        public void StartMonitoring(IAsyncLogEventSinkInspector inspector) => Inspector = inspector;
+        public void StopMonitoring(IAsyncLogEventSinkInspector inspector) { }
     }
 
     internal void Flush()
     {
-        lock (_writerGate)
+        lock (_inspectionGate)
         {
             if (_disposed) return;
             if (Environment.TickCount64 - _lastSummary >= 5000)
@@ -61,40 +62,29 @@ public sealed class RequestDiagnostics : IDisposable
                 foreach (var pair in _counts)
                 {
                     long count = Interlocked.Exchange(ref pair.Value.Value, 0);
-                    if (count > 0) Enqueue($"{DateTime.UtcNow:O} COUNT {pair.Key} requests={count}");
+                    if (count > 0) _logger.Information("COUNT {Counter:l} requests={Requests}", pair.Key, count);
                 }
             }
             foreach (var scope in _active.Values)
                 if (scope.ElapsedMs >= 1000 && scope.ElapsedMs - scope.LastReportMs >= 5000)
                 {
                     scope.LastReportMs = scope.ElapsedMs;
-                    Enqueue(scope.Line("PENDING"));
+                    scope.Emit("PENDING");
                 }
-            try
-            {
-                // Keep one previous segment; file I/O never runs on a filesystem callback.
-                if (File.Exists(_path) && new FileInfo(_path).Length >= 8 * 1024 * 1024)
-                    File.Move(_path, _path + ".1", overwrite: true);
-                using var writer = new StreamWriter(_path, append: true);
-                int dropped = Interlocked.Exchange(ref _dropped, 0);
-                if (dropped > 0) writer.WriteLine($"{DateTime.UtcNow:O} DROPPED count={dropped}");
-                for (int i = 0; i < 4096 && _lines.TryDequeue(out var line); i++)
-                {
-                    Interlocked.Decrement(ref _queued);
-                    writer.WriteLine(line);
-                }
-            }
-            catch { /* Diagnostics must not prevent mounted filesystem access. */ }
+            long dropped = DroppedMessages;
+            if (dropped > _lastDropped) _logger.Warning("DROPPED count={Count} total={Total}", dropped - _lastDropped, dropped);
+            _lastDropped = dropped;
         }
     }
 
     public void Dispose()
     {
         _timer.Dispose();
-        lock (_writerGate)
+        lock (_inspectionGate)
         {
             Flush();
             _disposed = true;
+            _logger.Dispose(); // Serilog drains the queue and closes the sink.
         }
     }
 
@@ -124,13 +114,15 @@ public sealed class RequestDiagnostics : IDisposable
         }
 
         public void Stage(string stage) => Volatile.Write(ref _stage, stage);
-        internal string Line(string kind) => $"{DateTime.UtcNow:O} {kind} id={Id} parent={(_parent?._owner == _owner ? _parent.Id : 0)} thread={_thread} pid={ProcessId} op={_operation} path='{_path}' elapsedMs={ElapsedMs} stage='{Volatile.Read(ref _stage)}'";
+        internal void Emit(string kind) => _owner._logger.Information(
+            "{Kind:l} id={RequestId} parent={ParentId} thread={ThreadId} pid={ProcessId} op={Operation:l} path='{Path:l}' elapsedMs={ElapsedMs} stage='{Stage:l}'",
+            kind, Id, _parent?._owner == _owner ? _parent.Id : 0, _thread, ProcessId, _operation, _path, ElapsedMs, Volatile.Read(ref _stage));
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _finished, 1) != 0) return;
             _owner._active.TryRemove(Id, out _);
-            if (Trace || ElapsedMs >= 100) _owner.Enqueue(Line("END"));
+            if (Trace || ElapsedMs >= 100) Emit("END");
             Current.Value = _parent;
         }
     }

@@ -42,8 +42,6 @@ internal sealed class DirCursor
 public sealed class WinFspMount : FileSystemBase
 {
     private readonly VirtualFileSystem _vfs;
-    private readonly string _logPath;
-    private readonly object _logGate = new();
 
     private RequestDiagnostics.Scope BeginRequest(string operation, string path, int fallbackProcessId = 0)
     {
@@ -55,7 +53,6 @@ public sealed class WinFspMount : FileSystemBase
     public WinFspMount(VirtualFileSystem vfs, string logPath)
     {
         _vfs = vfs;
-        _logPath = logPath;
     }
 
     public override int GetVolumeInfo(out FspVolumeInfo volumeInfo)
@@ -475,9 +472,7 @@ public sealed class WinFspMount : FileSystemBase
     {
         try
         {
-            lock (_logGate)
-                File.AppendAllText(_logPath,
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}: {ex.GetType().Name}: {ex.Message}\n");
+            _vfs.Diagnostics?.Error(message, ex);
         }
         catch { }
     }
@@ -486,8 +481,7 @@ public sealed class WinFspMount : FileSystemBase
     {
         try
         {
-            lock (_logGate)
-                File.AppendAllText(_logPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} {message}\n");
+            using var trace = RequestDiagnostics.Begin("WinFsp.Message", message, _vfs.Diagnostics);
         }
         catch { }
     }

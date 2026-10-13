@@ -18,7 +18,8 @@ public sealed class RequestDiagnosticsTests
             using (RequestDiagnostics.Begin("Layer.ReadObject:svn", "folder")) { }
             await Task.Delay(1100);
             diagnostics.Flush();
-            string pending = File.ReadAllText(path);
+            await WaitForLog(path, "PENDING id=1 parent=0");
+            string pending = ReadLog(path);
             StringAssert.Contains(pending, "PENDING id=1 parent=0");
             StringAssert.Contains(pending, "stage='waiting VFS lock'");
             StringAssert.Contains(pending, "BEGIN id=2 parent=1");
@@ -26,7 +27,24 @@ public sealed class RequestDiagnosticsTests
             Assert.IsFalse(pending.Contains("END id=1 parent=0"));
         }
         diagnostics.Flush();
-        StringAssert.Contains(File.ReadAllText(path), "END id=1 parent=0");
+        await WaitForLog(path, "END id=1 parent=0");
+        StringAssert.Contains(ReadLog(path), "END id=1 parent=0");
         Assert.IsNull(RequestDiagnostics.Begin("untraced", "folder"));
+    }
+    private static async Task WaitForLog(string path, string text)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (File.Exists(path) && ReadLog(path).Contains(text)) return;
+            await Task.Delay(20);
+        }
+        Assert.Fail("Asynchronous log was not written: " + text);
+    }
+    private static string ReadLog(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
     }
 }
