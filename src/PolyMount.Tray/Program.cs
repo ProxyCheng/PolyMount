@@ -1,7 +1,7 @@
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 
-namespace PolyMount.QtUI;
+namespace PolyMount.Tray;
 
 /// <summary>
 /// Qt-based PolyMount dashboard. Talks to the service over the shared named-pipe control client.
