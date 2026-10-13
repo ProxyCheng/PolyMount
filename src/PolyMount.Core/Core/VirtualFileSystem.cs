@@ -12,6 +12,7 @@ public sealed class VirtualFileSystem
     public IReadOnlyList<ILayer> Layers => _layers;
     public bool Writable => _layers.Any(l => l.Writable);
     public MetricsCollector? Metrics { get; set; }
+    public RequestDiagnostics? Diagnostics { get; set; }
     public string Generation => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
         System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
 
@@ -19,6 +20,7 @@ public sealed class VirtualFileSystem
     {
         for (index = 0; index < _layers.Count; index++)
         {
+            using var request = RequestDiagnostics.Begin("Layer.ReadObject:" + _layers[index].Name, path);
             if (!((IObjectLayer)_layers[index]).TryReadObject(path, out value!)) continue;
             if (fill && value.Header.IsDir) Fill(path, value, null, index);
             return true;
@@ -40,39 +42,57 @@ public sealed class VirtualFileSystem
         }
         return true;
     }
+    // Attribute queries must not read a directory's children. Remote providers can
+    // obtain the header from its parent's already resolved listing.
+    private bool ResolveHeader(string path, out VfsEntry entry, out int index)
+    {
+        for (index = 0; index < _layers.Count; index++)
+        {
+            using var request = RequestDiagnostics.Begin("Layer.GetEntry:" + _layers[index].Name, path);
+            if (_layers[index].TryGetEntry(path, out entry!)) return true;
+        }
+        entry = null!;
+        if (path.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
+        return false;
+    }
     public bool TryLookup(string path, out VfsEntry entry)
     {
+        using var request = RequestDiagnostics.Begin("VFS.Lookup", path, Diagnostics);
         path = VfsPath.Normalize(path);
         if (_openFiles.TryGetValue(path, out var open))
         {
             entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = open.LastWriteTimeUtc };
             return true;
         }
+        request?.Stage("waiting VFS lock");
         lock (_gate)
         {
+            request?.Stage("resolving metadata");
             path = VfsPath.Normalize(path);
             entry = null!;
-            if (!Visible(path) || !Resolve(path, out var value, out _)) return false;
-            entry = value.Header;
-            return true;
+            return Visible(path) && ResolveHeader(path, out entry, out _);
         }
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
     public List<VfsEntry> List(string path, bool recordAccess = true)
     {
+        using var request = RequestDiagnostics.Begin("VFS.List", path, Diagnostics);
+        request?.Stage("waiting VFS lock");
         lock (_gate)
         {
+            request?.Stage("resolving directory");
             path = VfsPath.Normalize(path);
             var watch = System.Diagnostics.Stopwatch.StartNew();
             if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
             if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
             // Resolve headers from overridden child objects without merging directory membership.
-            return value.Children!.Select(child => Resolve(VfsPath.Child(path, child.Name), out var obj, out _, false)
-                ? obj.Header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            return value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _)
+                ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
         }
     }
     public Stream OpenRead(string path, out VfsEntry entry)
     {
+            using var request = RequestDiagnostics.Begin("VFS.OpenRead", path, Diagnostics);
             path = VfsPath.Normalize(path);
             if (_openFiles.TryGetValue(path, out var open) && open.TryAcquire(false, out var handle))
             {
@@ -81,11 +101,12 @@ public sealed class VirtualFileSystem
                 return handle;
             }
             if (!Visible(path)) throw new VfsNotFoundException(path);
-            if (Resolve(path, out var visibleObject, out _, false) && visibleObject.Header.IsDir) throw new IOException("Path is a directory");
+            if (ResolveHeader(path, out var visibleHeader, out _) && visibleHeader.IsDir) throw new IOException("Path is a directory");
             var watch = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < _layers.Count; i++)
             {
                 var layer = _layers[i];
+                request?.Stage("opening content: " + layer.Name);
                 if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
                 try { Fill(path, new(entry), stream, i); return stream; }
@@ -252,17 +273,21 @@ public sealed class VirtualFileSystem
     public void InvalidateCaches() { foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate(); }
     public List<LayerProbe> Probe(string path)
     {
+        using var request = RequestDiagnostics.Begin("VFS.Probe", path, Diagnostics);
+        request?.Stage("waiting VFS lock");
         lock (_gate)
         {
+            request?.Stage("resolving origins");
             path = VfsPath.Normalize(path);
             // Source inspection must not populate caches or change the origin it observes.
             bool visible = Visible(path, false);
-            Resolve(path, out _, out int effective, false);
+            ResolveHeader(path, out _, out int effective);
             return _layers.Select((layer, index) =>
             {
-                bool exists = ((IObjectLayer)layer).TryReadObject(path, out var value);
-                return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && value.Header.IsDir,
-                    Size = exists ? value.Header.Size : 0, Effective = visible && exists && index == effective,
+                using var layerRequest = RequestDiagnostics.Begin("Layer.Probe:" + layer.Name, path);
+                bool exists = layer.TryGetEntry(path, out var header);
+                return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header.IsDir,
+                    Size = exists ? header.Size : 0, Effective = visible && exists && index == effective,
                     Shadowed = exists && (!visible || index != effective), Generation = layer.Generation };
             }).ToList();
         }

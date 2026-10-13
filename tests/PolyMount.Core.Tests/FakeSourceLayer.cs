@@ -23,6 +23,7 @@ internal sealed class FakeSourceLayer : ILayer
     public string Generation { get; private set; } = "g0";
 
     public int OpenReadCount { get; private set; }
+    public List<string> ListedDirectories { get; } = new();
 
     public void BumpGeneration(string gen) => Generation = gen;
 
@@ -53,6 +54,7 @@ internal sealed class FakeSourceLayer : ILayer
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel)
     {
+        ListedDirectories.Add(rel);
         var list = new List<VfsEntry>();
         foreach (var kv in _nodes)
         {

@@ -8,6 +8,42 @@ namespace PolyMount.Core.Tests;
 public class ObjectNamespaceTests
 {
     [TestMethod]
+    public void Listing_and_directory_metadata_do_not_enumerate_child_directories()
+    {
+        var source = new FakeSourceLayer();
+        source.AddFile("folder/sub/file", "payload");
+        var vfs = new VirtualFileSystem(new[] { source });
+
+        CollectionAssert.AreEqual(new[] { "folder" }, vfs.List("").Select(c => c.Name).ToArray());
+        Assert.IsTrue(vfs.TryLookup("folder", out var header));
+        Assert.IsTrue(header.IsDir);
+        Assert.IsTrue(vfs.Probe("folder").Single().Effective);
+        Assert.IsFalse(source.ListedDirectories.Contains("folder"));
+        Assert.IsFalse(source.ListedDirectories.Contains("folder/sub"));
+
+        CollectionAssert.AreEqual(new[] { "sub" }, vfs.List("folder").Select(c => c.Name).ToArray());
+        Assert.IsTrue(source.ListedDirectories.Contains("folder"));
+        Assert.IsFalse(source.ListedDirectories.Contains("folder/sub"));
+    }
+
+    [TestMethod]
+    public void Listing_preserves_upper_child_header_overrides_without_loading_their_children()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        source.AddFile("folder/file", "source");
+        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        using var content = new MemoryStream(new byte[123]);
+        overlay.TryApply(new[] { new ObjectChange("folder", new VirtualObject(new VfsEntry { Name = "folder", Size = 123 }), content) });
+        var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
+
+        var child = vfs.List("").Single();
+        Assert.IsFalse(child.IsDir);
+        Assert.AreEqual(123L, child.Size);
+        Assert.IsFalse(source.ListedDirectories.Contains("folder"));
+    }
+
+    [TestMethod]
     public void Opening_directory_caches_its_complete_listing_and_changes_its_origin()
     {
         using var temp = new TempDir();

@@ -50,6 +50,7 @@ public sealed class MountInstance : IDisposable
         var layers = built.ToList();
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
+        Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, "requests.log"));
     }
 
     public MountProfile Profile { get; }
@@ -263,7 +264,14 @@ public sealed class MountInstance : IDisposable
         return status;
     }
 
-    public void Dispose() => Unmount();
+    public void Dispose()
+    {
+        try { Unmount(); }
+        finally
+        {
+            Vfs.Diagnostics?.Dispose();
+        }
+    }
 
     private string ResolveColor(string name) => _configs.TryGetValue(name, out var config) && !string.IsNullOrEmpty(config.Color)
         ? config.Color : LayerColors.Resolve(_configs.TryGetValue(name, out config) ? config.Type : name, ColorOverrides);

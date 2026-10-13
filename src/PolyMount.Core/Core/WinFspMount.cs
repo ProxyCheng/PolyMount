@@ -12,6 +12,9 @@ internal sealed class FsNode
     public string Rel = "";
     public bool IsDir;
     public string LocalPath;
+    public int ProcessId;
+    public List<VfsEntry> DirectoryItems;
+    public readonly object DirectoryGate = new();
 }
 
 internal sealed class FsHandle : IDisposable
@@ -42,6 +45,13 @@ public sealed class WinFspMount : FileSystemBase
     private readonly string _logPath;
     private readonly object _logGate = new();
 
+    private RequestDiagnostics.Scope BeginRequest(string operation, string path, int fallbackProcessId = 0)
+    {
+        if (_vfs.Diagnostics == null) return null;
+        int processId = GetOperationProcessId();
+        return RequestDiagnostics.Begin(operation, path, _vfs.Diagnostics, processId != 0 ? processId : fallbackProcessId);
+    }
+
     public WinFspMount(VirtualFileSystem vfs, string logPath)
     {
         _vfs = vfs;
@@ -56,6 +66,7 @@ public sealed class WinFspMount : FileSystemBase
 
     public override int GetSecurityByName(string fileName, out uint fileAttributes, ref byte[] securityDescriptor)
     {
+        using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
         fileAttributes = 0;
         securityDescriptor = null;
         if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry)) return NtStatus.ObjectNameNotFound;
@@ -66,6 +77,8 @@ public sealed class WinFspMount : FileSystemBase
     public override int Open(string fileName, uint createOptions, uint grantedAccess,
         out object fileNode, out object fileDesc, out FspFileInfo fileInfo, out string normalizedName)
     {
+        using var request = BeginRequest("WinFsp.Open", fileName);
+        request?.Stage($"access=0x{grantedAccess:X} options=0x{createOptions:X}");
         fileNode = null;
         fileDesc = null;
         fileInfo = default;
@@ -82,12 +95,23 @@ public sealed class WinFspMount : FileSystemBase
             if (entry.IsDir)
             {
                 if (wantFile) return NtStatus.FileIsADirectory;
-                fileNode = new FsNode { Rel = rel, IsDir = true, LocalPath = null };
+                fileNode = new FsNode { Rel = rel, IsDir = true, LocalPath = null, ProcessId = request?.ProcessId ?? 0 };
                 fileInfo = BuildDirInfo(rel);
                 return NtStatus.Success;
             }
 
             if (wantDir) return NtStatus.NotADirectory;
+
+            // Shell metadata opens (READ_ATTRIBUTES/READ_CONTROL/SYNCHRONIZE)
+            // must not download content or copy it up just to query a file.
+            bool contentAccess = (grantedAccess & (Win32.GENERIC_READ | Win32.GENERIC_WRITE |
+                Win32.GENERIC_ALL | Win32.FILE_READ_DATA | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA)) != 0;
+            if (!contentAccess)
+            {
+                fileNode = new FsNode { Rel = rel, IsDir = false, ProcessId = request?.ProcessId ?? 0 };
+                fileInfo = BuildEntryInfo(entry, rel);
+                return NtStatus.Success;
+            }
 
             bool write =
                 (grantedAccess & (Win32.GENERIC_WRITE | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA)) != 0 ||
@@ -95,7 +119,7 @@ public sealed class WinFspMount : FileSystemBase
 
             Stream stream = write ? _vfs.OpenWrite(rel, false, out entry) : _vfs.OpenRead(rel, out entry);
 
-            fileNode = new FsNode { Rel = rel, IsDir = false };
+            fileNode = new FsNode { Rel = rel, IsDir = false, ProcessId = request?.ProcessId ?? 0 };
             fileDesc = new FsHandle { Stream = stream, Writable = write, TimeUtc = entry.TimeUtc };
             fileInfo = BuildStreamInfo(rel, stream, entry.TimeUtc);
             return NtStatus.Success;
@@ -109,6 +133,7 @@ public sealed class WinFspMount : FileSystemBase
         byte[] securityDescriptor, ulong allocationSize,
         out object fileNode, out object fileDesc, out FspFileInfo fileInfo, out string normalizedName)
     {
+        using var request = BeginRequest("WinFsp.Create", fileName);
         fileNode = null;
         fileDesc = null;
         fileInfo = default;
@@ -122,7 +147,7 @@ public sealed class WinFspMount : FileSystemBase
             {
                 if (_vfs.TryLookup(rel, out _)) return NtStatus.ObjectNameCollision;
                 _vfs.CreateDirectory(rel);
-                fileNode = new FsNode { Rel = rel, IsDir = true };
+                fileNode = new FsNode { Rel = rel, IsDir = true, ProcessId = request?.ProcessId ?? 0 };
                 fileInfo = BuildDirInfo(rel);
                 return NtStatus.Success;
             }
@@ -131,7 +156,7 @@ public sealed class WinFspMount : FileSystemBase
             bool truncate = disposition is 0x0 or 0x4 or 0x5;
 
             var stream = _vfs.OpenWrite(rel, truncate, out var entry);
-            fileNode = new FsNode { Rel = rel, IsDir = false };
+            fileNode = new FsNode { Rel = rel, IsDir = false, ProcessId = request?.ProcessId ?? 0 };
             fileDesc = new FsHandle { Stream = stream, Writable = true };
             fileInfo = BuildStreamInfo(rel, stream);
             return NtStatus.Success;
@@ -157,6 +182,7 @@ public sealed class WinFspMount : FileSystemBase
 
     public override int GetFileInfo(object fileNode, object fileDesc, out FspFileInfo fileInfo)
     {
+        using var request = BeginRequest("WinFsp.GetFileInfo", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
         fileInfo = default;
         var node = fileNode as FsNode;
         if (node == null) return NtStatus.InvalidParameter;
@@ -180,6 +206,8 @@ public sealed class WinFspMount : FileSystemBase
     public override int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
         out uint bytesTransferred)
     {
+        using var request = BeginRequest("WinFsp.Read", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+        request?.Stage($"offset={offset} length={length}");
         bytesTransferred = 0;
         var h = fileDesc as FsHandle;
         if (h?.Stream == null) return NtStatus.InvalidParameter;
@@ -201,6 +229,8 @@ public sealed class WinFspMount : FileSystemBase
     public override int Write(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
         bool writeToEndOfFile, bool constrainedIo, out uint bytesTransferred, out FspFileInfo fileInfo)
     {
+        using var request = BeginRequest("WinFsp.Write", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+        request?.Stage($"offset={offset} length={length}");
         bytesTransferred = 0;
         fileInfo = default;
         var h = fileDesc as FsHandle;
@@ -290,6 +320,7 @@ public sealed class WinFspMount : FileSystemBase
     public override bool ReadDirectoryEntry(object fileNode, object fileDesc, string pattern, string marker,
         ref object context, out string fileName, out FspFileInfo fileInfo)
     {
+        using var request = BeginRequest("WinFsp.ReadDirectoryEntry", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
         fileName = null;
         fileInfo = default;
 
@@ -300,8 +331,17 @@ public sealed class WinFspMount : FileSystemBase
         {
             if (context is not DirCursor cursor)
             {
-                var items = _vfs.List(node.Rel);
-                Log($"ReadDirectoryEntry rel='{node.Rel}' marker='{marker}' -> {items.Count} items");
+                List<VfsEntry> items;
+                lock (node.DirectoryGate)
+                {
+                    // WinFsp can reset the callback context at each buffer boundary.
+                    // Continue the same handle's snapshot when a marker is supplied;
+                    // only a fresh scan rebuilds the authoritative directory list.
+                    if (string.IsNullOrEmpty(marker) || node.DirectoryItems == null)
+                        node.DirectoryItems = _vfs.List(node.Rel);
+                    items = node.DirectoryItems;
+                }
+                request?.Stage($"marker='{marker}' items={items.Count}");
                 cursor = new DirCursor { Items = items };
                 if (!string.IsNullOrEmpty(marker))
                 {
