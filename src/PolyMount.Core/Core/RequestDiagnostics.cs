@@ -33,6 +33,10 @@ public sealed class RequestDiagnostics : IDisposable
         var parent = Current.Value;
         diagnostics ??= parent?._owner;
         if (diagnostics == null) return null;
+        // Layer probes dominate cached directory enumeration. Unsampled parent
+        // operations already track total latency and pending work; nested SVN
+        // calls still receive their own always-traced scopes.
+        if (operation.StartsWith("Layer.", StringComparison.Ordinal) && parent is { Trace: false }) return null;
         var scope = new Scope(diagnostics, parent, operation, path, processId);
         diagnostics._active[scope.Id] = scope;
         Current.Value = scope;

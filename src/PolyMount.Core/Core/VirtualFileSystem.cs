@@ -73,9 +73,9 @@ public sealed class VirtualFileSystem
     }
     // Attribute queries must not read a directory's children. Remote providers can
     // obtain the header from its parent's already resolved listing.
-    private bool ResolveHeader(string path, out VfsEntry entry, out int index)
+    private bool ResolveHeader(string path, out VfsEntry entry, out int index, int? limit = null)
     {
-        for (index = 0; index < _layers.Count; index++)
+        for (index = 0; index < (limit ?? _layers.Count); index++)
         {
             using var request = RequestDiagnostics.Begin("Layer.GetEntry:" + _layers[index].Name, path);
             if (_layers[index].TryGetEntry(path, out entry!)) return true;
@@ -117,7 +117,10 @@ public sealed class VirtualFileSystem
         if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
         // Provider objects are immutable directory snapshots. Copy before merging
         // upper child headers so unrelated reads and mutations can proceed.
-        var items = value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _)
+        // The authoritative listing already contains its provider's child headers.
+        // Only higher-priority layers can override them; never query lower sources
+        // for thousands of children of a cached directory.
+        var items = value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _, index)
             ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
         if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
         return items;

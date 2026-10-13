@@ -12,6 +12,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
         public long Bytes = bytes, Access = System.Diagnostics.Stopwatch.GetTimestamp();
         public CacheContent? Content = content;
         public CacheContent? OpenContent;
+        public LinkedListNode<Item>? OpenNode;
         public ObjectDatabase.Record? Record = record;
         public long Reservation = bytes;
         public long Metadata;
@@ -30,6 +31,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     private long _bytes, _pendingBytes;
     private long _metadataBytes;
     private int _openCount;
+    private readonly LinkedList<Item> _openLru = new();
     private long _openBytes;
     private const int MaxOpenFiles = 2048;
     private const long MaxOpenBytes = 64L * 1024 * 1024;
@@ -39,7 +41,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     {
         _version = version; Capacity = capacityBytes;
         _readRoot = Path.Combine(root, "reads", "objects-v2");
-        _reads = new(Path.Combine(root, "reads"), compression, recoverable: true);
+        _reads = new(Path.Combine(root, "reads"), compression, recoverable: true, preferredPrefix: version() + "|");
         _writes = new(Path.Combine(root, "writes"), compression);
         foreach (var record in _reads.Records)
         {
@@ -78,6 +80,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     {
         if (item.OpenContent == null) return;
         _openCount--; _openBytes -= item.OpenContent.Length;
+        _openLru.Remove(item.OpenNode!); item.OpenNode = null;
         item.OpenContent.Dispose(); item.OpenContent = null;
     }
     private bool TryGet(string key, out Item item)
@@ -85,6 +88,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
         item = null!;
         if (!_items.TryGetValue(key, out var found)) return false;
         found.Access = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (found.OpenNode != null) { _openLru.Remove(found.OpenNode); _openLru.AddFirst(found.OpenNode); }
         item = found;
         return true;
     }
@@ -287,8 +291,9 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
                     return true;
                 }
                 while (_openCount >= MaxOpenFiles || _openBytes + opened.Length > MaxOpenBytes)
-                    ReleaseOpen(_items.Values.Where(i => i.OpenContent != null).MinBy(i => i.Access)!);
+                    ReleaseOpen(_openLru.Last!.Value);
                 current.OpenContent = opened;
+                current.OpenNode = _openLru.AddFirst(current);
                 _openCount++; _openBytes += opened.Length;
                 stream = opened.Acquire()!;
                 return true;

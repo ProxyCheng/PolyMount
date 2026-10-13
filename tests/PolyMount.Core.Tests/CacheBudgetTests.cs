@@ -8,6 +8,20 @@ namespace PolyMount.Core.Tests;
 public sealed class CacheBudgetTests
 {
     [TestMethod]
+    public void Restart_prioritizes_current_generation_within_metadata_budget()
+    {
+        using var temp = new TempDir();
+        string root = temp.Sub("cache");
+        var database = new ObjectDatabase(Path.Combine(root, "reads"), false);
+        var children = Enumerable.Range(0, 1100).Select(i => new VfsEntry { Name = new string('x', 5000) + i }).ToArray();
+        var directory = VirtualObject.Directory("folder", children);
+        database.Apply(new[] { new ObjectChange("old|folder", directory), new ObjectChange("current|folder", directory) });
+        using var cache = new LruCacheLayer(root, () => "current", 1024L * 1024 * 1024);
+        Assert.IsTrue(cache.TryGetEntry("folder", out _), "Older generations must not crowd out current cached content on restart");
+        Assert.IsTrue(cache.EstimatedMetadataBytes <= CacheBudgets.MetadataBytes);
+    }
+
+    [TestMethod]
     public async Task Metadata_budget_evicts_recoverable_items_while_writer_is_blocked()
     {
         using var temp = new TempDir();

@@ -177,6 +177,9 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     }
     private void Flush(Session session)
     {
+        // Clean read pages have no session owner and nothing to write back.
+        // Closing each cached file must not scan all resident blocks.
+        if (!session.Writable) return;
         foreach (var page in _pages.Values.Where(p => ReferenceEquals(p.Owner, session))) WriteBack(page);
         if (session.Writable && session.Backing.Length != session.Length) session.Backing.SetLength(session.Length);
         session.Backing.Flush();

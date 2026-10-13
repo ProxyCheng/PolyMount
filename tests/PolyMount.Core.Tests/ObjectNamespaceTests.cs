@@ -8,6 +8,31 @@ namespace PolyMount.Core.Tests;
 public class ObjectNamespaceTests
 {
     [TestMethod]
+    public async Task Cached_directory_listing_does_not_query_source_child_headers()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer(); source.AddFile("folder/file", "payload");
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 1048576);
+        var cold = new VirtualFileSystem(new ILayer[] { cache, source });
+        cold.List(""); cold.List("folder");
+        await cache.WaitForPendingFillsAsync();
+        // No source is available in this chain. Headers in the cached directory
+        // must suffice; resolving children must not fall through to lower layers.
+        var unavailable = new HeaderFailureLayer();
+        var warm = new VirtualFileSystem(new ILayer[] { cache, unavailable });
+        Assert.AreEqual("file", warm.List("folder").Single().Name);
+    }
+    private sealed class HeaderFailureLayer : ILayer
+    {
+        public string Name => "unavailable";
+        public string Generation => "1";
+        public bool Writable => false;
+        public bool TryGetEntry(string path, out VfsEntry entry) => throw new InvalidOperationException("Source header requested");
+        public IReadOnlyList<VfsEntry> ListOwn(string path) => throw new InvalidOperationException("Source listing requested");
+        public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream) => throw new InvalidOperationException("Source content requested");
+    }
+
+    [TestMethod]
     public void Listing_and_directory_metadata_do_not_enumerate_child_directories()
     {
         var source = new FakeSourceLayer();

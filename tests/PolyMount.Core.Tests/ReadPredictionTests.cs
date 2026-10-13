@@ -8,6 +8,18 @@ namespace PolyMount.Core.Tests;
 public sealed class ReadPredictionTests
 {
     [TestMethod]
+    public void Replacing_an_edge_at_capacity_preserves_unrelated_transitions()
+    {
+        using var temp = new TempDir();
+        using var prediction = new ReadPrediction(new VirtualFileSystem(Array.Empty<ILayer>()),
+            new ReadPredictionOptions { MaxTransitions = 3 }, temp.Sub("capacity.json"));
+        foreach (var path in new[] { "a", "b", "c", "a" }) using (prediction.Demand(path)) { }
+        Assert.AreEqual(3, prediction.LearnedTransitions);
+        using (prediction.Demand("c")) { }
+        Assert.AreEqual(3, prediction.LearnedTransitions, "Replacing a recorded edge does not need eviction");
+    }
+
+    [TestMethod]
     public async Task One_previous_sequence_predicts_during_a_single_active_demand()
     {
         using var temp = new TempDir();

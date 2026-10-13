@@ -60,7 +60,8 @@ public sealed class ReadPrediction : IDisposable
                     _edges[_previous] = edge with { Hits = Math.Min(10000, edge.Hits + 1) };
                 else
                 {
-                    if (_edges.Count >= _options.MaxTransitions) _edges.Remove(_edges.MinBy(p => p.Value.Hits).Key);
+                    if (!_edges.ContainsKey(_previous) && _edges.Count >= _options.MaxTransitions)
+                        _edges.Remove(_edges.MinBy(p => p.Value.Hits).Key);
                     _edges[_previous] = new(_previous, path, 1);
                 }
             }

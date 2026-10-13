@@ -19,7 +19,7 @@ internal sealed class ObjectDatabase
     private long _usageCheckedAt;
     private long _diskBytes;
     private readonly object _usageGate = new();
-    public ObjectDatabase(string root, bool compress, bool recoverable = false)
+    public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null)
     {
         _root = Path.Combine(root, "objects-v2");
         _connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(_root, "objects.db"), Pooling = true, DefaultTimeout = 30 }.ToString();
@@ -31,6 +31,13 @@ internal sealed class ObjectDatabase
         command.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS objects(path TEXT PRIMARY KEY COLLATE NOCASE, record TEXT NOT NULL);";
         command.ExecuteNonQuery();
         command.CommandText = "SELECT record FROM objects";
+        if (preferredPrefix != null)
+        {
+            // Old generations remain on disk, but must not consume the bounded
+            // resident index before the currently mounted generation is loaded.
+            command.CommandText += " ORDER BY CASE WHEN substr(path,1,length($prefix))=$prefix COLLATE NOCASE THEN 0 ELSE 1 END";
+            command.Parameters.AddWithValue("$prefix", preferredPrefix);
+        }
         using var reader = command.ExecuteReader();
         _records = new(StringComparer.OrdinalIgnoreCase);
         long metadata = 0;
