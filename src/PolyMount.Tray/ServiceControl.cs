@@ -37,7 +37,12 @@ internal static class ServiceControl
         {
             try
             {
-                Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! });
+                Process.Start(new ProcessStartInfo(exe)
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(exe)!
+                });
                 return I18n.T("service.starting");
             }
             catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
