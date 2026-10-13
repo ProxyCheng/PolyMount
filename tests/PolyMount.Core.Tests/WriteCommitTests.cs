@@ -7,6 +7,24 @@ namespace PolyMount.Core.Tests;
 public sealed class WriteCommitTests
 {
     [TestMethod]
+    public void Closing_file_does_not_expose_disposed_storage_to_metadata_queries()
+    {
+        SharedObjectFile file = null!;
+        bool closed = false;
+        file = new SharedObjectFile(new MemoryStream(new byte[3]), "test", _ => { }, _ => { }, () =>
+        {
+            closed = true;
+            Assert.IsFalse(file.TryGetHeader("file", out _));
+        });
+        Assert.IsTrue(file.TryGetHeader("file", out var header));
+        Assert.AreEqual(3L, header.Size);
+        Assert.IsTrue(file.TryAcquire(false, out var handle));
+        handle.Dispose();
+        Assert.IsTrue(closed);
+        Assert.IsFalse(file.TryGetHeader("file", out _));
+    }
+
+    [TestMethod]
     public void Small_dirty_commit_uses_memory_snapshot_and_persists_content()
     {
         var file = new SharedObjectFile(new MemoryStream(), "test", _ => { }, snapshot =>

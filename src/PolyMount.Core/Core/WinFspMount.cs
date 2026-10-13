@@ -37,6 +37,7 @@ internal sealed class DirCursor
 {
     public List<VfsEntry> Items = new();
     public int Index;
+    public Action CountCallback;
 }
 
 public sealed class WinFspMount : FileSystemBase
@@ -200,7 +201,7 @@ public sealed class WinFspMount : FileSystemBase
         return NtStatus.Success;
     }
 
-    public override int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
+    public override unsafe int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
         out uint bytesTransferred)
     {
         using var request = BeginRequest("WinFsp.Read", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
@@ -214,9 +215,9 @@ public sealed class WinFspMount : FileSystemBase
             var stream = h.Stream;
             if ((long)offset != stream.Position) stream.Seek((long)offset, SeekOrigin.Begin);
 
-            var temp = new byte[length];
-            int read = stream.Read(temp, 0, (int)length);
-            if (read > 0) Marshal.Copy(temp, 0, buffer, read);
+            // WinFsp owns this buffer until the synchronous callback returns.
+            // Read directly into it instead of allocating and copying each request.
+            int read = stream.Read(new Span<byte>(buffer.ToPointer(), checked((int)length)));
             bytesTransferred = (uint)read;
             return read == 0 && length > 0 ? NtStatus.EndOfFile : NtStatus.Success;
         }
@@ -317,7 +318,10 @@ public sealed class WinFspMount : FileSystemBase
     public override bool ReadDirectoryEntry(object fileNode, object fileDesc, string pattern, string marker,
         ref object context, out string fileName, out FspFileInfo fileInfo)
     {
-        using var request = BeginRequest("WinFsp.ReadDirectoryEntry", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+        // A cursor's continuation only copies an already resolved entry. Trace
+        // the query boundary, not thousands of in-process entry callbacks.
+        using var request = context is DirCursor ? null : BeginRequest("WinFsp.ReadDirectoryEntry", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+        if (context is DirCursor continuation) continuation.CountCallback?.Invoke();
         fileName = null;
         fileInfo = default;
 
@@ -352,7 +356,8 @@ public sealed class WinFspMount : FileSystemBase
                     items = items.Where(entry => System.IO.Enumeration.FileSystemName.MatchesWin32Expression(
                         pattern, entry.Name, ignoreCase: true)).ToList();
                 request?.Stage($"pattern='{pattern}' marker='{marker}' items={items.Count}");
-                cursor = new DirCursor { Items = items };
+                cursor = new DirCursor { Items = items,
+                    CountCallback = _vfs.Diagnostics?.CallbackCounter("WinFsp.ReadDirectoryEntry", request?.ProcessId ?? node.ProcessId) };
                 if (!string.IsNullOrEmpty(marker))
                 {
                     int low = 0, high = items.Count;

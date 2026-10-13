@@ -230,15 +230,19 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         {
             ArgumentNullException.ThrowIfNull(buffer); ArgumentOutOfRangeException.ThrowIfNegative(offset); ArgumentOutOfRangeException.ThrowIfNegative(count);
             if (offset > buffer.Length - count) throw new ArgumentException("Invalid buffer range");
+            return Read(buffer.AsSpan(offset, count));
+        }
+        public override int Read(Span<byte> buffer)
+        {
             lock (cache._gate)
             {
-                Check(); int total = (int)Math.Min(count, Math.Max(0, session.Length - _position)), done = 0;
+                Check(); int total = (int)Math.Min(buffer.Length, Math.Max(0, session.Length - _position)), done = 0;
                 while (done < total)
                 {
                     long start = _position / cache.BlockSize * cache.BlockSize;
                     var page = cache.GetPage(session, start);
                     int within = (int)(_position - start), n = Math.Min(total - done, cache.BlockSize - within);
-                    Array.Copy(page.Bytes, within, buffer, offset + done, n); _position += n; done += n;
+                    page.Bytes.AsSpan(within, n).CopyTo(buffer.Slice(done, n)); _position += n; done += n;
                 }
                 return done;
             }

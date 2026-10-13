@@ -98,7 +98,10 @@ public sealed class MountInstance : IDisposable
                 PersistentAcls = false,
                 PostCleanupWhenModifiedOnly = true,
                 PassQueryDirectoryPattern = true,
-                FileInfoTimeout = 0
+                // Let WinFsp reuse metadata between stat/open/read calls. Ordinary
+                // filesystem mutations update its cache; changes made directly in
+                // backing layers become visible within this bounded timeout.
+                FileInfoTimeout = 1000
             };
 
             int rc = host.Mount(Profile.MountPoint, null, false, 0);

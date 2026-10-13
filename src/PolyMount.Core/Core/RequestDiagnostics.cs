@@ -47,6 +47,11 @@ public sealed class RequestDiagnostics : IDisposable
     }
 
     public long DroppedMessages => _monitor.Inspector?.DroppedMessagesCount ?? _lastDropped;
+    internal Action CallbackCounter(string operation, int processId)
+    {
+        var counter = _counts.GetOrAdd($"pid={processId} op={operation}", _ => new Counter());
+        return () => Interlocked.Increment(ref counter.Value);
+    }
     public void Error(string operation, Exception exception) => _logger.Error(exception, "Operation failed: {Operation}", operation);
     private sealed class QueueMonitor : IAsyncLogEventSinkMonitor
     {

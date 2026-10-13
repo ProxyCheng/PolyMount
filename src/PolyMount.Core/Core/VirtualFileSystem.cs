@@ -88,9 +88,8 @@ public sealed class VirtualFileSystem
     {
         using var request = RequestDiagnostics.Begin("VFS.Lookup", path, Diagnostics);
         path = VfsPath.Normalize(path);
-        if (_openFiles.TryGetValue(path, out var open))
+        if (_openFiles.TryGetValue(path, out var open) && open.TryGetHeader(VfsPath.Name(path), out entry))
         {
-            entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = open.LastWriteTimeUtc };
             return true;
         }
         request?.Stage("resolving metadata");
@@ -252,7 +251,8 @@ public sealed class VirtualFileSystem
                     { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
                 scratch.Position = 0;
                 scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
-                var file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
+                SharedObjectFile file = null!;
+                file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
                 {
                     lock (_mutationGate)
                     {
@@ -262,7 +262,7 @@ public sealed class VirtualFileSystem
                         ReplaceChild(list, current);
                         Apply(new ObjectChange[] { new(path, new(current), snapshot), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), list)) }, target);
                     }
-                }, () => _openFiles.TryRemove(path, out _));
+                }, () => ((ICollection<KeyValuePair<string, SharedObjectFile>>)_openFiles).Remove(new(path, file)));
                 _openFiles[path] = file;
                 file.TryAcquire(true, out var firstHandle);
                 return firstHandle;
@@ -402,6 +402,16 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
         lock (_gate) { handle = null!; if (_closed) return false; _references++; handle = new SharedHandle(this, writable); return true; }
     }
     public long Length { get { lock (_gate) return data.Length; } }
+    public bool TryGetHeader(string name, out VfsEntry entry)
+    {
+        lock (_gate)
+        {
+            entry = null!;
+            if (_closed) return false;
+            entry = new VfsEntry { Name = name, Size = data.Length, TimeUtc = _lastWriteTimeUtc };
+            return true;
+        }
+    }
     public int Read(long position, byte[] buffer, int offset, int count)
     { lock (_gate) { data.Position = position; return data.Read(buffer, offset, count); } }
     public void Write(long position, byte[] buffer, int offset, int count)
@@ -468,7 +478,7 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
             if (final)
             {
                 try { Flush(); }
-                finally { data.Dispose(); closed(); }
+                finally { try { data.Dispose(); } finally { closed(); } }
             }
         }
     }

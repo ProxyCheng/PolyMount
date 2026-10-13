@@ -7,6 +7,12 @@ using PolyMount.Core;
 using PolyMount.Layers;
 
 string Option(string name, string fallback) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault() ?? fallback;
+if (args.Contains("--warm-probe"))
+{
+    WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "TX4Package"),
+        Option("--path", "Repository/11_3606.local/resource.repository"));
+    return 0;
+}
 int repeats = int.Parse(Option("--repeats", "3"), CultureInfo.InvariantCulture);
 int fileMb = int.Parse(Option("--file-mb", "8"), CultureInfo.InvariantCulture);
 int smallFiles = int.Parse(Option("--small-files", "32"), CultureInfo.InvariantCulture);
