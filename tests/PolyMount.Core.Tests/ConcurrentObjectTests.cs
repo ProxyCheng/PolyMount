@@ -37,18 +37,20 @@ public sealed class ConcurrentObjectTests
     }
 
     [TestMethod]
-    public void Deleted_cache_directory_is_a_miss_and_is_recreated()
+    public async Task Deleted_cache_directory_is_a_miss_and_is_recreated()
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("folder/file", "source");
         var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
         var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
         using (var read = vfs.OpenRead("folder/file", out _)) { }
+        await cache.DrainAsync().WaitAsync(TimeSpan.FromSeconds(5));
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         Directory.Delete(temp.Sub("cache"), true);
         Assert.AreEqual("fake", vfs.Probe("folder").Single(p => p.Effective).Name);
         using var reader = new StreamReader(vfs.OpenRead("folder/file", out _));
         Assert.AreEqual("source", reader.ReadToEnd());
+        await cache.DrainAsync().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.IsTrue(Directory.Exists(temp.Sub("cache")));
         Assert.AreEqual("cache", vfs.Probe("folder/file").Single(p => p.Effective).Name);
     }

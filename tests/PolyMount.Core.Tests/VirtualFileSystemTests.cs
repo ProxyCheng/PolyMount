@@ -25,7 +25,7 @@ public class VirtualFileSystemTests
             return f;
         }
 
-        public void Dispose() => Temp.Dispose();
+        public void Dispose() { Cache.Dispose(); Temp.Dispose(); }
     }
 
     private static string ReadAll(Stream s)

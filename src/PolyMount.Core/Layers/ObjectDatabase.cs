@@ -68,9 +68,12 @@ internal sealed class ObjectDatabase
     {
         lock (_gate)
         {
-            EnsureAvailable();
             value = null!;
+            // Absent objects cannot become hits by checking the database file.
+            // Keep misses (especially empty overlay/write stores) entirely in memory.
             if (!_records.TryGetValue(key, out var record)) return false;
+            EnsureAvailable();
+            if (!_records.TryGetValue(key, out record)) return false;
             if (record.Blob != null && !File.Exists(Path.Combine(_root, record.Blob)))
             {
                 if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
@@ -84,7 +87,6 @@ internal sealed class ObjectDatabase
     }
     public bool TryOpen(string key, out VirtualObject value, out Stream stream)
     {
-        FileStream file;
         Record record;
         lock (_gate)
         {
@@ -92,8 +94,14 @@ internal sealed class ObjectDatabase
             if (!TryGet(key, out value) || value.Header.IsDir) return false;
             record = _records[key];
             if (record.Blob == null) throw new InvalidDataException("File object has no data: " + key);
-            file = new FileStream(Path.Combine(_root, record.Blob), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
         }
+        return TryOpenRecord(record, out stream);
+    }
+    internal bool TryOpenRecord(Record record, out Stream stream)
+    {
+        // Immutable published records can be opened without waiting for a cache
+        // writer's SQLite transaction or blob copy.
+        FileStream file = new(Path.Combine(_root, record.Blob!), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
             if (!record.Compressed) { stream = file; return true; }
             // WinFsp requires seekable handles. Compressed objects are decoded to a temporary
             // disk-backed handle, not an unbounded in-memory byte array.

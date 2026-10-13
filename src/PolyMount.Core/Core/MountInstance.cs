@@ -51,6 +51,7 @@ public sealed class MountInstance : IDisposable
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
         Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, "requests.log"));
+        foreach (var cache in _providers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
     }
 
     public MountProfile Profile { get; }
@@ -269,6 +270,7 @@ public sealed class MountInstance : IDisposable
         try { Unmount(); }
         finally
         {
+            foreach (var provider in _providers.Values.OfType<IDisposable>()) provider.Dispose();
             Vfs.Diagnostics?.Dispose();
         }
     }
