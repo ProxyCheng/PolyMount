@@ -35,6 +35,9 @@ public sealed class ControlRequest
     // Used by "layerAction": which layer to mutate and what to do.
     public string? Layer { get; set; }
     public string? Action { get; set; }
+
+    // Serialized AppConfig payload, used by "saveConfig".
+    public string? Config { get; set; }
 }
 
 public sealed class ControlResponse
@@ -46,6 +49,9 @@ public sealed class ControlResponse
 
     // Populated by the "probe" command.
     public ProbeResult? Probe { get; set; }
+
+    // Populated by "getConfig": serialized AppConfig.
+    public string? Config { get; set; }
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -61,6 +67,7 @@ public sealed class LayerProbe
     public bool Tombstoned { get; set; }   // this layer hides the path (effective tombstone)
     public bool DirectTombstone { get; set; } // tombstone set on this exact path (removable)
     public string Generation { get; set; } = "";
+    public string Color { get; set; } = "";   // layer-identity color "#RRGGBB"
 
     // 存在 / 不存在 / 不知道
     public string State =>
@@ -74,6 +81,8 @@ public sealed class ProbeResult
     public string Rel { get; set; } = "";
     public bool Found { get; set; }        // an effective (visible) entry exists
     public bool IsDir { get; set; }
+    public string EffectiveLayer { get; set; } = "";  // name of the winning layer, "" if none
+    public string EffectiveColor { get; set; } = "";  // color of the winning layer (for the badge)
     public List<LayerProbe> Layers { get; set; } = new();
 }
 
@@ -87,6 +96,9 @@ public static class ControlCommands
     public const string Unmount = "unmount";
     public const string Probe = "probe";
     public const string LayerAction = "layerAction";
+    public const string GetConfig = "getConfig";
+    public const string SaveConfig = "saveConfig";
+    public const string Reload = "reload";
 }
 
 // Action names accepted by the "layerAction" command.

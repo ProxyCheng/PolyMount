@@ -11,6 +11,7 @@ using Orientation = System.Windows.Controls.Orientation;
 using MessageBox = System.Windows.MessageBox;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using Size = System.Windows.Size;
+using ColorConverter = System.Windows.Media.ColorConverter;
 
 namespace PolyMount.Tray;
 
@@ -156,10 +157,19 @@ public partial class LayerVisualizerWindow : Window
     {
         var sb = new StackPanel();
 
-        var title = new TextBlock { FontWeight = FontWeights.Bold, FontSize = 13 };
+        var header = new StackPanel { Orientation = Orientation.Horizontal };
+        header.Children.Add(new Rectangle
+        {
+            Width = 13, Height = 13, RadiusX = 3, RadiusY = 3,
+            Fill = ParseBrush(p.Color), Stroke = Outline, StrokeThickness = 1,
+            VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0),
+            ToolTip = $"来源层颜色 {p.Color}"
+        });
+        var title = new TextBlock { FontWeight = FontWeights.Bold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
         title.Inlines.Add($"{p.Name}{(p.Writable ? " (可写)" : "")}  ");
         title.Inlines.Add(new System.Windows.Documents.Run("[" + StateLabel(state) + "]") { Foreground = Palette(state).body });
-        sb.Children.Add(title);
+        header.Children.Add(title);
+        sb.Children.Add(header);
 
         string detail = state switch
         {
@@ -176,6 +186,17 @@ public partial class LayerVisualizerWindow : Window
         Canvas.SetLeft(sb, x);
         Canvas.SetTop(sb, y + 4);
         Board.Children.Add(sb);
+    }
+
+    private static Brush ParseBrush(string hex)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(hex))
+                return new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+        }
+        catch { }
+        return Brushes.Gray;
     }
 
     // Management actions appropriate to the layer's current state.

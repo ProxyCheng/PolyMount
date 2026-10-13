@@ -40,6 +40,10 @@ public sealed class MountInstance : IDisposable
     public LruCacheLayer? Cache { get; }
     public ILayer Source { get; }
 
+    // User color overrides (layer name -> "#RRGGBB"); auto color is used for missing keys.
+    public IReadOnlyDictionary<string, string> ColorOverrides { get; set; } =
+        new Dictionary<string, string>();
+
     public string Name => Profile.Name;
     public string MountPoint => Profile.MountPoint;
 
@@ -109,6 +113,9 @@ public sealed class MountInstance : IDisposable
     public ProbeResult Probe(string rel)
     {
         var layers = Vfs.Probe(rel);
+        foreach (var lp in layers)
+            lp.Color = LayerColors.Resolve(lp.Name, ColorOverrides);
+
         var effective = layers.FirstOrDefault(l => l.Effective);
         return new ProbeResult
         {
@@ -117,6 +124,8 @@ public sealed class MountInstance : IDisposable
             Rel = rel,
             Found = effective != null,
             IsDir = effective?.IsDir ?? false,
+            EffectiveLayer = effective?.Name ?? "",
+            EffectiveColor = effective?.Color ?? "",
             Layers = layers
         };
     }
