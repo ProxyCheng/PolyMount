@@ -7,104 +7,36 @@ namespace PolyMount.Core.Tests;
 [TestClass]
 public class OverlayLayerTests
 {
-    private static OverlayLayer New(TempDir t) =>
-        new(t.Sub("overlay"), t.Sub("state", "tombstones"));
-
-    private static string ReadAll(Stream s)
+    [TestMethod]
+    public void Compressed_objects_and_directory_lists_survive_reopen()
     {
-        s.Seek(0, SeekOrigin.Begin);
-        using var r = new StreamReader(s, System.Text.Encoding.UTF8, leaveOpen: true);
-        return r.ReadToEnd();
+        using var temp = new TempDir();
+        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"), true);
+        var vfs = new VirtualFileSystem(new[] { overlay });
+        vfs.CreateDirectory("dir");
+        string text = new('x', 100000);
+        using (var write = vfs.OpenWrite("dir/file", true, out _)) write.Write(System.Text.Encoding.UTF8.GetBytes(text));
+        var reopened = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"), true) });
+        Assert.AreEqual("file", reopened.List("dir").Single().Name);
+        using var reader = new StreamReader(reopened.OpenRead("dir/file", out var header));
+        Assert.AreEqual(100000L, header.Size);
+        Assert.AreEqual(text, reader.ReadToEnd());
+        var store = new ObjectDatabase(temp.Sub("overlay"), true);
+        Assert.IsTrue(store.Records.Sum(r => r.StoredBytes) < 10000);
     }
 
     [TestMethod]
-    public void Create_write_then_read_roundtrips()
+    public void Batch_failure_does_not_publish_partial_directory_change()
     {
-        using var t = new TempDir();
-        var o = New(t);
-
-        using (var s = o.Create("dir/file.txt", out var e))
+        using var temp = new TempDir();
+        var store = new ObjectDatabase(temp.Sub("objects"), false);
+        store.Apply(new[] { new ObjectChange("", VirtualObject.Directory("", Array.Empty<VfsEntry>())) });
+        Assert.ThrowsException<ArgumentException>(() => store.Apply(new ObjectChange[]
         {
-            Assert.IsFalse(e.IsDir);
-            var bytes = System.Text.Encoding.UTF8.GetBytes("hello");
-            s.Write(bytes, 0, bytes.Length);
-        }
-
-        Assert.IsTrue(o.TryGetEntry("dir/file.txt", out var entry));
-        Assert.AreEqual(5, entry.Size);
-
-        Assert.IsTrue(o.TryOpenRead("dir/file.txt", out _, out var read));
-        using (read) Assert.AreEqual("hello", ReadAll(read));
-    }
-
-    [TestMethod]
-    public void ListOwn_returns_dirs_and_files()
-    {
-        using var t = new TempDir();
-        var o = New(t);
-        o.CreateDirectory("sub");
-        using (o.Create("a.txt", out _)) { }
-
-        var names = o.ListOwn("").Select(e => e.Name).OrderBy(x => x).ToArray();
-        CollectionAssert.AreEqual(new[] { "a.txt", "sub" }, names);
-    }
-
-    [TestMethod]
-    public void Delete_with_shadow_writes_tombstone_that_persists()
-    {
-        using var t = new TempDir();
-        var o = New(t);
-        using (o.Create("gone.txt", out _)) { }
-
-        o.Delete("gone.txt", shadowedBelow: true);
-        Assert.IsTrue(o.IsDeleted("gone.txt"));
-
-        // A freshly constructed overlay must reload the tombstone from disk.
-        var reopened = New(t);
-        Assert.IsTrue(reopened.IsDeleted("gone.txt"));
-    }
-
-    [TestMethod]
-    public void IsDeleted_is_hierarchical()
-    {
-        using var t = new TempDir();
-        var o = New(t);
-        o.CreateDirectory("d");
-        o.Delete("d", shadowedBelow: true);
-
-        Assert.IsTrue(o.IsDeleted("d"));
-        Assert.IsTrue(o.IsDeleted("d/child.txt"));
-        Assert.IsFalse(o.IsDeleted("other"));
-    }
-
-    [TestMethod]
-    public void Create_after_delete_removes_tombstone()
-    {
-        using var t = new TempDir();
-        var o = New(t);
-        using (o.Create("f.txt", out _)) { }
-        o.Delete("f.txt", shadowedBelow: true);
-        Assert.IsTrue(o.IsDeleted("f.txt"));
-
-        using (o.Create("f.txt", out _)) { }
-        Assert.IsFalse(o.IsDeleted("f.txt"));
-    }
-
-    [TestMethod]
-    public void Rename_moves_file()
-    {
-        using var t = new TempDir();
-        var o = New(t);
-        using (var s = o.Create("a.txt", out _))
-        {
-            var b = System.Text.Encoding.UTF8.GetBytes("data");
-            s.Write(b, 0, b.Length);
-        }
-
-        o.Rename("a.txt", "b.txt", replace: false, shadowedBelow: false);
-
-        Assert.IsFalse(o.TryGetEntry("a.txt", out _));
-        Assert.IsTrue(o.TryOpenRead("b.txt", out _, out var r));
-        using (r) Assert.AreEqual("data", ReadAll(r));
+            new("", VirtualObject.Directory("", new[] { new VfsEntry { Name = "bad" } })),
+            new("bad", new VirtualObject(new VfsEntry { Name = "bad" }))
+        }));
+        Assert.IsTrue(store.TryGet("", out var root));
+        Assert.AreEqual(0, root.Children!.Count);
     }
 }

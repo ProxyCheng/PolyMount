@@ -95,7 +95,7 @@ public class AppConfigTests
     {
         var cfg = new AppConfig
         {
-            Mounts = { new MountProfile { Name = "X", MountPoint = @"D:\a", StoreRoot = @"D:\a.s", Source = new SourceConfig { Type = "nope" } } }
+            Mounts = { new MountProfile { Name = "X", MountPoint = @"D:\a", Layers = new() { new() { Id = "unknown", Type = "nope" } } } }
         };
         Assert.ThrowsException<ArgumentException>(() => cfg.Validate());
     }

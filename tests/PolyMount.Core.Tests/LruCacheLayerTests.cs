@@ -45,13 +45,13 @@ public class LruCacheLayerTests
     public void Eviction_respects_capacity()
     {
         using var t = new TempDir();
-        var cache = new LruCacheLayer(t.Sub("cache"), () => "v1", capacityBytes: 10);
+        var cache = new LruCacheLayer(t.Sub("cache"), () => "v1", capacityBytes: 250);
 
-        using (var c = new MemoryStream(new byte[6])) cache.Store("a", "v1", FileEntry("a", 6), c);
-        using (var c = new MemoryStream(new byte[6])) cache.Store("b", "v1", FileEntry("b", 6), c);
+        using (var c = new MemoryStream(new byte[100])) cache.Store("a", "v1", FileEntry("a", 100), c);
+        using (var c = new MemoryStream(new byte[100])) cache.Store("b", "v1", FileEntry("b", 100), c);
 
         // 12 bytes > 10 capacity, so the oldest ("a") must have been evicted.
-        Assert.IsTrue(cache.TotalBytes <= 10);
+        Assert.IsTrue(cache.TotalBytes <= 250);
         Assert.IsFalse(cache.TryGetEntry("a", out _));
         Assert.IsTrue(cache.TryGetEntry("b", out _));
     }

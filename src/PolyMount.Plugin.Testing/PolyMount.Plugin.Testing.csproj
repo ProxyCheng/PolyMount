@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>true</IsPackable>
+    <PackageId>PolyMount.Plugin.Testing</PackageId>
+    <Description>Test provider contracts and discovery for PolyMount layer plugins.</Description>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" /></ItemGroup>
+</Project>

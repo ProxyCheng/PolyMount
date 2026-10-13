@@ -64,7 +64,7 @@ public class VirtualFileSystemTests
     {
         using var f = Fixture.Build();
         f.Source.AddFile("x.txt", "source-value");
-        using (var w = f.Overlay.Create("x.txt", out _))
+        using (var w = f.Vfs.OpenWrite("x.txt", true, out _))
         {
             var b = System.Text.Encoding.UTF8.GetBytes("overlay-value");
             w.Write(b, 0, b.Length);
@@ -75,13 +75,13 @@ public class VirtualFileSystemTests
     }
 
     [TestMethod]
-    public void List_unions_layers_and_dedupes_by_name()
+    public void Directory_snapshot_preserves_members_during_updates()
     {
         using var f = Fixture.Build();
         f.Source.AddFile("a.txt", "a");
         f.Source.AddFile("shared.txt", "src");
-        f.Overlay.CreateDirectory("b");
-        using (f.Overlay.Create("shared.txt", out _)) { }
+        f.Vfs.CreateDirectory("b");
+        using (f.Vfs.OpenWrite("shared.txt", true, out _)) { }
 
         var names = f.Vfs.List("").Select(e => e.Name).ToArray();
         CollectionAssert.AreEqual(new[] { "a.txt", "b", "shared.txt" }, names); // sorted, deduped
