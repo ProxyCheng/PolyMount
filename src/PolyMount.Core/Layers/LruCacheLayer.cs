@@ -240,7 +240,8 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             reads.FileObjects + writes.FileObjects, reads.DirectoryObjects + writes.DirectoryObjects,
             TotalBytes, Capacity, writes.ObjectBytes, writes.FileObjects + writes.DirectoryObjects);
     }
-    internal async Task DrainAsync()
+    internal Task DrainAsync() => WaitForPendingFillsAsync();
+    public async Task WaitForPendingFillsAsync()
     {
         while (true)
         {

@@ -11,6 +11,12 @@ int repeats = int.Parse(Option("--repeats", "3"), CultureInfo.InvariantCulture);
 int fileMb = int.Parse(Option("--file-mb", "8"), CultureInfo.InvariantCulture);
 int smallFiles = int.Parse(Option("--small-files", "32"), CultureInfo.InvariantCulture);
 int[] workers = Option("--workers", "1,4,8").Split(',').Select(int.Parse).ToArray();
+int engineDirectories = int.Parse(Option("--engine-directories", "128"));
+int engineFiles = int.Parse(Option("--engine-files", "16"));
+int engineRounds = int.Parse(Option("--engine-rounds", "2"));
+int remoteDelayMs = int.Parse(Option("--remote-delay-ms", "5"));
+bool engineOnly = args.Contains("--engine-only");
+if (engineDirectories <= 0 || engineFiles <= 0 || engineRounds <= 0 || remoteDelayMs < 0) throw new ArgumentException("Invalid engine workload sizes");
 if (repeats <= 0 || fileMb <= 0 || smallFiles <= 0 || workers.Any(w => w <= 0)) throw new ArgumentException("All workload sizes must be positive");
 string reportDirectory = Path.GetFullPath(Option("--report", "artifacts/performance"));
 string root = Path.Combine(Path.GetTempPath(), "PolyMount-perf-" + Guid.NewGuid().ToString("N"));
@@ -29,19 +35,37 @@ void Run(string backend, string scenario, int threads, int repeat, long bytes, i
     var cpu = process.TotalProcessorTime;
     long allocated = GC.GetTotalAllocatedBytes();
     var watch = Stopwatch.StartNew();
-    Parallel.For(0, threads, new ParallelOptions { MaxDegreeOfParallelism = threads }, index =>
+    int active = 0, peak = 0;
+    void ExecuteWorker(int index)
     {
         try
         {
             worker(index, action =>
             {
                 long start = Stopwatch.GetTimestamp();
-                action();
-                latencies.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+                int concurrent = Interlocked.Increment(ref active);
+                int old;
+                do { old = Volatile.Read(ref peak); } while (concurrent > old && Interlocked.CompareExchange(ref peak, concurrent, old) != old);
+                try { action(); }
+                finally { Interlocked.Decrement(ref active); latencies.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds); }
             });
         }
         catch (Exception ex) { errors.Add(ex.GetType().Name + ": " + ex.Message); }
-    });
+    }
+    if (scenario.StartsWith("Engine", StringComparison.Ordinal))
+    {
+        using var ready = new CountdownEvent(threads);
+        using var start = new ManualResetEventSlim();
+        var tasks = Enumerable.Range(0, threads).Select(index => Task.Factory.StartNew(() =>
+        {
+            ready.Signal(); start.Wait(); ExecuteWorker(index);
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        ready.Wait();
+        watch.Restart();
+        start.Set();
+        Task.WaitAll(tasks);
+    }
+    else Parallel.For(0, threads, new ParallelOptions { MaxDegreeOfParallelism = threads }, ExecuteWorker);
     watch.Stop();
     var samples = latencies.Order().ToArray();
     double Percentile(double q) => samples.Length == 0 ? 0 : samples[Math.Clamp((int)Math.Ceiling(q * samples.Length) - 1, 0, samples.Length - 1)];
@@ -50,12 +74,28 @@ void Run(string backend, string scenario, int threads, int repeat, long bytes, i
         samples.Length / watch.Elapsed.TotalSeconds, samples.Length == 0 ? 0 : samples.Average(), Percentile(.50), Percentile(.95), Percentile(.99),
         samples.Length == 0 ? 0 : samples[^1], (process.TotalProcessorTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes() - allocated,
         process.PeakWorkingSet64, errors.ToArray());
+    result = result with { PeakConcurrentOperations = peak, SlowOperations = samples.Count(ms => ms >= 1000) };
     results.Add(result);
     Console.WriteLine($"{backend,-10} {scenario,-18} threads={threads} run={repeat} {result.MBps:0.0} MB/s {result.OpsPerSecond:0.0} ops/s p95={result.P95Ms:0.000}ms errors={errors.Count}");
 }
 
 try
 {
+    foreach (int threads in workers)
+    for (int repeat = 1; repeat <= repeats; repeat++)
+    foreach (string backend in new[] { "Native", "ObjectVFS", "SimulatedRemote" })
+    {
+        string corpus = Path.Combine(root, "engine-" + Guid.NewGuid().ToString("N"));
+        using var engine = new EngineWorkload(corpus, backend, engineDirectories, engineFiles, remoteDelayMs);
+        long bytes = (long)engineDirectories * engineFiles * engineRounds * 8192;
+        int operations = checked(engineDirectories * engineRounds * (1 + engineFiles * 2));
+        Run(backend, "EngineFirstPass", threads, repeat, bytes, operations,
+            (index, measure) => engine.Load(index, threads, engineRounds, measure));
+        engine.WaitForPersistence();
+        Run(backend, "EngineWarmPass", threads, repeat, bytes, operations,
+            (index, measure) => engine.Load(index, threads, engineRounds, measure));
+    }
+    if (!engineOnly)
     foreach (int threads in workers)
     for (int repeat = 1; repeat <= repeats; repeat++)
     foreach (string backend in mounted == null ? new[] { "Native", "ObjectVFS" } : new[] { "Native", "ObjectVFS", "WinFsp" })
@@ -128,12 +168,13 @@ finally
     string report = Path.Combine(reportDirectory, "stress-" + stamp);
     var environment = new { StartedUtc = stamp, OS = Environment.OSVersion.ToString(), Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
         Processors = Environment.ProcessorCount, Workers = workers, Repeats = repeats, FileMB = fileMb, SmallFiles = smallFiles, MountRoot = mounted,
+        EngineDirectories = engineDirectories, EngineFiles = engineFiles, EngineRounds = engineRounds, RemoteDelayMs = remoteDelayMs,
         Caveat = "Warm OS-cache workloads. ObjectVFS bypasses WinFsp; WinFsp is included only with --mount-root. Latencies include open/flush where noted. Not cold disk throughput." };
     File.WriteAllText(report + ".json", JsonSerializer.Serialize(new { Environment = environment, Results = results }, new JsonSerializerOptions { WriteIndented = true }));
     var markdown = new StringBuilder("# PolyMount automated stress report\n\n").AppendLine(JsonSerializer.Serialize(environment)).AppendLine()
-        .AppendLine("| Backend | Scenario | Workers | Run | MB/s | Ops/s | Mean ms | P95 ms | P99 ms | Max ms | Errors |")
-        .AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-    foreach (var r in results) markdown.AppendLine(FormattableString.Invariant($"| {r.Backend} | {r.Scenario} | {r.Workers} | {r.Repeat} | {r.MBps:0.0} | {r.OpsPerSecond:0.0} | {r.MeanMs:0.000} | {r.P95Ms:0.000} | {r.P99Ms:0.000} | {r.MaxMs:0.000} | {r.Errors.Length} |"));
+        .AppendLine("| Backend | Scenario | Workers | Run | Seconds | MB/s | Ops/s | Mean ms | P95 ms | P99 ms | Max ms | Peak concurrent | >=1s ops | Errors |")
+        .AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    foreach (var r in results) markdown.AppendLine(FormattableString.Invariant($"| {r.Backend} | {r.Scenario} | {r.Workers} | {r.Repeat} | {r.Seconds:0.000} | {r.MBps:0.0} | {r.OpsPerSecond:0.0} | {r.MeanMs:0.000} | {r.P95Ms:0.000} | {r.P99Ms:0.000} | {r.MaxMs:0.000} | {r.PeakConcurrentOperations} | {r.SlowOperations} | {r.Errors.Length} |"));
     markdown.AppendLine("\n## Repeat summary (median throughput)\n")
         .AppendLine("| Backend | Scenario | Workers | Median MB/s | Median ops/s | Relative to native throughput |")
         .AppendLine("|---|---|---:|---:|---:|---:|");
@@ -147,8 +188,8 @@ finally
     markdown.AppendLine("\n## Errors\n");
     foreach (var r in results.Where(r => r.Errors.Length > 0)) markdown.AppendLine($"- {r.Backend}/{r.Scenario}: {string.Join("; ", r.Errors)}");
     File.WriteAllText(report + ".md", markdown.ToString());
-    var csv = new StringBuilder("Backend,Scenario,Workers,Repeat,Bytes,Operations,Seconds,MBps,OpsPerSecond,MeanMs,P50Ms,P95Ms,P99Ms,MaxMs,CpuMs,AllocatedBytes,PeakWorkingSetBytes,ErrorCount\n");
-    foreach (var r in results) csv.AppendLine(FormattableString.Invariant($"{r.Backend},{r.Scenario},{r.Workers},{r.Repeat},{r.Bytes},{r.Operations},{r.Seconds},{r.MBps},{r.OpsPerSecond},{r.MeanMs},{r.P50Ms},{r.P95Ms},{r.P99Ms},{r.MaxMs},{r.CpuMs},{r.AllocatedBytes},{r.PeakWorkingSetBytes},{r.Errors.Length}"));
+    var csv = new StringBuilder("Backend,Scenario,Workers,Repeat,Bytes,Operations,Seconds,MBps,OpsPerSecond,MeanMs,P50Ms,P95Ms,P99Ms,MaxMs,CpuMs,AllocatedBytes,PeakWorkingSetBytes,PeakConcurrentOperations,SlowOperations,ErrorCount\n");
+    foreach (var r in results) csv.AppendLine(FormattableString.Invariant($"{r.Backend},{r.Scenario},{r.Workers},{r.Repeat},{r.Bytes},{r.Operations},{r.Seconds},{r.MBps},{r.OpsPerSecond},{r.MeanMs},{r.P50Ms},{r.P95Ms},{r.P99Ms},{r.MaxMs},{r.CpuMs},{r.AllocatedBytes},{r.PeakWorkingSetBytes},{r.PeakConcurrentOperations},{r.SlowOperations},{r.Errors.Length}"));
     File.WriteAllText(report + ".csv", csv.ToString());
     Console.WriteLine("Reports: " + report + ".{json,md,csv}");
 }
@@ -157,5 +198,7 @@ return results.Any(r => r.Errors.Length > 0) ? 1 : 0;
 internal sealed record RunResult(string Backend, string Scenario, int Workers, int Repeat, long Bytes, int ExpectedOperations, int Operations,
     double Seconds, double MBps, double OpsPerSecond, double MeanMs, double P50Ms, double P95Ms, double P99Ms, double MaxMs, double CpuMs, long AllocatedBytes, long PeakWorkingSetBytes, string[] Errors)
 {
+    public int PeakConcurrentOperations { get; init; }
+    public int SlowOperations { get; init; }
     public static RunResult Failure(string backend, string scenario, int workers, int repeat, string error) => new(backend, scenario, workers, repeat, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, new[] { error });
 }
