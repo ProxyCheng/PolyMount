@@ -14,6 +14,33 @@ public sealed class SvnLayer : ILayer, IRevisionSource
     private DateTime _pinMtime = DateTime.MinValue;
     private readonly object _gate = new();
     private long _nextPinCheck;
+    private readonly Dictionary<string, long> _memoAccess = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, long> _memoSizes = new(StringComparer.OrdinalIgnoreCase);
+    private long _metadataBytes;
+    public long EstimatedMetadataBytes { get { lock (_gate) return _metadataBytes; } }
+    public int CachedDirectories { get { lock (_gate) return _memo.Count; } }
+    private void ClearMemo()
+    {
+        _memo.Clear(); _entries.Clear(); _memoAccess.Clear(); _memoSizes.Clear(); _metadataBytes = 0;
+    }
+    private void StoreListing(string key, string generation, string path, IReadOnlyList<VfsEntry> list)
+    {
+        if (_memo.ContainsKey(key)) return;
+        long size = CacheBudgets.Estimate(key, new VirtualObject(new VfsEntry { Name = VfsPath.Name(path), IsDir = true }, list));
+        if (size > CacheBudgets.MetadataBytes) return;
+        while (_memo.Count >= CacheBudgets.MaxObjects || _metadataBytes + size > CacheBudgets.MetadataBytes)
+        {
+            string oldest = _memoAccess.MinBy(p => p.Value).Key;
+            var children = _memo[oldest];
+            string prefix = oldest + (oldest.EndsWith('|') ? "" : "/");
+            foreach (var child in children) _entries.Remove(prefix + child.Name);
+            _metadataBytes -= _memoSizes[oldest];
+            _memo.Remove(oldest); _memoAccess.Remove(oldest); _memoSizes.Remove(oldest);
+        }
+        _memo[key] = list; _memoAccess[key] = Environment.TickCount64; _metadataBytes += size;
+        _memoSizes[key] = size;
+        foreach (var child in list) _entries[generation + "|" + VfsPath.Child(path, child.Name)] = child;
+    }
 
     private SvnLayer(SvnClient svn, string pinPath)
     {
@@ -38,8 +65,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         {
             _rev = rev;
             _pinMtime = File.GetLastWriteTimeUtc(_pinPath);
-            _memo.Clear();
-            _entries.Clear();
+            ClearMemo();
         }
     }
 
@@ -63,7 +89,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
                     {
                         lock (_gate)
                         {
-                            if (r != _rev) { _rev = r; _memo.Clear(); _entries.Clear(); }
+                            if (r != _rev) { _rev = r; ClearMemo(); }
                             _pinMtime = mtime;
                         }
                     }
@@ -91,8 +117,10 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         {
             if (_entries.TryGetValue(key, out entry!)) return true;
         }
-        ListOwn(VfsPath.Parent(rel));
-        lock (_gate) return _entries.TryGetValue(key, out entry!);
+        var list = ListOwn(VfsPath.Parent(rel));
+        // Oversized directories are served but not retained in the memo index.
+        entry = list.FirstOrDefault(c => string.Equals(c.Name, VfsPath.Name(rel), StringComparison.OrdinalIgnoreCase))!;
+        return entry != null;
     }
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel)
@@ -113,7 +141,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         Lazy<IReadOnlyList<VfsEntry>> pending;
         lock (_gate)
         {
-            if (_memo.TryGetValue(key, out var cached)) return cached;
+            if (_memo.TryGetValue(key, out var cached)) { _memoAccess[key] = Environment.TickCount64; return cached; }
             if (!_listingRequests.TryGetValue(key, out pending!))
             {
                 string directory = rel;
@@ -138,8 +166,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
             {
                 if (_rev == revision)
                 {
-                    _memo[key] = list;
-                    foreach (var child in list) _entries[generation + "|" + VfsPath.Child(rel, child.Name)] = child;
+                    StoreListing(key, generation, rel, list);
                 }
             }
             return list;

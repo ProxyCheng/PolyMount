@@ -28,7 +28,14 @@ internal sealed class ObjectDatabase
         command.CommandText = "SELECT record FROM objects";
         using var reader = command.ExecuteReader();
         _records = new(StringComparer.OrdinalIgnoreCase);
-        while (reader.Read()) { var record = JsonSerializer.Deserialize<Record>(reader.GetString(0))!; _records[record.Path] = record; }
+        long metadata = 0;
+        while (reader.Read())
+        {
+            var record = JsonSerializer.Deserialize<Record>(reader.GetString(0))!;
+            long size = CacheBudgets.Estimate(record.Path, record.Value);
+            if (_recoverable && (_records.Count >= CacheBudgets.MaxObjects || metadata + size > CacheBudgets.MetadataBytes)) continue;
+            _records[record.Path] = record; metadata += size;
+        }
     }
     private SqliteConnection Connect()
     {
@@ -178,6 +185,16 @@ internal sealed class ObjectDatabase
                 }
                 foreach (var key in removed) _records.Remove(key);
                 foreach (var update in updates) _records[update.Key] = update.Value;
+                if (_recoverable)
+                {
+                    long metadata = _records.Values.Sum(r => CacheBudgets.Estimate(r.Path, r.Value));
+                    foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
+                    {
+                        if (_records.Count <= CacheBudgets.MaxObjects && metadata <= CacheBudgets.MetadataBytes) break;
+                        _records.Remove(record.Path);
+                        metadata -= CacheBudgets.Estimate(record.Path, record.Value);
+                    }
+                }
             }
             catch
             {

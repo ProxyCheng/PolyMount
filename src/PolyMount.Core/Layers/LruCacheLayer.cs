@@ -9,11 +9,12 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     private sealed class Item(VirtualObject value, long bytes, CacheContent? content = null, ObjectDatabase.Record? record = null)
     {
         public VirtualObject Value = value;
-        public long Bytes = bytes, Access = Environment.TickCount64;
+        public long Bytes = bytes, Access = System.Diagnostics.Stopwatch.GetTimestamp();
         public CacheContent? Content = content;
         public CacheContent? OpenContent;
         public ObjectDatabase.Record? Record = record;
         public long Reservation = bytes;
+        public long Metadata;
     }
     private readonly ObjectDatabase _reads, _writes;
     private readonly Func<string> _version;
@@ -26,6 +27,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     private readonly Timer _storageCheck;
     private int _checkingStorage;
     private long _bytes, _pendingBytes;
+    private long _metadataBytes;
     private int _openCount;
     private long _openBytes;
     private const int MaxOpenFiles = 2048;
@@ -40,7 +42,9 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         _writes = new(Path.Combine(root, "writes"), compression);
         foreach (var record in _reads.Records)
         {
-            _items[record.Path] = new(record.Value, record.StoredBytes, record: record);
+            long metadata = CacheBudgets.Estimate(record.Path, record.Value);
+            _items[record.Path] = new(record.Value, record.StoredBytes, record: record) { Metadata = metadata };
+            _metadataBytes += metadata;
             _bytes += record.StoredBytes;
         }
         using (ExecutionContext.SuppressFlow())
@@ -54,6 +58,9 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     public long Capacity { get; }
     public long TotalBytes { get { lock (_gate) return _bytes; } }
     public int Count { get { lock (_gate) return _items.Count; } }
+    public long EstimatedMetadataBytes { get { lock (_gate) return _metadataBytes; } }
+    public long PendingBytes { get { lock (_gate) return _pendingBytes; } }
+    public int RetainedReadHandles { get { lock (_gate) return _openCount; } }
     public string? LastPersistenceError { get; private set; }
     public RequestDiagnostics? Diagnostics { get; set; }
     internal Action? BeforePersist { get; set; }
@@ -62,6 +69,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     {
         if (!_items.Remove(key, out var item)) return;
         _bytes -= item.Bytes;
+        _metadataBytes -= item.Metadata;
         item.Content?.Dispose(); item.Content = null;
         ReleaseOpen(item);
     }
@@ -75,7 +83,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     {
         item = null!;
         if (!_items.TryGetValue(key, out var found)) return false;
-        found.Access = Environment.TickCount64;
+        found.Access = System.Diagnostics.Stopwatch.GetTimestamp();
         item = found;
         return true;
     }
@@ -127,9 +135,10 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         long estimate = value.Header.IsDir
             ? 256L + (value.Children?.Sum(c => 256L + c.Name.Length * 6L) ?? 0)
             : value.Header.Size + 128;
+        long metadata = CacheBudgets.Estimate(key, value);
         lock (_gate)
         {
-            if (_disposed || estimate > Capacity || estimate > MaxPendingBytes ||
+            if (_disposed || metadata > CacheBudgets.MetadataBytes || estimate > Capacity || estimate > MaxPendingBytes ||
                 _pendingBytes + estimate > MaxPendingBytes || _queue.Reader.Count >= 4096 || _items.ContainsKey(key)) return;
             CacheContent? captured = null;
             try
@@ -140,10 +149,11 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
                 }
                 // Directory lists and headers are immutable snapshots for background work.
                 var snapshot = new VirtualObject(Clone(value.Header), value.Children?.Select(Clone).ToArray());
-                var item = new Item(snapshot, estimate, captured);
+                var item = new Item(snapshot, estimate, captured) { Metadata = metadata };
                 if (!_queue.Writer.TryWrite((key, item))) { captured?.Dispose(); return; }
                 _items[key] = item; _bytes += estimate; _pendingBytes += estimate;
-                while (_bytes > Capacity && _items.Count > 0)
+                _metadataBytes += metadata;
+                while ((_bytes > Capacity || _metadataBytes > CacheBudgets.MetadataBytes || _items.Count > CacheBudgets.MaxObjects) && _items.Count > 0)
                     Remove(_items.MinBy(p => p.Value.Access).Key);
                 if (_worker == null)
                 {
@@ -205,7 +215,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
                         {
                         if (_items.TryGetValue(work.Key, out var current) && current == work.Item)
                         {
-                            if (!published.TryGetValue(work.Key, out var record)) continue;
+                            if (!published.TryGetValue(work.Key, out var record)) { Remove(work.Key); continue; }
                             _bytes += record.StoredBytes - current.Bytes;
                             current.Bytes = record.StoredBytes;
                             current.Record = record;
