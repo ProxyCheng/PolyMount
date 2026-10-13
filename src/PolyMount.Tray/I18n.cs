@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using QtSharp.Api;
 
@@ -17,13 +16,14 @@ internal static class I18n
     public static string F(string key, params object[] args) => string.Format(Culture, T(key), args);
     public static void Initialize()
     {
+        QtResources.Register();
         _events = new TranslationEvents();
         QCoreApplication.Instance().InstallEventFilter(_events);
         Install(Language);
     }
     private static void Install(string language)
     {
-        if (_events!.Catalogs.FirstOrDefault(c => c.Translator.Language() == language).Translator is { } existing)
+        if (_events!.Catalogs.TryGetValue(language, out var existing))
         {
             if (_translator != null) QCoreApplication.RemoveTranslator(_translator);
             _translator = existing;
@@ -31,19 +31,9 @@ internal static class I18n
             return;
         }
         var translator = new QTranslator();
-        using var stream = typeof(I18n).Assembly.GetManifestResourceStream("PolyMount.translations.polymount_" + language + ".qm")
-            ?? throw new InvalidOperationException("Qt translation resource is missing: " + language);
-        using var memory = new MemoryStream(); stream.CopyTo(memory);
-        var bytes = memory.ToArray();
-        var pointer = Marshal.AllocHGlobal(bytes.Length);
-        try
-        {
-            Marshal.Copy(bytes, 0, pointer, bytes.Length);
-            // QTranslator's memory overload requires data to remain valid for its lifetime.
-            if (!translator.Load(pointer, bytes.Length)) throw new InvalidOperationException("Invalid Qt translation catalog");
-            _events!.Catalogs.Add((translator, pointer));
-        }
-        catch { Marshal.FreeHGlobal(pointer); translator.Dispose(); throw; }
+        if (!translator.Load(":/polymount/translations/polymount_" + language + ".qm"))
+        { translator.Dispose(); throw new InvalidOperationException("Invalid Qt translation catalog: " + language); }
+        _events.Catalogs.Add(language, translator);
         if (_translator != null) QCoreApplication.RemoveTranslator(_translator);
         _translator = translator;
         QCoreApplication.InstallTranslator(translator);
@@ -95,7 +85,7 @@ internal static class I18n
     private sealed class TranslationEvents : QObject
     {
         public List<ObjectTranslationFilter> Bindings { get; } = new();
-        public List<(QTranslator Translator, IntPtr Data)> Catalogs { get; } = new();
+        public Dictionary<string, QTranslator> Catalogs { get; } = new();
         public override bool EventFilter(QObject watched, QEvent e)
         {
             if (e.type() == QEvent.Type.LanguageChange && watched.Handle == QCoreApplication.Instance().Handle)

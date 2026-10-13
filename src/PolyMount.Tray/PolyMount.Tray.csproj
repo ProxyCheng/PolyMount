@@ -18,8 +18,7 @@
   <Import Project="$(QtSharpRoot)QtSharp.Api.props" />
 
   <ItemGroup>
-    <EmbeddedResource Include="resources\theme.qss" LogicalName="PolyMount.theme.qss" />
-    <EmbeddedResource Include="translations\*.qm" LogicalName="PolyMount.translations.%(Filename)%(Extension)" />
+    <Content Include="resources\polymount.rcc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
     <ProjectReference Include="..\PolyMount.QtBinding\PolyMount.QtBinding.csproj" />
   </ItemGroup>

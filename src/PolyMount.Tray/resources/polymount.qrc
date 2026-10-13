@@ -1,0 +1,7 @@
+<RCC>
+  <qresource prefix="/polymount">
+    <file alias="theme.qss">theme.qss</file>
+    <file alias="translations/polymount_en.qm">../translations/polymount_en.qm</file>
+    <file alias="translations/polymount_zh-CN.qm">../translations/polymount_zh-CN.qm</file>
+  </qresource>
+</RCC>
