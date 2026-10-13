@@ -7,6 +7,8 @@ internal sealed class EngineWorkload : IDisposable
     private readonly int _directories, _files;
     private readonly VirtualFileSystem? _vfs;
     private readonly LruCacheLayer? _cache;
+    private readonly DelayedSource? _source;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Count, double Ms)> _timings = new();
     public EngineWorkload(string root, string backend, int directories, int files, int delayMs)
     {
         _root = root; _directories = directories; _files = files;
@@ -19,12 +21,66 @@ internal sealed class EngineWorkload : IDisposable
         }
         if (backend != "Native")
         {
-            ILayer source = new DelayedSource(new DirectoryLayer(root), backend == "SimulatedRemote" ? delayMs : 0);
+            ILayer source = _source = new DelayedSource(new DirectoryLayer(root), backend == "SimulatedRemote" ? delayMs : 0);
             _cache = new LruCacheLayer(root + ".cache", () => "fixed", 256L * 1024 * 1024);
             _vfs = new VirtualFileSystem(new ILayer[] { _cache, source });
         }
     }
     private static byte[] Payload(int directory, int file) => Enumerable.Repeat((byte)((directory * 17 + file) % 251), 16384).ToArray();
+    private void Measure(string kind, Action<Action> measure, Action action)
+    {
+        measure(() =>
+        {
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            try { action(); }
+            finally
+            {
+                double ms = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                _timings.AddOrUpdate(kind, (1, ms), (_, old) => (old.Count + 1, old.Ms + ms));
+            }
+        });
+    }
+    public void PrintBreakdown(string phase)
+    {
+        Console.WriteLine($"  {phase}: " + string.Join("; ", _timings.OrderBy(p => p.Key).Select(p => $"{p.Key} count={p.Value.Count} mean={p.Value.Ms / p.Value.Count:0.000}ms")));
+        _timings.Clear();
+        if (_source != null)
+            Console.WriteLine($"  source: metadata={Interlocked.Exchange(ref _source.Metadata, 0)}, listings={Interlocked.Exchange(ref _source.Listings, 0)}, opens={Interlocked.Exchange(ref _source.Opens, 0)}; cache objects={_cache!.Count}");
+    }
+    public void PrewarmFully()
+    {
+        if (_cache == null) return;
+        for (int d = 0; d < _directories; d++)
+        {
+            Load(d, _directories, 1, action => action());
+            WaitForPersistence();
+        }
+        _timings.Clear();
+        if (_source != null) { _source.Metadata = 0; _source.Listings = 0; _source.Opens = 0; }
+    }
+    public void MetadataMicrobench(int workers)
+    {
+        if (_cache == null) return;
+        foreach (string mode in new[] { "FileExists", "CacheHeader", "VfsLookup" })
+        {
+            using var ready = new CountdownEvent(workers);
+            using var go = new ManualResetEventSlim();
+            var tasks = Enumerable.Range(0, workers).Select(index => Task.Factory.StartNew(() =>
+            {
+                ready.Signal(); go.Wait();
+                for (int i = 0; i < 1000; i++)
+                {
+                    string path = $"d{index % _directories}/f{i % _files}";
+                    bool exists = mode == "FileExists" ? File.Exists(Path.Combine(_root, path))
+                        : mode == "CacheHeader" ? _cache.TryGetEntry(path, out _) : _vfs!.TryLookup(path, out _);
+                    if (!exists) throw new InvalidDataException("Microbench lookup missed");
+                }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+            ready.Wait();
+            var watch = System.Diagnostics.Stopwatch.StartNew(); go.Set(); Task.WaitAll(tasks);
+            Console.WriteLine($"  Microbench {mode}: workers={workers} operations={workers * 1000} seconds={watch.Elapsed.TotalSeconds:0.000} ops/s={workers * 1000 / watch.Elapsed.TotalSeconds:0.0}");
+        }
+    }
     public void Load(int worker, int workers, int rounds, Action<Action> measure)
     {
         for (int round = 0; round < rounds; round++)
@@ -32,7 +88,7 @@ internal sealed class EngineWorkload : IDisposable
         {
             int directory = d;
             string folder = "d" + directory;
-            measure(() =>
+            Measure("Directory", measure, () =>
             {
                 int count = _vfs != null ? _vfs.List(folder).Count : Directory.EnumerateFileSystemEntries(Path.Combine(_root, folder)).Count();
                 if (count != _files) throw new InvalidDataException("Directory entry count mismatch");
@@ -41,7 +97,7 @@ internal sealed class EngineWorkload : IDisposable
             {
                 int file = f;
                 string path = folder + "/f" + file;
-                measure(() =>
+                Measure("Metadata", measure, () =>
                 {
                     long size;
                     if (_vfs != null)
@@ -52,7 +108,7 @@ internal sealed class EngineWorkload : IDisposable
                     else size = new FileInfo(Path.Combine(_root, path)).Length;
                     if (size != 16384) throw new InvalidDataException("Metadata size mismatch");
                 });
-                measure(() =>
+                Measure("OpenAndRead", measure, () =>
                 {
                     using Stream stream = _vfs != null ? _vfs.OpenRead(path, out _) : File.OpenRead(Path.Combine(_root, path));
                     // Read a header and a non-sequential page from each resource.
@@ -75,13 +131,14 @@ internal sealed class EngineWorkload : IDisposable
 
     private sealed class DelayedSource(ILayer inner, int delayMs) : ILayer
     {
+        public long Metadata, Listings, Opens;
         public string Name => "source";
         public string Generation => "fixed";
         public bool Writable => false;
-        public bool TryGetEntry(string path, out VfsEntry entry) => inner.TryGetEntry(path, out entry);
+        public bool TryGetEntry(string path, out VfsEntry entry) { Interlocked.Increment(ref Metadata); return inner.TryGetEntry(path, out entry); }
         public IReadOnlyList<VfsEntry> ListOwn(string path)
-        { if (delayMs > 0) Thread.Sleep(delayMs); return inner.ListOwn(path); }
+        { Interlocked.Increment(ref Listings); if (delayMs > 0) Thread.Sleep(delayMs); return inner.ListOwn(path); }
         public bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
-        { if (delayMs > 0) Thread.Sleep(delayMs); return inner.TryOpenRead(path, out entry, out stream); }
+        { Interlocked.Increment(ref Opens); if (delayMs > 0) Thread.Sleep(delayMs); return inner.TryOpenRead(path, out entry, out stream); }
     }
 }

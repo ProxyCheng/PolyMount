@@ -16,6 +16,7 @@ int engineFiles = int.Parse(Option("--engine-files", "16"));
 int engineRounds = int.Parse(Option("--engine-rounds", "2"));
 int remoteDelayMs = int.Parse(Option("--remote-delay-ms", "5"));
 bool engineOnly = args.Contains("--engine-only");
+bool breakdown = args.Contains("--engine-breakdown");
 if (engineDirectories <= 0 || engineFiles <= 0 || engineRounds <= 0 || remoteDelayMs < 0) throw new ArgumentException("Invalid engine workload sizes");
 if (repeats <= 0 || fileMb <= 0 || smallFiles <= 0 || workers.Any(w => w <= 0)) throw new ArgumentException("All workload sizes must be positive");
 string reportDirectory = Path.GetFullPath(Option("--report", "artifacts/performance"));
@@ -91,9 +92,20 @@ try
         int operations = checked(engineDirectories * engineRounds * (1 + engineFiles * 2));
         Run(backend, "EngineFirstPass", threads, repeat, bytes, operations,
             (index, measure) => engine.Load(index, threads, engineRounds, measure));
+        if (breakdown) engine.PrintBreakdown("FirstPass");
         engine.WaitForPersistence();
         Run(backend, "EngineWarmPass", threads, repeat, bytes, operations,
             (index, measure) => engine.Load(index, threads, engineRounds, measure));
+        if (breakdown)
+        {
+            engine.PrintBreakdown("WarmPass");
+            engine.PrewarmFully();
+            Run(backend, "EngineFullyWarm", threads, repeat, bytes, operations,
+                (index, measure) => engine.Load(index, threads, engineRounds, measure));
+            engine.PrintBreakdown("FullyWarm");
+            engine.WaitForPersistence();
+            engine.MetadataMicrobench(threads);
+        }
     }
     if (!engineOnly)
     foreach (int threads in workers)
