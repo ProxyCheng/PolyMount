@@ -16,7 +16,7 @@ internal static class ServiceControl
 
     public static string Start()
     {
-        if (IsRunning()) return "service already running";
+        if (IsRunning()) return I18n.T("service.already");
 
         var exe = ServiceExePath();
         if (exe != null && File.Exists(exe))
@@ -24,29 +24,29 @@ internal static class ServiceControl
             try
             {
                 Process.Start(new ProcessStartInfo(exe) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(exe)! });
-                return "service starting...";
+                return I18n.T("service.starting");
             }
-            catch (Exception ex) { return "start failed: " + ex.Message; }
+            catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
         }
 
         // Fall back to an installed Windows service.
         try
         {
             Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount") { UseShellExecute = false, CreateNoWindow = true });
-            return "service start requested (sc.exe)";
+            return I18n.T("service.startRequested");
         }
-        catch (Exception ex) { return "start failed (no exe, no service): " + ex.Message; }
+        catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
     }
 
     public static string Stop()
     {
-        if (!IsRunning()) return "service not running";
+        if (!IsRunning()) return I18n.T("service.notRunning");
         try
         {
             ControlClient.Send(new ControlRequest { Cmd = ControlCommands.Shutdown });
-            return "service stopping...";
+            return I18n.T("service.stopping");
         }
-        catch (Exception ex) { return "stop failed: " + ex.Message; }
+        catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
     }
 
     // In the dev layout the tray and service live in sibling bin dirs; derive one path from the

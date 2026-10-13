@@ -7,7 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PolyMount.Tray</AssemblyName>
     <RootNamespace>PolyMount.Tray</RootNamespace>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
   <!-- QtSharp binding + runtime + native/Qt DLL copies. Adjust QtSharpRoot if QtSharp moves. -->
