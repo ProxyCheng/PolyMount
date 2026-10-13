@@ -2,6 +2,9 @@
 <TS version="2.1" language="zh-CN">
   <context>
     <name>PolyMount</name>
+    <message><source>editor.close.title</source><translation>有未保存的修改</translation></message>
+    <message><source>editor.close.message</source><translation>关闭前是否保存此实例的修改？</translation></message>
+    <message><source>editor.discard</source><translation>放弃修改</translation></message>
     <message><source>object.manageBoundary</source><translation>管理缓存分界线…</translation></message>
     <message><source>object.boundaryPosition</source><translation>缓存失效分界线</translation></message>
     <message><source>object.boundaryNone</source><translation>保留所有层记录</translation></message>
@@ -23,6 +26,26 @@
     <message><source>picker.selected</source><translation>已选择：{0}</translation></message>
     <message><source>picker.atEnd</source><translation>添加位置：层栈末尾</translation></message>
     <message><source>picker.after</source><translation>添加位置：“{0}”之后</translation></message>
+    <message><source>tabs.close</source><translation>关闭标签页</translation></message>
+    <message><source>tabs.center</source><translation>合并为标签页</translation></message>
+    <message><source>tabs.left</source><translation>分栏 · 左侧</translation></message>
+    <message><source>tabs.right</source><translation>分栏 · 右侧</translation></message>
+    <message><source>tabs.top</source><translation>分栏 · 上方</translation></message>
+    <message><source>tabs.bottom</source><translation>分栏 · 下方</translation></message>
+    <message><source>tabs.float</source><translation>松开成为独立窗口 · Esc 取消</translation></message>
+    <message><source>tabs.release</source><translation>松开停靠到此处 · Esc 取消</translation></message>
+    <message>
+      <source>tabs.hint</source>
+      <translation>拖动标签排序；拖离标签栏可合并、分栏或拖出窗口。Esc 取消。</translation>
+    </message>
+    <message>
+      <source>tabs.merge</source>
+      <translation>合并标签页</translation>
+    </message>
+    <message>
+      <source>tabs.split</source>
+      <translation>在此分栏</translation>
+    </message>
     <message>
       <source>dashboard.title</source>
       <translation>PolyMount · 挂载工作台</translation>
@@ -194,16 +217,16 @@
       <translation>请先保存并应用配置，再操作对应运行层。</translation>
     </message>
     <message>
-      <source>stats.layerShare</source>
-      <translation>逐层读取命中占比</translation>
+      <source>stats.layerBytes</source>
+      <translation>逐层读取命中字节数</translation>
     </message>
     <message>
       <source>stats.series.count</source>
       <translation>{0} 个层</translation>
     </message>
     <message>
-      <source>stats.share.definition</source>
-      <translation>命中占比 = 该层提供的成功读取 / 全部成功读取；无读取时显示 0%。</translation>
+      <source>stats.layerBytes.definition</source>
+      <translation>四个图按层堆叠：总高度是总计量，各颜色带的厚度是该层贡献。延迟按请求数加权，堆叠总量为总体平均延迟；缺失采样保留断点。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>

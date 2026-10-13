@@ -2,6 +2,9 @@
 <TS version="2.1" language="en">
   <context>
     <name>PolyMount</name>
+    <message><source>editor.close.title</source><translation>Unsaved changes</translation></message>
+    <message><source>editor.close.message</source><translation>Save changes to this instance before closing?</translation></message>
+    <message><source>editor.discard</source><translation>Discard</translation></message>
     <message><source>object.manageBoundary</source><translation>Manage cache boundary…</translation></message>
     <message><source>object.boundaryPosition</source><translation>Cache invalidation boundary</translation></message>
     <message><source>object.boundaryNone</source><translation>Keep all layer records</translation></message>
@@ -23,6 +26,26 @@
     <message><source>picker.selected</source><translation>Selected: {0}</translation></message>
     <message><source>picker.atEnd</source><translation>Placement: end of the layer stack</translation></message>
     <message><source>picker.after</source><translation>Placement: after “{0}”</translation></message>
+    <message><source>tabs.close</source><translation>Close tab</translation></message>
+    <message><source>tabs.center</source><translation>Merge as tabs</translation></message>
+    <message><source>tabs.left</source><translation>Split · left</translation></message>
+    <message><source>tabs.right</source><translation>Split · right</translation></message>
+    <message><source>tabs.top</source><translation>Split · above</translation></message>
+    <message><source>tabs.bottom</source><translation>Split · below</translation></message>
+    <message><source>tabs.float</source><translation>Release to float · Esc to cancel</translation></message>
+    <message><source>tabs.release</source><translation>Release to dock · Esc to cancel</translation></message>
+    <message>
+      <source>tabs.hint</source>
+      <translation>Drag tabs to reorder; drag outside the bar to merge, split or float. Esc cancels.</translation>
+    </message>
+    <message>
+      <source>tabs.merge</source>
+      <translation>Merge tabs</translation>
+    </message>
+    <message>
+      <source>tabs.split</source>
+      <translation>Split here</translation>
+    </message>
     <message>
       <source>dashboard.title</source>
       <translation>PolyMount · Mount workspace</translation>
@@ -194,16 +217,16 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
       <translation>Save and apply the configuration before operating on the runtime layer.</translation>
     </message>
     <message>
-      <source>stats.layerShare</source>
-      <translation>Read share by layer</translation>
+      <source>stats.layerBytes</source>
+      <translation>Read bytes by layer</translation>
     </message>
     <message>
       <source>stats.series.count</source>
       <translation>{0} layers</translation>
     </message>
     <message>
-      <source>stats.share.definition</source>
-      <translation>Read share = successful reads served by this layer / all successful reads; 0% when idle.</translation>
+      <source>stats.layerBytes.definition</source>
+      <translation>All four charts stack layer contributions: total height is the total, and each colored band's thickness is that layer's value. Latency uses request-weighted contributions to the overall average. Missing observations remain gaps.</translation>
     </message>
     <message>
       <source>brand.subtitle</source>

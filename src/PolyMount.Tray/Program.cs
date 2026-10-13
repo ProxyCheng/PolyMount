@@ -153,12 +153,10 @@ internal static class Program
     {
         TrayActivation.Smoke();
         var dashboard = new Dashboard();
-        var editor = new ConfigEditor("L10");
-        var stats = new StatsWindow("L10");
+        var editor = dashboard.OpenEditor("L10")!;
+        var stats = dashboard.OpenPerformance("L10");
         LayerVisualizer.Open("D:\\L10\\20260924");
         dashboard.ShowWindow();
-        editor.ShowWindow();
-        stats.ShowWindow();
         var timer = new QTimer();
         int ticks = 0;
         string original = I18n.Language;
@@ -167,6 +165,10 @@ internal static class Program
         timer.Timeout += () =>
         {
             ticks++;
+            if (ticks == 2)
+            {
+                try { dashboard.SmokeTabs(); } catch (Exception ex) { failure = ex.ToString(); }
+            }
             if (ticks == 18 && capture != null)
             {
                 dashboard.Capture(Path.Combine(capture, "dashboard.png"));
@@ -176,18 +178,18 @@ internal static class Program
             if (ticks == 20)
             {
                 try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
-                editor.SmokeInteractions();
-                dashboard.SmokeSilentUpdate();
                 try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
                 catch (Exception ex) { failure = ex.ToString(); }
+                editor.SmokeInteractions();
+                dashboard.SmokeSilentUpdate();
                 I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
             }
             if (ticks == 36 && capture != null)
             {
-                dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
-                editor.Capture(Path.Combine(capture, "layers-alternate.png"));
                 try { editor.SmokeLayerPicker(Path.Combine(capture, "layer-picker-alternate.png")); }
                 catch (Exception ex) { failure = ex.ToString(); }
+                dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
+                editor.Capture(Path.Combine(capture, "layers-alternate.png"));
             }
             if (ticks == 40)
             {
@@ -197,12 +199,10 @@ internal static class Program
             if (ticks == 45)
             {
                 dashboard.Resize(560, 420);
-                editor.Resize(560, 420);
-                stats.Resize(560, 420);
             }
             if (ticks == 50)
             {
-                if (dashboard.Width > 560 || editor.Width > 560 || stats.Width > 560)
+                if (dashboard.Width > 560)
                     failure = "Workspace windows could not shrink to the requested size";
                 if (capture != null)
                 {
@@ -215,7 +215,7 @@ internal static class Program
             {
                 timer.Stop();
                 try { stats.VerifyResponseSampling(); } catch (Exception ex) { failure = ex.Message; }
-                Console.WriteLine(failure ?? "UI smoke passed: Dashboard, ConfigEditor, Stats and live localization.");
+                Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }
         };

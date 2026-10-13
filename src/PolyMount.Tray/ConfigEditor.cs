@@ -40,6 +40,11 @@ internal sealed class ConfigEditor : QWidget
     private string? _openName;
     private bool _addAfterLoad;
     private string? _originalName;
+    private long _editVersion, _saveVersion;
+    private Action? _closeAfterSave;
+    private bool _allowClose;
+    private readonly QLabel _heading;
+    internal bool IsDirty => _dirty;
     public event Action? Saved;
     private static string T(string key) => I18n.T(key);
 
@@ -51,15 +56,13 @@ internal sealed class ConfigEditor : QWidget
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
-        I18n.Bind(SetWindowTitle, "editor.title");
         Resize(1000, 820);
         var root = new QVBoxLayout(WindowScrollArea.Create(this, 900, 720));
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
-        var heading = Plain("", "pageTitle");
-        I18n.Changed += () => heading.SetText(mountName == null ? T("mount.new") : I18n.F("editor.instance", mountName));
-        heading.SetText(mountName == null ? T("mount.new") : I18n.F("editor.instance", mountName));
-        root.AddWidget(heading);
+        _heading = Plain("", "pageTitle");
+        UpdateDocumentTitle();
+        root.AddWidget(_heading);
         root.AddWidget(Label("editor.subtitle", "muted"));
 
         var split = new QSplitter();
@@ -230,6 +233,13 @@ internal sealed class ConfigEditor : QWidget
             _layerEnabled.SetChecked(enabled);
             _layerName.SetText("Smoke layer");
             if (_layer.Name != "Smoke layer") throw new InvalidOperationException("Layer name was not updated");
+            if (!WindowTitle.EndsWith(" *") || !_heading.Text.EndsWith(" *"))
+                throw new InvalidOperationException("Unsaved edits have no document marker");
+            bool closed = false;
+            RequestClose(() => closed = true, () => 2);
+            if (closed) throw new InvalidOperationException("Cancel closed the dirty editor");
+            RequestClose(() => closed = true, () => 1);
+            if (!closed) throw new InvalidOperationException("Discard did not permit closing the editor");
             _layerName.SetText(name);
             _color.SetText("#DC2626");
             if (_layer.Color != "#DC2626") throw new InvalidOperationException("Color preview is not linked to the layer");
@@ -304,10 +314,16 @@ internal sealed class ConfigEditor : QWidget
             }
             if (_saving)
             {
+                _saving = false;
+                _dirty = _editVersion != _saveVersion;
                 _originalName = _saveName;
+                UpdateDocumentTitle();
                 var failures = response.Mounts.Where(m => !string.IsNullOrWhiteSpace(m.Error)).Select(m => m.Name + ": " + m.Error).ToArray();
                 _status.SetText(failures.Length > 0 ? T("saved.errors") + " " + string.Join("; ", failures) : T(_dirty ? "unsaved" : "saved"));
                 Saved?.Invoke();
+                var close = _closeAfterSave;
+                _closeAfterSave = null;
+                if (close != null && !_dirty) { close(); return; }
                 if (_saveName == null) Hide();
                 return;
             }
@@ -322,6 +338,7 @@ internal sealed class ConfigEditor : QWidget
             _current = -1;
             _layer = null;
             _dirty = false;
+            UpdateDocumentTitle();
             RebuildMounts();
             _loading = false;
             if (_addAfterLoad) OnAdd();
@@ -335,6 +352,9 @@ internal sealed class ConfigEditor : QWidget
         catch (Exception ex)
         {
             if (_saving) _dirty = true;
+            _saving = false;
+            _closeAfterSave = null;
+            UpdateDocumentTitle();
             _status.SetText(T(_layerOperation ? "operation.failed" : _saving ? "save.failed" : "load.failed") + ex.Message);
             _layerOperation = false;
         }
@@ -659,7 +679,7 @@ internal sealed class ConfigEditor : QWidget
                 return ControlClient.SaveConfig(config.ToJson());
             });
             _saveName = draft?.Name;
-            _dirty = false;
+            _saveVersion = _editVersion;
             _save.SetEnabled(false);
             _status.SetText(T("working"));
         }
@@ -718,9 +738,41 @@ internal sealed class ConfigEditor : QWidget
         if (dialog.Exec() == 1) _color.SetText(dialog.SelectedColor().Name());
     }
     private bool Confirm(string key) => QMessageBox.Question(this, T("confirm"), T(key), T("confirm"), T("cancel"), null, 1, 1) == 0;
-    private void Dirty() { if (!_loading) { _dirty = true; _status.SetText(T("unsaved")); } }
+    private void Dirty()
+    {
+        if (_loading) return;
+        _editVersion++;
+        _dirty = true;
+        _status.SetText(T("unsaved"));
+        UpdateDocumentTitle();
+    }
+    private void UpdateDocumentTitle()
+    {
+        string name = Current?.Name ?? _originalName ?? _openName ?? "";
+        string title = (name.Length == 0 ? T("mount.new") : I18n.F("editor.instance", name)) + (_dirty ? " *" : "");
+        SetWindowTitle(title);
+        _heading?.SetText(title);
+    }
+    internal void RequestClose(Action close, Func<int>? choose = null)
+    {
+        if (_pending != null) { _status.SetText(T("working")); return; }
+        if (!_dirty) { close(); return; }
+        int choice = choose?.Invoke() ?? QMessageBox.Question(this, T("editor.close.title"), T("editor.close.message"),
+            T("save"), T("editor.discard"), T("cancel"), 0, 2);
+        if (choice == 1) { close(); return; }
+        if (choice != 0) return;
+        OnSave();
+        if (_pending != null && _saving) _closeAfterSave = close;
+    }
+    public override void CloseEvent(QCloseEvent e)
+    {
+        if (_allowClose) { e.Accept(); return; }
+        e.Ignore();
+        RequestClose(() => { _allowClose = true; Close(); DeleteLater(); });
+    }
     private void Translate()
     {
+        UpdateDocumentTitle();
         UpdatePresets();
         RebuildMounts();
         RebuildLayers();

@@ -1,6 +1,9 @@
 <RCC>
   <qresource prefix="/polymount">
     <file alias="theme.qss">theme.qss</file>
+    <file alias="check.png">check.png</file>
+    <file alias="chevron-left.png">chevron-left.png</file>
+    <file alias="chevron-right.png">chevron-right.png</file>
     <file alias="translations/polymount_en.qm">../translations/polymount_en.qm</file>
     <file alias="translations/polymount_zh-CN.qm">../translations/polymount_zh-CN.qm</file>
   </qresource>

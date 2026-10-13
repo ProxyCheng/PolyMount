@@ -53,6 +53,7 @@ internal static class TrayIcons
         }
         switch (name)
         {
+            case "close": Line(7, 7, 17, 17); Line(17, 7, 7, 17); break;
             case "app":
                 p.SetBrush(new QBrush(new QColor("#2563eb")));
                 p.SetPen(new QPen(new QColor("#2563eb")));

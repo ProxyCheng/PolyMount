@@ -23,9 +23,7 @@ internal sealed class Dashboard : QWidget
     private bool _connected, _filling, _wasVisible;
     private string? _selectedName;
     private DateTime _nextRefresh;
-    private readonly Dictionary<string, ConfigEditor> _editors = new();
-    private readonly Dictionary<string, StatsWindow> _stats = new();
-    private ConfigEditor? _newEditor;
+    private readonly TabWorkspace _tabs;
     private bool _quietPending;
     private Action? _queued;
     private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet, bool ServiceAction = false);
@@ -38,7 +36,16 @@ internal sealed class Dashboard : QWidget
         Resize(1280, 820);
         SetStyleSheet(TrayTheme.StyleSheet);
         I18n.Bind(SetWindowTitle, "dashboard.title");
-        var root = new QHBoxLayout(WindowScrollArea.Create(this, 1080, 720));
+        SetMinimumSize(480, 360);
+        var shell = new QVBoxLayout(this);
+        shell.SetContentsMargins(0, 0, 0, 0);
+        _tabs = new TabWorkspace(this);
+        shell.AddWidget(_tabs);
+        var overviewPage = new QWidget();
+        _tabs.Open("overview", () => overviewPage, () => T("overview"), pinned: true);
+        var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080, 720));
+        overviewPage.SetMinimumSize(0, 0);
+        overviewPage.SetSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored);
         root.SetContentsMargins(0, 0, 0, 0);
         root.SetSpacing(0);
 
@@ -448,26 +455,27 @@ internal sealed class Dashboard : QWidget
         catch (Exception ex) { Feedback(T("folder.failed") + " " + ex.Message, true); }
     }
 
-    private void OpenEditor(string? name = null, bool create = false)
+    internal ConfigEditor? OpenEditor(string? name = null, bool create = false)
     {
-        ConfigEditor editor;
-        if (create) editor = _newEditor = new ConfigEditor(create: true);
-        else
-        {
-            if (name == null) return;
-            if (!_editors.TryGetValue(name, out editor!)) _editors[name] = editor = new ConfigEditor(name);
-        }
+        if (!create && name == null) return null;
+        var editor = (ConfigEditor)_tabs.Open(create ? "editor:new" : "editor:" + name,
+            () => new ConfigEditor(name, create),
+            () => create ? T("mount.new") : I18n.F("editor.instance", name!));
         editor.Saved -= OnConfigSaved;
         editor.Saved += OnConfigSaved;
-        editor.ShowWindow();
+        return editor;
     }
 
     private void OpenPerformance()
     {
         if (Selected is not { } m) return;
-        if (!_stats.TryGetValue(m.Name, out var stats)) _stats[m.Name] = stats = new StatsWindow(m.Name);
-        stats.ShowWindow();
+        OpenPerformance(m.Name);
     }
+
+    internal StatsWindow OpenPerformance(string name) => (StatsWindow)_tabs.Open("stats:" + name,
+        () => new StatsWindow(name), () => I18n.F("stats.instance", name));
+
+    internal void SmokeTabs() => _tabs.SmokeInteractions("editor:L10", "stats:L10");
 
     private void OnConfigSaved() => Refresh();
 

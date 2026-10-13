@@ -26,7 +26,8 @@ internal sealed class StatsWindow : QWidget
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
-    private sealed record Sample(DateTime Time, double Reads, double Cost, double Bytes, Dictionary<string, double> Shares);
+    private sealed record LayerSample(double Reads, double Cost, double Bytes);
+    private sealed record Sample(DateTime Time, Dictionary<string, LayerSample> Layers);
     private static string T(string key) => I18n.T(key);
 
     public StatsWindow(string? instanceName = null)
@@ -64,7 +65,7 @@ internal sealed class StatsWindow : QWidget
         _charts = new[]
         {
             new PerformanceChart("stats.reads", "#2563eb", "/s"),
-            new PerformanceChart("stats.layerShare", "#059669", "%", 100),
+            new PerformanceChart("stats.layerBytes", "#059669", "KiB"),
             new PerformanceChart("stats.latency", "#8b5cf6", "ms"),
             new PerformanceChart("stats.bytes", "#0891b2", "KB/s")
         };
@@ -77,7 +78,7 @@ internal sealed class StatsWindow : QWidget
         _layerLegend.SetTextFormat(Qt.TextFormat.RichText);
         _layerLegend.SetObjectName("muted");
         root.AddWidget(_layerLegend);
-        root.AddWidget(Label("stats.share.definition", "muted"));
+        root.AddWidget(Label("stats.layerBytes.definition", "muted"));
         var access = new QHBoxLayout();
         _accessPie = new LayerAccessPie();
         access.AddWidget(_accessPie);
@@ -94,6 +95,7 @@ internal sealed class StatsWindow : QWidget
         _table.SetSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);
         _table.VerticalHeader().Hide();
         _table.HorizontalHeader().SetSectionResizeMode(QHeaderView.ResizeMode.Stretch);
+        _table.HorizontalHeader().SetDefaultAlignment(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter);
         _table.SetMaximumHeight(205);
         root.AddWidget(_table);
         _status = new QLabel();
@@ -123,6 +125,15 @@ internal sealed class StatsWindow : QWidget
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
             throw new InvalidOperationException("Performance window did not collect response overhead samples");
+        var sample = CaptureLayers(DateTime.UtcNow, new[] { new MountMetrics { Mount = "test", Layers = new()
+        {
+            new() { Name = "a", Hits = 2, AvgCostMs = 10, Bytes = 1024 },
+            new() { Name = "b", Hits = 3, AvgCostMs = 20, Bytes = 2048 },
+            new() { Name = "idle" }
+        } } });
+        if (sample.Layers.Count != 3 || sample.Layers.Values.Sum(l => l.Reads) != 5 ||
+            sample.Layers.Values.Sum(l => l.Cost) != 16 || sample.Layers.Values.Sum(l => l.Bytes) != 3)
+            throw new InvalidOperationException("Layer chart contributions do not sum to the overall metrics");
     }
 
     private void TogglePause()
@@ -187,15 +198,8 @@ internal sealed class StatsWindow : QWidget
         DateTime now = DateTime.UtcNow;
         var alive = metrics.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
-        foreach (var mount in metrics)
-            Add(mount.Mount, new Sample(now, mount.TotalReads, mount.AvgCostMs, mount.Layers.Sum(l => l.Bytes) / 1024.0,
-                mount.Layers.ToDictionary(l => mount.Mount + "/" + l.Name, l => l.SharePercent)));
-        double reads = metrics.Sum(m => m.TotalReads);
-        Add("", new Sample(now, reads,
-            reads == 0 ? 0 : metrics.Sum(m => m.AvgCostMs * m.TotalReads) / reads,
-            metrics.Sum(m => m.Layers.Sum(l => l.Bytes)) / 1024.0,
-            metrics.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Share: reads == 0 ? 0 : l.Hits * 100.0 / reads)))
-                .ToDictionary(l => l.Key, l => l.Share)));
+        foreach (var mount in metrics) Add(mount.Mount, CaptureLayers(now, new[] { mount }));
+        Add("", CaptureLayers(now, metrics));
         string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
         var names = metrics.Select(m => m.Mount).ToArray();
         if (_mount.Count != names.Length + 1 || names.Where((name, i) => _mount.ItemText(i + 1) != name).Any())
@@ -212,6 +216,14 @@ internal sealed class StatsWindow : QWidget
         _status.SetText(T("stats.live") + " · " + DateTime.Now.ToString("HH:mm:ss"));
     }
 
+    private static Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts)
+    {
+        var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
+        double reads = rows.Sum(r => r.Layer.Hits);
+        return new(time, rows.ToDictionary(r => r.Key, r => new LayerSample(r.Layer.Hits,
+            reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes / 1024.0)));
+    }
+
     private void Add(string name, Sample sample)
     {
         if (!_history.TryGetValue(name, out var samples)) _history[name] = samples = new();
@@ -224,14 +236,20 @@ internal sealed class StatsWindow : QWidget
         string selected = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText);
         var samples = _history.GetValueOrDefault(selected) ?? new();
         DateTime end = samples.LastOrDefault()?.Time ?? DateTime.UtcNow;
-        for (int i = 0; i < _charts.Length; i++)
-        {
-            if (i == 1) continue;
-            int chart = i;
-            _charts[i].SetSamples(samples.Select(s => (s.Time, chart switch { 0 => s.Reads, 2 => s.Cost, _ => s.Bytes })).ToList(), end);
-        }
         var mounts = _latest.Where(m => selected == "" || m.Mount == selected).ToList();
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();
+        for (int chart = 0; chart < _charts.Length; chart++)
+        {
+            int metric = chart;
+            _charts[chart].SetSeries(rows.Select(row => new ChartSeries(
+                selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
+                string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
+                samples.Select(s =>
+                {
+                    var layer = s.Layers.GetValueOrDefault(row.m.Mount + "/" + row.l.Name);
+                    return (s.Time, layer == null ? 0 : metric switch { 0 => layer.Reads, 2 => layer.Cost, _ => layer.Bytes });
+                }).ToList())).ToList(), end);
+        }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
         long total = accessRows.Sum(r => r.Layer.Hits + r.Layer.Writes);
@@ -243,15 +261,10 @@ internal sealed class StatsWindow : QWidget
             $"<span style='color:{s.Color}'>●</span> " + System.Net.WebUtility.HtmlEncode(s.Name) + " · " +
             I18n.F("stats.access.counts", s.Reads, s.Writes, total == 0 ? 0 : 100.0 * (s.Reads + s.Writes) / total)));
         if (_accessLegend.Text != accessLegend) _accessLegend.SetText(accessLegend);
-        _charts[1].SetSeries(rows.Select(row => new ChartSeries(
-            selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
-            string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
-            samples.Where(s => s.Shares.ContainsKey(row.m.Mount + "/" + row.l.Name))
-                .Select(s => (s.Time, s.Shares[row.m.Mount + "/" + row.l.Name])).ToList())).ToList(), end);
         string legend = string.Join(" &nbsp; · &nbsp; ", rows.Select(row =>
             $"<span style='color:{(string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color)}'>●</span> " +
             System.Net.WebUtility.HtmlEncode(selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName) +
-            " " + row.l.SharePercent.ToString("0.#", I18n.Culture) + "%"));
+            " " + (row.l.Bytes / 1024.0).ToString("0.##", I18n.Culture) + " KiB"));
         if (_layerLegend.Text != legend) _layerLegend.SetText(legend);
         bool structureChanged = _table.RowCount != rows.Count;
         if (structureChanged) { _table.SetUpdatesEnabled(false); _table.SetRowCount(rows.Count); }
@@ -263,7 +276,12 @@ internal sealed class StatsWindow : QWidget
             for (int col = 0; col < values.Length; col++)
             {
                 var item = _table.Item(row, col);
-                if (item == null) _table.SetItem(row, col, new QTableWidgetItem(values[col]));
+                if (item == null)
+                {
+                    item = new QTableWidgetItem(values[col]);
+                    item.SetTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter);
+                    _table.SetItem(row, col, item);
+                }
                 else if (item.Text() != values[col]) item.SetText(values[col]);
             }
             if (layer.Color.Length > 0) _table.Item(row, 1).SetForeground(new QBrush(new QColor(layer.Color)));
@@ -305,37 +323,47 @@ internal sealed class StatsWindow : QWidget
     }
 }
 
-/// <summary>Time-scaled, filled line graph. Missing observations are gaps, not fabricated zeroes.</summary>
+/// <summary>Time-scaled stacked layer areas. Missing observations remain gaps.</summary>
 internal sealed record ChartSeries(string Name, string Color, List<(DateTime Time, double Value)> Samples);
 
 internal sealed class PerformanceChart : QWidget
 {
     private readonly string _titleKey, _color, _unit;
-    private readonly double _fixedMax;
-    private List<(DateTime Time, double Value)> _samples = new();
     private DateTime _end;
-    private List<ChartSeries>? _series;
-    public PerformanceChart(string titleKey, string color, string unit, double fixedMax = 0)
+    private List<ChartSeries> _series = new();
+    public PerformanceChart(string titleKey, string color, string unit)
     {
         _titleKey = titleKey;
         _color = color;
         _unit = unit;
-        _fixedMax = fixedMax;
         SetMinimumSize(330, 210);
-        I18n.Changed += Update;
     }
-    public void SetSamples(List<(DateTime Time, double Value)> samples, DateTime end)
-    {
-        _samples = samples;
-        _end = end;
-        Update();
-    }
+    public override void ChangeEvent(QEvent e)
+    { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
     public void SetSeries(List<ChartSeries> series, DateTime end)
     {
         _series = series;
         _end = end;
+        SetToolTip(string.Join("\n", series.Select(s => s.Name + ": " + s.Samples.LastOrDefault().Value.ToString("0.##", I18n.Culture) + " " + _unit)));
         Update();
     }
+    private static double NiceStep(double target)
+    {
+        // D3 tickStep: nearest 1/2/5 decade, using geometric-mean thresholds.
+        // https://d3js.org/d3-array/ticks
+        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(target)));
+        double fraction = target / magnitude;
+        return magnitude * (fraction < Math.Sqrt(2) ? 1 : fraction < Math.Sqrt(10) ? 2 : fraction < Math.Sqrt(50) ? 5 : 10);
+    }
+
+    private static double TickValue(int index, double step) => step < 1 ? index / Math.Round(1 / step) : index * step;
+
+    private static string TickText(double value, double step)
+    {
+        int decimals = Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15);
+        return value.ToString("F" + decimals, I18n.Culture);
+    }
+
     public override void PaintEvent(QPaintEvent e)
     {
         using var p = new QPainter(AsQPaintDevice());
@@ -351,59 +379,119 @@ internal sealed class PerformanceChart : QWidget
             p.SetFont(titleFont);
             p.SetPen(new QPen(new QColor("#334155")));
             p.DrawText(18, 29, I18n.T(_titleKey));
-            double value = _samples.LastOrDefault().Value;
+            var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
+            var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => Math.Max(0, sample.Value))).ToArray();
+            var totals = times.Select(time => valuesBySeries.Sum(s => s.GetValueOrDefault(time))).ToArray();
+            double value = totals.LastOrDefault();
             using var numberFont = new QFont("Segoe UI", 20);
             numberFont.SetBold(true);
             p.SetFont(numberFont);
             p.SetPen(new QPen(new QColor(_color)));
-            p.DrawText(18, 63, _series != null ? I18n.F("stats.series.count", _series.Count)
-                : _samples.Count == 0 ? "—" : value.ToString("0.##", I18n.Culture) + " " + _unit);
+            p.DrawText(18, 63, times.Length == 0 ? "—" : value.ToString("0.##", I18n.Culture) + " " + _unit);
 
-            int left = 18, top = 88, right = width - 18, bottom = height - 30;
-            double max = _fixedMax > 0 ? _fixedMax : Math.Max(1, Math.Ceiling(_samples.Select(s => s.Value).DefaultIfEmpty(0).Max() * 1.15));
+            using var detailFont = new QFont("Segoe UI", 8);
+            using var detailMetrics = new QFontMetrics(detailFont);
+            var summaries = _series.Select(s => (s.Color, Text: s.Name + " " + s.Samples.LastOrDefault().Value.ToString("0.##", I18n.Culture) + " " + _unit)).ToArray();
+            int summariesWidth = summaries.Sum(s => detailMetrics.HorizontalAdvance(s.Text) + 18);
+            if (summariesWidth <= width - 36)
+            {
+                p.SetFont(detailFont);
+                int x = 18;
+                foreach (var summary in summaries)
+                {
+                    p.SetPen(new QPen(new QColor(summary.Color)));
+                    p.DrawText(x, 80, summary.Text);
+                    x += detailMetrics.HorizontalAdvance(summary.Text) + 18;
+                }
+            }
+
+            int top = summariesWidth <= width - 36 && summaries.Length > 0 ? 108 : 88, right = width - 18, bottom = height - 46;
+            double max = Math.Max(_unit == "ms" ? 1 : 5, totals.DefaultIfEmpty(0).Max() * 1.15);
+            double targetIntervals = Math.Max(2, (bottom - top) / 36.0);
+            double valueStep = 0;
+            int valueIntervals = 0;
+            // D3 nice: round the domain outward, then recompute until the step stabilizes.
+            for (int pass = 0; pass < 10; pass++)
+            {
+                double step = NiceStep(max / targetIntervals);
+                if (_unit != "ms") step = Math.Max(1, step);
+                if (step == valueStep) break;
+                valueStep = step;
+                valueIntervals = (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
+                max = TickValue(valueIntervals, step);
+            }
             using var smallFont = new QFont("Segoe UI", 8);
             p.SetFont(smallFont);
+            using var fontMetrics = new QFontMetrics(smallFont);
+            int labelWidth = Enumerable.Range(0, valueIntervals + 1)
+                .Max(i => fontMetrics.HorizontalAdvance(TickText(TickValue(i, valueStep), valueStep)));
+            int left = 18 + labelWidth + 10;
+            int timeLabelWidth = fontMetrics.HorizontalAdvance("−60s") + 24;
+            double timeStep = Math.Max(1, NiceStep(60 / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth))));
             p.SetPen(new QPen(new QColor("#718096")));
-            p.DrawText(right - 95, top - 8, max.ToString("0.#", I18n.Culture) + " " + _unit);
+            string maxLabel = TickText(max, valueStep) + " " + _unit;
+            p.DrawText(right - fontMetrics.HorizontalAdvance(maxLabel), top - 8, maxLabel);
             p.DrawText(left, height - 10, I18n.T("stats.history"));
-            p.DrawText(right - 35, height - 10, I18n.T("stats.now"));
-            p.SetPen(new QPen(new QColor("#e7edf5")));
-            for (int i = 0; i <= 4; i++) p.DrawLine(left, top + (bottom - top) * i / 4, right, top + (bottom - top) * i / 4);
-            for (int i = 0; i <= 6; i++) p.DrawLine(left + (right - left) * i / 6, top, left + (right - left) * i / 6, bottom);
-
-            foreach (var series in _series ?? new List<ChartSeries> { new("", _color, _samples) })
+            p.DrawText(right - fontMetrics.HorizontalAdvance(I18n.T("stats.now")), height - 10, I18n.T("stats.now"));
+            using var gridPen = new QPen(new QColor("#e7edf5"));
+            using var labelPen = new QPen(new QColor("#718096"));
+            for (int i = 0; i <= valueIntervals; i++)
             {
-            var segments = new List<List<(DateTime Time, double Value)>>();
-            foreach (var sample in series.Samples)
-            {
-                if (segments.Count == 0 || (sample.Time - segments[^1][^1].Time).TotalSeconds > 2.5) segments.Add(new());
-                segments[^1].Add(sample);
+                int y = bottom - (int)Math.Round((bottom - top) * i / (double)valueIntervals);
+                p.SetPen(gridPen);
+                p.DrawLine(left, y, right, y);
+                string label = TickText(TickValue(i, valueStep), valueStep);
+                p.SetPen(labelPen);
+                p.DrawText(left - 10 - fontMetrics.HorizontalAdvance(label), y + 4, label);
             }
+            for (int i = 0; i <= (int)Math.Floor(60 / timeStep); i++)
+            {
+                double seconds = TickValue(i, timeStep);
+                int x = right - (int)Math.Round((right - left) * seconds / 60);
+                p.SetPen(gridPen);
+                p.DrawLine(x, top, x, bottom);
+                string label = (seconds == 0 ? "0" : "−" + TickText(seconds, timeStep)) + "s";
+                int textWidth = fontMetrics.HorizontalAdvance(label);
+                p.SetPen(labelPen);
+                p.DrawText(Math.Clamp(x - textWidth / 2, left, right - textWidth), bottom + 17, label);
+            }
+
             double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / 60, 0, 1) * (right - left);
             double Y(double number) => bottom - Math.Clamp(number / max, 0, 1) * (bottom - top);
-            foreach (var segment in segments)
+            var baseline = new double[times.Length];
+            // The last provider is the bottom of the chain and of the area stack.
+            for (int layer = _series.Count - 1; layer >= 0; layer--)
             {
+                var series = _series[layer];
+                var upper = times.Select((time, index) => baseline[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
+                int start = 0;
+                while (start < times.Length)
+                {
+                int finish = start + 1;
+                while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= 2.5) finish++;
                 using var fill = new QPainterPath();
-                fill.MoveTo(X(segment[0].Time), bottom);
-                foreach (var sample in segment) fill.LineTo(X(sample.Time), Y(sample.Value));
-                fill.LineTo(X(segment[^1].Time), bottom);
+                fill.MoveTo(X(times[start]), Y(baseline[start]));
+                for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
+                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(baseline[index]));
                 fill.CloseSubpath();
                 using var fillColor = new QColor(series.Color);
-                fillColor.SetAlpha(_series == null ? 35 : 18);
+                fillColor.SetAlpha(155);
                 p.SetPen(new QPen(Qt.PenStyle.NoPen));
                 p.SetBrush(new QBrush(fillColor));
                 p.DrawPath(fill);
                 using var line = new QPainterPath();
-                line.MoveTo(X(segment[0].Time), Y(segment[0].Value));
-                foreach (var sample in segment.Skip(1)) line.LineTo(X(sample.Time), Y(sample.Value));
+                line.MoveTo(X(times[start]), Y(upper[start]));
+                for (int index = start + 1; index < finish; index++) line.LineTo(X(times[index]), Y(upper[index]));
                 using var pen = new QPen(new QColor(series.Color));
                 pen.SetWidthF(1.8);
                 p.SetPen(pen);
                 p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
                 p.DrawPath(line);
+                start = finish;
+                }
+                baseline = upper;
             }
-            }
-            if (_series?.Count == 0 || _series == null && _samples.Count == 0)
+            if (times.Length == 0)
             {
                 p.SetPen(new QPen(new QColor("#94a3b8")));
                 p.DrawText(left + 12, top + 30, I18n.T("stats.noData"));
