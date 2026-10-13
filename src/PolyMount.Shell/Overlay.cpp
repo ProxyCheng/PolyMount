@@ -23,7 +23,7 @@ static const COLORREF palette[] = {
 #undef PM_COLOR
 };
 static const GUID baseId = {0x7d619ac0,0xdbe2,0x4f33,{0x9a,0x11,0x6c,0xc2,0xc8,0x32,0x90,0x01}};
-struct Cached { int slot = -1; ULONGLONG expires = 0; bool pending = false; };
+struct Cached { int slot = -1; ULONGLONG expires = 0; bool pending = false; ULONGLONG seen = 0; };
 static std::mutex gate;
 static std::condition_variable wake;
 static std::map<std::wstring,Cached> entries;
@@ -111,7 +111,17 @@ static void Worker() {
             std::string response; std::vector<std::wstring> next;
             if(Exchange("{\"Cmd\":\"status\"}",response)) for(const auto& root:Fields(response,"MountPoint")) next.push_back(Normalize(Wide(root)));
             bool changed;
-            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next; }
+            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next;
+              // Recheck recently displayed items even when Explorer does not request a new
+              // overlay evaluation. Opening a folder can cache its listing without a shell
+              // change notification; its icon in the parent window still needs updating.
+              const auto now=GetTickCount64();
+              for(auto& pair:entries) { auto& e=pair.second;
+                if(!e.pending && e.expires<=now && now-e.seen<60000 && requests.size()<128) {
+                    e.pending=true;requests.push_back(pair.first);
+                }
+              }
+            }
             refresh=GetTickCount64()+5000;
             // Ask Explorer to re-evaluate icons after initial discovery/config changes.
             if(changed) for(const auto& root:next) SHChangeNotify(SHCNE_UPDATEDIR,SHCNF_PATHW,root.c_str(),nullptr);
@@ -157,6 +167,7 @@ public:
         if(!UnderRoot(path)) return S_FALSE;
         if(entries.size()>10000) { for(auto it=entries.begin();it!=entries.end();) if(!it->second.pending) it=entries.erase(it); else ++it; }
         auto& e=entries[path];
+        e.seen=GetTickCount64();
         if(!e.pending && e.expires<=GetTickCount64() && requests.size()<512) { e.pending=true;requests.push_back(path);wake.notify_one(); }
         return e.slot==slot ? S_OK : S_FALSE;
     }
