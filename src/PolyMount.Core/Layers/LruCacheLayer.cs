@@ -22,6 +22,8 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     private readonly Channel<(string Key, Item Item)> _queue = Channel.CreateBounded<(string, Item)>(
         new BoundedChannelOptions(128) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private Task? _worker;
+    private readonly Timer _storageCheck;
+    private int _checkingStorage;
     private long _bytes, _pendingBytes;
     private bool _disposed;
     private const long MaxPendingBytes = 256L * 1024 * 1024;
@@ -36,6 +38,8 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             _items[record.Path] = new(record.Value, record.StoredBytes, record: record);
             _bytes += record.StoredBytes;
         }
+        using (ExecutionContext.SuppressFlow())
+            _storageCheck = new Timer(_ => ValidateStorage(), null, 1000, 1000);
     }
     private string Key(string path) => Generation + "|" + path;
     public string Name => "cache";
@@ -59,15 +63,38 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     {
         item = null!;
         if (!_items.TryGetValue(key, out var found)) return false;
-        if (!File.Exists(Path.Combine(_readRoot, "objects.db")) ||
-            (found.Record?.Blob is { } blob && !File.Exists(Path.Combine(_readRoot, blob))))
-        {
-            Remove(key);
-            return false;
-        }
         found.Access = Environment.TickCount64;
         item = found;
         return true;
+    }
+    internal Action? BeforeStorageCheck { get; set; }
+    internal void ValidateStorage()
+    {
+        if (Interlocked.CompareExchange(ref _checkingStorage, 1, 0) != 0) return;
+        try
+        {
+            KeyValuePair<string, Item>[] snapshot;
+            lock (_gate)
+            {
+                if (_disposed || _items.Count == 0) return;
+                snapshot = _items.ToArray();
+            }
+            BeforeStorageCheck?.Invoke();
+            // Filesystem calls are deliberately outside the cache index lock.
+            bool databaseExists = File.Exists(Path.Combine(_readRoot, "objects.db"));
+            foreach (var pair in snapshot)
+            {
+                var record = pair.Value.Record;
+                if (databaseExists && (record?.Blob == null || File.Exists(Path.Combine(_readRoot, record.Blob)))) continue;
+                lock (_gate)
+                {
+                    if (_items.TryGetValue(pair.Key, out var current) && ReferenceEquals(current, pair.Value) && current.Record == record)
+                        Remove(pair.Key);
+                }
+            }
+        }
+        catch (Exception ex) { LastPersistenceError = ex.Message; }
+        finally { Volatile.Write(ref _checkingStorage, 0); }
     }
     public bool TryReadObject(string path, out VirtualObject value)
     {
@@ -251,6 +278,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     }
     public void Dispose()
     {
+        _storageCheck.Dispose();
         Task? worker;
         lock (_gate)
         {

@@ -41,12 +41,13 @@ public sealed class ConcurrentObjectTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("folder/file", "source");
-        var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
         var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
         using (var read = vfs.OpenRead("folder/file", out _)) { }
         await cache.DrainAsync().WaitAsync(TimeSpan.FromSeconds(5));
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
         Directory.Delete(temp.Sub("cache"), true);
+        cache.ValidateStorage();
         Assert.AreEqual("fake", vfs.Probe("folder").Single(p => p.Effective).Name);
         using var reader = new StreamReader(vfs.OpenRead("folder/file", out _));
         Assert.AreEqual("source", reader.ReadToEnd());
