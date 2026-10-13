@@ -1,5 +1,6 @@
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
+using System.Diagnostics;
 
 namespace PolyMount.Tray;
 
@@ -14,12 +15,14 @@ internal sealed class StatsWindow : QWidget
     private readonly QLabel _layerLegend;
     private readonly LayerAccessPie _accessPie;
     private readonly QLabel _accessLegend;
+    private readonly QLabel _responseCost;
+    private readonly Queue<(double Request, double Dispatch, double Ui)> _responseSamples = new();
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
     private readonly Dictionary<string, List<Sample>> _history = new();
     private List<MountMetrics> _latest = new();
-    private Task<(ControlResponse Trends, ControlResponse Access)>? _pending;
+    private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -98,6 +101,10 @@ internal sealed class StatsWindow : QWidget
         _status.SetObjectName("muted");
         _status.SetTextFormat(Qt.TextFormat.PlainText);
         root.AddWidget(_status);
+        _responseCost = new QLabel();
+        _responseCost.SetObjectName("muted");
+        _responseCost.SetWordWrap(true);
+        root.AddWidget(_responseCost);
         _timer = new QTimer(this);
         _timer.Timeout += Tick;
         _timer.Start(100);
@@ -113,6 +120,11 @@ internal sealed class StatsWindow : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+    internal void VerifyResponseSampling()
+    {
+        if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
+            throw new InvalidOperationException("Performance window did not collect response overhead samples");
+    }
 
     private void TogglePause()
     {
@@ -138,7 +150,15 @@ internal sealed class StatsWindow : QWidget
                 if (!response.Ok) throw new InvalidOperationException(response.Error);
                 if (!sample.Access.Ok) throw new InvalidOperationException(sample.Access.Error);
                 if (_requestEpoch == _epoch && !_paused && visible)
-                { _accessMetrics = sample.Access.Metrics; Accept(response.Metrics); }
+                {
+                    double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
+                    var ui = Stopwatch.StartNew();
+                    _accessMetrics = sample.Access.Metrics; Accept(response.Metrics);
+                    ui.Stop();
+                    _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds));
+                    while (_responseSamples.Count > 60) _responseSamples.Dequeue();
+                    RenderResponseCost();
+                }
             }
             catch (Exception ex)
             {
@@ -150,7 +170,14 @@ internal sealed class StatsWindow : QWidget
             _requested = false;
             _requestEpoch = _epoch;
             _next = DateTime.UtcNow.AddSeconds(1);
-            _pending = Task.Run(() => (ControlClient.Metrics(1, _instanceName), ControlClient.Metrics(60, _instanceName)));
+            _pending = Task.Run(() =>
+            {
+                var watch = Stopwatch.StartNew();
+                var trends = ControlClient.Metrics(1, _instanceName);
+                var access = ControlClient.Metrics(60, _instanceName);
+                watch.Stop();
+                return (trends, access, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
+            });
         }
         _wasVisible = visible;
     }
@@ -254,6 +281,15 @@ internal sealed class StatsWindow : QWidget
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
+        RenderResponseCost();
+    }
+    private void RenderResponseCost()
+    {
+        if (_responseSamples.Count == 0) { _responseCost.SetText(T("stats.response.waiting")); return; }
+        var requests = _responseSamples.Select(s => s.Request).Order().ToArray();
+        double p95 = requests[Math.Clamp((int)Math.Ceiling(requests.Length * .95) - 1, 0, requests.Length - 1)];
+        _responseCost.SetText(I18n.F("stats.response.cost", requests.Average(), p95,
+            _responseSamples.Average(s => s.Dispatch), _responseSamples.Average(s => s.Ui), _responseSamples.Count));
     }
     public override void ChangeEvent(QEvent e)
     {

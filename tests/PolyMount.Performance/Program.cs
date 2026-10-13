@@ -1,45 +1,161 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
+using System.Text;
+using System.Text.Json;
 using PolyMount.Core;
 using PolyMount.Layers;
 
+string Option(string name, string fallback) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault() ?? fallback;
+int repeats = int.Parse(Option("--repeats", "3"), CultureInfo.InvariantCulture);
+int fileMb = int.Parse(Option("--file-mb", "8"), CultureInfo.InvariantCulture);
+int smallFiles = int.Parse(Option("--small-files", "32"), CultureInfo.InvariantCulture);
+int[] workers = Option("--workers", "1,4,8").Split(',').Select(int.Parse).ToArray();
+if (repeats <= 0 || fileMb <= 0 || smallFiles <= 0 || workers.Any(w => w <= 0)) throw new ArgumentException("All workload sizes must be positive");
+string reportDirectory = Path.GetFullPath(Option("--report", "artifacts/performance"));
 string root = Path.Combine(Path.GetTempPath(), "PolyMount-perf-" + Guid.NewGuid().ToString("N"));
-Directory.CreateDirectory(root);
-const int threads = 8, blocks = 128, blockSize = 65536;
-byte[] payload = new byte[blockSize]; Random.Shared.NextBytes(payload);
-var vfs = new VirtualFileSystem(new[] { new OverlayLayer(Path.Combine(root, "overlay"), Path.Combine(root, "state")) });
-void Measure(string label, Action<int> operation)
+string? mounted = args.Contains("--mount-root") ? Path.GetFullPath(Option("--mount-root", "")) : null;
+Directory.CreateDirectory(root); Directory.CreateDirectory(reportDirectory);
+var results = new List<RunResult>();
+const int blockSize = 65536;
+int blocks = checked(fileMb * 1048576 / blockSize);
+var payload = new byte[blockSize]; new Random(42).NextBytes(payload);
+using var process = Process.GetCurrentProcess();
+
+void Run(string backend, string scenario, int threads, int repeat, long bytes, int expectedOperations, Action<int, Action<Action>> worker)
 {
+    var latencies = new ConcurrentBag<double>();
+    var errors = new ConcurrentBag<string>();
+    var cpu = process.TotalProcessorTime;
+    long allocated = GC.GetTotalAllocatedBytes();
     var watch = Stopwatch.StartNew();
-    Parallel.For(0, threads, operation);
+    Parallel.For(0, threads, new ParallelOptions { MaxDegreeOfParallelism = threads }, index =>
+    {
+        try
+        {
+            worker(index, action =>
+            {
+                long start = Stopwatch.GetTimestamp();
+                action();
+                latencies.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
+            });
+        }
+        catch (Exception ex) { errors.Add(ex.GetType().Name + ": " + ex.Message); }
+    });
     watch.Stop();
-    double mb = threads * blocks * blockSize / 1048576.0;
-    Console.WriteLine($"{label}: {mb:0} MB, {watch.Elapsed.TotalSeconds:0.000}s, {mb / watch.Elapsed.TotalSeconds:0.0} MB/s, {threads} workers");
+    var samples = latencies.Order().ToArray();
+    double Percentile(double q) => samples.Length == 0 ? 0 : samples[Math.Clamp((int)Math.Ceiling(q * samples.Length) - 1, 0, samples.Length - 1)];
+    var result = new RunResult(backend, scenario, threads, repeat, bytes, expectedOperations, samples.Length,
+        watch.Elapsed.TotalSeconds, errors.Count == 0 ? bytes / 1048576.0 / watch.Elapsed.TotalSeconds : 0,
+        samples.Length / watch.Elapsed.TotalSeconds, samples.Length == 0 ? 0 : samples.Average(), Percentile(.50), Percentile(.95), Percentile(.99),
+        samples.Length == 0 ? 0 : samples[^1], (process.TotalProcessorTime - cpu).TotalMilliseconds, GC.GetTotalAllocatedBytes() - allocated,
+        process.PeakWorkingSet64, errors.ToArray());
+    results.Add(result);
+    Console.WriteLine($"{backend,-10} {scenario,-18} threads={threads} run={repeat} {result.MBps:0.0} MB/s {result.OpsPerSecond:0.0} ops/s p95={result.P95Ms:0.000}ms errors={errors.Count}");
 }
+
 try
 {
-    Measure("Native write + Flush", worker =>
+    foreach (int threads in workers)
+    for (int repeat = 1; repeat <= repeats; repeat++)
+    foreach (string backend in mounted == null ? new[] { "Native", "ObjectVFS" } : new[] { "Native", "ObjectVFS", "WinFsp" })
     {
-        using var file = new FileStream(Path.Combine(root, worker + ".data"), FileMode.Create, FileAccess.Write);
-        for (int i = 0; i < blocks; i++) file.Write(payload);
-        file.Flush(true);
-    });
-    Measure("Object write + Flush", worker =>
-    {
-        using var file = vfs.OpenWrite(worker + ".data", true, out _);
-        for (int i = 0; i < blocks; i++) file.Write(payload);
-        file.Flush();
-    });
-    Measure("Native warm read", worker =>
-    {
-        using var file = File.OpenRead(Path.Combine(root, worker + ".data"));
-        var buffer = new byte[blockSize];
-        for (int i = 0; i < blocks; i++) file.ReadExactly(buffer);
-    });
-    Measure("Object warm read", worker =>
-    {
-        using var file = vfs.OpenRead(worker + ".data", out _);
-        var buffer = new byte[blockSize];
-        for (int i = 0; i < blocks; i++) file.ReadExactly(buffer);
-    });
+        string directory = Path.Combine(backend == "WinFsp" ? mounted! : root, "PolyMount-stress-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        VirtualFileSystem? vfs = backend == "ObjectVFS"
+            ? new(new[] { new OverlayLayer(Path.Combine(directory, "objects"), Path.Combine(directory, "state")) }) : null;
+        Stream Write(string path, bool truncate) => vfs != null ? vfs.OpenWrite(path, truncate, out _)
+            : new FileStream(Path.Combine(directory, path), truncate ? FileMode.Create : FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        Stream Read(string path) => vfs != null ? vfs.OpenRead(path, out _) : new FileStream(Path.Combine(directory, path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        void Flush(Stream stream) { if (stream is FileStream file) file.Flush(true); else stream.Flush(); }
+        long bytes = (long)threads * blocks * blockSize;
+        try
+        {
+            Run(backend, "SequentialWrite", threads, repeat, bytes, threads * (blocks + 2), (index, measure) =>
+            {
+                Stream? file = null;
+                try { measure(() => file = Write(index + ".data", true)); for (int i = 0; i < blocks; i++) measure(() => file!.Write(payload)); measure(() => Flush(file!)); }
+                finally { file?.Dispose(); }
+            });
+            Run(backend, "WarmSequentialRead", threads, repeat, bytes, threads * (blocks + 1), (index, measure) =>
+            {
+                Stream? file = null; var buffer = new byte[blockSize];
+                try { measure(() => file = Read(index + ".data")); for (int i = 0; i < blocks; i++) measure(() => file!.ReadExactly(buffer)); }
+                finally { file?.Dispose(); }
+                if (!buffer.SequenceEqual(payload)) throw new InvalidDataException("Sequential read mismatch");
+            });
+            Run(backend, "RandomRead4K", threads, repeat, (long)threads * blocks * 4096, threads * blocks, (index, measure) =>
+            {
+                using var file = Read(index + ".data"); var buffer = new byte[4096]; var random = new Random(index);
+                for (int i = 0; i < blocks; i++) { long offset = random.Next(blocks * 16) * 4096L; measure(() => { file.Position = offset; file.ReadExactly(buffer); }); }
+            });
+            Run(backend, "SmallFileLifecycle", threads, repeat, (long)threads * smallFiles * 4096, threads * smallFiles, (index, measure) =>
+            {
+                for (int i = 0; i < smallFiles; i++)
+                {
+                    string path = $"small-{index}-{i}";
+                    measure(() =>
+                    {
+                        using (var file = Write(path, true)) { file.Write(payload.AsSpan(0, 4096)); Flush(file); }
+                        using (var file = Read(path)) { var buffer = new byte[4096]; file.ReadExactly(buffer); if (!buffer.AsSpan().SequenceEqual(payload.AsSpan(0, 4096))) throw new InvalidDataException("Small file mismatch"); }
+                        if (vfs != null) vfs.Delete(path); else File.Delete(Path.Combine(directory, path));
+                    });
+                }
+            });
+            using (var file = Write("shared.data", true)) { file.SetLength((long)threads * blocks * blockSize); Flush(file); }
+            Run(backend, "SharedFileWrite", threads, repeat, bytes, threads * (blocks + 1), (index, measure) =>
+            {
+                using var file = Write("shared.data", false); file.Position = (long)index * blocks * blockSize;
+                byte[] segment = Enumerable.Repeat((byte)(index + 1), blockSize).ToArray();
+                for (int i = 0; i < blocks; i++) measure(() => file.Write(segment));
+                measure(() => Flush(file));
+            });
+            using (var file = Read("shared.data"))
+            {
+                var buffer = new byte[blockSize];
+                for (int i = 0; i < threads; i++) for (int block = 0; block < blocks; block++)
+                { file.ReadExactly(buffer); if (buffer.Any(b => b != (byte)(i + 1))) throw new InvalidDataException("Concurrent writes lost data"); }
+            }
+        }
+        catch (Exception ex) { results.Add(RunResult.Failure(backend, "WorkloadSetup", threads, repeat, ex.ToString())); }
+        finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(directory, true); }
+    }
 }
-finally { Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true); }
+finally
+{
+    Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools(); Directory.Delete(root, true);
+    string stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+    string report = Path.Combine(reportDirectory, "stress-" + stamp);
+    var environment = new { StartedUtc = stamp, OS = Environment.OSVersion.ToString(), Runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
+        Processors = Environment.ProcessorCount, Workers = workers, Repeats = repeats, FileMB = fileMb, SmallFiles = smallFiles, MountRoot = mounted,
+        Caveat = "Warm OS-cache workloads. ObjectVFS bypasses WinFsp; WinFsp is included only with --mount-root. Latencies include open/flush where noted. Not cold disk throughput." };
+    File.WriteAllText(report + ".json", JsonSerializer.Serialize(new { Environment = environment, Results = results }, new JsonSerializerOptions { WriteIndented = true }));
+    var markdown = new StringBuilder("# PolyMount automated stress report\n\n").AppendLine(JsonSerializer.Serialize(environment)).AppendLine()
+        .AppendLine("| Backend | Scenario | Workers | Run | MB/s | Ops/s | Mean ms | P95 ms | P99 ms | Max ms | Errors |")
+        .AppendLine("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    foreach (var r in results) markdown.AppendLine(FormattableString.Invariant($"| {r.Backend} | {r.Scenario} | {r.Workers} | {r.Repeat} | {r.MBps:0.0} | {r.OpsPerSecond:0.0} | {r.MeanMs:0.000} | {r.P95Ms:0.000} | {r.P99Ms:0.000} | {r.MaxMs:0.000} | {r.Errors.Length} |"));
+    markdown.AppendLine("\n## Repeat summary (median throughput)\n")
+        .AppendLine("| Backend | Scenario | Workers | Median MB/s | Median ops/s | Relative to native throughput |")
+        .AppendLine("|---|---|---:|---:|---:|---:|");
+    double Median(IEnumerable<double> values) { var sorted = values.Order().ToArray(); return sorted.Length == 0 ? 0 : (sorted[(sorted.Length - 1) / 2] + sorted[sorted.Length / 2]) / 2; }
+    foreach (var group in results.Where(r => r.Errors.Length == 0).GroupBy(r => (r.Backend, r.Scenario, r.Workers)))
+    {
+        double rate = Median(group.Select(r => r.MBps));
+        double native = Median(results.Where(r => r.Backend == "Native" && r.Scenario == group.Key.Scenario && r.Workers == group.Key.Workers && r.Errors.Length == 0).Select(r => r.MBps));
+        markdown.AppendLine(FormattableString.Invariant($"| {group.Key.Backend} | {group.Key.Scenario} | {group.Key.Workers} | {rate:0.0} | {Median(group.Select(r => r.OpsPerSecond)):0.0} | {(native == 0 ? 0 : rate / native):0.00}x |"));
+    }
+    markdown.AppendLine("\n## Errors\n");
+    foreach (var r in results.Where(r => r.Errors.Length > 0)) markdown.AppendLine($"- {r.Backend}/{r.Scenario}: {string.Join("; ", r.Errors)}");
+    File.WriteAllText(report + ".md", markdown.ToString());
+    var csv = new StringBuilder("Backend,Scenario,Workers,Repeat,Bytes,Operations,Seconds,MBps,OpsPerSecond,MeanMs,P50Ms,P95Ms,P99Ms,MaxMs,CpuMs,AllocatedBytes,PeakWorkingSetBytes,ErrorCount\n");
+    foreach (var r in results) csv.AppendLine(FormattableString.Invariant($"{r.Backend},{r.Scenario},{r.Workers},{r.Repeat},{r.Bytes},{r.Operations},{r.Seconds},{r.MBps},{r.OpsPerSecond},{r.MeanMs},{r.P50Ms},{r.P95Ms},{r.P99Ms},{r.MaxMs},{r.CpuMs},{r.AllocatedBytes},{r.PeakWorkingSetBytes},{r.Errors.Length}"));
+    File.WriteAllText(report + ".csv", csv.ToString());
+    Console.WriteLine("Reports: " + report + ".{json,md,csv}");
+}
+return results.Any(r => r.Errors.Length > 0) ? 1 : 0;
+
+internal sealed record RunResult(string Backend, string Scenario, int Workers, int Repeat, long Bytes, int ExpectedOperations, int Operations,
+    double Seconds, double MBps, double OpsPerSecond, double MeanMs, double P50Ms, double P95Ms, double P99Ms, double MaxMs, double CpuMs, long AllocatedBytes, long PeakWorkingSetBytes, string[] Errors)
+{
+    public static RunResult Failure(string backend, string scenario, int workers, int repeat, string error) => new(backend, scenario, workers, repeat, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, new[] { error });
+}

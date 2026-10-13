@@ -138,10 +138,15 @@ internal static class Program
                 dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
                 editor.Capture(Path.Combine(capture, "layers-alternate.png"));
             }
-            if (ticks == 40) I18n.SetLanguage(original);
+            if (ticks == 40)
+            {
+                if (I18n.T("dashboard.title") == "dashboard.title") failure = "Qt resource translation lookup failed";
+                I18n.SetLanguage(original);
+            }
             if (ticks >= 60)
             {
                 timer.Stop();
+                try { stats.VerifyResponseSampling(); } catch (Exception ex) { failure = ex.Message; }
                 Console.WriteLine(failure ?? "UI smoke passed: Dashboard, ConfigEditor, Stats and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }

@@ -944,5 +944,13 @@ Close applications using mounted files first.</translation>
       <source>probe.fallthrough</source>
       <translation>No entry; falls through</translation>
     </message>
+    <message>
+      <source>stats.response.waiting</source>
+      <translation>Response overhead 路 Waiting for samples</translation>
+    </message>
+    <message>
+      <source>stats.response.cost</source>
+      <translation>Response overhead 路 Request avg {0:0.00} ms / P95 {1:0.00} ms 路 UI dispatch {2:0.00} ms 路 UI update {3:0.00} ms 路 {4} samples (two IPC requests per sample; excludes painting)</translation>
+    </message>
   </context>
 </TS>

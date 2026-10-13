@@ -944,5 +944,13 @@
       <source>probe.fallthrough</source>
       <translation>此层无条目，继续向下读取</translation>
     </message>
+    <message>
+      <source>stats.response.waiting</source>
+      <translation>鍝嶅簲寮€閿€ 路 绛夊緟閲囨牱</translation>
+    </message>
+    <message>
+      <source>stats.response.cost</source>
+      <translation>鍝嶅簲寮€閿€ 路 璇锋眰骞冲潎 {0:0.00} ms / P95 {1:0.00} ms 路 涓荤嚎绋嬭皟搴?{2:0.00} ms 路 鐣岄潰鏇存柊 {3:0.00} ms 路 {4} 娆￠噰鏍凤紙姣忔鍚袱涓?IPC 璇锋眰锛屼笉鍚粯鍒讹級</translation>
+    </message>
   </context>
 </TS>
