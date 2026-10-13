@@ -12,6 +12,8 @@ internal sealed class Dashboard
     private readonly QWidget _window;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
+    private ConfigEditor? _editor;
+    private StatsWindow? _stats;
 
     public Dashboard()
     {
@@ -54,6 +56,15 @@ internal sealed class Dashboard
         AddButton(bar, "Clear cache", () => ControlClient.ClearCache(SelectedName()));
 
         bar.AddStretch(1);
+
+        var edit = new QPushButton("Edit config...");
+        edit.Clicked += _ => { _editor ??= new ConfigEditor(); _editor.ShowWindow(); };
+        bar.AddWidget(edit);
+
+        var stats = new QPushButton("Stats...");
+        stats.Clicked += _ => { _stats ??= new StatsWindow(); _stats.ShowWindow(); };
+        bar.AddWidget(stats);
+
         return bar;
     }
 
