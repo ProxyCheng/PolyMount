@@ -8,6 +8,21 @@ namespace PolyMount.Core.Tests;
 public sealed class ReadPredictionTests
 {
     [TestMethod]
+    public async Task One_previous_sequence_predicts_during_a_single_active_demand()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer(); source.AddFile("a", "a"); source.AddFile("b", "b");
+        var vfs = new VirtualFileSystem(new[] { source });
+        using var loaded = new ManualResetEventSlim();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { IdleDelayMs = 100 },
+            temp.Sub("one-run.json"), path => { if (path == "b") loaded.Set(); });
+        using (prediction.Demand("a")) { }
+        using (prediction.Demand("b")) { }
+        using (prediction.Demand("a"))
+            Assert.IsTrue(await Task.Run(() => loaded.Wait(TimeSpan.FromSeconds(5))));
+    }
+
+    [TestMethod]
     public void Reset_erases_persisted_model_and_keeps_live_demand_accounting()
     {
         using var temp = new TempDir();

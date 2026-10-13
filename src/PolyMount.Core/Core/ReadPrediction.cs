@@ -8,6 +8,7 @@ public sealed class ReadPredictionOptions
     public int MaxTransitions { get; set; } = 4096;
     public long MaxFileBytes { get; set; } = 8L * 1024 * 1024;
     public int IdleDelayMs { get; set; } = 250;
+    public int MaxActiveDemandForPreload { get; set; } = 1;
 }
 
 /// <summary>Bounded next-file predictor. One speculative load, only after demand becomes idle.</summary>
@@ -22,7 +23,8 @@ public sealed class ReadPrediction : IDisposable
     private readonly Action<string>? _preload;
     private readonly Timer _timer;
     private readonly CancellationTokenSource _stop = new();
-    private string? _previous, _candidate;
+    private string? _previous;
+    private readonly Queue<string> _candidates = new();
     private long _lastDemand;
     private int _activeDemand;
     private Task? _loading;
@@ -63,7 +65,13 @@ public sealed class ReadPrediction : IDisposable
                 }
             }
             _previous = path;
-            _candidate = _edges.TryGetValue(path, out var next) && next.Hits >= 2 ? next.To : null;
+            // One previous run is enough to nominate a candidate. Keep a small
+            // queue so a later unrelated access does not erase earlier predictions.
+            if (_edges.TryGetValue(path, out var next) && next.Hits >= 1 && !_candidates.Contains(next.To))
+            {
+                if (_candidates.Count >= 16) _candidates.Dequeue();
+                _candidates.Enqueue(next.To);
+            }
         }
         return new DemandScope(this);
     }
@@ -75,9 +83,10 @@ public sealed class ReadPrediction : IDisposable
     {
         lock (_gate)
         {
-            if (_stop.IsCancellationRequested || _activeDemand != 0 || _candidate == null ||
-                _loading is { IsCompleted: false } || Environment.TickCount64 - _lastDemand < _options.IdleDelayMs) return;
-            string candidate = _candidate; _candidate = null; Predictions++;
+            if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload || _candidates.Count == 0 ||
+                _loading is { IsCompleted: false } ||
+                (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
+            string candidate = _candidates.Dequeue(); Predictions++;
             long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _loading = Task.Run(() =>
             {
@@ -86,7 +95,7 @@ public sealed class ReadPrediction : IDisposable
                     if (_stop.IsCancellationRequested || !_vfs.TryLookup(candidate, out var entry) ||
                         (!entry.IsDir && entry.Size > _options.MaxFileBytes) || (entry.IsDir && _preload == null)) return;
                     if (_preload == null && _vfs.Layers.OfType<ICacheLayer>().Any(c => c.TryGetEntry(candidate, out _))) return;
-                    lock (_gate) if (_activeDemand != 0 || _stop.IsCancellationRequested || epoch != _epoch) return;
+                    lock (_gate) if (_activeDemand > _options.MaxActiveDemandForPreload || _stop.IsCancellationRequested || epoch != _epoch) return;
                     using var trace = RequestDiagnostics.Begin("Predict.Preload", candidate, _vfs.Diagnostics);
                     if (_preload != null) _preload(candidate);
                     else { using var stream = _vfs.OpenRead(candidate, out _, speculative: true); }
@@ -104,7 +113,7 @@ public sealed class ReadPrediction : IDisposable
             // Do not reset live demand counts or abort an already-started I/O.
             // Queued candidates from the old model cannot begin after this reset.
             _epoch++;
-            _edges.Clear(); _previous = null; _candidate = null;
+            _edges.Clear(); _previous = null; _candidates.Clear();
             Predictions = 0; Completed = 0;
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
             string temp = _modelPath + ".tmp";
