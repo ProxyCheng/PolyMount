@@ -7,5 +7,4 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\Update-Pol
 set "RESULT=%ERRORLEVEL%"
 echo.
 if not "%RESULT%"=="0" echo Update failed. Review the error above.
-pause
 exit /b %RESULT%
