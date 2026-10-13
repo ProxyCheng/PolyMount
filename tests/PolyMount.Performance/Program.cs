@@ -158,6 +158,16 @@ try
                 using var file = Read(index + ".data"); var buffer = new byte[4096]; var random = new Random(index);
                 for (int i = 0; i < blocks; i++) { long offset = random.Next(blocks * 16) * 4096L; measure(() => { file.Position = offset; file.ReadExactly(buffer); }); }
             });
+            Run(backend, "PartialWriteAndFlush", threads, repeat, (long)threads * 4096, threads, (index, measure) =>
+            {
+                measure(() =>
+                {
+                    using var file = Write(index + ".data", false);
+                    file.Position = (long)blocks * blockSize / 2;
+                    file.Write(payload.AsSpan(0, 4096));
+                    Flush(file);
+                });
+            });
             Run(backend, "SmallFileLifecycle", threads, repeat, (long)threads * smallFiles * 4096, threads * smallFiles, (index, measure) =>
             {
                 for (int i = 0; i < smallFiles; i++)
