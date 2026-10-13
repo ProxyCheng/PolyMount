@@ -15,6 +15,10 @@ internal static class Program
     {
         _app = new QApplication(args);
 
+        // A bounded, read-only UI smoke run for checking native widgets and both languages.
+        if (Array.IndexOf(args, "--ui-smoke") >= 0)
+            return RunUiSmoke(args);
+
         // Launched from the Explorer context menu: show just the layer view, no tray.
         int probeIdx = Array.IndexOf(args, "--probe");
         if (probeIdx >= 0 && probeIdx + 1 < args.Length)
@@ -27,7 +31,7 @@ internal static class Program
         QApplication.SetQuitOnLastWindowClosed(false);
 
         _tray = new QSystemTrayIcon();
-        _tray.SetIcon(QApplication.Style().StandardIcon(QStyle.StandardPixmap.SP_DriveHDIcon));
+        _tray.SetIcon(TrayIcons.App);
         _tray.SetToolTip("PolyMount");
         _menu = BuildMenu();            // keep a reference so it is not garbage-collected
         _tray.SetContextMenu(_menu);
@@ -41,7 +45,7 @@ internal static class Program
         // Surface the icon: Windows parks new tray icons in the overflow area, so pop a balloon
         // and open the dashboard once so the user can find it.
         if (QSystemTrayIcon.IsSystemTrayAvailable())
-            _tray.ShowMessage("PolyMount", "Running in the system tray. Double-click the icon or use the menu.",
+            _tray.ShowMessage("PolyMount", I18n.T("tray.message"),
                 QSystemTrayIcon.MessageIcon.Information, 4000);
 
         ShowDashboard();
@@ -52,16 +56,23 @@ internal static class Program
     {
         var menu = new QMenu();
 
-        var open = menu.AddAction("Open Dashboard");
+        var open = menu.AddAction("");
+        I18n.Bind(open.SetText, "tray.open");
+        open.SetIcon(TrayIcons.Get("drive"));
         open.Triggered += _ => ShowDashboard();
 
-        var startSvc = menu.AddAction("Start Service");
+        var startSvc = menu.AddAction("");
+        I18n.Bind(startSvc.SetText, "service.start");
+        startSvc.SetIcon(TrayIcons.Get("play"));
         startSvc.Triggered += _ => ServiceControl.Start();
 
-        var stopSvc = menu.AddAction("Stop Service");
+        var stopSvc = menu.AddAction("");
+        I18n.Bind(stopSvc.SetText, "service.stop");
+        stopSvc.SetIcon(TrayIcons.Get("stop"));
         stopSvc.Triggered += _ => ServiceControl.Stop();
 
-        var shell = menu.AddAction("Explorer context menu");
+        var shell = menu.AddAction("");
+        I18n.Bind(shell.SetText, "tray.shell");
         shell.SetCheckable(true);
         shell.SetChecked(ShellMenuInstaller.IsInstalled());
         shell.Triggered += _ =>
@@ -77,7 +88,8 @@ internal static class Program
 
         menu.AddSeparator();
 
-        var exit = menu.AddAction("Exit");
+        var exit = menu.AddAction("");
+        I18n.Bind(exit.SetText, "tray.exit");
         exit.Triggered += _ => _app.Quit();
 
         return menu;
@@ -87,5 +99,57 @@ internal static class Program
     {
         _dashboard ??= new Dashboard();
         _dashboard.ShowWindow();
+    }
+
+    private static int RunUiSmoke(string[] args)
+    {
+        var dashboard = new Dashboard();
+        var editor = new ConfigEditor("L10");
+        var stats = new StatsWindow("L10");
+        dashboard.ShowWindow();
+        editor.ShowWindow();
+        stats.ShowWindow();
+        var timer = new QTimer();
+        int ticks = 0;
+        string original = I18n.Language;
+        int captureIndex = Array.IndexOf(args, "--capture");
+        string? capture = captureIndex >= 0 && captureIndex + 1 < args.Length ? args[captureIndex + 1] : null;
+        string? failure = null;
+        ApiRuntime.UnhandledCallbackException += (context, ex) => failure = context + ": " + ex;
+        timer.Timeout += () =>
+        {
+            ticks++;
+            if (ticks == 18 && capture != null)
+            {
+                dashboard.Capture(Path.Combine(capture, "dashboard.png"));
+                editor.Capture(Path.Combine(capture, "layers.png"));
+                stats.Capture(Path.Combine(capture, "stats.png"));
+            }
+            if (ticks == 20)
+            {
+                editor.SmokeInteractions();
+                dashboard.SmokeSilentUpdate();
+                I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
+            }
+            if (ticks == 36 && capture != null)
+            {
+                dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
+                editor.Capture(Path.Combine(capture, "layers-alternate.png"));
+            }
+            if (ticks == 40) I18n.SetLanguage(original);
+            if (ticks >= 60)
+            {
+                timer.Stop();
+                Console.WriteLine(failure ?? "UI smoke passed: Dashboard, ConfigEditor, Stats and live localization.");
+                _app.Exit(failure == null ? 0 : 1);
+            }
+        };
+        timer.Start(100);
+        int code = _app.Exec();
+        GC.KeepAlive(dashboard);
+        GC.KeepAlive(editor);
+        GC.KeepAlive(stats);
+        GC.KeepAlive(timer);
+        return code;
     }
 }

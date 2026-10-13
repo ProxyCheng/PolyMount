@@ -1,39 +1,210 @@
+using System.Diagnostics;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 
 namespace PolyMount.Tray;
 
-/// <summary>The main dashboard window: a table of mounts plus control buttons.</summary>
+/// <summary>Mount workspace. The Qt timer delivers background IPC results on the UI thread.</summary>
 internal sealed class Dashboard
 {
-    private static readonly string[] Columns =
-        { "Name", "Mounted", "Mount point", "Source", "Rev", "Providers", "Cache", "Error" };
-
     private readonly QWidget _window;
     private readonly QTableWidget _table;
-    private readonly QLabel _status;
-    private ConfigEditor? _editor;
-    private StatsWindow? _stats;
+    private readonly QLineEdit _search;
+    private readonly QComboBox _filter, _language;
+    private readonly QLabel _service, _total, _active, _issues, _layerTotal;
+    private readonly QLabel _listCount, _empty, _feedback, _updated;
+    private readonly QLabel _detailName, _detailState, _mountPath, _layers, _detailError;
+    private readonly QWidget _detailBody;
+    private readonly QPushButton _refresh, _start, _stop, _create;
+    private readonly QPushButton _toggleMount, _open, _edit, _performance, _inspect;
+    private readonly QTimer _timer;
+    private readonly List<MountStatus> _mounts = new();
+    private List<MountStatus> _visible = new();
+    private Task<Result>? _pending;
+    private bool _connected, _filling, _wasVisible;
+    private string? _selectedName;
+    private DateTime _nextRefresh;
+    private readonly Dictionary<string, ConfigEditor> _editors = new();
+    private readonly Dictionary<string, StatsWindow> _stats = new();
+    private ConfigEditor? _newEditor;
+    private bool _quietPending;
+    private Action? _queued;
+    private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet, bool ServiceAction = false);
+    private static string T(string key) => I18n.T(key);
 
     public Dashboard()
     {
         _window = new QWidget();
-        _window.SetWindowTitle("PolyMount Dashboard");
-        _window.Resize(1000, 540);
+        _window.SetObjectName("dashboard");
+        _window.SetWindowIcon(TrayIcons.App);
+        _window.Resize(1280, 820);
+        _window.SetMinimumSize(1080, 720);
+        _window.SetStyleSheet(TrayTheme.StyleSheet);
+        I18n.Bind(_window.SetWindowTitle, "dashboard.title");
+        var root = new QHBoxLayout(_window);
+        root.SetContentsMargins(0, 0, 0, 0);
+        root.SetSpacing(0);
 
-        var root = new QVBoxLayout(_window);
-        root.AddLayout(BuildToolbar());
+        var sidebar = Panel("sidebar");
+        sidebar.SetFixedWidth(204);
+        var nav = new QVBoxLayout(sidebar);
+        nav.SetContentsMargins(18, 28, 18, 22);
+        nav.SetSpacing(12);
+        var brand = new QLabel();
+        brand.SetPixmap(TrayIcons.BrandPixmap);
+        nav.AddWidget(brand);
+        nav.AddWidget(Label("brand.subtitle", "sidebarMuted"));
+        nav.AddSpacing(28);
+        nav.AddWidget(Label("workspace", "sidebarMuted"));
+        nav.AddWidget(Label("overview", "navActive"));
+        nav.AddStretch(1);
+        nav.AddWidget(Label("service.connection", "sidebarMuted"));
+        _service = PlainLabel("", "serviceBadge");
+        nav.AddWidget(_service);
+        _start = Button("service.start", () => RunService(true), "navButton", "play");
+        _stop = Button("service.stop", () => RunService(false), "navButton", "stop");
+        nav.AddWidget(_start);
+        nav.AddWidget(_stop);
+        nav.AddSpacing(12);
+        nav.AddWidget(Label("language", "sidebarMuted"));
+        _language = new QComboBox();
+        _language.AddItem("简体中文");
+        _language.AddItem("English");
+        _language.SetCurrentIndex(I18n.Language == "zh-CN" ? 0 : 1);
+        _language.CurrentIndexChanged += i => I18n.SetLanguage(i == 0 ? "zh-CN" : "en");
+        nav.AddWidget(_language);
+        nav.AddWidget(Label("tray.keepRunning", "sidebarMuted"));
+        root.AddWidget(sidebar);
 
+        var content = new QVBoxLayout();
+        content.SetContentsMargins(26, 24, 26, 18);
+        content.SetSpacing(18);
+        root.AddLayout(content, 1);
+        var heading = new QHBoxLayout();
+        var title = new QVBoxLayout();
+        title.SetSpacing(5);
+        title.AddWidget(Label("dashboard.heading", "pageTitle"));
+        title.AddWidget(Label("dashboard.subtitle", "muted"));
+        heading.AddLayout(title, 1);
+        heading.AddStretch(1);
+        _refresh = Button("refresh", () => Refresh(), icon: "refresh");
+        I18n.Bind(_refresh.SetToolTip, "refresh.tip");
+        heading.AddWidget(_refresh);
+        _create = Button("mount.new", () => OpenEditor(create: true), "primary", "plus");
+        heading.AddWidget(_create);
+        content.AddLayout(heading);
+
+        var overview = new QHBoxLayout();
+        overview.SetSpacing(12);
+        _total = Metric(overview, "metric.total", "metric.total.hint", "drive");
+        _active = Metric(overview, "metric.active", "metric.active.hint", "check");
+        _issues = Metric(overview, "metric.issues", "metric.issues.hint", "alert");
+        _layerTotal = Metric(overview, "metric.layers", "metric.layers.hint", "layers");
+        content.AddLayout(overview);
+
+        var workspace = new QSplitter();
+        workspace.SetHandleWidth(14);
+        workspace.SetChildrenCollapsible(false);
+        var listPanel = Panel("surface");
+        var list = new QVBoxLayout(listPanel);
+        list.SetContentsMargins(18, 18, 18, 16);
+        list.SetSpacing(14);
+        var listHeading = new QHBoxLayout();
+        listHeading.AddWidget(Label("mount.instances", "sectionTitle"));
+        listHeading.AddStretch(1);
+        _listCount = PlainLabel("", "muted");
+        listHeading.AddWidget(_listCount);
+        list.AddLayout(listHeading);
+        var tools = new QHBoxLayout();
+        _search = new QLineEdit();
+        I18n.Bind(_search.SetPlaceholderText, "search.placeholder");
+        _search.SetClearButtonEnabled(true);
+        _search.TextChanged += _ => FillTable();
+        tools.AddWidget(_search, 1);
+        _filter = new QComboBox();
+        UpdateFilters();
+        _filter.CurrentIndexChanged += _ => FillTable();
+        tools.AddWidget(_filter);
+        list.AddLayout(tools);
         _table = new QTableWidget();
-        _table.SetColumnCount(Columns.Length);
-        _table.SetHorizontalHeaderLabels(Columns);
+        _table.SetColumnCount(3);
         _table.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
         _table.SetSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);
-        root.AddWidget(_table);
+        _table.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
+        _table.SetShowGrid(false);
+        _table.SetWordWrap(false);
+        _table.SetFrameShape(QFrame.Shape.NoFrame);
+        _table.VerticalHeader().Hide();
+        _table.HorizontalHeader().SetSectionResizeMode(0, QHeaderView.ResizeMode.Stretch);
+        for (int i = 1; i < 3; i++) _table.HorizontalHeader().SetSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents);
+        _table.ItemSelectionChanged += SelectMount;
+        _table.CellDoubleClicked += (_, _) => OpenSelected();
+        list.AddWidget(_table, 1);
+        _empty = PlainLabel("", "emptyState");
+        _empty.SetAlignment(Qt.Alignment.AlignCenter);
+        list.AddWidget(_empty);
+        list.AddWidget(Label("mount.list.hint", "muted"));
+        workspace.AddWidget(listPanel);
 
-        _status = new QLabel("starting...");
-        root.AddWidget(_status);
-
+        var details = Panel("surface");
+        details.SetMinimumWidth(306);
+        details.SetMaximumWidth(390);
+        var detail = new QVBoxLayout(details);
+        detail.SetContentsMargins(20, 20, 20, 20);
+        detail.SetSpacing(12);
+        detail.AddWidget(Label("detail", "eyebrow"));
+        _detailName = PlainLabel("", "detailTitle");
+        detail.AddWidget(_detailName);
+        _detailState = PlainLabel("", "muted");
+        detail.AddWidget(_detailState);
+        var scroll = new QScrollArea();
+        scroll.SetWidgetResizable(true);
+        scroll.SetFrameShape(QFrame.Shape.NoFrame);
+        _detailBody = new QWidget();
+        var body = new QVBoxLayout(_detailBody);
+        body.SetContentsMargins(0, 8, 2, 0);
+        body.SetSpacing(10);
+        var actions = new QHBoxLayout();
+        _toggleMount = Button("mount", ToggleSelected, "primary", "play");
+        _open = Button("open.folder", OpenSelected, icon: "folder");
+        actions.AddWidget(_toggleMount, 1);
+        actions.AddWidget(_open, 1);
+        body.AddLayout(actions);
+        _mountPath = DetailField(body, "mount.location");
+        body.AddWidget(Label("layers.heading", "eyebrow"));
+        _layers = PlainLabel("", "layerChain");
+        body.AddWidget(_layers);
+        _inspect = Button("layers.inspect", () => { if (Selected is { } m) LayerVisualizer.Open(m.MountPoint); }, icon: "layers");
+        body.AddWidget(_inspect);
+        _edit = Button("mount.manage", () => OpenEditor(Selected?.Name), icon: "settings");
+        body.InsertWidget(1, _edit);
+        _performance = Button("mount.performance", OpenPerformance, icon: "chart");
+        body.InsertWidget(2, _performance);
+        _detailError = PlainLabel("", "errorBox");
+        body.AddWidget(_detailError);
+        body.AddStretch(1);
+        scroll.SetWidget(_detailBody);
+        detail.AddWidget(scroll, 1);
+        workspace.AddWidget(details);
+        workspace.SetStretchFactor(0, 3);
+        workspace.SetStretchFactor(1, 2);
+        content.AddWidget(workspace, 1);
+        _feedback = PlainLabel(T("connecting"), "feedback");
+        content.AddWidget(_feedback);
+        var footer = new QHBoxLayout();
+        var footerHint = Label("dashboard.footer", "muted");
+        footerHint.SetWordWrap(false);
+        footer.AddWidget(footerHint);
+        footer.AddStretch(1);
+        _updated = PlainLabel("", "muted");
+        _updated.SetWordWrap(false);
+        footer.AddWidget(_updated);
+        content.AddLayout(footer);
+        I18n.Changed += Translate;
+        _timer = new QTimer(_window);
+        _timer.Timeout += Tick;
+        _timer.Start(100);
+        Translate();
         Refresh();
     }
 
@@ -42,98 +213,377 @@ internal sealed class Dashboard
         _window.Show();
         _window.Raise();
         _window.ActivateWindow();
-        Refresh();
+        if (_pending == null) Refresh(quiet: true);
     }
 
-    private QHBoxLayout BuildToolbar()
+    internal void Capture(string path) { using var image = _window.Grab(); image.Save(path); }
+
+    internal void SmokeSilentUpdate()
     {
-        var bar = new QHBoxLayout();
-
-        AddButton(bar, "Refresh", () => ControlClient.Status());
-        AddButton(bar, "Mount", () => ControlClient.Mount(SelectedName()));
-        AddButton(bar, "Unmount", () => ControlClient.Unmount(SelectedName()));
-        AddButton(bar, "Refresh HEAD", () => ControlClient.RefreshHead(SelectedName()));
-        AddButton(bar, "Clear cache", () => ControlClient.ClearCache(SelectedName()));
-
-        bar.AddStretch(1);
-
-        var startSvc = new QPushButton("Start service");
-        startSvc.Clicked += _ => { _status.SetText(ServiceControl.Start()); };
-        bar.AddWidget(startSvc);
-
-        var stopSvc = new QPushButton("Stop service");
-        stopSvc.Clicked += _ => { _status.SetText(ServiceControl.Stop()); };
-        bar.AddWidget(stopSvc);
-
-        var edit = new QPushButton("Edit config...");
-        edit.Clicked += _ => { _editor ??= new ConfigEditor(); _editor.ShowWindow(); };
-        bar.AddWidget(edit);
-
-        var stats = new QPushButton("Stats...");
-        stats.Clicked += _ => { _stats ??= new StatsWindow(); _stats.ShowWindow(); };
-        bar.AddWidget(stats);
-
-        return bar;
-    }
-
-    private void AddButton(QHBoxLayout bar, string text, Func<ControlResponse> call)
-    {
-        var b = new QPushButton(text);
-        b.Clicked += _ => Act(call);
-        bar.AddWidget(b);
-    }
-
-    private string? SelectedName()
-    {
+        if (_visible.Count == 0) return;
+        var item = _table.Item(0, 0);
         int row = _table.CurrentRow();
-        if (row < 0) return null;
-        return _table.Item(row, 0)?.Text();
+        int scroll = _table.VerticalScrollBar().Value;
+        FillTable();
+        if (_table.Item(0, 0).Handle != item.Handle || _table.CurrentRow() != row || _table.VerticalScrollBar().Value != scroll)
+            throw new InvalidOperationException("Silent update replaced table items or changed selection/scroll position");
     }
 
-    private void Act(Func<ControlResponse> call)
+    private MountStatus? Selected => _mounts.FirstOrDefault(m => m.Name == _selectedName);
+    private void Refresh(bool quiet = false) => Run(ControlClient.Status, null, quiet);
+
+    private void Run(Func<ControlResponse> call, string? successKey, bool quiet = false)
     {
-        try
+        if (_pending != null)
         {
-            var resp = call();
-            _status.SetText(resp.Ok ? "ok" : "error: " + resp.Error);
-            Fill(resp);
+            if (_quietPending && !quiet)
+            {
+                _queued = () => Run(call, successKey);
+                _quietPending = false;
+                UpdateActions();
+            }
+            return;
         }
-        catch (Exception ex)
+        _quietPending = quiet;
+        if (!quiet) Feedback(T(successKey == null ? "refreshing" : "working"));
+        _pending = Task.Run(() =>
         {
-            _status.SetText("service unreachable: " + ex.Message);
-        }
+            try
+            {
+                var response = call();
+                return new Result(response, successKey, response.Ok ? null : response.Error ?? "Unknown error", quiet);
+            }
+            catch (Exception ex) { return new Result(null, null, ex.Message, quiet); }
+        });
+        UpdateActions();
     }
 
-    private void Refresh() => Act(ControlClient.Status);
-
-    private void Fill(ControlResponse resp)
+    private void Tick()
     {
-        var mounts = resp.Mounts;
-        _table.SetRowCount(mounts.Count);
-        for (int r = 0; r < mounts.Count; r++)
+        if (_pending is { IsCompleted: true })
         {
-            var m = mounts[r];
-            Set(r, 0, m.Name);
-            Set(r, 1, m.Mounted ? "yes" : "no");
-            Set(r, 2, m.MountPoint);
-            Set(r, 3, m.SourceType);
-            Set(r, 4, m.Revision == 0 ? "" : m.Revision.ToString());
-            Set(r, 5, string.Join(" -> ", m.Providers.Select(p => p.Name + (p.Writable ? "(w)" : ""))));
-            Set(r, 6, FormatBytes(m.CacheBytes) + " / " + FormatBytes(m.CacheCapacity));
-            Set(r, 7, m.Error ?? "");
+            var result = _pending.GetAwaiter().GetResult();
+            _pending = null;
+            if (result.ServiceAction)
+            {
+                Feedback(result.Message ?? result.Error ?? "", result.Error != null);
+                _nextRefresh = DateTime.UtcNow.AddSeconds(1);
+            }
+            else
+            {
+                _connected = result.Response != null;
+                if (result.Response is { Ok: true } response)
+                {
+                    _mounts.Clear();
+                    _mounts.AddRange(response.Mounts);
+                    UpdateOverview();
+                    FillTable();
+                    _updated.SetText(I18n.F("updated", DateTime.Now.ToString("HH:mm:ss")));
+                    if (!result.Quiet) Feedback(T(result.Message ?? "refreshed"));
+                    else if (_feedback.Text.StartsWith(T("connection.failed"), StringComparison.Ordinal)) Feedback(T("connected"));
+                }
+                else if (result.Error != null)
+                    Feedback(T(result.Response == null ? "connection.failed" : "operation.failed") + " " + result.Error, true);
+                if (!_connected)
+                {
+                    foreach (var value in new[] { _total, _active, _issues, _layerTotal }) value.SetText("—");
+                    _updated.SetText(T("offline.retry"));
+                    FillTable();
+                }
+                _nextRefresh = DateTime.UtcNow.AddSeconds(10);
+            }
+            UpdateConnection();
+            UpdateActions();
+            if (_queued is { } queued) { _queued = null; queued(); }
         }
-        _table.ResizeColumnsToContents();
+        bool visible = _window.IsVisible();
+        if (visible && _pending == null && (!_wasVisible || DateTime.UtcNow >= _nextRefresh)) Refresh(quiet: true);
+        _wasVisible = visible;
     }
 
-    private void Set(int row, int col, string text) =>
-        _table.SetItem(row, col, new QTableWidgetItem(text ?? ""));
+    private void Translate()
+    {
+        UpdateFilters();
+        _table.SetHorizontalHeaderLabels(new[] { T("column.instance"), T("state"), T("column.layers") });
+        UpdateConnection();
+        if (_connected) UpdateOverview();
+        FillTable();
+        _feedback.SetText(T(_connected ? "connected" : "connecting"));
+        _updated.SetText(T("auto.refresh"));
+    }
+
+    private void UpdateFilters()
+    {
+        int selected = Math.Max(0, _filter.CurrentIndex);
+        _filter.BlockSignals(true);
+        _filter.Clear();
+        foreach (var key in new[] { "filter.all", "state.mounted", "state.unmounted", "state.error", "state.disabled" }) _filter.AddItem(T(key));
+        _filter.SetCurrentIndex(selected);
+        _filter.BlockSignals(false);
+    }
+
+    private void UpdateConnection()
+    {
+        SetText(_service, "●  " + T(_connected ? "service.online" : "service.offline"));
+        string style = _connected ? "color: #6ee7b7;" : "color: #fbbf24;";
+        if (_service.StyleSheet != style) _service.SetStyleSheet(style);
+    }
+
+    private void UpdateOverview()
+    {
+        SetText(_total, _mounts.Count.ToString());
+        SetText(_active, _mounts.Count(m => m.Mounted).ToString());
+        int issues = _mounts.Count(m => !string.IsNullOrWhiteSpace(m.Error));
+        SetText(_issues, issues.ToString());
+        string style = issues > 0 ? "color: #dc2626;" : "color: #17243b;";
+        if (_issues.StyleSheet != style) _issues.SetStyleSheet(style);
+        SetText(_layerTotal, _mounts.Sum(m => m.Providers.Count).ToString());
+    }
+
+    private void FillTable()
+    {
+        if (_table == null) return;
+        string query = _search.Text.Trim();
+        var visible = _mounts.Where(m =>
+            (query.Length == 0 || $"{m.Name} {m.MountPoint}".Contains(query, StringComparison.OrdinalIgnoreCase)) &&
+            (_filter.CurrentIndex switch { 1 => m.Mounted, 2 => !m.Mounted, 3 => !string.IsNullOrWhiteSpace(m.Error), 4 => !m.Enabled, _ => true })).ToList();
+        bool structureChanged = !_visible.Select(m => m.Name).SequenceEqual(visible.Select(m => m.Name));
+        _visible = visible;
+        _filling = true;
+        if (structureChanged) _table.SetUpdatesEnabled(false);
+        if (structureChanged) _table.SetRowCount(_visible.Count);
+        for (int row = 0; row < _visible.Count; row++)
+        {
+            var m = _visible[row];
+            var name = Cell(row, 0, m.Name + "\n" + m.MountPoint);
+            name.SetToolTip(m.Name + "\n" + m.MountPoint);
+            if (structureChanged) name.SetIcon(TrayIcons.Get("drive"));
+            bool stateChanged = structureChanged || _table.Item(row, 1)?.Text() != StateText(m);
+            var state = Cell(row, 1, StateText(m));
+            if (stateChanged) state.SetForeground(new QBrush(new QColor(StateColor(m))));
+            state.SetToolTip(m.Error ?? StateText(m));
+            Cell(row, 2, I18n.F("layer.count", m.Providers.Count));
+            if (structureChanged) _table.SetRowHeight(row, 68);
+        }
+        int selected = _visible.FindIndex(m => m.Name == _selectedName);
+        if (selected < 0 && _visible.Count > 0) selected = 0;
+        bool changed = _selectedName != (selected < 0 ? null : _visible[selected].Name);
+        _selectedName = selected < 0 ? null : _visible[selected].Name;
+        if (selected >= 0 && (structureChanged || changed)) _table.SelectRow(selected);
+        if (structureChanged) _table.SetUpdatesEnabled(true);
+        _filling = false;
+        SetText(_listCount, I18n.F("list.count", _visible.Count, _mounts.Count) + (_connected ? "" : " · " + T("last.known")));
+        _empty.SetVisible(_visible.Count == 0);
+        SetText(_empty, T(!_connected ? "empty.offline" : _mounts.Count == 0 ? "empty.new" : "empty.search"));
+        UpdateDetails(changed);
+    }
+
+    private void SelectMount()
+    {
+        if (_filling) return;
+        int row = _table.CurrentRow();
+        _selectedName = row >= 0 && row < _visible.Count ? _visible[row].Name : null;
+        UpdateDetails(true);
+    }
+
+    private void UpdateDetails(bool changed = false)
+    {
+        var m = Selected;
+        _detailBody.SetVisible(m != null);
+        SetText(_detailName, m?.Name ?? T("detail.select"));
+        SetText(_detailState, m == null ? T("detail.hint") : (_connected ? StateText(m) : T("detail.offline")));
+        string style = m == null || !_connected ? "color: #64748b;" : $"color: {StateColor(m)};";
+        if (_detailState.StyleSheet != style) _detailState.SetStyleSheet(style);
+        if (m != null)
+        {
+            SetText(_mountPath, m.MountPoint);
+            SetText(_layers, string.Join("\n↓\n", m.Providers.Select((p, i) => $"{i + 1:00}  {(string.IsNullOrEmpty(p.DisplayName) ? p.Name : p.DisplayName)}   ·   {T(p.Writable ? "writable" : "readonly")}")));
+            _detailError.SetVisible(!string.IsNullOrWhiteSpace(m.Error));
+            SetText(_detailError, T("instance.error") + "\n" + m.Error);
+        }
+        UpdateActions();
+    }
+
+    private void UpdateActions()
+    {
+        bool idle = _pending == null || _quietPending;
+        var m = Selected;
+        bool ready = idle && _connected && m != null;
+        _refresh.SetEnabled(idle);
+        string refreshText = T(idle ? "refresh" : "working.short");
+        if (_refresh.Text != refreshText) _refresh.SetText(refreshText);
+        _start.SetEnabled(idle && !_connected);
+        _stop.SetEnabled(idle && _connected);
+        _create.SetEnabled(idle && _connected);
+        _toggleMount.SetEnabled(ready && (m!.Mounted || m.Enabled));
+        string toggleText = T(m?.Mounted == true ? "unmount" : "mount");
+        if (_toggleMount.Text != toggleText)
+        {
+            _toggleMount.SetText(toggleText);
+            _toggleMount.SetIcon(TrayIcons.Get(m?.Mounted == true ? "stop" : "play", "#ffffff"));
+        }
+        _toggleMount.SetToolTip(T(m?.Enabled == false ? "disabled.tip" : "selected.tip"));
+        _open.SetEnabled(ready && m!.Mounted);
+        _edit.SetEnabled(ready);
+        _performance.SetEnabled(ready);
+        _inspect.SetEnabled(ready && m!.Providers.Count > 0);
+    }
+
+    private void ToggleSelected()
+    {
+        if (Selected is not { } m) return;
+        if (m.Mounted)
+        {
+            if (!Confirm("unmount", I18n.F("confirm.unmount", m.Name, m.MountPoint))) return;
+            Run(() => ControlClient.Unmount(m.Name), "unmount.done");
+        }
+        else Run(() => ControlClient.Mount(m.Name), "mount.done");
+    }
+
+    private void OpenSelected()
+    {
+        if (Selected is not { Mounted: true } m || !_connected || (_pending != null && !_quietPending)) return;
+        try { Process.Start(new ProcessStartInfo(m.MountPoint) { UseShellExecute = true }); }
+        catch (Exception ex) { Feedback(T("folder.failed") + " " + ex.Message, true); }
+    }
+
+    private void OpenEditor(string? name = null, bool create = false)
+    {
+        ConfigEditor editor;
+        if (create) editor = _newEditor = new ConfigEditor(create: true);
+        else
+        {
+            if (name == null) return;
+            if (!_editors.TryGetValue(name, out editor!)) _editors[name] = editor = new ConfigEditor(name);
+        }
+        editor.Saved -= OnConfigSaved;
+        editor.Saved += OnConfigSaved;
+        editor.ShowWindow();
+    }
+
+    private void OpenPerformance()
+    {
+        if (Selected is not { } m) return;
+        if (!_stats.TryGetValue(m.Name, out var stats)) _stats[m.Name] = stats = new StatsWindow(m.Name);
+        stats.ShowWindow();
+    }
+
+    private void OnConfigSaved() => Refresh();
+
+    private void RunService(bool start)
+    {
+        if (_pending != null)
+        {
+            if (_quietPending) { _queued = () => RunService(start); _quietPending = false; UpdateActions(); }
+            return;
+        }
+        if (!start && !Confirm("service.stop", T("confirm.service"))) return;
+        Feedback(T("working"));
+        _quietPending = false;
+        _pending = Task.Run(() =>
+        {
+            try
+            {
+                string message = start ? ServiceControl.Start() : ServiceControl.Stop();
+                return new Result(null, message, null, false, true);
+            }
+            catch (Exception ex) { return new Result(null, null, ex.Message, false, true); }
+        });
+        UpdateActions();
+    }
+
+    private bool Confirm(string titleKey, string message) => QMessageBox.Question(_window, T(titleKey), message,
+        T("confirm"), T("cancel"), null, 1, 1) == 0;
+
+    private void Feedback(string text, bool error = false)
+    {
+        _feedback.SetText(text);
+        _feedback.SetStyleSheet(error
+            ? "background: #fff1f2; color: #b42335; border: 1px solid #fecdd3; border-radius: 8px; padding: 10px 14px;"
+            : "background: #eef4ff; color: #315ca8; border: 1px solid #dae6fc; border-radius: 8px; padding: 10px 14px;");
+    }
+
+    private QTableWidgetItem Cell(int row, int col, string text)
+    {
+        var item = _table.Item(row, col);
+        if (item == null) { item = new QTableWidgetItem(text); _table.SetItem(row, col, item); }
+        else if (item.Text() != text) item.SetText(text);
+        return item;
+    }
+    private static void SetText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
+    private static string StateText(MountStatus m) => T(!string.IsNullOrWhiteSpace(m.Error) ? "state.error" : m.Mounted ? "state.mounted" : !m.Enabled ? "state.disabled" : "state.unmounted");
+    private static string StateColor(MountStatus m) => !string.IsNullOrWhiteSpace(m.Error) ? "#dc2626" : m.Mounted ? "#059669" : "#64748b";
+
+    private static QWidget Panel(string name)
+    {
+        var widget = new QWidget();
+        widget.SetObjectName(name);
+        widget.SetAttribute(Qt.WidgetAttribute.WA_StyledBackground);
+        return widget;
+    }
+
+    private static QLabel Label(string key, string name)
+    {
+        var label = PlainLabel("", name);
+        I18n.Bind(label.SetText, key);
+        return label;
+    }
+
+    private static QLabel PlainLabel(string text, string name)
+    {
+        var label = new QLabel(text);
+        label.SetObjectName(name);
+        label.SetWordWrap(true);
+        label.SetTextFormat(Qt.TextFormat.PlainText);
+        return label;
+    }
+
+    private static QPushButton Button(string key, Action action, string name = "", string? icon = null)
+    {
+        var button = new QPushButton();
+        I18n.Bind(button.SetText, key);
+        button.SetObjectName(name);
+        button.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+        if (icon != null) button.SetIcon(TrayIcons.Get(icon, name == "primary" ? "#ffffff" : name == "navButton" ? "#c8d4e6" : "#526786"));
+        button.Clicked += _ => action();
+        return button;
+    }
+
+    private static QLabel Metric(QHBoxLayout row, string title, string hint, string icon)
+    {
+        var card = Panel("surface");
+        var layout = new QVBoxLayout(card);
+        layout.SetContentsMargins(16, 15, 16, 15);
+        layout.SetSpacing(6);
+        var header = new QHBoxLayout();
+        header.AddWidget(Label(title, "muted"));
+        header.AddStretch(1);
+        var image = new QLabel();
+        image.SetPixmap(TrayIcons.Get(icon, "#7890b2").Pixmap(20, 20));
+        header.AddWidget(image);
+        layout.AddLayout(header);
+        var number = PlainLabel("—", "metricValue");
+        layout.AddWidget(number);
+        layout.AddWidget(Label(hint, "metricHint"));
+        row.AddWidget(card, 1);
+        return number;
+    }
+
+    private static QLabel DetailField(QVBoxLayout layout, string title)
+    {
+        layout.AddWidget(Label(title, "eyebrow"));
+        var value = PlainLabel("", "detailValue");
+        value.SetTextInteractionFlags(Qt.TextInteractionFlags.TextSelectableByMouse);
+        layout.AddWidget(value);
+        return value;
+    }
 
     private static string FormatBytes(long bytes)
     {
         string[] units = { "B", "KB", "MB", "GB", "TB" };
-        double v = bytes;
-        int i = 0;
-        while (v >= 1024 && i < units.Length - 1) { v /= 1024; i++; }
-        return i == 0 ? $"{bytes} B" : $"{v:0.##} {units[i]}";
+        double value = bytes;
+        int unit = 0;
+        while (value >= 1024 && unit < units.Length - 1) { value /= 1024; unit++; }
+        return value.ToString("0.#", I18n.Culture) + " " + units[unit];
     }
 }
