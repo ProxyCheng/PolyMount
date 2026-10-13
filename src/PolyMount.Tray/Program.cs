@@ -66,10 +66,12 @@ internal static class Program
         instanceLock.SetStaleLockTime(0);
         if (!instanceLock.TryLock(0))
         {
-            Console.Error.WriteLine(instanceLock.Error() == QLockFile.LockError.LockFailedError
-                ? "PolyMount Tray is already running." : "Unable to acquire the PolyMount Tray instance lock: " + instanceLock.Error());
-            return instanceLock.Error() == QLockFile.LockError.LockFailedError ? 0 : 2;
+            if (instanceLock.Error() == QLockFile.LockError.LockFailedError &&
+                TrayActivation.ActivateExisting(TrayActivation.ServerName(settingsDirectory))) return 0;
+            Console.Error.WriteLine("Unable to activate the existing tray or acquire its instance lock: " + instanceLock.Error());
+            return 2;
         }
+        using var activation = new TrayActivation(TrayActivation.ServerName(settingsDirectory), ShowDashboard);
 
         // Closing the dashboard must not quit the app; the tray keeps it alive.
         QApplication.SetQuitOnLastWindowClosed(false);
@@ -143,11 +145,13 @@ internal static class Program
     private static void ShowDashboard()
     {
         _dashboard ??= new Dashboard();
+        if (_dashboard.IsMinimized()) _dashboard.ShowNormal();
         _dashboard.ShowWindow();
     }
 
     private static int RunUiSmoke(string? capture)
     {
+        TrayActivation.Smoke();
         var dashboard = new Dashboard();
         var editor = new ConfigEditor("L10");
         var stats = new StatsWindow("L10");
