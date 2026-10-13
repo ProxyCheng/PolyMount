@@ -18,6 +18,20 @@ internal static class ServiceControl
     {
         if (IsRunning()) return I18n.T("service.already");
 
+        // Installed layout uses the SCM account and ProgramData configuration, never a
+        // second interactive service process beside the packaged tray executable.
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "..", "install.json")))
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount")
+                    { UseShellExecute = false, CreateNoWindow = true })!;
+                process.WaitForExit(5000);
+                return process.HasExited && process.ExitCode == 0 ? I18n.T("service.startRequested") : I18n.T("operation.failed") + "sc.exe start PolyMount";
+            }
+            catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
+        }
+
         var exe = ServiceExePath();
         if (exe != null && File.Exists(exe))
         {

@@ -4,7 +4,9 @@ using PolyMount.Service;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(options => options.ServiceName = "PolyMount");
-builder.Services.AddSingleton<MountManager>();
+int configIndex = Array.IndexOf(args, "--config");
+string? configPath = configIndex >= 0 && configIndex + 1 < args.Length ? Path.GetFullPath(args[configIndex + 1]) : null;
+builder.Services.AddSingleton<MountManager>(services => new MountManager(services.GetRequiredService<IHostApplicationLifetime>(), configPath));
 builder.Services.AddHostedService<Worker>();
 
 var host = builder.Build();
