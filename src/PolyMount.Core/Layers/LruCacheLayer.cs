@@ -77,12 +77,7 @@ public sealed class LruCacheLayer : ICacheLayer
 
     public void Invalidate()
     {
-        lock (_gate)
-        {
-            _size.Clear();
-            _access.Clear();
-            _total = 0;
-        }
+        Purge();
     }
 
     // Evict a single cached path (exists -> unknown) for the current generation.

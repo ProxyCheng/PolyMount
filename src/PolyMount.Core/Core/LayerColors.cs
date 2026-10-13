@@ -12,10 +12,10 @@ public static class LayerColors
     // A few hand-picked colors for the well-known built-in layers; everything else is hashed.
     private static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["overlay"] = "#1E88E5", // blue   - local writable
-        ["cache"] = "#8E24AA",   // purple - cache
-        ["svn"] = "#43A047",     // green  - svn source
-        ["dir"] = "#FB8C00"      // orange - local dir source
+        ["overlay"] = "#2563EB", // blue   - local writable
+        ["cache"] = "#8B5CF6",   // violet - cache
+        ["svn"] = "#059669",     // green  - svn source
+        ["dir"] = "#D97706"      // amber - local dir source
     };
 
     /// <summary>Deterministic auto color for an arbitrary layer key, as "#RRGGBB".</summary>

@@ -51,8 +51,7 @@ public sealed class AppConfig
             if (!names.Add(m.Name)) throw new ArgumentException("duplicate mount name: " + m.Name);
             if (string.IsNullOrWhiteSpace(m.MountPoint)) throw new ArgumentException($"mount '{m.Name}' has no MountPoint");
             if (string.IsNullOrWhiteSpace(m.StoreRoot)) throw new ArgumentException($"mount '{m.Name}' has no StoreRoot");
-            if (!SourceRegistry.Contains(m.Source.Type))
-                throw new ArgumentException($"mount '{m.Name}' uses unknown source type '{m.Source.Type}'");
+            m.ValidateLayers();
         }
         foreach (var kv in LayerColors)
             if (!PolyMount.Core.LayerColors.TryNormalizeHex(kv.Value, out _))
@@ -86,6 +85,46 @@ public sealed class MountProfile
     public string StoreRoot { get; set; } = "";
     public long CacheCapacityBytes { get; set; } = 4L * 1024 * 1024 * 1024;
     public SourceConfig Source { get; set; } = new();
+
+    // Null keeps the legacy overlay -> cache -> source configuration working.
+    public List<LayerConfig>? Layers { get; set; }
+
+    public List<LayerConfig> GetLayers() => Layers ?? new List<LayerConfig>
+    {
+        new() { Id = "overlay", Type = "overlay" },
+        new() { Id = "cache", Type = "cache", CacheCapacityBytes = CacheCapacityBytes },
+        new() { Id = Source.Type, Type = Source.Type, Source = Source }
+    }.Where(l => l.Type != "cache" || !string.Equals(Source.Type, "dir", StringComparison.OrdinalIgnoreCase)).ToList();
+
+    public void ValidateLayers()
+    {
+        var layers = GetLayers();
+        var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var layer in layers)
+        {
+            if (string.IsNullOrWhiteSpace(layer.Id) || layer.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-' && c != '_'))
+                throw new ArgumentException($"mount '{Name}' has an invalid layer ID '{layer.Id}'");
+            if (!ids.Add(layer.Id)) throw new ArgumentException($"duplicate layer ID '{layer.Id}' in '{Name}'");
+            if (!LayerRegistry.Contains(layer.Type))
+                throw new ArgumentException($"unknown layer type '{layer.Type}' in '{Name}'");
+            if (!layer.Enabled) continue;
+            LayerRegistry.Validate(layer);
+            if (!string.IsNullOrEmpty(layer.Color) && !Core.LayerColors.TryNormalizeHex(layer.Color, out _))
+                throw new ArgumentException($"invalid color for layer '{layer.Id}'");
+        }
+    }
+}
+
+public sealed class LayerConfig
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public bool Enabled { get; set; } = true;
+    public string Type { get; set; } = "overlay";
+    public string Path { get; set; } = "";
+    public long CacheCapacityBytes { get; set; } = 4L * 1024 * 1024 * 1024;
+    public SourceConfig Source { get; set; } = new();
+    public string Color { get; set; } = "";
 }
 
 public sealed class SourceConfig

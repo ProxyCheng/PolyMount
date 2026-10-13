@@ -36,10 +36,17 @@ public class VirtualFileSystemTests
     }
 
     [TestMethod]
-    public void Requires_a_writable_layer()
+    public void Readonly_chain_reads_and_rejects_mutations()
     {
         var src = new FakeSourceLayer();
-        Assert.ThrowsException<ArgumentException>(() => new VirtualFileSystem(new ILayer[] { src }));
+        src.AddFile("file", "read-only");
+        var vfs = new VirtualFileSystem(new ILayer[] { src });
+        using var read = vfs.OpenRead("file", out _);
+        Assert.AreEqual("read-only", ReadAll(read));
+        Assert.ThrowsException<UnauthorizedAccessException>(() => vfs.OpenWrite("file", false, out _));
+        Assert.ThrowsException<UnauthorizedAccessException>(() => vfs.CreateDirectory("folder"));
+        Assert.ThrowsException<UnauthorizedAccessException>(() => vfs.Delete("file"));
+        Assert.ThrowsException<UnauthorizedAccessException>(() => vfs.Rename("file", "renamed", false));
     }
 
     [TestMethod]

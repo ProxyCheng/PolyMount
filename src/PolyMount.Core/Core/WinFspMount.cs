@@ -100,6 +100,7 @@ public sealed class WinFspMount : FileSystemBase
             return NtStatus.Success;
         }
         catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
+        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
         catch (Exception ex) { Log("Open " + fileName, ex); return NtStatus.UnexpectedIoError; }
     }
 
@@ -134,6 +135,7 @@ public sealed class WinFspMount : FileSystemBase
             fileInfo = BuildStreamInfo(rel, stream);
             return NtStatus.Success;
         }
+        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
         catch (Exception ex) { Log("Create " + fileName, ex); return NtStatus.UnexpectedIoError; }
     }
 
@@ -251,7 +253,7 @@ public sealed class WinFspMount : FileSystemBase
         catch (Exception ex) { Log("SetBasicInfo", ex); return NtStatus.UnexpectedIoError; }
     }
 
-    public override int CanDelete(object fileNode, object fileDesc, string fileName) => NtStatus.Success;
+    public override int CanDelete(object fileNode, object fileDesc, string fileName) => _vfs.Writable ? NtStatus.Success : NtStatus.AccessDenied;
 
     public override int SetDelete(object fileNode, object fileDesc, string fileName, bool deleteFile)
     {
@@ -264,6 +266,7 @@ public sealed class WinFspMount : FileSystemBase
             return NtStatus.Success;
         }
         catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
+        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
         catch (Exception ex) { Log("SetDelete " + fileName, ex); return NtStatus.UnexpectedIoError; }
     }
 
@@ -278,6 +281,7 @@ public sealed class WinFspMount : FileSystemBase
             return NtStatus.Success;
         }
         catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
+        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
         catch (Exception ex) { Log("Rename", ex); return NtStatus.UnexpectedIoError; }
     }
 

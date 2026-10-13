@@ -9,37 +9,52 @@ public sealed class MountInstance : IDisposable
     private readonly string _logPath;
     private readonly object _gate = new();
     private FileSystemHost? _host;
+    private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
 
     public MountInstance(MountProfile profile)
     {
         Profile = profile;
+        profile.ValidateLayers();
         var state = Path.Combine(profile.StoreRoot, "state");
         Directory.CreateDirectory(state);
         _logPath = Path.Combine(state, "polymount.log");
 
-        Overlay = new OverlayLayer(Path.Combine(profile.StoreRoot, "overlay"), Path.Combine(state, "tombstones"));
-        Source = SourceRegistry.Create(profile.Source, state);
-
-        var layers = new List<ILayer> { Overlay };
-
-        // Local sources already live on disk, so a read-through cache only wastes space.
-        if (Source is not ILocalSource)
+        var configs = profile.GetLayers().Where(l => l.Enabled).ToList();
+        var built = new ILayer[configs.Count];
+        // Build bottom-up so every cache can observe the generation of its complete lower chain.
+        for (int i = configs.Count - 1; i >= 0; i--)
         {
-            Cache = new LruCacheLayer(Path.Combine(profile.StoreRoot, "cache"), () => Source.Generation,
-                profile.CacheCapacityBytes);
-            layers.Add(Cache);
+            var cfg = configs[i];
+            _configs.Add(cfg.Id, cfg);
+            bool legacyId = cfg.Id == cfg.Type;
+            string layerState = legacyId ? state : Path.Combine(state, cfg.Id);
+            Directory.CreateDirectory(layerState);
+            string storage = string.IsNullOrWhiteSpace(cfg.Path) ? Path.Combine(profile.StoreRoot, cfg.Id) : cfg.Path;
+            int index = i;
+            var provider = LayerRegistry.Create(cfg, new LayerBuildContext(storage, layerState, () =>
+                {
+                    var lower = built.Skip(index + 1).Select(l => l.Name + ":" + l.Generation);
+                    // Preserve the old revision-based folder for the single-source chain.
+                    if (built.Length - index == 2) return built[index + 1].Generation;
+                    return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join("|", lower))));
+                }));
+            _providers.Add(cfg.Id, provider);
+            built[i] = provider is ICacheLayer cache ? new NamedCacheLayer(cfg.Id, cache) : new NamedLayer(cfg.Id, provider);
         }
-
-        layers.Add(Source);
+        Overlay = _providers.Values.OfType<OverlayLayer>().FirstOrDefault();
+        Cache = _providers.Values.OfType<LruCacheLayer>().FirstOrDefault();
+        Source = configs.Where(c => SourceRegistry.Contains(c.Type)).Select(c => _providers[c.Id]).FirstOrDefault();
+        var layers = built.ToList();
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
     }
 
     public MountProfile Profile { get; }
     public VirtualFileSystem Vfs { get; }
-    public OverlayLayer Overlay { get; }
+    public OverlayLayer? Overlay { get; }
     public LruCacheLayer? Cache { get; }
-    public ILayer Source { get; }
+    public ILayer? Source { get; }
     public MetricsCollector Metrics { get; } = new();
 
     // User color overrides (layer name -> "#RRGGBB"); auto color is used for missing keys.
@@ -98,25 +113,35 @@ public sealed class MountInstance : IDisposable
         }
     }
 
-    public void SetPin(long revision)
+    public void SetPin(long revision, string? layer = null)
     {
-        if (Source is IRevisionSource rev) rev.SetRevision(revision);
-        else throw new NotSupportedException("source '" + Profile.Source.Type + "' has no revision");
+        var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
+        if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
+        foreach (var rev in revisions) rev.SetRevision(revision);
     }
 
-    public void RefreshHead()
+    public void RefreshHead(string? layer = null)
     {
-        if (Source is IRevisionSource rev) rev.SetRevision(rev.HeadRevision());
-        else throw new NotSupportedException("source has no revision");
+        var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
+        if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
+        foreach (var rev in revisions) rev.SetRevision(rev.HeadRevision());
     }
 
-    public void ClearCache() => Cache?.Purge();
+    public void ClearCache(string? layer = null)
+    {
+        foreach (var cache in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<LruCacheLayer>()) cache.Purge();
+    }
 
     public MountMetrics GetMetrics(int windowSeconds)
     {
         var m = Metrics.Snapshot(Profile.Name, windowSeconds);
+        // Include every active provider, even when it served no reads in this window.
+        m.Layers = Vfs.Layers.Select(layer => m.Layers.FirstOrDefault(l => l.Name == layer.Name) ?? new LayerMetric { Name = layer.Name }).ToList();
         foreach (var lm in m.Layers)
-            lm.Color = LayerColors.Resolve(lm.Name, ColorOverrides);
+        {
+            lm.Color = ResolveColor(lm.Name);
+            lm.DisplayName = _configs[lm.Name].Name;
+        }
         return m;
     }
 
@@ -124,7 +149,10 @@ public sealed class MountInstance : IDisposable
     {
         var layers = Vfs.Probe(rel);
         foreach (var lp in layers)
-            lp.Color = LayerColors.Resolve(lp.Name, ColorOverrides);
+        {
+            lp.Color = ResolveColor(lp.Name);
+            lp.Type = _configs[lp.Name].Type;
+        }
 
         var effective = layers.FirstOrDefault(l => l.Effective);
         return new ProbeResult
@@ -143,22 +171,24 @@ public sealed class MountInstance : IDisposable
     // Mutate a single layer's state for one path, then return the refreshed probe.
     public ProbeResult ApplyLayerAction(string layer, string rel, string action)
     {
-        switch (layer.ToLowerInvariant())
+        if (!_providers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
+        if (provider.Writable) Vfs.InvalidateCaches();
+        switch (provider)
         {
-            case "overlay":
+            case OverlayLayer overlay:
                 switch (action)
                 {
-                    case LayerActions.Restore:   Overlay.ClearTombstone(rel); break;        // deleted -> unknown
-                    case LayerActions.Hide:      Overlay.Delete(rel, shadowedBelow: true); break;   // -> deleted
-                    case LayerActions.DropLocal: Overlay.Delete(rel, shadowedBelow: false); break;  // exists -> unknown
+                    case LayerActions.Restore:   overlay.ClearTombstone(rel); break;
+                    case LayerActions.Hide:      overlay.Delete(rel, shadowedBelow: true); break;
+                    case LayerActions.DropLocal: overlay.Delete(rel, shadowedBelow: false); break;
                     default: throw new NotSupportedException($"overlay has no action '{action}'");
                 }
                 break;
 
-            case "cache":
+            case LruCacheLayer cache:
                 if (action != LayerActions.EvictCache)
                     throw new NotSupportedException($"cache has no action '{action}'");
-                Cache?.InvalidateEntry(rel);
+                cache.InvalidateEntry(rel);
                 break;
 
             default:
@@ -176,21 +206,24 @@ public sealed class MountInstance : IDisposable
             Enabled = Profile.Enabled,
             Mounted = Mounted,
             MountPoint = Profile.MountPoint,
-            SourceType = Profile.Source.Type,
-            Url = Profile.Source.Url,
-            CacheBytes = Cache?.TotalBytes ?? 0,
-            CacheCapacity = Cache?.Capacity ?? 0,
-            CacheCount = Cache?.Count ?? 0
+            SourceType = string.Join(" + ", _configs.Values.Where(c => SourceRegistry.Contains(c.Type)).Select(c => c.Type).Distinct()),
+            Url = string.Join("\n", _configs.Values.Where(c => SourceRegistry.Contains(c.Type)).Select(c => c.Type == "dir" ? c.Source.Path : c.Source.Url)),
+            CacheBytes = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.TotalBytes),
+            CacheCapacity = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Capacity),
+            CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count)
         };
 
         foreach (var layer in Vfs.Layers)
-            status.Providers.Add(new ProviderInfo { Name = layer.Name, Writable = layer.Writable, Generation = layer.Generation });
+            status.Providers.Add(new ProviderInfo { Name = layer.Name, DisplayName = _configs[layer.Name].Name, Type = _configs[layer.Name].Type, Color = ResolveColor(layer.Name), Writable = layer.Writable, Generation = layer.Generation });
 
         if (Source is IRevisionSource rev) status.Revision = rev.Revision;
         return status;
     }
 
     public void Dispose() => Unmount();
+
+    private string ResolveColor(string name) => _configs.TryGetValue(name, out var config) && !string.IsNullOrEmpty(config.Color)
+        ? config.Color : LayerColors.Resolve(_configs.TryGetValue(name, out config) ? config.Type : name, ColorOverrides);
 
     // WinFsp creates its own reparse-point directory for a directory mount point, so the
     // target must NOT already exist. A pre-existing (even empty) directory causes

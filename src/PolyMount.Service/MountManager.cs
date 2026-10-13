@@ -123,13 +123,13 @@ public sealed class MountManager
                 case ControlCommands.Status:
                     break;
                 case ControlCommands.SetPin:
-                    Find(request.Name).SetPin(request.Rev);
+                    Find(request.Name).SetPin(request.Rev, request.Layer);
                     break;
                 case ControlCommands.RefreshHead:
-                    Find(request.Name).RefreshHead();
+                    Find(request.Name).RefreshHead(request.Layer);
                     break;
                 case ControlCommands.ClearCache:
-                    Find(request.Name).ClearCache();
+                    Find(request.Name).ClearCache(request.Layer);
                     break;
                 case ControlCommands.Mount:
                     Find(request.Name).Mount(Config.WinFspBin);
@@ -166,7 +166,8 @@ public sealed class MountManager
                     break;
                 case ControlCommands.Metrics:
                     lock (_gate)
-                        response.Metrics = _instances.Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
+                        response.Metrics = _instances.Where(i => request.Name == null || string.Equals(i.Name, request.Name, StringComparison.OrdinalIgnoreCase))
+                            .Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
                     break;
                 case ControlCommands.Shutdown:
                     // Respond first, then unmount and stop the host shortly after so the reply flushes.
@@ -191,6 +192,18 @@ public sealed class MountManager
         lock (_gate)
         {
             response.Mounts = _instances.Select(i => i.GetStatus()).ToList();
+            foreach (var profile in Config.Mounts.Where(p => response.Mounts.All(s => s.Name != p.Name)))
+            {
+                var layers = profile.GetLayers();
+                response.Mounts.Add(new MountStatus
+                {
+                    Name = profile.Name, Enabled = profile.Enabled, MountPoint = profile.MountPoint,
+                    SourceType = string.Join(" + ", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type).Distinct()),
+                    Url = string.Join("\n", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type == "dir" ? l.Source.Path : l.Source.Url)),
+                    Providers = layers.Where(l => l.Enabled).Select(l => new ProviderInfo { Name = l.Id, DisplayName = l.Name, Type = l.Type, Color = l.Color,
+                        Writable = l.Type == "overlay" || l.Type == "dir" && l.Source.Writable }).ToList()
+                });
+            }
             foreach (var status in response.Mounts)
                 if (_errors.TryGetValue(status.Name, out var err)) status.Error = err;
         }

@@ -3,6 +3,9 @@ namespace PolyMount.Core.Ipc;
 public sealed class ProviderInfo
 {
     public string Name { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string Color { get; set; } = "";
     public bool Writable { get; set; }
     public string Generation { get; set; } = "";
 }
@@ -64,6 +67,7 @@ public sealed class ControlResponse
 public sealed class LayerProbe
 {
     public string Name { get; set; } = "";
+    public string Type { get; set; } = "";
     public bool Writable { get; set; }
     public bool Exists { get; set; }
     public bool IsDir { get; set; }
@@ -113,6 +117,7 @@ public static class ControlCommands
 public sealed class LayerMetric
 {
     public string Name { get; set; } = "";
+    public string DisplayName { get; set; } = "";
     public string Color { get; set; } = "";
     public long Hits { get; set; }          // reads served by this layer
     public double SharePercent { get; set; } // share of total reads

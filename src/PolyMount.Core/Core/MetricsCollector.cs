@@ -10,7 +10,7 @@ namespace PolyMount.Core;
 /// </summary>
 public sealed class MetricsCollector
 {
-    private readonly record struct Sample(long TicksUtc, string Layer, double CostMs, long Bytes);
+    private readonly record struct Sample(long TicksUtc, string Layer, double CostMs, long Bytes, bool Cached);
 
     private readonly int _capacity;
     private readonly ConcurrentQueue<Sample> _samples = new();
@@ -18,9 +18,9 @@ public sealed class MetricsCollector
 
     public MetricsCollector(int capacity = 5000) => _capacity = capacity;
 
-    public void RecordRead(string layer, TimeSpan elapsed, long bytes)
+    public void RecordRead(string layer, TimeSpan elapsed, long bytes, bool cached = false)
     {
-        _samples.Enqueue(new Sample(DateTime.UtcNow.Ticks, layer, elapsed.TotalMilliseconds, bytes));
+        _samples.Enqueue(new Sample(DateTime.UtcNow.Ticks, layer, elapsed.TotalMilliseconds, bytes, cached));
         if (Interlocked.Increment(ref _count) > _capacity)
             if (_samples.TryDequeue(out _)) Interlocked.Decrement(ref _count);
     }
@@ -40,7 +40,7 @@ public sealed class MetricsCollector
         foreach (var g in recent.GroupBy(s => s.Layer, StringComparer.OrdinalIgnoreCase))
         {
             var arr = g.ToArray();
-            if (string.Equals(g.Key, "cache", StringComparison.OrdinalIgnoreCase)) cacheHits += arr.Length;
+            cacheHits += arr.Count(s => s.Cached);
             result.Layers.Add(new LayerMetric
             {
                 Name = g.Key,
