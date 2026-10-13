@@ -32,6 +32,7 @@ public sealed class MountInstance : IDisposable
 
         layers.Add(Source);
         Vfs = new VirtualFileSystem(layers);
+        Vfs.Metrics = Metrics;
     }
 
     public MountProfile Profile { get; }
@@ -39,6 +40,7 @@ public sealed class MountInstance : IDisposable
     public OverlayLayer Overlay { get; }
     public LruCacheLayer? Cache { get; }
     public ILayer Source { get; }
+    public MetricsCollector Metrics { get; } = new();
 
     // User color overrides (layer name -> "#RRGGBB"); auto color is used for missing keys.
     public IReadOnlyDictionary<string, string> ColorOverrides { get; set; } =
@@ -110,6 +112,14 @@ public sealed class MountInstance : IDisposable
 
     public void ClearCache() => Cache?.Purge();
 
+    public MountMetrics GetMetrics(int windowSeconds)
+    {
+        var m = Metrics.Snapshot(Profile.Name, windowSeconds);
+        foreach (var lm in m.Layers)
+            lm.Color = LayerColors.Resolve(lm.Name, ColorOverrides);
+        return m;
+    }
+
     public ProbeResult Probe(string rel)
     {
         var layers = Vfs.Probe(rel);
@@ -138,9 +148,9 @@ public sealed class MountInstance : IDisposable
             case "overlay":
                 switch (action)
                 {
-                    case LayerActions.Restore:   Overlay.ClearTombstone(rel); break;        // 不存在 -> 不知道
-                    case LayerActions.Hide:      Overlay.Delete(rel, shadowedBelow: true); break;   // -> 不存在
-                    case LayerActions.DropLocal: Overlay.Delete(rel, shadowedBelow: false); break;  // 存在 -> 不知道
+                    case LayerActions.Restore:   Overlay.ClearTombstone(rel); break;        // deleted -> unknown
+                    case LayerActions.Hide:      Overlay.Delete(rel, shadowedBelow: true); break;   // -> deleted
+                    case LayerActions.DropLocal: Overlay.Delete(rel, shadowedBelow: false); break;  // exists -> unknown
                     default: throw new NotSupportedException($"overlay has no action '{action}'");
                 }
                 break;

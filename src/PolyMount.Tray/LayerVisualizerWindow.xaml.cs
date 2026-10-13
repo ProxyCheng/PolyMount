@@ -68,10 +68,10 @@ public partial class LayerVisualizerWindow : Window
 
     private static string StateLabel(State s) => s switch
     {
-        State.Effective => "生效（存在）",
-        State.Shadowed => "被覆盖（存在）",
-        State.Tombstone => "不存在（墓碑）",
-        _ => "不知道（向下层）"
+        State.Effective => "effective (exists)",
+        State.Shadowed => "shadowed (exists)",
+        State.Tombstone => "deleted (tombstone)",
+        _ => "unknown (fall through)"
     };
 
     private void Render()
@@ -81,8 +81,8 @@ public partial class LayerVisualizerWindow : Window
 
         PathText.Text = $"{result.MountPoint}\\{result.Rel.Replace('/', '\\')}".TrimEnd('\\');
         SummaryText.Text = result.Found
-            ? $"挂载 “{result.Mount}” · 相对 “{(result.Rel.Length == 0 ? "<根>" : result.Rel)}” · 生效类型：{(result.IsDir ? "目录" : "文件")}"
-            : $"挂载 “{result.Mount}” · 相对 “{(result.Rel.Length == 0 ? "<根>" : result.Rel)}” · 当前不可见（无生效层或被墓碑遮蔽）";
+            ? $"mount \"{result.Mount}\" · rel \"{(result.Rel.Length == 0 ? "<root>" : result.Rel)}\" · effective type: {(result.IsDir ? "directory" : "file")}"
+            : $"mount \"{result.Mount}\" · rel \"{(result.Rel.Length == 0 ? "<root>" : result.Rel)}\" · currently not visible (no effective layer or hidden by tombstone)";
 
         BuildLegend();
 
@@ -163,19 +163,19 @@ public partial class LayerVisualizerWindow : Window
             Width = 13, Height = 13, RadiusX = 3, RadiusY = 3,
             Fill = ParseBrush(p.Color), Stroke = Outline, StrokeThickness = 1,
             VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0),
-            ToolTip = $"来源层颜色 {p.Color}"
+            ToolTip = $"source layer color {p.Color}"
         });
         var title = new TextBlock { FontWeight = FontWeights.Bold, FontSize = 13, VerticalAlignment = VerticalAlignment.Center };
-        title.Inlines.Add($"{p.Name}{(p.Writable ? " (可写)" : "")}  ");
+        title.Inlines.Add($"{p.Name}{(p.Writable ? " (writable)" : "")}  ");
         title.Inlines.Add(new System.Windows.Documents.Run("[" + StateLabel(state) + "]") { Foreground = Palette(state).body });
         header.Children.Add(title);
         sb.Children.Add(header);
 
         string detail = state switch
         {
-            State.Unknown => "该层无此路径，解析向下层传递",
-            State.Tombstone => "墓碑：遮蔽下层同名项",
-            _ => p.IsDir ? "目录" : $"文件 · {FormatBytes(p.Size)}"
+            State.Unknown => "layer has no entry; resolution falls through",
+            State.Tombstone => "tombstone: hides same-named items below",
+            _ => p.IsDir ? "directory" : $"file · {FormatBytes(p.Size)}"
         };
         sb.Children.Add(new TextBlock { Text = detail, Foreground = Freeze(Color.FromRgb(0x55, 0x55, 0x55)) });
         sb.Children.Add(new TextBlock { Text = "gen: " + p.Generation, FontSize = 11, Foreground = Freeze(Color.FromRgb(0x99, 0x99, 0x99)) });
@@ -207,18 +207,18 @@ public partial class LayerVisualizerWindow : Window
         if (string.Equals(p.Name, "overlay", StringComparison.OrdinalIgnoreCase))
         {
             if (p.DirectTombstone)
-                panel.Children.Add(Btn("恢复（删除墓碑）", p.Name, LayerActions.Restore));
+                panel.Children.Add(Btn("Restore (remove tombstone)", p.Name, LayerActions.Restore));
             else if (p.Exists)
             {
-                panel.Children.Add(Btn("删除（墓碑遮蔽）", p.Name, LayerActions.Hide));
-                panel.Children.Add(Btn("丢弃本层改动", p.Name, LayerActions.DropLocal));
+                panel.Children.Add(Btn("Delete (tombstone)", p.Name, LayerActions.Hide));
+                panel.Children.Add(Btn("Discard local change", p.Name, LayerActions.DropLocal));
             }
             else
-                panel.Children.Add(Btn("删除（墓碑遮蔽）", p.Name, LayerActions.Hide));
+                panel.Children.Add(Btn("Delete (tombstone)", p.Name, LayerActions.Hide));
         }
         else if (string.Equals(p.Name, "cache", StringComparison.OrdinalIgnoreCase) && p.Exists)
         {
-            panel.Children.Add(Btn("清除此文件缓存", p.Name, LayerActions.EvictCache));
+            panel.Children.Add(Btn("Evict cached file", p.Name, LayerActions.EvictCache));
         }
 
         return panel.Children.Count == 0 ? null : panel;
@@ -238,7 +238,7 @@ public partial class LayerVisualizerWindow : Window
             var resp = ControlClient.LayerAction(_fullPath, layer, action);
             if (!resp.Ok)
             {
-                MessageBox.Show(this, resp.Error ?? "操作失败", "PolyMount", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(this, resp.Error ?? "action failed", "PolyMount", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             if (resp.Probe != null) { _result = resp.Probe; Render(); }
@@ -252,10 +252,10 @@ public partial class LayerVisualizerWindow : Window
     private void BuildLegend()
     {
         Legend.Children.Clear();
-        AddLegendItem(EffectiveBody, "生效（存在）");
-        AddLegendItem(ShadowedBody, "被覆盖（存在）");
-        AddLegendItem(TombBody, "不存在（墓碑）");
-        AddLegendItem(EmptyBody, "不知道");
+        AddLegendItem(EffectiveBody, "effective (exists)");
+        AddLegendItem(ShadowedBody, "shadowed (exists)");
+        AddLegendItem(TombBody, "deleted (tombstone)");
+        AddLegendItem(EmptyBody, "unknown");
     }
 
     private void AddLegendItem(Brush fill, string text)

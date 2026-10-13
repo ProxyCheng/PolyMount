@@ -161,6 +161,10 @@ public sealed class MountManager
                 case ControlCommands.Reload:
                     Reload();
                     break;
+                case ControlCommands.Metrics:
+                    lock (_gate)
+                        response.Metrics = _instances.Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
+                    break;
                 default:
                     throw new InvalidOperationException("unknown command: " + request.Cmd);
             }

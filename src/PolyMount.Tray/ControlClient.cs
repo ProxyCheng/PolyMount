@@ -48,4 +48,7 @@ public static class ControlClient
 
     public static ControlResponse Reload()
         => Send(new ControlRequest { Cmd = ControlCommands.Reload });
+
+    public static ControlResponse Metrics(int windowSeconds = 300)
+        => Send(new ControlRequest { Cmd = ControlCommands.Metrics, WindowSeconds = windowSeconds });
 }

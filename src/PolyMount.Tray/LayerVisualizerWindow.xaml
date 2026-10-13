@@ -1,7 +1,7 @@
 <Window x:Class="PolyMount.Tray.LayerVisualizerWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PolyMount 分层视图" Height="640" Width="580"
+        Title="PolyMount Layer View" Height="640" Width="580"
         WindowStartupLocation="CenterScreen">
     <DockPanel Margin="12">
         <Border DockPanel.Dock="Top" Background="#F3F3F3" CornerRadius="4" Padding="10" Margin="0,0,0,10">

@@ -9,7 +9,7 @@ namespace PolyMount.Tray;
 public static class ShellMenuInstaller
 {
     private const string KeyName = "PolyMountLayers";
-    private const string Label = "PolyMount: 查看分层";
+    private const string Label = "PolyMount: Show layers";
 
     // Apply to all files ("*") and folders ("Directory").
     private static readonly string[] Types = { "*", "Directory" };

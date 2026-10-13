@@ -36,7 +36,7 @@ public partial class App : Application
         var menu = new ContextMenuStrip();
         menu.Items.Add("Dashboard", null, (_, _) => ShowDashboard());
 
-        var shellItem = new ToolStripMenuItem("资源管理器右键菜单") { Checked = ShellMenuInstaller.IsInstalled() };
+        var shellItem = new ToolStripMenuItem("Explorer context menu") { Checked = ShellMenuInstaller.IsInstalled() };
         shellItem.Click += (_, _) => ToggleShellMenu(shellItem);
         menu.Items.Add(shellItem);
 
@@ -55,7 +55,7 @@ public partial class App : Application
             var resp = ControlClient.Probe(path);
             if (!resp.Ok || resp.Probe == null)
             {
-                MessageBox.Show(resp.Error ?? "无法获取分层信息", "PolyMount", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show(resp.Error ?? "could not get layer info", "PolyMount", MessageBoxButton.OK, MessageBoxImage.Warning);
                 Shutdown();
                 return;
             }
@@ -63,7 +63,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            MessageBox.Show("连接 PolyMount 服务失败：" + ex.Message, "PolyMount", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show("Failed to connect to the PolyMount service: " + ex.Message, "PolyMount", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown();
         }
     }

@@ -104,6 +104,12 @@ public partial class DashboardWindow : Window
         RefreshStatus();
     }
 
+    private void OnStats(object sender, RoutedEventArgs e)
+    {
+        var stats = new StatsWindow { Owner = this };
+        stats.Show();
+    }
+
     private static string FormatBytes(long bytes)
     {
         double value = bytes;

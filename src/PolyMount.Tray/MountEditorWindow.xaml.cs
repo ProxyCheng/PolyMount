@@ -29,7 +29,7 @@ public partial class MountEditorWindow : Window
             var resp = ControlClient.GetConfig();
             if (!resp.Ok || string.IsNullOrWhiteSpace(resp.Config))
             {
-                StatusText.Text = "无法读取配置: " + (resp.Error ?? "空响应");
+                StatusText.Text = "could not read config: " + (resp.Error ?? "empty response");
                 return;
             }
 
@@ -46,11 +46,11 @@ public partial class MountEditorWindow : Window
             RefreshSwatches();
 
             RebuildList();
-            StatusText.Text = $"已加载 {_config.Mounts.Count} 个挂载实例";
+            StatusText.Text = $"loaded {_config.Mounts.Count} mount instance(s)";
         }
         catch (Exception ex)
         {
-            StatusText.Text = "读取配置失败: " + ex.Message;
+            StatusText.Text = "failed to read config: " + ex.Message;
         }
     }
 
@@ -60,7 +60,7 @@ public partial class MountEditorWindow : Window
     {
         MountListBox.Items.Clear();
         foreach (var m in _config.Mounts)
-            MountListBox.Items.Add(m.Name + (m.Enabled ? "" : " (停用)"));
+            MountListBox.Items.Add(m.Name + (m.Enabled ? "" : " (disabled)"));
         if (_config.Mounts.Count > 0)
             MountListBox.SelectedIndex = Math.Min(Math.Max(_current, 0), _config.Mounts.Count - 1);
         else
@@ -191,19 +191,19 @@ public partial class MountEditorWindow : Window
         }
         catch (Exception ex)
         {
-            StatusText.Text = "校验失败: " + ex.Message;
+            StatusText.Text = "validation failed: " + ex.Message;
             return;
         }
 
         try
         {
             var resp = ControlClient.SaveConfig(_config.ToJson());
-            if (!resp.Ok) { StatusText.Text = "保存失败: " + resp.Error; return; }
-            StatusText.Text = "已保存并重载。";
+            if (!resp.Ok) { StatusText.Text = "save failed: " + resp.Error; return; }
+            StatusText.Text = "saved and reloaded.";
         }
         catch (Exception ex)
         {
-            StatusText.Text = "服务不可达: " + ex.Message;
+            StatusText.Text = "service unreachable: " + ex.Message;
         }
     }
 

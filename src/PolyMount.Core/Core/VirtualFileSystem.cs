@@ -18,6 +18,9 @@ public sealed class VirtualFileSystem
 
     public IReadOnlyList<ILayer> Layers => _layers;
 
+    // Optional read analytics sink (set by MountInstance).
+    public MetricsCollector? Metrics { get; set; }
+
     public string Generation => _layers[^1].Generation;
 
     public bool IsDeleted(string rel)
@@ -56,11 +59,18 @@ public sealed class VirtualFileSystem
 
     public Stream OpenRead(string rel, out VfsEntry entry)
     {
+        var sw = Metrics != null ? System.Diagnostics.Stopwatch.StartNew() : null;
         for (int i = 0; i < _layers.Count; i++)
         {
             var layer = _layers[i];
             if (layer.IsDeleted(rel)) break;
             if (!layer.TryOpenRead(rel, out var e, out var stream)) continue;
+
+            if (sw != null)
+            {
+                sw.Stop();
+                Metrics!.RecordRead(layer.Name, sw.Elapsed, e.Size);
+            }
 
             for (int j = 0; j < i; j++)
             {

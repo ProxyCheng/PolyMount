@@ -85,7 +85,7 @@ public sealed class LruCacheLayer : ICacheLayer
         }
     }
 
-    // Evict a single cached path (存在 -> 不知道) for the current generation.
+    // Evict a single cached path (exists -> unknown) for the current generation.
     public void InvalidateEntry(string rel)
     {
         var p = PathFor(rel);

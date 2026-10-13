@@ -38,6 +38,9 @@ public sealed class ControlRequest
 
     // Serialized AppConfig payload, used by "saveConfig".
     public string? Config { get; set; }
+
+    // Rolling-window size (seconds) for the "metrics" command; 0 => default.
+    public int WindowSeconds { get; set; }
 }
 
 public sealed class ControlResponse
@@ -52,6 +55,9 @@ public sealed class ControlResponse
 
     // Populated by "getConfig": serialized AppConfig.
     public string? Config { get; set; }
+
+    // Populated by "metrics": per-mount read analytics.
+    public List<MountMetrics> Metrics { get; set; } = new();
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -69,7 +75,7 @@ public sealed class LayerProbe
     public string Generation { get; set; } = "";
     public string Color { get; set; } = "";   // layer-identity color "#RRGGBB"
 
-    // 存在 / 不存在 / 不知道
+    // exists / deleted / unknown
     public string State =>
         Exists ? "exists" : Tombstoned ? "deleted" : "unknown";
 }
@@ -99,13 +105,36 @@ public static class ControlCommands
     public const string GetConfig = "getConfig";
     public const string SaveConfig = "saveConfig";
     public const string Reload = "reload";
+    public const string Metrics = "metrics";
+}
+
+// Per-layer read analytics within a recent time window.
+public sealed class LayerMetric
+{
+    public string Name { get; set; } = "";
+    public string Color { get; set; } = "";
+    public long Hits { get; set; }          // reads served by this layer
+    public double SharePercent { get; set; } // share of total reads
+    public double AvgCostMs { get; set; }    // average read-resolution latency
+    public double MaxCostMs { get; set; }
+    public long Bytes { get; set; }          // bytes served
+}
+
+public sealed class MountMetrics
+{
+    public string Mount { get; set; } = "";
+    public int WindowSeconds { get; set; }
+    public long TotalReads { get; set; }
+    public double CacheHitPercent { get; set; }
+    public double AvgCostMs { get; set; }
+    public List<LayerMetric> Layers { get; set; } = new();
 }
 
 // Action names accepted by the "layerAction" command.
 public static class LayerActions
 {
-    public const string Restore = "restore";       // overlay: 不存在 -> 不知道 (remove tombstone)
-    public const string Hide = "hide";             // overlay: -> 不存在 (delete copy + tombstone)
-    public const string DropLocal = "dropLocal";   // overlay: 存在 -> 不知道 (discard local copy, reveal below)
-    public const string EvictCache = "evict";      // cache: 存在 -> 不知道 (evict this path)
+    public const string Restore = "restore";       // overlay: deleted -> unknown (remove tombstone)
+    public const string Hide = "hide";             // overlay: -> deleted (delete copy + tombstone)
+    public const string DropLocal = "dropLocal";   // overlay: exists -> unknown (discard local copy, reveal below)
+    public const string EvictCache = "evict";      // cache: exists -> unknown (evict this path)
 }

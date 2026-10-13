@@ -13,7 +13,8 @@
             <TextBlock Text="Pin rev:" VerticalAlignment="Center" Margin="0,0,4,0"/>
             <TextBox x:Name="PinBox" Width="90" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <Button x:Name="SetPinButton" Content="Set pin" Width="70" Margin="0,0,18,0" Click="OnSetPin"/>
-            <Button x:Name="EditConfigButton" Content="Edit config..." Width="100" Click="OnEditConfig"/>
+            <Button x:Name="EditConfigButton" Content="Edit config..." Width="100" Margin="0,0,6,0" Click="OnEditConfig"/>
+            <Button x:Name="StatsButton" Content="Stats..." Width="80" Click="OnStats"/>
         </StackPanel>
         <TextBlock x:Name="StatusText" DockPanel.Dock="Bottom" Margin="0,8,0,0" TextWrapping="Wrap"/>
         <ListView x:Name="MountList">
