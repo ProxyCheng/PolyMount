@@ -7,6 +7,7 @@ public sealed class VirtualFileSystem
 {
     private readonly List<ILayer> _layers;
     private readonly object _gate = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
     public VirtualFileSystem(IEnumerable<ILayer> layers) => _layers = layers.ToList();
     public IReadOnlyList<ILayer> Layers => _layers;
     public bool Writable => _layers.Any(l => l.Writable);
@@ -41,6 +42,12 @@ public sealed class VirtualFileSystem
     }
     public bool TryLookup(string path, out VfsEntry entry)
     {
+        path = VfsPath.Normalize(path);
+        if (_openFiles.TryGetValue(path, out var open))
+        {
+            entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = DateTime.UtcNow };
+            return true;
+        }
         lock (_gate)
         {
             path = VfsPath.Normalize(path);
@@ -51,12 +58,14 @@ public sealed class VirtualFileSystem
         }
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
-    public List<VfsEntry> List(string path)
+    public List<VfsEntry> List(string path, bool recordAccess = true)
     {
         lock (_gate)
         {
             path = VfsPath.Normalize(path);
-            if (!Visible(path) || !Resolve(path, out var value, out _) || !value.Header.IsDir) return new();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
+            if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
             // Resolve headers from overridden child objects without merging directory membership.
             return value.Children!.Select(child => Resolve(VfsPath.Child(path, child.Name), out var obj, out _, false)
                 ? obj.Header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
@@ -64,9 +73,13 @@ public sealed class VirtualFileSystem
     }
     public Stream OpenRead(string path, out VfsEntry entry)
     {
-        lock (_gate)
-        {
             path = VfsPath.Normalize(path);
+            if (_openFiles.TryGetValue(path, out var open) && open.TryAcquire(false, out var handle))
+            {
+                entry = new VfsEntry { Name = VfsPath.Name(path), Size = handle.Length, TimeUtc = DateTime.UtcNow };
+                Metrics?.RecordRead(open.LayerName, TimeSpan.Zero, entry.Size);
+                return handle;
+            }
             if (!Visible(path)) throw new VfsNotFoundException(path);
             if (Resolve(path, out var visibleObject, out _, false) && visibleObject.Header.IsDir) throw new IOException("Path is a directory");
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -79,7 +92,6 @@ public sealed class VirtualFileSystem
                 catch { stream.Dispose(); throw; }
             }
             throw new VfsNotFoundException(path);
-        }
     }
     private void Fill(string path, VirtualObject value, Stream? content, int hit)
     {
@@ -98,7 +110,7 @@ public sealed class VirtualFileSystem
     {
         string parent = VfsPath.Parent(path);
         if (!TryLookup(parent, out var header) || !header.IsDir) throw new VfsNotFoundException(parent);
-        return List(parent);
+        return List(parent, recordAccess: false);
     }
     private static void ReplaceChild(List<VfsEntry> children, VfsEntry child)
     {
@@ -107,6 +119,7 @@ public sealed class VirtualFileSystem
     }
     private ILayer Apply(IReadOnlyList<ObjectChange> changes, ILayer? selected = null)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         foreach (var change in changes) if (change.Content != null) change.Content.Position = 0;
         if (selected != null)
         {
@@ -118,6 +131,7 @@ public sealed class VirtualFileSystem
         {
             foreach (var change in changes) if (change.Content != null) change.Content.Position = 0;
             if (!((IObjectLayer)layer).TryApply(changes)) continue;
+            Metrics?.RecordWrite(layer.Name, watch.Elapsed, 0);
             InvalidateCaches();
             return layer;
         }
@@ -129,6 +143,12 @@ public sealed class VirtualFileSystem
         {
             path = VfsPath.Normalize(path);
             if (path.Length == 0) throw new IOException("Cannot write the root as a file");
+            if (_openFiles.TryGetValue(path, out var shared) && shared.TryAcquire(true, out var sharedHandle))
+            {
+                if (truncate) sharedHandle.SetLength(0);
+                entry = new VfsEntry { Name = VfsPath.Name(path), Size = sharedHandle.Length, TimeUtc = DateTime.UtcNow };
+                return sharedHandle;
+            }
             var children = ParentChildren(path);
             var scratch = PolyMount.Layers.ObjectDatabase.Scratch();
             try
@@ -142,19 +162,20 @@ public sealed class VirtualFileSystem
                 ReplaceChild(children, entry);
                 var target = Apply(new ObjectChange[] { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
                 scratch.Position = 0;
-                return new ObjectWriteStream(scratch, () =>
+                var file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
                 {
                     lock (_gate)
                     {
-                        var current = new VfsEntry { Name = VfsPath.Name(path), Size = scratch.Length, TimeUtc = DateTime.UtcNow };
+                        var current = new VfsEntry { Name = VfsPath.Name(path), Size = snapshot.Length, TimeUtc = DateTime.UtcNow };
                         // Parent changes are merged at each commit; concurrent siblings are retained.
                         var list = ParentChildren(path);
                         ReplaceChild(list, current);
-                        long position = scratch.Position;
-                        try { Apply(new ObjectChange[] { new(path, new(current), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), list)) }, target); }
-                        finally { scratch.Position = position; }
+                        Apply(new ObjectChange[] { new(path, new(current), snapshot), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), list)) }, target);
                     }
-                });
+                }, () => _openFiles.TryRemove(path, out _));
+                _openFiles[path] = file;
+                file.TryAcquire(true, out var firstHandle);
+                return firstHandle;
             }
             catch { scratch.Dispose(); throw; }
         }
@@ -177,6 +198,8 @@ public sealed class VirtualFileSystem
         {
             path = VfsPath.Normalize(path);
             if (path.Length == 0) throw new UnauthorizedAccessException("Cannot delete the root");
+            foreach (var key in _openFiles.Keys.Where(p => p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase)))
+                if (_openFiles.TryRemove(key, out var opened)) opened.Detach();
             if (!TryLookup(path, out _)) throw new VfsNotFoundException(path);
             var children = ParentChildren(path);
             children.RemoveAll(c => string.Equals(c.Name, VfsPath.Name(path), StringComparison.OrdinalIgnoreCase));
@@ -198,6 +221,8 @@ public sealed class VirtualFileSystem
             try
             {
                 CopyTree(path, destination, changes, streams);
+                foreach (var key in _openFiles.Keys.Where(p => p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase)))
+                    if (_openFiles.TryRemove(key, out var opened)) opened.Detach();
                 string fromParent = VfsPath.Parent(path), toParent = VfsPath.Parent(destination);
                 var from = ParentChildren(path);
                 var to = string.Equals(fromParent, toParent, StringComparison.OrdinalIgnoreCase) ? from : ParentChildren(destination);
@@ -245,22 +270,87 @@ public sealed class VirtualFileSystem
 }
 
 /// <summary>Seekable staging handle; flush persists the complete file object and parent metadata.</summary>
-internal sealed class ObjectWriteStream(Stream inner, Action commit) : Stream
+internal sealed class SharedObjectFile(Stream data, string layerName, Action<long> recordWrite, Action<Stream> commit, Action closed)
 {
-    private bool _dirty, _disposed;
-    public override bool CanRead => inner.CanRead;
-    public override bool CanSeek => inner.CanSeek;
-    public override bool CanWrite => inner.CanWrite;
-    public override long Length => inner.Length;
-    public override long Position { get => inner.Position; set => inner.Position = value; }
-    public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
-    public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
-    public override void Write(byte[] buffer, int offset, int count) { inner.Write(buffer, offset, count); _dirty = true; Flush(); }
-    public override void SetLength(long value) { inner.SetLength(value); _dirty = true; Flush(); }
-    public override void Flush() { if (_dirty) { inner.Flush(); commit(); _dirty = false; } }
+    public string LayerName => layerName;
+    private readonly object _gate = new();
+    private readonly object _commitGate = new();
+    private int _references;
+    private bool _closed;
+    private bool _detached;
+    public void Detach() { lock (_gate) _detached = true; }
+    private long _version, _persisted;
+    public bool TryAcquire(bool writable, out Stream handle)
+    {
+        lock (_gate) { handle = null!; if (_closed) return false; _references++; handle = new SharedHandle(this, writable); return true; }
+    }
+    public long Length { get { lock (_gate) return data.Length; } }
+    public int Read(long position, byte[] buffer, int offset, int count)
+    { lock (_gate) { data.Position = position; return data.Read(buffer, offset, count); } }
+    public void Write(long position, byte[] buffer, int offset, int count)
+    { lock (_gate) { data.Position = position; data.Write(buffer, offset, count); _version++; } recordWrite(count); }
+    public void SetLength(long length) { lock (_gate) { data.SetLength(length); _version++; } recordWrite(0); }
+    public void Flush()
+    {
+        lock (_commitGate)
+        {
+            long version;
+            using var snapshot = PolyMount.Layers.ObjectDatabase.Scratch();
+            lock (_gate)
+            {
+                version = _version;
+                if (version == _persisted || _detached) return;
+                // Commit reads the same seekable staging file; writes are held only for
+                // this file, so unrelated file data operations remain parallel.
+                data.Flush();
+                long position = data.Position;
+                try { data.Position = 0; data.CopyTo(snapshot); }
+                finally { data.Position = position; }
+            }
+            snapshot.Position = 0;
+            commit(snapshot);
+            lock (_gate) _persisted = version;
+        }
+    }
+    public void Release()
+    {
+        try { Flush(); }
+        finally
+        {
+            bool final;
+            lock (_gate)
+            {
+                final = --_references == 0;
+                if (final) _closed = true;
+            }
+            if (final)
+            {
+                try { Flush(); }
+                finally { data.Dispose(); closed(); }
+            }
+        }
+    }
+}
+
+internal sealed class SharedHandle(SharedObjectFile file, bool writable) : Stream
+{
+    private long _position;
+    private bool _disposed;
+    public override bool CanRead => !_disposed;
+    public override bool CanSeek => !_disposed;
+    public override bool CanWrite => !_disposed && writable;
+    public override long Length => file.Length;
+    public override long Position { get => _position; set { ArgumentOutOfRangeException.ThrowIfNegative(value); _position = value; } }
+    public override int Read(byte[] buffer, int offset, int count) { int read = file.Read(_position, buffer, offset, count); _position += read; return read; }
+    public override long Seek(long offset, SeekOrigin origin)
+    { Position = origin switch { SeekOrigin.Begin => offset, SeekOrigin.Current => _position + offset, SeekOrigin.End => Length + offset, _ => throw new ArgumentException("Invalid seek origin") }; return _position; }
+    public override void Write(byte[] buffer, int offset, int count)
+    { if (!CanWrite) throw new UnauthorizedAccessException(); file.Write(_position, buffer, offset, count); _position += count; }
+    public override void SetLength(long value) { if (!CanWrite) throw new UnauthorizedAccessException(); file.SetLength(value); }
+    public override void Flush() => file.Flush();
     protected override void Dispose(bool disposing)
     {
-        if (!_disposed && disposing) { try { Flush(); } finally { inner.Dispose(); _disposed = true; } }
+        if (!_disposed && disposing) { file.Release(); _disposed = true; }
         base.Dispose(disposing);
     }
 }

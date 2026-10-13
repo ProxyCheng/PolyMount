@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text.Json;
 using PolyMount.Core;
+using Microsoft.Data.Sqlite;
 
 namespace PolyMount.Layers;
 
@@ -8,27 +9,74 @@ namespace PolyMount.Layers;
 internal sealed class ObjectDatabase
 {
     internal sealed record Record(string Path, VirtualObject Value, string? Blob, bool Compressed, long StoredBytes, long Access);
-    private readonly string _root, _catalog;
+    private readonly string _root, _connectionString;
     private readonly object _gate = new();
     private Dictionary<string, Record> _records;
     private readonly bool _compress;
-    public ObjectDatabase(string root, bool compress)
+    private readonly bool _recoverable;
+    public ObjectDatabase(string root, bool compress, bool recoverable = false)
     {
-        _root = Path.Combine(root, "objects-v1");
-        _catalog = Path.Combine(_root, "catalog.json");
+        _root = Path.Combine(root, "objects-v2");
+        _connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(_root, "objects.db"), Pooling = true, DefaultTimeout = 30 }.ToString();
         _compress = compress;
+        _recoverable = recoverable;
         Directory.CreateDirectory(_root);
-        _records = File.Exists(_catalog)
-            ? (JsonSerializer.Deserialize<List<Record>>(File.ReadAllText(_catalog)) ?? new()).ToDictionary(r => r.Path, StringComparer.OrdinalIgnoreCase)
-            : new(StringComparer.OrdinalIgnoreCase);
+        using var connection = Connect();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS objects(path TEXT PRIMARY KEY COLLATE NOCASE, record TEXT NOT NULL);";
+        command.ExecuteNonQuery();
+        command.CommandText = "SELECT record FROM objects";
+        using var reader = command.ExecuteReader();
+        _records = new(StringComparer.OrdinalIgnoreCase);
+        while (reader.Read()) { var record = JsonSerializer.Deserialize<Record>(reader.GetString(0))!; _records[record.Path] = record; }
     }
-    public IReadOnlyList<Record> Records { get { lock (_gate) return _records.Values.ToArray(); } }
+    private SqliteConnection Connect()
+    {
+        var connection = new SqliteConnection(_connectionString); connection.Open();
+        using var command = connection.CreateCommand(); command.CommandText = "PRAGMA synchronous=FULL;"; command.ExecuteNonQuery();
+        return connection;
+    }
+    public IReadOnlyList<Record> Records { get { lock (_gate) { EnsureAvailable(); return _records.Values.ToArray(); } } }
+    internal LayerStorageUsage GetStorageUsage()
+    {
+        lock (_gate)
+        {
+            EnsureAvailable();
+            long diskBytes = 0;
+            foreach (var path in Directory.EnumerateFiles(_root))
+            {
+                try { diskBytes += new FileInfo(path).Length; }
+                catch (FileNotFoundException) { }
+            }
+            return new(diskBytes, _records.Values.Sum(r => r.StoredBytes),
+                _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir));
+        }
+    }
+    private void EnsureAvailable()
+    {
+        if (File.Exists(Path.Combine(_root, "objects.db"))) return;
+        if (_records.Count > 0 && !_recoverable) throw new IOException("Persistent layer storage was removed: " + _root);
+        if (_recoverable) _records.Clear();
+        Directory.CreateDirectory(_root);
+        SqliteConnection.ClearAllPools();
+        using var connection = Connect();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS objects(path TEXT PRIMARY KEY COLLATE NOCASE, record TEXT NOT NULL);";
+        command.ExecuteNonQuery();
+    }
     public bool TryGet(string key, out VirtualObject value)
     {
         lock (_gate)
         {
+            EnsureAvailable();
             value = null!;
             if (!_records.TryGetValue(key, out var record)) return false;
+            if (record.Blob != null && !File.Exists(Path.Combine(_root, record.Blob)))
+            {
+                if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
+                Apply(new[] { new ObjectChange(key, null) });
+                return false;
+            }
             _records[key] = record with { Access = DateTime.UtcNow.Ticks };
             value = record.Value;
             return true;
@@ -36,13 +84,16 @@ internal sealed class ObjectDatabase
     }
     public bool TryOpen(string key, out VirtualObject value, out Stream stream)
     {
+        FileStream file;
+        Record record;
         lock (_gate)
         {
             stream = null!;
             if (!TryGet(key, out value) || value.Header.IsDir) return false;
-            var record = _records[key];
+            record = _records[key];
             if (record.Blob == null) throw new InvalidDataException("File object has no data: " + key);
-            var file = new FileStream(Path.Combine(_root, record.Blob), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            file = new FileStream(Path.Combine(_root, record.Blob), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        }
             if (!record.Compressed) { stream = file; return true; }
             // WinFsp requires seekable handles. Compressed objects are decoded to a temporary
             // disk-backed handle, not an unbounded in-memory byte array.
@@ -56,7 +107,6 @@ internal sealed class ObjectDatabase
                 return true;
             }
             catch { scratch.Dispose(); throw; }
-        }
     }
     internal static FileStream Scratch() => new(Path.Combine(Path.GetTempPath(), "PolyMount-object-" + Guid.NewGuid().ToString("N")),
         FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 131072, FileOptions.DeleteOnClose);
@@ -65,13 +115,18 @@ internal sealed class ObjectDatabase
     {
         lock (_gate)
         {
-            var next = new Dictionary<string, Record>(_records, StringComparer.OrdinalIgnoreCase);
+            EnsureAvailable();
+            var updates = new Dictionary<string, Record>(StringComparer.OrdinalIgnoreCase);
+            var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var obsolete = new HashSet<string>();
             var created = new List<string>();
             try
             {
                 foreach (var change in changes)
                 {
-                    if (change.Object == null) { next.Remove(change.Path); continue; }
+                    if (_records.TryGetValue(change.Path, out var old) && old.Blob != null) obsolete.Add(old.Blob);
+                    if (change.Object == null) { updates.Remove(change.Path); removed.Add(change.Path); continue; }
+                    removed.Remove(change.Path);
                     var value = change.Object;
                     string? blob = null;
                     long stored = 0;
@@ -94,26 +149,34 @@ internal sealed class ObjectDatabase
                     }
                     else if (value.Children == null) throw new ArgumentException("Directory update requires a complete child list");
                     stored += JsonSerializer.SerializeToUtf8Bytes(value).Length;
-                    next[change.Path] = new(change.Path, value, blob, _compress && !value.Header.IsDir, stored, DateTime.UtcNow.Ticks);
+                    updates[change.Path] = new(change.Path, value, blob, _compress && !value.Header.IsDir, stored, DateTime.UtcNow.Ticks);
                 }
-                string temp = _catalog + ".tmp-" + Guid.NewGuid().ToString("N");
-                try
+                using (var connection = Connect())
+                using (var transaction = connection.BeginTransaction())
                 {
-                    using (var file = new FileStream(temp, FileMode.CreateNew, FileAccess.Write))
-                    { JsonSerializer.Serialize(file, next.Values); file.Flush(true); }
-                    File.Move(temp, _catalog, true);
+                    foreach (var change in changes)
+                    {
+                        using var command = connection.CreateCommand(); command.Transaction = transaction;
+                        command.Parameters.AddWithValue("$path", change.Path);
+                        if (change.Object == null) command.CommandText = "DELETE FROM objects WHERE path=$path";
+                        else
+                        {
+                            command.CommandText = "INSERT INTO objects(path,record) VALUES($path,$record) ON CONFLICT(path) DO UPDATE SET record=excluded.record";
+                            command.Parameters.AddWithValue("$record", JsonSerializer.Serialize(updates[change.Path]));
+                        }
+                        command.ExecuteNonQuery();
+                    }
+                    transaction.Commit();
                 }
-                finally { if (File.Exists(temp)) File.Delete(temp); }
-                _records = next;
+                foreach (var key in removed) _records.Remove(key);
+                foreach (var update in updates) _records[update.Key] = update.Value;
             }
             catch
             {
                 foreach (var blob in created) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
                 throw;
             }
-            var live = _records.Values.Where(r => r.Blob != null).Select(r => r.Blob!).ToHashSet();
-            foreach (var blob in Directory.EnumerateFiles(_root, "*.blob"))
-                if (!live.Contains(Path.GetFileName(blob))) { try { File.Delete(blob); } catch { } }
+            foreach (var blob in obsolete) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
         }
     }
     public void Clear() => Apply(Records.Select(r => new ObjectChange(r.Path, null)).ToArray());

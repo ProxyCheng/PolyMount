@@ -3,7 +3,7 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Durable path-keyed object layer. Namespace changes are complete directory objects.</summary>
-public sealed class OverlayLayer : ILayer
+public sealed class OverlayLayer : ILayer, IObjectManagement, ILayerStorageUsage
 {
     private readonly ObjectDatabase _database;
     public OverlayLayer(string root, string statePath, bool compression = false) => _database = new(root, compression);
@@ -23,4 +23,10 @@ public sealed class OverlayLayer : ILayer
     }
     public void ClearLocalChanges() => _database.Clear();
     public void DropObject(string path) => _database.Apply(new[] { new ObjectChange(path, null) });
+    public void ReleaseObject(string path) => DropObject(path);
+    public LayerStorageUsage GetStorageUsage()
+    {
+        var usage = _database.GetStorageUsage();
+        return usage with { DurableBytes = usage.ObjectBytes, DurableObjects = usage.FileObjects + usage.DirectoryObjects };
+    }
 }

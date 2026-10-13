@@ -8,6 +8,8 @@ public sealed class ProviderInfo
     public string Color { get; set; } = "";
     public bool Writable { get; set; }
     public string Generation { get; set; } = "";
+    public LayerStorageUsage? StorageUsage { get; set; }
+    public string? StorageError { get; set; }
 }
 
 public sealed class MountStatus
@@ -38,6 +40,8 @@ public sealed class ControlRequest
     // Used by "layerAction": which layer to mutate and what to do.
     public string? Layer { get; set; }
     public string? Action { get; set; }
+    public int Boundary { get; set; }
+    public List<string> ExpectedLayers { get; set; } = new();
 
     // Serialized AppConfig payload, used by "saveConfig".
     public string? Config { get; set; }
@@ -71,6 +75,7 @@ public sealed class LayerProbe
     public string Type { get; set; } = "";
     public bool Writable { get; set; }
     public bool Exists { get; set; }
+    public bool Manageable { get; set; }
     public bool IsDir { get; set; }
     public long Size { get; set; }
     public bool Effective { get; set; }   // this layer's entry is the one that wins
@@ -106,6 +111,7 @@ public static class ControlCommands
     public const string Unmount = "unmount";
     public const string Probe = "probe";
     public const string LayerAction = "layerAction";
+    public const string ReleaseAbove = "releaseAbove";
     public const string GetConfig = "getConfig";
     public const string SaveConfig = "saveConfig";
     public const string Reload = "reload";
@@ -120,6 +126,9 @@ public sealed class LayerMetric
     public string DisplayName { get; set; } = "";
     public string Color { get; set; } = "";
     public long Hits { get; set; }          // reads served by this layer
+    public long Writes { get; set; }
+    public long WriteBytes { get; set; }
+    public double AccessSharePercent { get; set; }
     public double SharePercent { get; set; } // share of total reads
     public double AvgCostMs { get; set; }    // average read-resolution latency
     public double MaxCostMs { get; set; }
@@ -131,6 +140,7 @@ public sealed class MountMetrics
     public string Mount { get; set; } = "";
     public int WindowSeconds { get; set; }
     public long TotalReads { get; set; }
+    public long TotalWrites { get; set; }
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();

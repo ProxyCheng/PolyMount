@@ -3,14 +3,14 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Shared object KV storage with evictable read-through data and durable user writes.</summary>
-public sealed class LruCacheLayer : ICacheLayer, IObjectCache
+public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement, ILayerStorageUsage
 {
     private readonly ObjectDatabase _reads, _writes;
     private readonly Func<string> _version;
     public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false)
     {
         _version = version; Capacity = capacityBytes;
-        _reads = new(Path.Combine(root, "reads"), compression);
+        _reads = new(Path.Combine(root, "reads"), compression, recoverable: true);
         _writes = new(Path.Combine(root, "writes"), compression);
     }
     private string Key(string path) => Generation + "|" + path;
@@ -44,4 +44,17 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache
     public void Invalidate() => _reads.Clear();
     public void Purge() => _reads.Clear();
     public void InvalidateEntry(string path) => _reads.Apply(new[] { new ObjectChange(Key(path), null) });
+    public void ReleaseObject(string path)
+    {
+        _writes.Apply(new[] { new ObjectChange(path, null) });
+        InvalidateEntry(path);
+    }
+    public LayerStorageUsage GetStorageUsage()
+    {
+        var reads = _reads.GetStorageUsage();
+        var writes = _writes.GetStorageUsage();
+        return new(reads.DiskBytes + writes.DiskBytes, reads.ObjectBytes + writes.ObjectBytes,
+            reads.FileObjects + writes.FileObjects, reads.DirectoryObjects + writes.DirectoryObjects,
+            reads.ObjectBytes, Capacity, writes.ObjectBytes, writes.FileObjects + writes.DirectoryObjects);
+    }
 }

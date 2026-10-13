@@ -9,6 +9,7 @@ public sealed class MountInstance : IDisposable
     private readonly string _logPath;
     private readonly object _gate = new();
     private FileSystemHost? _host;
+    private string _lastWinFspBin = "";
     private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
 
@@ -71,6 +72,7 @@ public sealed class MountInstance : IDisposable
 
     public void Mount(string winFspBin)
     {
+        _lastWinFspBin = winFspBin;
         lock (_gate)
         {
             if (_host != null) return;
@@ -162,6 +164,7 @@ public sealed class MountInstance : IDisposable
         {
             lp.Color = ResolveColor(lp.Name);
             lp.Type = _configs[lp.Name].Type;
+            lp.Manageable = _providers[lp.Name] is IObjectManagement;
         }
 
         var effective = layers.FirstOrDefault(l => l.Effective);
@@ -179,6 +182,20 @@ public sealed class MountInstance : IDisposable
     }
 
     // Mutate a single layer's state for one path, then return the refreshed probe.
+    public ProbeResult ReleaseAbove(string rel, int boundary, IReadOnlyList<string> expected)
+    {
+        if (boundary < 0 || boundary > Vfs.Layers.Count || !Vfs.Layers.Select(l => l.Name).SequenceEqual(expected))
+            throw new InvalidOperationException("Layer chain changed; refresh before applying");
+        bool remount = Mounted;
+        Unmount();
+        try
+        {
+            foreach (var layer in Vfs.Layers.Take(boundary))
+                if (_providers[layer.Name] is IObjectManagement management) management.ReleaseObject(rel);
+        }
+        finally { if (remount) Mount(_lastWinFspBin); }
+        return Probe(rel);
+    }
     public ProbeResult ApplyLayerAction(string layer, string rel, string action)
     {
         if (!_providers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
@@ -222,7 +239,16 @@ public sealed class MountInstance : IDisposable
         };
 
         foreach (var layer in Vfs.Layers)
-            status.Providers.Add(new ProviderInfo { Name = layer.Name, DisplayName = _configs[layer.Name].Name, Type = _configs[layer.Name].Type, Color = ResolveColor(layer.Name), Writable = layer.Writable, Generation = layer.Generation });
+        {
+            var info = new ProviderInfo { Name = layer.Name, DisplayName = _configs[layer.Name].Name, Type = _configs[layer.Name].Type, Color = ResolveColor(layer.Name), Writable = layer.Writable, Generation = layer.Generation };
+            if (_providers[layer.Name] is ILayerStorageUsage storage)
+            {
+                try { info.StorageUsage = storage.GetStorageUsage(); }
+                catch (IOException ex) { info.StorageError = ex.Message; }
+                catch (UnauthorizedAccessException ex) { info.StorageError = ex.Message; }
+            }
+            status.Providers.Add(info);
+        }
 
         if (Source is IRevisionSource rev) status.Revision = rev.Revision;
         return status;

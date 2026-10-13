@@ -159,6 +159,12 @@ public sealed class MountManager
                     response.Probe = inst.ApplyLayerAction(request.Layer ?? "", rel, request.Action ?? "");
                     break;
                 }
+                case ControlCommands.ReleaseAbove:
+                {
+                    var (instance, rel) = ResolvePath(request.Path);
+                    response.Probe = instance.ReleaseAbove(rel, request.Boundary, request.ExpectedLayers);
+                    break;
+                }
                 case ControlCommands.GetConfig:
                     response.Config = Config.ToJson();
                     break;
