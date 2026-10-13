@@ -39,4 +39,13 @@ public static class ControlClient
             Layer = layer,
             Action = action
         });
+
+    public static ControlResponse GetConfig()
+        => Send(new ControlRequest { Cmd = ControlCommands.GetConfig });
+
+    public static ControlResponse SaveConfig(string json)
+        => Send(new ControlRequest { Cmd = ControlCommands.SaveConfig, Config = json });
+
+    public static ControlResponse Reload()
+        => Send(new ControlRequest { Cmd = ControlCommands.Reload });
 }

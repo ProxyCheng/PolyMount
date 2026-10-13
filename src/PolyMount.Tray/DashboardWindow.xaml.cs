@@ -97,6 +97,13 @@ public partial class DashboardWindow : Window
         Call(new ControlRequest { Cmd = ControlCommands.SetPin, Name = SelectedName(), Rev = rev });
     }
 
+    private void OnEditConfig(object sender, RoutedEventArgs e)
+    {
+        var editor = new MountEditorWindow { Owner = this };
+        editor.ShowDialog();
+        RefreshStatus();
+    }
+
     private static string FormatBytes(long bytes)
     {
         double value = bytes;
