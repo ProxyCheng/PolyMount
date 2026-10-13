@@ -1,0 +1,15 @@
+# Normalize line endings; let Git handle conversion automatically.
+* text=auto
+
+# Source files use CRLF in the working tree on Windows.
+*.cs text eol=crlf
+*.csproj text eol=crlf
+*.slnx text eol=crlf
+*.xaml text eol=crlf
+*.json text eol=crlf
+*.md text eol=crlf
+
+# Binaries
+*.dll binary
+*.png binary
+*.ico binary
