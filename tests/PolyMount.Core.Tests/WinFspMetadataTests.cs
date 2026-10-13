@@ -16,9 +16,12 @@ public sealed class WinFspMetadataTests
         Assert.AreEqual(0, mount.Open("folder", 0, 0, out var node, out var handle, out _, out _));
         Assert.AreEqual(0, mount.GetDirInfoByName(node, handle, "target.local", out var name, out _));
         Assert.AreEqual("Target.local", name, ignoreCase: true);
+        int parentQueries = source.ListedDirectories.Count(p => p == "folder");
         object context = null!;
         Assert.IsTrue(mount.ReadDirectoryEntry(node, handle, "target.local", "", ref context, out name, out _));
-        Assert.AreEqual("Target.local", name);
+        Assert.AreEqual("Target.local", name, ignoreCase: true);
+        Assert.AreEqual(parentQueries + 1, source.ListedDirectories.Count(p => p == "folder"),
+            "Only ancestor visibility should read the parent; do not resolve every sibling header");
         Assert.IsFalse(mount.ReadDirectoryEntry(node, handle, "target.local", "", ref context, out _, out _));
         context = null!;
         Assert.IsTrue(mount.ReadDirectoryEntry(node, handle, "*.local", "Other.local", ref context, out name, out _));

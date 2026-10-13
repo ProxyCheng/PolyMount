@@ -329,6 +329,15 @@ public sealed class WinFspMount : FileSystemBase
             if (context is not DirCursor cursor)
             {
                 List<VfsEntry> items;
+                bool exactName = !string.IsNullOrEmpty(pattern) && pattern.IndexOfAny(new[] { '*', '?', '<', '>', '"' }) < 0;
+                request?.Stage($"pattern='{pattern}' marker='{marker}' resolving query");
+                if (exactName)
+                {
+                    items = _vfs.TryLookup(VfsPath.Child(node.Rel, pattern), out var match)
+                        ? new List<VfsEntry> { match } : new List<VfsEntry>();
+                }
+                else
+                {
                 lock (node.DirectoryGate)
                 {
                     // WinFsp can reset the callback context at each buffer boundary.
@@ -338,10 +347,11 @@ public sealed class WinFspMount : FileSystemBase
                         node.DirectoryItems = _vfs.List(node.Rel);
                     items = node.DirectoryItems;
                 }
+                }
                 if (!string.IsNullOrEmpty(pattern) && pattern != "*")
                     items = items.Where(entry => System.IO.Enumeration.FileSystemName.MatchesWin32Expression(
                         pattern, entry.Name, ignoreCase: true)).ToList();
-                request?.Stage($"marker='{marker}' items={items.Count}");
+                request?.Stage($"pattern='{pattern}' marker='{marker}' items={items.Count}");
                 cursor = new DirCursor { Items = items };
                 if (!string.IsNullOrEmpty(marker))
                 {
