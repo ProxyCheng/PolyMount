@@ -9,6 +9,7 @@ public sealed class MountInstance : IDisposable
     private readonly string _logPath;
     private readonly object _gate = new();
     private FileSystemHost? _host;
+    private bool _unmounting;
     private string _lastWinFspBin = "";
     private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
@@ -76,6 +77,7 @@ public sealed class MountInstance : IDisposable
         lock (_gate)
         {
             if (_host != null) return;
+            if (_unmounting) throw new IOException("Mount is still unmounting");
             WinFspBootstrap.Ensure(winFspBin);
 
             PrepareMountPoint(Profile.MountPoint);
@@ -106,12 +108,19 @@ public sealed class MountInstance : IDisposable
 
     public void Unmount()
     {
+        FileSystemHost host;
         lock (_gate)
         {
             if (_host == null) return;
-            try { _host.Unmount(); } catch { }
-            try { _host.Dispose(); } catch { }
+            host = _host;
             _host = null;
+            _unmounting = true;
+        }
+        try { host.Unmount(); }
+        finally
+        {
+            try { host.Dispose(); }
+            finally { lock (_gate) _unmounting = false; }
         }
     }
 

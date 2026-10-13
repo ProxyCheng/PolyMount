@@ -15,20 +15,33 @@ public static class ControlClient
 
     public static string PipeName { get; set; } = "PolyMount.Control";
     public static int ConnectTimeoutMs { get; set; } = 3000;
+    public static int ResponseTimeoutMs { get; set; } = 5000;
 
     public static ControlResponse Send(ControlRequest request)
     {
-        using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut);
+        using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(ConnectTimeoutMs);
 
         // leaveOpen: true on both so disposing the reader/writer does NOT close the pipe out from
         // under the other (the reader closes first, then the writer's flush-on-dispose would hit a
         // closed pipe -> "Cannot access a closed pipe"). Only the pipe's own using closes it.
-        using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
         using (var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true))
         {
-            writer.WriteLine(JsonSerializer.Serialize(request, Options));
-            var line = reader.ReadLine();
+            using var timeout = new CancellationTokenSource(request.Cmd is ControlCommands.Status or ControlCommands.Metrics or ControlCommands.GetConfig or ControlCommands.Probe
+                ? ResponseTimeoutMs : 120000);
+            string? line;
+            try
+            {
+                var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request, Options) + "\n");
+                pipe.WriteAsync(payload.AsMemory(), timeout.Token).AsTask().GetAwaiter().GetResult();
+                pipe.FlushAsync(timeout.Token).GetAwaiter().GetResult();
+                line = reader.ReadLineAsync(timeout.Token).AsTask().GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                pipe.Dispose();
+                throw new TimeoutException("Control service did not respond: " + request.Cmd);
+            }
             if (line == null) throw new IOException("empty control response");
             return JsonSerializer.Deserialize<ControlResponse>(line) ?? new ControlResponse();
         }
