@@ -2,6 +2,21 @@
 <TS version="2.1" language="en">
   <context>
     <name>PolyMount</name>
+    <message><source>picker.title</source><translation>Add a layer</translation></message>
+    <message><source>picker.subtitle</source><translation>Choose a provider for your stack. Preview its purpose and settings before adding it.</translation></message>
+    <message><source>picker.search</source><translation>Search layer names, types or descriptions…</translation></message>
+    <message><source>picker.empty</source><translation>No matching layers. Try a different search.</translation></message>
+    <message><source>picker.preview</source><translation>LAYER PREVIEW</translation></message>
+    <message><source>picker.fields</source><translation>CONFIGURABLE PROPERTIES</translation></message>
+    <message><source>picker.configure</source><translation>Configure this layer in the property panel after adding it.</translation></message>
+    <message><source>picker.draft</source><translation>Added to the draft only. Save the instance to apply changes; drag layers to reorder.</translation></message>
+    <message><source>picker.add</source><translation>Add layer</translation></message>
+    <message><source>picker.count</source><translation>AVAILABLE LAYERS · {0}</translation></message>
+    <message><source>picker.select</source><translation>Select a layer to continue</translation></message>
+    <message><source>picker.commonOnly</source><translation>Name, visibility and color</translation></message>
+    <message><source>picker.selected</source><translation>Selected: {0}</translation></message>
+    <message><source>picker.atEnd</source><translation>Placement: end of the layer stack</translation></message>
+    <message><source>picker.after</source><translation>Placement: after “{0}”</translation></message>
     <message>
       <source>dashboard.title</source>
       <translation>PolyMount · Mount workspace</translation>

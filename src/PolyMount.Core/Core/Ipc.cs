@@ -10,6 +10,9 @@ public sealed class ProviderInfo
     public string Generation { get; set; } = "";
     public LayerStorageUsage? StorageUsage { get; set; }
     public string? StorageError { get; set; }
+    public long BlockCacheHits { get; set; }
+    public long BlockCacheMisses { get; set; }
+    public long BlockWriteBacks { get; set; }
 }
 
 public sealed class MountStatus
@@ -56,6 +59,7 @@ public sealed class ControlResponse
     public string? Error { get; set; }
     public List<MountStatus> Mounts { get; set; } = new();
     public List<string> SourceTypes { get; set; } = new();
+    public List<LayerDescriptor> LayerDescriptors { get; set; } = new();
     public List<LayerPreset> Presets { get; set; } = new();
 
     // Populated by the "probe" command.

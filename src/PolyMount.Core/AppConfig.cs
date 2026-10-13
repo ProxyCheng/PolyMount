@@ -117,6 +117,7 @@ public sealed class LayerConfig
     public SourceConfig Source { get; set; } = new();
     public string Color { get; set; } = "";
     public bool Compression { get; set; }
+    public Dictionary<string, JsonElement> Parameters { get; set; } = new();
 }
 
 public sealed class SourceConfig
@@ -133,4 +134,5 @@ public sealed class SourceConfig
 
     // Used by the "dir" source: allow writing straight through to the backing directory.
     public bool Writable { get; set; } = false;
+    public Dictionary<string, JsonElement> Parameters { get; set; } = new();
 }

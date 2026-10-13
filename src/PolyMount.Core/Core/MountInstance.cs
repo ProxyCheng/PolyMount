@@ -142,7 +142,8 @@ public sealed class MountInstance : IDisposable
 
     public void ClearCache(string? layer = null)
     {
-        foreach (var cache in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<LruCacheLayer>()) cache.Purge();
+        foreach (var cache in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<ICacheLayer>())
+            if (cache is MemoryCacheLayer memory) memory.Clear(); else cache.Invalidate();
     }
 
     public void ClearLocalChanges(string layer, string winFspBin)
@@ -252,6 +253,10 @@ public sealed class MountInstance : IDisposable
         foreach (var layer in Vfs.Layers)
         {
             var info = new ProviderInfo { Name = layer.Name, DisplayName = _configs[layer.Name].Name, Type = _configs[layer.Name].Type, Color = ResolveColor(layer.Name), Writable = layer.Writable, Generation = layer.Generation };
+            if (_providers[layer.Name] is MemoryCacheLayer memory)
+            {
+                info.BlockCacheHits = memory.Hits; info.BlockCacheMisses = memory.Misses; info.BlockWriteBacks = memory.WriteBacks;
+            }
             if (_providers[layer.Name] is ILayerStorageUsage storage)
             {
                 try { info.StorageUsage = storage.GetStorageUsage(); }

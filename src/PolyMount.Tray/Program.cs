@@ -131,12 +131,16 @@ internal static class Program
             {
                 editor.SmokeInteractions();
                 dashboard.SmokeSilentUpdate();
+                try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
+                catch (Exception ex) { failure = ex.ToString(); }
                 I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
             }
             if (ticks == 36 && capture != null)
             {
                 dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
                 editor.Capture(Path.Combine(capture, "layers-alternate.png"));
+                try { editor.SmokeLayerPicker(Path.Combine(capture, "layer-picker-alternate.png")); }
+                catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks == 40)
             {

@@ -126,10 +126,23 @@ public sealed class VirtualFileSystem
                 request?.Stage("opening content: " + layer.Name);
                 if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
-                try { Fill(path, new(entry), stream, i); return stream; }
+                try
+                {
+                    Fill(path, new(entry), stream, i);
+                    return WrapContent(path, stream, i, false, layer.Name + ":" + layer.Generation + ":" + entry.Size + ":" + entry.TimeUtc.Ticks + ":" + Interlocked.Read(ref _resolutionEpoch));
+                }
                 catch { stream.Dispose(); throw; }
             }
             throw new VfsNotFoundException(path);
+    }
+    private Stream WrapContent(string path, Stream stream, int providerIndex, bool writable, string version)
+    {
+        for (int i = providerIndex - 1; i >= 0; i--)
+        {
+            var inner = _layers[i] is NamedLayer named ? named.Inner : _layers[i];
+            if (inner is IFileStreamLayer accelerator) stream = accelerator.WrapStream(path, version, stream, writable);
+        }
+        return stream;
     }
     private void Fill(string path, VirtualObject value, Stream? content, int hit)
     {
@@ -188,7 +201,7 @@ public sealed class VirtualFileSystem
                 return sharedHandle;
             }
             var children = ParentChildren(path);
-            var scratch = PolyMount.Layers.ObjectDatabase.Scratch();
+            Stream scratch = PolyMount.Layers.ObjectDatabase.Scratch();
             try
             {
                 if (TryLookup(path, out var existing))
@@ -200,6 +213,7 @@ public sealed class VirtualFileSystem
                 ReplaceChild(children, entry);
                 var target = Apply(new ObjectChange[] { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
                 scratch.Position = 0;
+                scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
                 var file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
                 {
                     lock (_mutationGate)

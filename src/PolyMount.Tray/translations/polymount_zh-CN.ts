@@ -2,6 +2,21 @@
 <TS version="2.1" language="zh-CN">
   <context>
     <name>PolyMount</name>
+    <message><source>picker.title</source><translation>添加层</translation></message>
+    <message><source>picker.subtitle</source><translation>为当前层栈选择一个提供器，先了解用途与可配置属性，再确认添加。</translation></message>
+    <message><source>picker.search</source><translation>搜索层名称、类型或用途…</translation></message>
+    <message><source>picker.empty</source><translation>没有匹配的层，请尝试其他关键词。</translation></message>
+    <message><source>picker.preview</source><translation>层预览</translation></message>
+    <message><source>picker.fields</source><translation>可配置属性</translation></message>
+    <message><source>picker.configure</source><translation>添加后，在右侧属性面板中完成配置。</translation></message>
+    <message><source>picker.draft</source><translation>添加到配置草稿，保存实例后生效；可拖动调整层顺序。</translation></message>
+    <message><source>picker.add</source><translation>添加此层</translation></message>
+    <message><source>picker.count</source><translation>可用层 · {0}</translation></message>
+    <message><source>picker.select</source><translation>请选择一个层类型</translation></message>
+    <message><source>picker.commonOnly</source><translation>名称、启用状态与颜色</translation></message>
+    <message><source>picker.selected</source><translation>已选择：{0}</translation></message>
+    <message><source>picker.atEnd</source><translation>添加位置：层栈末尾</translation></message>
+    <message><source>picker.after</source><translation>添加位置：“{0}”之后</translation></message>
     <message>
       <source>dashboard.title</source>
       <translation>PolyMount · 挂载工作台</translation>

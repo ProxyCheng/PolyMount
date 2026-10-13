@@ -125,7 +125,7 @@ public sealed class MountManager
 
     public ControlResponse Handle(ControlRequest request)
     {
-        var response = new ControlResponse { SourceTypes = SourceRegistry.Types.ToList(), Presets = LayerPresetRegistry.All.ToList() };
+        var response = new ControlResponse { SourceTypes = SourceRegistry.Types.ToList(), LayerDescriptors = LayerRegistry.Descriptors.ToList(), Presets = LayerPresetRegistry.All.ToList() };
         try
         {
             switch (request.Cmd)

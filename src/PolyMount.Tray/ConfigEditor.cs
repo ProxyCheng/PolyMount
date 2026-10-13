@@ -5,14 +5,17 @@ using QtSharp.Api;
 
 namespace PolyMount.Tray;
 
-/// <summary>A draft mount editor with an actual draggable provider chain and type-specific forms.</summary>
+/// <summary>A draft mount editor with a draggable provider chain and descriptor-driven forms.</summary>
 internal sealed class ConfigEditor : QWidget
 {
-    private readonly QWidget _fields, _overlayFields, _cacheFields, _svnFields, _dirFields;
+    private readonly QWidget _fields;
+    private readonly QVBoxLayout _propertyLayout;
+    private QWidget? _propertyPanel;
+    private readonly List<(LayerFieldDescriptor Field, QWidget Editor, QLabel Label)> _propertyEditors = new();
+    private readonly List<(QPushButton Button, LayerActionDescriptor Action)> _propertyActions = new();
     private readonly QListWidget _mountList, _layerList;
-    private readonly QLineEdit _name, _mountPoint, _storage, _cacheStorage, _capacity, _url, _revision, _trust, _user, _password, _dirPath, _color, _layerName;
-    private readonly QCheckBox _enabled, _writable, _layerEnabled;
-    private readonly QCheckBox _compression, _cacheCompression;
+    private readonly QLineEdit _name, _mountPoint, _color, _layerName;
+    private readonly QCheckBox _enabled, _layerEnabled;
     private readonly QPushButton _colorPreview;
     private readonly QLabel _status, _layerTitle, _layerDescription, _id;
     private readonly QPushButton _save, _removeLayer;
@@ -26,6 +29,7 @@ internal sealed class ConfigEditor : QWidget
     private bool _usageOnline;
     private AppConfig _config = new();
     private List<string> _sourceTypes = new();
+    private List<LayerDescriptor> _layerDescriptors = new();
     private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
@@ -150,52 +154,18 @@ internal sealed class ConfigEditor : QWidget
         Row(common, "layer.color", colorPanel);
         right.AddLayout(common);
 
-        _overlayFields = new QWidget();
-        var overlayForm = new QFormLayout(_overlayFields);
         _overlayUsage = Plain("", "layerChain");
-        overlayForm.AddRow(_overlayUsage);
-        _storage = Edit(overlayForm, "layer.storage");
-        _compression = new QCheckBox();
-        I18n.Bind(_compression.SetText, "layer.compression");
-        _compression.Toggled += _ => Dirty();
-        overlayForm.AddRow("", _compression);
-        overlayForm.AddRow("", Button("overlay.clear", () => LayerOperation(ControlCommands.ClearLocalChanges), "trash"));
-        right.AddWidget(_overlayFields);
-        _cacheFields = new QWidget();
-        var cacheForm = new QFormLayout(_cacheFields);
+        right.AddWidget(_overlayUsage);
         _cacheUsage = Plain("", "detailValue");
-        cacheForm.AddRow(_cacheUsage);
+        right.AddWidget(_cacheUsage);
         _cacheProgress = new QProgressBar();
         _cacheProgress.SetRange(0, 1000);
         _cacheProgress.SetTextVisible(false);
         _cacheProgress.SetFixedHeight(10);
-        cacheForm.AddRow(_cacheProgress);
-        _cacheStorage = Edit(cacheForm, "layer.storage");
-        _cacheCompression = new QCheckBox();
-        I18n.Bind(_cacheCompression.SetText, "layer.compression");
-        _cacheCompression.Toggled += _ => Dirty();
-        cacheForm.AddRow("", _cacheCompression);
-        _capacity = Edit(cacheForm, "cache.limit");
-        cacheForm.AddRow("", Button("cache.layer.clear", () => LayerOperation(ControlCommands.ClearCache)));
-        right.AddWidget(_cacheFields);
-        _svnFields = new QWidget();
-        var svnForm = new QFormLayout(_svnFields);
-        _url = Edit(svnForm, "svn.repository");
-        _revision = Edit(svnForm, "svn.pin");
-        _trust = Edit(svnForm, "svn.trust");
-        _user = Edit(svnForm, "svn.user");
-        _password = Edit(svnForm, "svn.password");
-        _password.SetEchoMode(QLineEdit.EchoMode.Password);
-        svnForm.AddRow("", Button("revision.head", () => LayerOperation(ControlCommands.RefreshHead)));
-        right.AddWidget(_svnFields);
-        _dirFields = new QWidget();
-        var dirForm = new QFormLayout(_dirFields);
-        _dirPath = Edit(dirForm, "dir.path");
-        _writable = new QCheckBox();
-        I18n.Bind(_writable.SetText, "dir.writable");
-        _writable.Toggled += _ => Dirty();
-        dirForm.AddRow("", _writable);
-        right.AddWidget(_dirFields);
+        right.AddWidget(_cacheProgress);
+        _propertyLayout = new QVBoxLayout();
+        _propertyLayout.SetContentsMargins(0, 0, 0, 0);
+        right.AddLayout(_propertyLayout);
         right.AddStretch(1);
         scroll.SetWidget(_fields);
         split.AddWidget(scroll);
@@ -235,6 +205,7 @@ internal sealed class ConfigEditor : QWidget
 
     internal void SmokeInteractions()
     {
+        SmokePropertyForm();
         if (_pending != null || Current?.Layers is not { Count: > 0 } layers) return;
         for (int i = 0; i < layers.Count; i++) _layerList.SetCurrentRow(i);
         var before = layers.Select(l => l.Id).ToArray();
@@ -261,6 +232,45 @@ internal sealed class ConfigEditor : QWidget
             _color.SetText("#DC2626");
             if (_layer.Color != "#DC2626") throw new InvalidOperationException("Color preview is not linked to the layer");
             _color.SetText(color);
+        }
+    }
+
+    private void SmokePropertyForm()
+    {
+        var originalLayer = _layer;
+        var descriptor = new LayerDescriptor
+        {
+            Type = "ui-smoke-provider", Title = new("Smoke provider", "测试层"),
+            Fields = new()
+            {
+                new() { Path = "Parameters.Endpoint", Title = new("Endpoint", "地址") },
+                new() { Path = "Parameters.Secret", Kind = LayerFieldKind.Secret, Trim = false },
+                new() { Path = "Parameters.Count", Kind = LayerFieldKind.Integer, Minimum = 0, DefaultValue = "1" },
+                new() { Path = "Parameters.Enabled", Kind = LayerFieldKind.Boolean },
+                new() { Path = "Parameters.Mode", Kind = LayerFieldKind.Choice, DefaultValue = "fast",
+                    Choices = new() { new() { Value = "fast", Title = new("Fast", "快速") } } }
+            }
+        };
+        _layerDescriptors.Add(descriptor);
+        try
+        {
+            _layer = new LayerConfig { Id = "smoke", Type = descriptor.Type };
+            ShowLayer();
+            ((QLineEdit)_propertyEditors[0].Editor).SetText("https://smoke.invalid");
+            ((QLineEdit)_propertyEditors[1].Editor).SetText(" secret ");
+            ((QCheckBox)_propertyEditors[3].Editor).SetChecked(true);
+            TranslateProperties();
+            LayerProperties.Apply(_layer, _propertyEditors.Select(e => (e.Field, PropertyValue(e.Field, e.Editor))));
+            if (_layer.Parameters["Endpoint"].GetString() != "https://smoke.invalid" ||
+                _layer.Parameters["Secret"].GetString() != " secret " || !_layer.Parameters["Enabled"].GetBoolean() ||
+                _layer.Parameters["Count"].GetInt64() != 1 || _layer.Parameters["Mode"].GetString() != "fast")
+                throw new InvalidOperationException("Descriptor-driven form did not preserve or bind plugin parameters");
+        }
+        finally
+        {
+            _layerDescriptors.Remove(descriptor);
+            _layer = originalLayer;
+            ShowLayer();
         }
     }
 
@@ -303,6 +313,7 @@ internal sealed class ConfigEditor : QWidget
             _loading = true;
             _config = AppConfig.FromJson(response.Config);
             _sourceTypes = response.SourceTypes;
+            _layerDescriptors = response.LayerDescriptors;
             _presetDefinitions = response.Presets;
             UpdatePresets();
             foreach (var mount in _config.Mounts) mount.Layers = mount.GetLayers();
@@ -370,7 +381,7 @@ internal sealed class ConfigEditor : QWidget
         m.MountPoint = _mountPoint.Text.Trim();
         m.Enabled = _enabled.IsChecked();
         // Compatibility fields remain useful to older clients and service error status.
-        var source = m.Layers!.FirstOrDefault(l => SourceRegistry.Contains(l.Type));
+        var source = m.Layers!.FirstOrDefault(l => _sourceTypes.Contains(l.Type, StringComparer.OrdinalIgnoreCase));
         if (source != null) m.Source = source.Source;
         m.CacheCapacityBytes = m.Layers!.Where(l => l.Type == "cache").Sum(l => l.CacheCapacityBytes);
     }
@@ -384,7 +395,7 @@ internal sealed class ConfigEditor : QWidget
             {
                 var item = new QListWidgetItem(LayerText(layer));
                 item.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(layer.Id));
-                item.SetIcon(TrayIcons.Get(layer.Type == "dir" ? "folder" : layer.Type == "svn" ? "drive" : "layers", LayerColor(layer)));
+                item.SetIcon(TrayIcons.Get(Descriptor(layer.Type).Icon, LayerColor(layer)));
                 _layerList.AddItem(item);
             }
         int row = Current?.Layers?.FindIndex(l => l == _layer) ?? -1;
@@ -406,33 +417,13 @@ internal sealed class ConfigEditor : QWidget
     private void ShowLayer()
     {
         _loading = true;
-        _layerTitle.SetText(_layer == null ? T("layer.select") : T("layer." + _layer.Type));
-        _layerDescription.SetText(_layer == null ? "" : T("layer." + _layer.Type + ".hint"));
+        _layerTitle.SetText(_layer == null ? T("layer.select") : Descriptor(_layer.Type).Title.Resolve(I18n.Language));
+        _layerDescription.SetText(_layer == null ? "" : Descriptor(_layer.Type).Description.Resolve(I18n.Language));
         _id.SetText(_layer?.Id ?? "—");
         _layerName.SetText(_layer?.Name ?? "");
         _layerEnabled.SetChecked(_layer?.Enabled == true);
         _color.SetText(_layer == null ? "" : LayerColor(_layer));
-        _storage.SetText(_layer?.Path ?? "");
-        _cacheStorage.SetText(_layer?.Path ?? "");
-        _compression.SetChecked(_layer?.Compression == true);
-        _cacheCompression.SetChecked(_layer?.Compression == true);
-        string defaultStorage = Current == null || _layer == null ? "" : Path.Combine(Current.GetStoreRoot(), _layer.Id);
-        _storage.SetPlaceholderText(defaultStorage);
-        _cacheStorage.SetPlaceholderText(defaultStorage);
-        _storage.SetToolTip(defaultStorage);
-        _cacheStorage.SetToolTip(defaultStorage);
-        _capacity.SetText(((_layer?.CacheCapacityBytes ?? 0) / 1048576).ToString());
-        _url.SetText(_layer?.Source.Url ?? "");
-        _revision.SetText((_layer?.Source.PinnedRevision ?? 0).ToString());
-        _trust.SetText(_layer?.Source.TrustServerCertFailures ?? "");
-        _user.SetText(_layer?.Source.Username ?? "");
-        _password.SetText(_layer?.Source.Password ?? "");
-        _dirPath.SetText(_layer?.Source.Path ?? "");
-        _writable.SetChecked(_layer?.Source.Writable == true);
-        _overlayFields.SetVisible(_layer?.Type == "overlay");
-        _cacheFields.SetVisible(_layer?.Type == "cache");
-        _svnFields.SetVisible(_layer?.Type == "svn");
-        _dirFields.SetVisible(_layer?.Type == "dir");
+        BuildProperties();
         _color.SetEnabled(_layer != null);
         _colorPreview.SetEnabled(_layer != null);
         _layerName.SetEnabled(_layer != null);
@@ -449,34 +440,99 @@ internal sealed class ConfigEditor : QWidget
         _layer.Color = color;
         _layer.Name = _layerName.Text.Trim();
         _layer.Enabled = _layerEnabled.IsChecked();
-        if (_layer.Type == "overlay") _layer.Path = _storage.Text.Trim();
-        if (_layer.Type == "cache") _layer.Path = _cacheStorage.Text.Trim();
-        if (_layer.Type == "overlay") _layer.Compression = _compression.IsChecked();
-        if (_layer.Type == "cache") _layer.Compression = _cacheCompression.IsChecked();
-        if (_layer.Type == "cache")
-        {
-            if (!long.TryParse(_capacity.Text, out var mb) || mb <= 0 || mb > long.MaxValue / 1048576)
-            {
-                if (_layer.Enabled)
-                throw new ArgumentException(T("validation.failed") + T("cache.limit"));
-            }
-            else _layer.CacheCapacityBytes = mb * 1048576;
-        }
-        if (_layer.Type == "svn")
-        {
-            if ((!long.TryParse(_revision.Text, out var revision) || revision < 0) && _layer.Enabled) throw new ArgumentException(T("revision.invalid"));
-            _layer.Source.Url = _url.Text.Trim();
-            _layer.Source.PinnedRevision = revision;
-            _layer.Source.TrustServerCertFailures = _trust.Text.Trim();
-            _layer.Source.Username = string.IsNullOrWhiteSpace(_user.Text) ? null : _user.Text.Trim();
-            _layer.Source.Password = string.IsNullOrEmpty(_password.Text) ? null : _password.Text;
-        }
-        if (_layer.Type == "dir")
-        {
-            _layer.Source.Path = _dirPath.Text.Trim();
-            _layer.Source.Writable = _writable.IsChecked();
-        }
+        LayerProperties.Apply(_layer, _propertyEditors.Select(e => (e.Field, PropertyValue(e.Field, e.Editor))));
         _layer.Source.Type = _layer.Type;
+    }
+
+    private LayerDescriptor Descriptor(string type) => _layerDescriptors.FirstOrDefault(d => d.Type.Equals(type, StringComparison.OrdinalIgnoreCase))
+        ?? new LayerDescriptor { Type = type, Title = new(type, type) };
+
+    private static string PropertyValue(LayerFieldDescriptor field, QWidget editor) => field.Kind switch
+    {
+        LayerFieldKind.Boolean => ((QCheckBox)editor).IsChecked().ToString(),
+        LayerFieldKind.Choice => ((QComboBox)editor).CurrentIndex is var index && index >= 0 && index < field.Choices.Count ? field.Choices[index].Value : "",
+        _ => ((QLineEdit)editor).Text
+    };
+
+    private void BuildProperties()
+    {
+        _propertyEditors.Clear();
+        _propertyActions.Clear();
+        if (_propertyPanel != null)
+        {
+            _propertyLayout.RemoveWidget(_propertyPanel);
+            _propertyPanel.Hide();
+            _propertyPanel.DeleteLater();
+        }
+        _propertyPanel = new QWidget();
+        _propertyLayout.AddWidget(_propertyPanel);
+        var layout = new QVBoxLayout(_propertyPanel);
+        layout.SetContentsMargins(0, 0, 0, 0);
+        var form = new QFormLayout();
+        form.SetRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows);
+        form.SetFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow);
+        layout.AddLayout(form);
+        if (_layer == null) return;
+        var descriptor = Descriptor(_layer.Type);
+        foreach (var field in descriptor.Fields)
+        {
+            string value = LayerProperties.Read(_layer, field);
+            QWidget editor;
+            if (field.Kind == LayerFieldKind.Boolean)
+            {
+                var check = new QCheckBox();
+                check.SetChecked(bool.TryParse(value, out bool flag) && flag);
+                check.Toggled += _ => Dirty();
+                editor = check;
+            }
+            else if (field.Kind == LayerFieldKind.Choice)
+            {
+                var combo = new QComboBox();
+                foreach (var choice in field.Choices) combo.AddItem(choice.Title.Resolve(I18n.Language));
+                combo.SetCurrentIndex(field.Choices.FindIndex(c => c.Value == value));
+                combo.CurrentIndexChanged += _ => Dirty();
+                editor = combo;
+            }
+            else
+            {
+                var edit = new QLineEdit();
+                if (field.Kind == LayerFieldKind.Secret) edit.SetEchoMode(QLineEdit.EchoMode.Password);
+                edit.SetText(value);
+                edit.SetPlaceholderText(field.Placeholder);
+                edit.TextChanged += _ => Dirty();
+                editor = edit;
+            }
+            var label = Plain(field.Title.Resolve(I18n.Language), "muted");
+            editor.SetToolTip(field.Description.Resolve(I18n.Language));
+            form.AddRow(label, editor);
+            _propertyEditors.Add((field, editor, label));
+        }
+        foreach (var action in descriptor.Actions)
+        {
+            var button = new QPushButton(action.Title.Resolve(I18n.Language));
+            button.Clicked += _ => LayerOperation(action);
+            layout.AddWidget(button);
+            _propertyActions.Add((button, action));
+        }
+    }
+
+    private void TranslateProperties()
+    {
+        foreach (var (field, editor, label) in _propertyEditors)
+        {
+            label.SetText(field.Title.Resolve(I18n.Language));
+            editor.SetToolTip(field.Description.Resolve(I18n.Language));
+            if (editor is QComboBox combo)
+            {
+                int index = combo.CurrentIndex;
+                combo.BlockSignals(true);
+                combo.Clear();
+                foreach (var choice in field.Choices) combo.AddItem(choice.Title.Resolve(I18n.Language));
+                combo.SetCurrentIndex(index);
+                combo.BlockSignals(false);
+            }
+        }
+        foreach (var (button, action) in _propertyActions) button.SetText(action.Title.Resolve(I18n.Language));
     }
 
     private void ReorderLayers()
@@ -495,24 +551,18 @@ internal sealed class ConfigEditor : QWidget
     private void ChooseLayer()
     {
         if (Current == null) return;
-        var dialog = new QDialog(this);
-        dialog.SetWindowTitle(T("layer.choose"));
-        dialog.SetStyleSheet(TrayTheme.StyleSheet);
-        dialog.Resize(420, 320);
-        var layout = new QVBoxLayout(dialog);
-        layout.AddWidget(Label("layer.choose", "sectionTitle"));
-        foreach (var type in new[] { "overlay", "cache" }.Concat(_sourceTypes))
+        try { CommitLayer(); }
+        catch (ArgumentException ex) { _status.SetText(ex.Message); return; }
+        string insertion = _layer == null ? T("picker.atEnd") : I18n.F("picker.after", string.IsNullOrEmpty(_layer.Name) ? Descriptor(_layer.Type).Title.Resolve(I18n.Language) : _layer.Name);
+        var dialog = new LayerPicker(this, _layerDescriptors, insertion);
+        try
         {
-            string captured = type;
-            var button = new QPushButton(T("layer." + type) + "\n" + T("layer." + type + ".hint"));
-            button.SetIcon(TrayIcons.Get(type == "dir" ? "folder" : "layers"));
-            button.Clicked += _ => { AddLayer(captured); dialog.Accept(); };
-            layout.AddWidget(button);
+            if (dialog.Exec() == 1 && dialog.Selected is { } descriptor) AddLayer(descriptor.Type);
         }
-        var cancel = Button("cancel", dialog.Reject);
-        layout.AddWidget(cancel);
-        dialog.Exec();
+        finally { dialog.DeleteLater(); }
     }
+
+    internal void SmokeLayerPicker(string? capture = null) => LayerPicker.Smoke(this, _layerDescriptors.Count > 0 ? _layerDescriptors : LayerRegistry.Descriptors, capture);
 
     private void AddLayer(string type)
     {
@@ -522,6 +572,7 @@ internal sealed class ConfigEditor : QWidget
         string id = type;
         for (int i = 2; layers.Any(l => l.Id == id); i++) id = type + "-" + i;
         var layer = new LayerConfig { Id = id, Type = type, Source = new SourceConfig { Type = type } };
+        LayerProperties.Apply(layer, Descriptor(type).Fields.Where(f => f.DefaultValue != null).Select(f => (f, f.DefaultValue!)));
         int at = _layerList.CurrentRow < 0 ? layers.Count : _layerList.CurrentRow + 1;
         layers.Insert(at, layer);
         _layer = layer;
@@ -612,7 +663,7 @@ internal sealed class ConfigEditor : QWidget
 
     private string LayerColor(LayerConfig layer) => string.IsNullOrEmpty(layer.Color) ? LayerColors.Resolve(layer.Type, _config.LayerColors) : layer.Color;
     private string? _saveName;
-    private string LayerText(LayerConfig layer) => $"≡  {(string.IsNullOrEmpty(layer.Name) ? T("layer." + layer.Type) : layer.Name)}{(layer.Enabled ? "" : " · " + T("state.disabled"))}\n     {T("layer." + layer.Type)} · {layer.Id}";
+    private string LayerText(LayerConfig layer) => $"≡  {(string.IsNullOrEmpty(layer.Name) ? Descriptor(layer.Type).Title.Resolve(I18n.Language) : layer.Name)}{(layer.Enabled ? "" : " · " + T("state.disabled"))}\n     {Descriptor(layer.Type).Title.Resolve(I18n.Language)} · {layer.Id}";
     private void UpdateLayerIdentity()
     {
         if (_loading || _layer == null) return;
@@ -628,17 +679,18 @@ internal sealed class ConfigEditor : QWidget
         if (index < 0) return;
         var item = _layerList.Item(index);
         item.SetText(LayerText(_layer));
-        item.SetIcon(TrayIcons.Get(_layer.Type == "dir" ? "folder" : "layers", _layer.Enabled ? LayerColor(_layer) : "#94A3B8"));
+        item.SetIcon(TrayIcons.Get(Descriptor(_layer.Type).Icon, _layer.Enabled ? LayerColor(_layer) : "#94A3B8"));
         item.SetForeground(new QBrush(new QColor(_layer.Enabled ? "#26354B" : "#94A3B8")));
     }
     private void SetColor(string color) => _color.SetText(color);
-    private void LayerOperation(string command)
+    private void LayerOperation(LayerActionDescriptor action)
     {
         if (_pending != null || _layer == null || _originalName == null || !_layer.Enabled) return;
         string id = _layer.Id;
         if (_dirty) { _status.SetText(T("layer.operation.saveFirst")); return; }
-        if (!Confirm(command == ControlCommands.ClearLocalChanges ? "confirm.overlay.clear" : command == ControlCommands.ClearCache ? "confirm.layer.cache" : "confirm.layer.head")) return;
-        var request = new ControlRequest { Cmd = command, Name = _originalName, Layer = id };
+        if (action.Confirmation.Resolve(I18n.Language) is { Length: > 0 } confirmation &&
+            QMessageBox.Question(this, T("confirm"), confirmation, T("confirm"), T("cancel"), null, 1, 1) != 0) return;
+        var request = new ControlRequest { Cmd = action.Command, Name = _originalName, Layer = id };
         _saving = false;
         _layerOperation = true;
         _pending = Task.Run(() => ControlClient.Send(request));
@@ -667,8 +719,9 @@ internal sealed class ConfigEditor : QWidget
         UpdatePresets();
         RebuildMounts();
         RebuildLayers();
-        _layerTitle.SetText(_layer == null ? T("layer.select") : T("layer." + _layer.Type));
-        _layerDescription.SetText(_layer == null ? "" : T("layer." + _layer.Type + ".hint"));
+        _layerTitle.SetText(_layer == null ? T("layer.select") : Descriptor(_layer.Type).Title.Resolve(I18n.Language));
+        _layerDescription.SetText(_layer == null ? "" : Descriptor(_layer.Type).Description.Resolve(I18n.Language));
+        TranslateProperties();
         _status.SetText(T(_dirty ? "unsaved" : "refreshed"));
         RenderUsage();
     }
@@ -707,6 +760,9 @@ internal sealed class ConfigEditor : QWidget
     {
         var provider = _layer == null ? null : _runtimeProviders.FirstOrDefault(p => p.Name == _layer.Id);
         var usage = _usageOnline ? provider?.StorageUsage : null;
+        _overlayUsage.SetVisible(usage != null && usage.CacheCapacity <= 0);
+        _cacheUsage.SetVisible(usage?.CacheCapacity > 0);
+        _cacheProgress.SetVisible(usage?.CacheCapacity > 0);
         if (usage == null)
         {
             string text = provider?.StorageError == null ? T(_usageOnline ? "usage.inactive" : "usage.offline") : T("usage.failed") + provider.StorageError;
@@ -720,6 +776,11 @@ internal sealed class ConfigEditor : QWidget
         SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.CacheBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
             I18n.F("usage.cacheDetails", UsageBytes(usage.DiskBytes), UsageBytes(usage.DurableBytes), usage.DurableObjects));
         _cacheProgress.SetToolTip(T("usage.capacityHint"));
+        if (provider?.Type == "memory-cache")
+            SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.MemoryBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
+                (I18n.Language == "zh-CN"
+                    ? $"RAM · 命中 {provider.BlockCacheHits} · 未命中 {provider.BlockCacheMisses} · 回写 {provider.BlockWriteBacks}"
+                    : $"RAM · {provider.BlockCacheHits} hits · {provider.BlockCacheMisses} misses · {provider.BlockWriteBacks} write-backs"));
     }
     private static void SetUsageText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
     private static string UsageBytes(long bytes)

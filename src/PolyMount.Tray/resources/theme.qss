@@ -1,4 +1,13 @@
 QWidget { font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; color: #26354b; }
+        QDialog#layerPicker { background: #f3f6fb; }
+        QWidget#pickerPreview { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; }
+        QWidget#pickerPlacement { background: #eaf0f8; border: 1px solid #e0e7f1; border-radius: 8px; }
+        QLabel#pickerType { color: #7b8aa0; font-size: 11px; }
+        QLabel#pickerCardTitle { font-size: 14px; font-weight: 600; color: #17243b; }
+        QListWidget#layerCatalog { background: transparent; border: none; padding: 0; }
+        QListWidget#layerCatalog::item { background: transparent; border: none; padding: 0; }
+        QListWidget#layerCatalog::item:selected { background: transparent; }
+        QListWidget#layerCatalog::item:focus { border: 1px solid #2563eb; border-radius: 9px; }
         QWidget#dashboard { background: #f3f6fb; }
         QWidget#surface { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; }
         QWidget#sidebar { background: #142237; }

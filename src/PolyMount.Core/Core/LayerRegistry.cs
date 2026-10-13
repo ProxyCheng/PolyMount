@@ -5,16 +5,35 @@ namespace PolyMount.Core;
 /// <summary>Provider construction and parameter validation, independent of chain layout.</summary>
 public static class LayerRegistry
 {
-    private sealed record Registration(Func<LayerConfig, LayerBuildContext, ILayer> Create, Action<LayerConfig>? Validate);
+    private sealed record Registration(Func<LayerConfig, LayerBuildContext, ILayer> Create, Action<LayerConfig>? Validate, LayerDescriptor? Descriptor);
     private static readonly Dictionary<string, Registration> Registrations = new(StringComparer.OrdinalIgnoreCase);
     static LayerRegistry()
     {
-        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression));
+        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
         Register("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
-            c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); });
+            c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
+        Register("memory-cache", (c, ctx) => new MemoryCacheLayer(MemoryCapacity(c), MemoryBlockSize(c), ctx.LowerGeneration),
+            c =>
+            {
+                long capacity = MemoryCapacity(c); int block = MemoryBlockSize(c);
+                if (block < 4096 || block > 1048576 || (block & (block - 1)) != 0 || capacity < block)
+                    throw new ArgumentException("memory-cache requires capacity >= block size and a power-of-two block size (4 KiB–1 MiB)");
+            }, BuiltInLayerDescriptors.Memory());
     }
+    private static long MemoryCapacity(LayerConfig config) => config.Parameters.TryGetValue("CapacityBytes", out var value) ? value.GetInt64() : 16 * 1048576;
+    private static int MemoryBlockSize(LayerConfig config) => config.Parameters.TryGetValue("BlockSize", out var value)
+        ? value.ValueKind == System.Text.Json.JsonValueKind.String ? int.Parse(value.GetString()!, System.Globalization.CultureInfo.InvariantCulture) : value.GetInt32() : 65536;
     public static void Register(string type, Func<LayerConfig, LayerBuildContext, ILayer> create, Action<LayerConfig>? validate = null)
-        => Registrations[type] = new(create, validate);
+        => Register(type, create, validate, null);
+    public static void Register(string type, Func<LayerConfig, LayerBuildContext, ILayer> create, Action<LayerConfig>? validate, LayerDescriptor? descriptor)
+    {
+        if (descriptor != null) descriptor.Type = type;
+        Registrations[type] = new(create, validate, descriptor);
+    }
+    public static LayerDescriptor Describe(string type) =>
+        (Registrations.TryGetValue(type, out var registration) ? registration.Descriptor : SourceRegistry.Describe(type))
+        ?? new LayerDescriptor { Type = type, Title = new(type, type) };
+    public static IEnumerable<LayerDescriptor> Descriptors => Types.Select(Describe);
     public static bool Contains(string type) => Registrations.ContainsKey(type) || SourceRegistry.Contains(type);
     public static IEnumerable<string> Types => Registrations.Keys.Concat(SourceRegistry.Types).Distinct(StringComparer.OrdinalIgnoreCase);
     internal static void Unregister(string type) => Registrations.Remove(type);
