@@ -1,6 +1,7 @@
 namespace PolyMount.Core;
 
 using PolyMount.Core.Ipc;
+using PolyMount.Layers;
 
 public sealed class VirtualFileSystem
 {
@@ -156,12 +157,14 @@ public sealed class VirtualFileSystem
             result.Add(new LayerProbe
             {
                 Name = l.Name,
+                Writable = l.Writable,
                 Exists = exists,
                 IsDir = exists && e.IsDir,
                 Size = exists && !e.IsDir ? e.Size : 0,
                 Effective = i == effectiveIndex,
                 Shadowed = exists && i != effectiveIndex,
                 Tombstoned = l.IsDeleted(rel),
+                DirectTombstone = l is OverlayLayer ov && ov.HasTombstone(rel),
                 Generation = l.Generation
             });
         }

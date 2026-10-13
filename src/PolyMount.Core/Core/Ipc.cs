@@ -29,8 +29,12 @@ public sealed class ControlRequest
     public string? Name { get; set; }
     public long Rev { get; set; }
 
-    // Full local path to inspect, used by the "probe" command.
+    // Full local path to inspect, used by the "probe" and "layerAction" commands.
     public string? Path { get; set; }
+
+    // Used by "layerAction": which layer to mutate and what to do.
+    public string? Layer { get; set; }
+    public string? Action { get; set; }
 }
 
 public sealed class ControlResponse
@@ -48,13 +52,19 @@ public sealed class ControlResponse
 public sealed class LayerProbe
 {
     public string Name { get; set; } = "";
+    public bool Writable { get; set; }
     public bool Exists { get; set; }
     public bool IsDir { get; set; }
     public long Size { get; set; }
     public bool Effective { get; set; }   // this layer's entry is the one that wins
     public bool Shadowed { get; set; }     // exists here but hidden by a layer above
-    public bool Tombstoned { get; set; }   // this layer actively hides the path (tombstone)
+    public bool Tombstoned { get; set; }   // this layer hides the path (effective tombstone)
+    public bool DirectTombstone { get; set; } // tombstone set on this exact path (removable)
     public string Generation { get; set; } = "";
+
+    // 存在 / 不存在 / 不知道
+    public string State =>
+        Exists ? "exists" : Tombstoned ? "deleted" : "unknown";
 }
 
 public sealed class ProbeResult
@@ -76,4 +86,14 @@ public static class ControlCommands
     public const string Mount = "mount";
     public const string Unmount = "unmount";
     public const string Probe = "probe";
+    public const string LayerAction = "layerAction";
+}
+
+// Action names accepted by the "layerAction" command.
+public static class LayerActions
+{
+    public const string Restore = "restore";       // overlay: 不存在 -> 不知道 (remove tombstone)
+    public const string Hide = "hide";             // overlay: -> 不存在 (delete copy + tombstone)
+    public const string DropLocal = "dropLocal";   // overlay: 存在 -> 不知道 (discard local copy, reveal below)
+    public const string EvictCache = "evict";      // cache: 存在 -> 不知道 (evict this path)
 }

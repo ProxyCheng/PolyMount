@@ -121,6 +121,34 @@ public sealed class MountInstance : IDisposable
         };
     }
 
+    // Mutate a single layer's state for one path, then return the refreshed probe.
+    public ProbeResult ApplyLayerAction(string layer, string rel, string action)
+    {
+        switch (layer.ToLowerInvariant())
+        {
+            case "overlay":
+                switch (action)
+                {
+                    case LayerActions.Restore:   Overlay.ClearTombstone(rel); break;        // 不存在 -> 不知道
+                    case LayerActions.Hide:      Overlay.Delete(rel, shadowedBelow: true); break;   // -> 不存在
+                    case LayerActions.DropLocal: Overlay.Delete(rel, shadowedBelow: false); break;  // 存在 -> 不知道
+                    default: throw new NotSupportedException($"overlay has no action '{action}'");
+                }
+                break;
+
+            case "cache":
+                if (action != LayerActions.EvictCache)
+                    throw new NotSupportedException($"cache has no action '{action}'");
+                Cache?.InvalidateEntry(rel);
+                break;
+
+            default:
+                throw new NotSupportedException($"layer '{layer}' is not editable");
+        }
+
+        return Probe(rel);
+    }
+
     public MountStatus GetStatus()
     {
         var status = new MountStatus

@@ -27,4 +27,16 @@ public static class ControlClient
 
     public static ControlResponse Status()
         => Send(new ControlRequest { Cmd = ControlCommands.Status });
+
+    public static ControlResponse Probe(string fullPath)
+        => Send(new ControlRequest { Cmd = ControlCommands.Probe, Path = fullPath });
+
+    public static ControlResponse LayerAction(string fullPath, string layer, string action)
+        => Send(new ControlRequest
+        {
+            Cmd = ControlCommands.LayerAction,
+            Path = fullPath,
+            Layer = layer,
+            Action = action
+        });
 }

@@ -85,6 +85,19 @@ public sealed class LruCacheLayer : ICacheLayer
         }
     }
 
+    // Evict a single cached path (存在 -> 不知道) for the current generation.
+    public void InvalidateEntry(string rel)
+    {
+        var p = PathFor(rel);
+        var key = Path.GetFullPath(p);
+        lock (_gate)
+        {
+            if (_size.TryRemove(key, out var sz)) Interlocked.Add(ref _total, -sz);
+            _access.TryRemove(key, out _);
+        }
+        try { if (File.Exists(p)) File.Delete(p); } catch { }
+    }
+
     public void Purge()
     {
         lock (_gate)

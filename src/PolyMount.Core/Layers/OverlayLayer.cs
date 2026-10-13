@@ -139,6 +139,16 @@ public sealed class OverlayLayer : ILayer
 
     // ---- tombstones ----
 
+    // Does this layer directly tombstone this exact path (i.e. explicitly "不存在", as opposed to
+    // inheriting a tombstone from an ancestor directory)?
+    public bool HasTombstone(string rel) => _tombstones.Contains(rel);
+
+    // 不存在 -> 不知道 : stop hiding the lower layers for this path.
+    public void ClearTombstone(string rel) => RemoveTombstone(rel);
+
+    // -> 不存在 : explicitly hide this path (and anything below it).
+    public void MarkTombstone(string rel) => AddTombstone(rel);
+
     private void LoadTombstones()    {
         try
         {

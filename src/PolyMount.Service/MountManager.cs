@@ -84,6 +84,12 @@ public sealed class MountManager
                 case ControlCommands.Probe:
                     response.Probe = ProbePath(request.Path);
                     break;
+                case ControlCommands.LayerAction:
+                {
+                    var (inst, rel) = ResolvePath(request.Path);
+                    response.Probe = inst.ApplyLayerAction(request.Layer ?? "", rel, request.Action ?? "");
+                    break;
+                }
                 default:
                     throw new InvalidOperationException("unknown command: " + request.Cmd);
             }
@@ -115,8 +121,14 @@ public sealed class MountManager
     // path relative to its mount point, then probes the layer stack.
     private ProbeResult ProbePath(string? fullPath)
     {
+        var (inst, rel) = ResolvePath(fullPath);
+        return inst.Probe(rel);
+    }
+
+    private (MountInstance Instance, string Rel) ResolvePath(string? fullPath)
+    {
         if (string.IsNullOrWhiteSpace(fullPath))
-            throw new InvalidOperationException("probe requires a path");
+            throw new InvalidOperationException("a path is required");
 
         var full = Path.GetFullPath(fullPath).TrimEnd('\\');
 
@@ -126,11 +138,11 @@ public sealed class MountManager
             {
                 var mp = Path.GetFullPath(inst.MountPoint).TrimEnd('\\');
                 if (full.Equals(mp, StringComparison.OrdinalIgnoreCase))
-                    return inst.Probe(string.Empty);
+                    return (inst, string.Empty);
 
                 var prefix = mp + "\\";
                 if (full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return inst.Probe(VfsPath.Normalize(full.Substring(prefix.Length)));
+                    return (inst, VfsPath.Normalize(full.Substring(prefix.Length)));
             }
         }
 
