@@ -312,8 +312,11 @@ public sealed class VirtualFileSystem
 }
 
 /// <summary>Seekable staging handle; flush persists the complete file object and parent metadata.</summary>
-internal sealed class SharedObjectFile(Stream data, string layerName, Action<long> recordWrite, Action<Stream> commit, Action closed)
+internal sealed class SharedObjectFile(Stream data, string layerName, Action<long> recordWrite, Action<Stream> commit, Action closed,
+    Func<Stream>? createSnapshot = null)
 {
+    private static readonly SemaphoreSlim MemorySnapshots = new(32, 32);
+    private const int SmallSnapshotBytes = 64 * 1024;
     public string LayerName => layerName;
     private readonly object _gate = new();
     private readonly object _commitGate = new();
@@ -332,28 +335,53 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
     public int Read(long position, byte[] buffer, int offset, int count)
     { lock (_gate) { data.Position = position; return data.Read(buffer, offset, count); } }
     public void Write(long position, byte[] buffer, int offset, int count)
-    { lock (_gate) { data.Position = position; data.Write(buffer, offset, count); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(count); }
-    public void SetLength(long length) { lock (_gate) { data.SetLength(length); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(0); }
+    { if (count == 0) return; lock (_gate) { data.Position = position; data.Write(buffer, offset, count); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(count); }
+    public void SetLength(long length) { lock (_gate) { if (data.Length == length) return; data.SetLength(length); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(0); }
     public void Flush()
     {
         lock (_commitGate)
         {
             long version;
-            using var snapshot = PolyMount.Layers.ObjectDatabase.Scratch();
             lock (_gate)
             {
-                version = _version;
-                if (version == _persisted || _detached) return;
-                // Commit reads the same seekable staging file; writes are held only for
-                // this file, so unrelated file data operations remain parallel.
-                data.Flush();
-                long position = data.Position;
-                try { data.Position = 0; data.CopyTo(snapshot); }
-                finally { data.Position = position; }
+                if (_version == _persisted || _detached) return;
             }
-            snapshot.Position = 0;
-            commit(snapshot);
-            lock (_gate) _persisted = version;
+            bool memorySnapshot;
+            lock (_gate)
+            {
+                memorySnapshot = createSnapshot == null && data.Length <= SmallSnapshotBytes && MemorySnapshots.Wait(0);
+            }
+            Stream? snapshot = null;
+            try
+            {
+                // Small file snapshots avoid a second temporary disk file. Admission
+                // is nonblocking and globally bounded to 32 x 64 KiB of payload.
+                snapshot = createSnapshot?.Invoke() ?? (memorySnapshot
+                    ? new MemoryStream(SmallSnapshotBytes) : PolyMount.Layers.ObjectDatabase.Scratch());
+                lock (_gate)
+                {
+                    version = _version;
+                    if (version == _persisted || _detached) return;
+                    if (memorySnapshot && data.Length > SmallSnapshotBytes)
+                    {
+                        snapshot.Dispose();
+                        snapshot = PolyMount.Layers.ObjectDatabase.Scratch();
+                        MemorySnapshots.Release(); memorySnapshot = false;
+                    }
+                    data.Flush();
+                    long position = data.Position;
+                    try { data.Position = 0; data.CopyTo(snapshot); }
+                    finally { data.Position = position; }
+                }
+                snapshot.Position = 0;
+                commit(snapshot);
+                lock (_gate) _persisted = version;
+            }
+            finally
+            {
+                snapshot?.Dispose();
+                if (memorySnapshot) MemorySnapshots.Release();
+            }
         }
     }
     public void Release()
