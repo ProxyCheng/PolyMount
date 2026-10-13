@@ -338,14 +338,21 @@ public sealed class WinFspMount : FileSystemBase
                         node.DirectoryItems = _vfs.List(node.Rel);
                     items = node.DirectoryItems;
                 }
+                if (!string.IsNullOrEmpty(pattern) && pattern != "*")
+                    items = items.Where(entry => System.IO.Enumeration.FileSystemName.MatchesWin32Expression(
+                        pattern, entry.Name, ignoreCase: true)).ToList();
                 request?.Stage($"marker='{marker}' items={items.Count}");
                 cursor = new DirCursor { Items = items };
                 if (!string.IsNullOrEmpty(marker))
                 {
-                    int i = 0;
-                    while (i < items.Count &&
-                           string.Compare(items[i].Name, marker, StringComparison.OrdinalIgnoreCase) <= 0) i++;
-                    cursor.Index = i;
+                    int low = 0, high = items.Count;
+                    while (low < high)
+                    {
+                        int middle = low + (high - low) / 2;
+                        if (string.Compare(items[middle].Name, marker, StringComparison.OrdinalIgnoreCase) <= 0) low = middle + 1;
+                        else high = middle;
+                    }
+                    cursor.Index = low;
                 }
                 context = cursor;
             }
@@ -362,6 +369,24 @@ public sealed class WinFspMount : FileSystemBase
             Log("ReadDirectoryEntry rel='" + node.Rel + "'", ex);
             return false;
         }
+    }
+
+    public override int GetDirInfoByName(object fileNode, object fileDesc, string fileName,
+        out string normalizedName, out FspFileInfo fileInfo)
+    {
+        normalizedName = fileName;
+        fileInfo = default;
+        var node = fileNode as FsNode;
+        if (node == null || !node.IsDir) return NtStatus.NotADirectory;
+        try
+        {
+            using var request = BeginRequest("WinFsp.GetDirInfoByName", VfsPath.Child(node.Rel, fileName), node.ProcessId);
+            if (!_vfs.TryLookup(VfsPath.Child(node.Rel, fileName), out var entry)) return NtStatus.ObjectNameNotFound;
+            normalizedName = entry.Name;
+            fileInfo = BuildEntryInfo(entry, VfsPath.Child(node.Rel, entry.Name));
+            return NtStatus.Success;
+        }
+        catch (Exception ex) { Log("GetDirInfoByName " + fileName, ex); return NtStatus.UnexpectedIoError; }
     }
 
     public override int Flush(object fileNode, object fileDesc, out FspFileInfo fileInfo)

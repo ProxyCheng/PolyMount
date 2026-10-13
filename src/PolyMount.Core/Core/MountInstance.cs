@@ -97,7 +97,7 @@ public sealed class MountInstance : IDisposable
                 UnicodeOnDisk = true,
                 PersistentAcls = false,
                 PostCleanupWhenModifiedOnly = true,
-                PassQueryDirectoryPattern = false,
+                PassQueryDirectoryPattern = true,
                 FileInfoTimeout = 0
             };
 

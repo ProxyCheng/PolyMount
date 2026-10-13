@@ -8,6 +8,25 @@ namespace PolyMount.Core.Tests;
 public sealed class WinFspMetadataTests
 {
     [TestMethod]
+    public void Named_directory_query_and_patterns_do_not_return_unrelated_children()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer(); source.AddFile("folder/Target.local/file", "data"); source.AddDir("folder/Other.local");
+        var mount = new WinFspMount(new VirtualFileSystem(new[] { source }), temp.Sub("mount.log"));
+        Assert.AreEqual(0, mount.Open("folder", 0, 0, out var node, out var handle, out _, out _));
+        Assert.AreEqual(0, mount.GetDirInfoByName(node, handle, "target.local", out var name, out _));
+        Assert.AreEqual("Target.local", name, ignoreCase: true);
+        object context = null!;
+        Assert.IsTrue(mount.ReadDirectoryEntry(node, handle, "target.local", "", ref context, out name, out _));
+        Assert.AreEqual("Target.local", name);
+        Assert.IsFalse(mount.ReadDirectoryEntry(node, handle, "target.local", "", ref context, out _, out _));
+        context = null!;
+        Assert.IsTrue(mount.ReadDirectoryEntry(node, handle, "*.local", "Other.local", ref context, out name, out _));
+        Assert.AreEqual("Target.local", name);
+        Assert.IsFalse(source.ListedDirectories.Contains("folder/Target.local"));
+    }
+
+    [TestMethod]
     public void Directory_pagination_reuses_snapshot_and_new_scan_refreshes_it()
     {
         using var temp = new TempDir();
