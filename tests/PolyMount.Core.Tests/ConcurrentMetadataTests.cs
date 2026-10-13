@@ -9,6 +9,7 @@ public sealed class ConcurrentMetadataTests
     private sealed class BlockingSource : ILayer, IDisposable
     {
         public readonly ManualResetEventSlim Entered = new(), Release = new();
+        public int SlowListings;
         public string Name => "blocking";
         public string Generation => "1";
         public bool Writable => false;
@@ -21,6 +22,7 @@ public sealed class ConcurrentMetadataTests
         {
             if (path == "slow")
             {
+                Interlocked.Increment(ref SlowListings);
                 Entered.Set();
                 if (!Release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException();
             }
@@ -35,6 +37,24 @@ public sealed class ConcurrentMetadataTests
             return true;
         }
         public void Dispose() { Entered.Dispose(); Release.Dispose(); }
+    }
+
+    [TestMethod]
+    public async Task Concurrent_same_directory_queries_share_one_inflight_listing()
+    {
+        using var source = new BlockingSource();
+        var vfs = new VirtualFileSystem(new[] { source });
+        var tasks = Enumerable.Range(0, 16).Select(_ => Task.Factory.StartNew(() => vfs.List("slow"),
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        try
+        {
+            Assert.IsTrue(source.Entered.Wait(TimeSpan.FromSeconds(5)));
+            await Task.Delay(200);
+            Assert.AreEqual(1, source.SlowListings);
+        }
+        finally { source.Release.Set(); await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(5)); }
+        vfs.List("slow");
+        Assert.AreEqual(2, source.SlowListings, "Finished results must not become an unversioned permanent cache");
     }
 
     [TestMethod]

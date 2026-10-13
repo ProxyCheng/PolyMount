@@ -9,6 +9,8 @@ public sealed class VirtualFileSystem
     // Only mutations coordinate parent snapshot updates. Provider reads never
     // take this lock, including network-backed metadata and directory queries.
     private readonly object _mutationGate = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>> _resolutions = new();
+    private long _resolutionEpoch;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
     public VirtualFileSystem(IEnumerable<ILayer> layers) => _layers = layers.ToList();
     public IReadOnlyList<ILayer> Layers => _layers;
@@ -19,6 +21,26 @@ public sealed class VirtualFileSystem
         System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
 
     private bool Resolve(string path, out VirtualObject value, out int index, bool fill = true)
+    {
+        var key = (path.ToUpperInvariant(), fill, System.Threading.Interlocked.Read(ref _resolutionEpoch));
+        var pending = _resolutions.GetOrAdd(key, _ => new(() =>
+        {
+            bool found = ResolveOwn(path, out var resolved, out int hit, fill);
+            return (found, resolved, hit);
+        }, LazyThreadSafetyMode.ExecutionAndPublication));
+        try
+        {
+            var result = pending.Value;
+            value = result.Value; index = result.Index;
+            return result.Found;
+        }
+        finally
+        {
+            ((ICollection<KeyValuePair<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>>>)_resolutions)
+                .Remove(new(key, pending));
+        }
+    }
+    private bool ResolveOwn(string path, out VirtualObject value, out int index, bool fill)
     {
         for (index = 0; index < _layers.Count; index++)
         {
@@ -265,7 +287,11 @@ public sealed class VirtualFileSystem
         changes.Add(new(destination, new(renamed, children)));
         foreach (var child in children) CopyTree(VfsPath.Child(source, child.Name), VfsPath.Child(destination, child.Name), changes, streams);
     }
-    public void InvalidateCaches() { foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate(); }
+    public void InvalidateCaches()
+    {
+        Interlocked.Increment(ref _resolutionEpoch);
+        foreach (var cache in _layers.OfType<ICacheLayer>()) cache.Invalidate();
+    }
     public List<LayerProbe> Probe(string path)
     {
         using var request = RequestDiagnostics.Begin("VFS.Probe", path, Diagnostics);

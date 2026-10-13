@@ -1,4 +1,5 @@
 using PolyMount.Core;
+using System.IO.Enumeration;
 
 namespace PolyMount.Layers;
 
@@ -97,18 +98,16 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel)
     {
-        var list = new List<VfsEntry>();
         var p = LocalPath(rel);
-        if (!Directory.Exists(p)) return list;
-
-        foreach (var d in Directory.EnumerateDirectories(p))
-            list.Add(new VfsEntry { Name = Path.GetFileName(d), IsDir = true, TimeUtc = Directory.GetLastWriteTimeUtc(d) });
-        foreach (var f in Directory.EnumerateFiles(p))
+        if (!Directory.Exists(p)) return Array.Empty<VfsEntry>();
+        // Windows enumeration already returns length/time/attributes. Use these
+        // fields rather than stat every child and scan the directory twice.
+        return new FileSystemEnumerable<VfsEntry>(p, (ref FileSystemEntry entry) => new VfsEntry
         {
-            var fi = new FileInfo(f);
-            list.Add(new VfsEntry { Name = fi.Name, IsDir = false, Size = fi.Length, TimeUtc = fi.LastWriteTimeUtc });
-        }
-        return list;
+            Name = entry.FileName.ToString(), IsDir = entry.IsDirectory,
+            Size = entry.IsDirectory ? 0 : entry.Length, TimeUtc = entry.LastWriteTimeUtc.UtcDateTime
+        }, new EnumerationOptions { RecurseSubdirectories = false, AttributesToSkip = 0,
+            IgnoreInaccessible = false, ReturnSpecialDirectories = false }).ToArray();
     }
 
     public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)
