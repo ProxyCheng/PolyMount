@@ -101,9 +101,16 @@ internal sealed class SvnClient
         psi.ArgumentList.Add(UrlFor(rel, rev));
 
         using var proc = Process.Start(psi)!;
-        using (var fs = File.Create(tmp)) proc.StandardOutput.BaseStream.CopyTo(fs);
-        var stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        try
+        {
+            using var fs = File.Create(tmp);
+            var copy = proc.StandardOutput.BaseStream.CopyToAsync(fs);
+            if (!Task.WhenAll(copy, proc.WaitForExitAsync()).Wait(TimeSpan.FromSeconds(120)))
+            { proc.Kill(entireProcessTree: true); throw new TimeoutException("svn cat timed out after 120 seconds"); }
+        }
+        catch { if (!proc.HasExited) proc.Kill(entireProcessTree: true); TryDelete(tmp); throw; }
+        var stderr = stderrTask.GetAwaiter().GetResult();
 
         if (proc.ExitCode != 0)
         {
@@ -130,9 +137,12 @@ internal sealed class SvnClient
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         using var proc = Process.Start(psi)!;
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+        var stderrTask = proc.StandardError.ReadToEndAsync();
+        if (!Task.WhenAll(stdoutTask, stderrTask, proc.WaitForExitAsync()).Wait(TimeSpan.FromSeconds(30)))
+        { proc.Kill(entireProcessTree: true); throw new TimeoutException("svn metadata request timed out after 30 seconds"); }
+        var stdout = stdoutTask.GetAwaiter().GetResult();
+        var stderr = stderrTask.GetAwaiter().GetResult();
         return (proc.ExitCode, stdout, stderr);
     }
 

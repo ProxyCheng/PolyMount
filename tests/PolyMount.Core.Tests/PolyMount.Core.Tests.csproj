@@ -23,4 +23,9 @@
     <ProjectReference Include="..\..\src\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Reference Include="winfsp-msil">
+      <HintPath>C:\Program Files (x86)\WinFsp\bin\winfsp-msil.dll</HintPath>
+    </Reference>
+  </ItemGroup>
 </Project>

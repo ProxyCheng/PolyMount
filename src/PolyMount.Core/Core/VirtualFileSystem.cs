@@ -45,7 +45,7 @@ public sealed class VirtualFileSystem
         path = VfsPath.Normalize(path);
         if (_openFiles.TryGetValue(path, out var open))
         {
-            entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = DateTime.UtcNow };
+            entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = open.LastWriteTimeUtc };
             return true;
         }
         lock (_gate)
@@ -76,7 +76,7 @@ public sealed class VirtualFileSystem
             path = VfsPath.Normalize(path);
             if (_openFiles.TryGetValue(path, out var open) && open.TryAcquire(false, out var handle))
             {
-                entry = new VfsEntry { Name = VfsPath.Name(path), Size = handle.Length, TimeUtc = DateTime.UtcNow };
+                entry = new VfsEntry { Name = VfsPath.Name(path), Size = handle.Length, TimeUtc = open.LastWriteTimeUtc };
                 Metrics?.RecordRead(open.LayerName, TimeSpan.Zero, entry.Size);
                 return handle;
             }
@@ -146,7 +146,7 @@ public sealed class VirtualFileSystem
             if (_openFiles.TryGetValue(path, out var shared) && shared.TryAcquire(true, out var sharedHandle))
             {
                 if (truncate) sharedHandle.SetLength(0);
-                entry = new VfsEntry { Name = VfsPath.Name(path), Size = sharedHandle.Length, TimeUtc = DateTime.UtcNow };
+                entry = new VfsEntry { Name = VfsPath.Name(path), Size = sharedHandle.Length, TimeUtc = shared.LastWriteTimeUtc };
                 return sharedHandle;
             }
             var children = ParentChildren(path);
@@ -278,6 +278,8 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
     private int _references;
     private bool _closed;
     private bool _detached;
+    private DateTime _lastWriteTimeUtc = DateTime.UtcNow;
+    public DateTime LastWriteTimeUtc { get { lock (_gate) return _lastWriteTimeUtc; } }
     public void Detach() { lock (_gate) _detached = true; }
     private long _version, _persisted;
     public bool TryAcquire(bool writable, out Stream handle)
@@ -288,8 +290,8 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
     public int Read(long position, byte[] buffer, int offset, int count)
     { lock (_gate) { data.Position = position; return data.Read(buffer, offset, count); } }
     public void Write(long position, byte[] buffer, int offset, int count)
-    { lock (_gate) { data.Position = position; data.Write(buffer, offset, count); _version++; } recordWrite(count); }
-    public void SetLength(long length) { lock (_gate) { data.SetLength(length); _version++; } recordWrite(0); }
+    { lock (_gate) { data.Position = position; data.Write(buffer, offset, count); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(count); }
+    public void SetLength(long length) { lock (_gate) { data.SetLength(length); _version++; _lastWriteTimeUtc = DateTime.UtcNow; } recordWrite(0); }
     public void Flush()
     {
         lock (_commitGate)

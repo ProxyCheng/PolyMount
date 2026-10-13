@@ -160,16 +160,20 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetPriority(int* priority) override{if(!priority)return E_POINTER;*priority=0;return S_OK;}
     HRESULT STDMETHODCALLTYPE IsMemberOf(LPCWSTR file,DWORD) override {
+        try {
         if(!file) return S_FALSE;
         bool expected=false; if(workerStarted.compare_exchange_strong(expected,true)) std::thread(Worker).detach();
         std::wstring path=Normalize(file);
-        std::lock_guard<std::mutex> lock(gate);
+        // Explorer callbacks must never wait for the worker's cache maintenance.
+        std::unique_lock<std::mutex> lock(gate,std::try_to_lock);
+        if(!lock.owns_lock()) return S_FALSE;
         if(!UnderRoot(path)) return S_FALSE;
-        if(entries.size()>10000) { for(auto it=entries.begin();it!=entries.end();) if(!it->second.pending) it=entries.erase(it); else ++it; }
+        if(entries.size()>=10000 && entries.find(path)==entries.end()) return S_FALSE;
         auto& e=entries[path];
         e.seen=GetTickCount64();
         if(!e.pending && e.expires<=GetTickCount64() && requests.size()<512) { e.pending=true;requests.push_back(path);wake.notify_one(); }
         return e.slot==slot ? S_OK : S_FALSE;
+        } catch(...) { return S_FALSE; }
     }
 };
 class Factory final : public IClassFactory {

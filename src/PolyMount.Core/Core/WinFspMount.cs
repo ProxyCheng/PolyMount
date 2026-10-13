@@ -18,6 +18,7 @@ internal sealed class FsHandle : IDisposable
 {
     public Stream Stream;
     public bool Writable;
+    public DateTime TimeUtc;
     public void Dispose()
     {
         if (Stream is FileStream fs)
@@ -95,8 +96,8 @@ public sealed class WinFspMount : FileSystemBase
             Stream stream = write ? _vfs.OpenWrite(rel, false, out entry) : _vfs.OpenRead(rel, out entry);
 
             fileNode = new FsNode { Rel = rel, IsDir = false };
-            fileDesc = new FsHandle { Stream = stream, Writable = write };
-            fileInfo = BuildStreamInfo(rel, stream);
+            fileDesc = new FsHandle { Stream = stream, Writable = write, TimeUtc = entry.TimeUtc };
+            fileInfo = BuildStreamInfo(rel, stream, entry.TimeUtc);
             return NtStatus.Success;
         }
         catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
@@ -162,7 +163,8 @@ public sealed class WinFspMount : FileSystemBase
 
         if ((fileDesc as FsHandle)?.Stream is { } stream)
         {
-            fileInfo = BuildStreamInfo(node.Rel, stream);
+            var handle = fileDesc as FsHandle;
+            fileInfo = BuildStreamInfo(node.Rel, stream, handle?.Writable == false ? handle.TimeUtc : default);
             return NtStatus.Success;
         }
         if (node.IsDir)
@@ -171,7 +173,7 @@ public sealed class WinFspMount : FileSystemBase
             return NtStatus.Success;
         }
         if (!_vfs.TryLookup(node.Rel, out var entry)) return NtStatus.ObjectNameNotFound;
-        fileInfo = BuildEntryInfo(entry);
+        fileInfo = BuildEntryInfo(entry, node.Rel);
         return NtStatus.Success;
     }
 
@@ -315,7 +317,7 @@ public sealed class WinFspMount : FileSystemBase
 
             var entry = cursor.Items[cursor.Index++];
             fileName = entry.Name;
-            fileInfo = BuildEntryInfo(entry);
+            fileInfo = BuildEntryInfo(entry, VfsPath.Child(node.Rel, entry.Name));
             return true;
         }
         catch (Exception ex)
@@ -364,9 +366,9 @@ public sealed class WinFspMount : FileSystemBase
 
     private static long RoundUp(long size) => size <= 0 ? 0 : (size + 4095) / 4096 * 4096;
 
-    private FspFileInfo BuildEntryInfo(VfsEntry e)
+    private FspFileInfo BuildEntryInfo(VfsEntry e, string rel = null)
     {
-        var timeUtc = e.TimeUtc == default ? DateTime.UtcNow : e.TimeUtc;
+        var timeUtc = e.TimeUtc == default ? DateTime.UnixEpoch : e.TimeUtc;
         var ft = ToFileTime(timeUtc);
         long size = e.IsDir ? 0 : e.Size;
         return new FspFileInfo
@@ -379,17 +381,17 @@ public sealed class WinFspMount : FileSystemBase
             LastAccessTime = ft,
             LastWriteTime = ft,
             ChangeTime = ft,
-            IndexNumber = IndexOf(e.Name),
+            IndexNumber = IndexOf(rel ?? e.Name),
             HardLinks = 0,
             EaSize = 0
         };
     }
 
-    private FspFileInfo BuildStreamInfo(string rel, Stream stream)
+    private FspFileInfo BuildStreamInfo(string rel, Stream stream, DateTime timeUtc = default)
     {
-        DateTime t;
-        try { t = stream is FileStream fs ? File.GetLastWriteTimeUtc(fs.Name) : DateTime.UtcNow; }
-        catch { t = DateTime.UtcNow; }
+        DateTime t = timeUtc;
+        if (t == default && _vfs.TryLookup(rel, out var entry)) t = entry.TimeUtc;
+        if (t == default) t = DateTime.UnixEpoch;
         var ft = ToFileTime(t);
         long size = 0;
         try { size = stream.Length; } catch { }
@@ -411,7 +413,8 @@ public sealed class WinFspMount : FileSystemBase
 
     private FspFileInfo BuildDirInfo(string rel)
     {
-        var ft = ToFileTime(DateTime.UtcNow);
+        var time = _vfs.TryLookup(rel, out var entry) && entry.TimeUtc != default ? entry.TimeUtc : DateTime.UnixEpoch;
+        var ft = ToFileTime(time);
         return new FspFileInfo
         {
             FileAttributes = Win32.FILE_ATTRIBUTE_DIRECTORY,
