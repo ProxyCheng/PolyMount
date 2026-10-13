@@ -26,6 +26,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     private Task? _worker;
     private readonly Timer _storageCheck;
     private int _checkingStorage;
+    private int _storageCursor;
     private long _bytes, _pendingBytes;
     private long _metadataBytes;
     private int _openCount;
@@ -102,8 +103,10 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
             BeforeStorageCheck?.Invoke();
             // Filesystem calls are deliberately outside the cache index lock.
             bool databaseExists = File.Exists(Path.Combine(_readRoot, "objects.db"));
-            foreach (var pair in snapshot)
+            int checks = databaseExists ? Math.Min(256, snapshot.Length) : snapshot.Length;
+            for (int i = 0; i < checks; i++)
             {
+                var pair = snapshot[(_storageCursor + i) % snapshot.Length];
                 var record = pair.Value.Record;
                 if (databaseExists && (record?.Blob == null || File.Exists(Path.Combine(_readRoot, record.Blob)))) continue;
                 lock (_gate)
@@ -112,6 +115,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
                         Remove(pair.Key);
                 }
             }
+            _storageCursor = (_storageCursor + checks) % snapshot.Length;
         }
         catch (Exception ex) { LastPersistenceError = ex.Message; }
         finally { Volatile.Write(ref _checkingStorage, 0); }
@@ -202,14 +206,14 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
                     request?.Stage($"writing blobs and SQLite batch records={changes.Count}");
                     _reads.Apply(changes);
                     var records = _reads.Records;
-                    var published = records.ToDictionary(r => r.Path, StringComparer.OrdinalIgnoreCase);
+                    var published = changes.ToDictionary(c => c.Path, c => _reads.GetPublishedRecord(c.Path), StringComparer.OrdinalIgnoreCase);
                     lock (_gate)
                     {
                         foreach (var work in batch)
                         {
                         if (_items.TryGetValue(work.Key, out var current) && current == work.Item)
                         {
-                            if (!published.TryGetValue(work.Key, out var record)) { Remove(work.Key); continue; }
+                            if (!published.TryGetValue(work.Key, out var record) || record == null) { Remove(work.Key); continue; }
                             _bytes += record.StoredBytes - current.Bytes;
                             current.Bytes = record.StoredBytes;
                             current.Record = record;

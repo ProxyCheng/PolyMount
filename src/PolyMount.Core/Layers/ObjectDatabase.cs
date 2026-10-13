@@ -12,8 +12,13 @@ internal sealed class ObjectDatabase
     private readonly string _root, _connectionString;
     private readonly object _gate = new();
     private Dictionary<string, Record> _records;
+    private long _metadataBytes;
+    private readonly Dictionary<string, long> _recordSizes = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _compress;
     private readonly bool _recoverable;
+    private long _usageCheckedAt;
+    private long _diskBytes;
+    private readonly object _usageGate = new();
     public ObjectDatabase(string root, bool compress, bool recoverable = false)
     {
         _root = Path.Combine(root, "objects-v2");
@@ -35,7 +40,9 @@ internal sealed class ObjectDatabase
             long size = CacheBudgets.Estimate(record.Path, record.Value);
             if (_recoverable && (_records.Count >= CacheBudgets.MaxObjects || metadata + size > CacheBudgets.MetadataBytes)) continue;
             _records[record.Path] = record; metadata += size;
+            _recordSizes[record.Path] = size;
         }
+        _metadataBytes = metadata;
     }
     private SqliteConnection Connect()
     {
@@ -46,24 +53,36 @@ internal sealed class ObjectDatabase
     public IReadOnlyList<Record> Records { get { lock (_gate) { EnsureAvailable(); return _records.Values.ToArray(); } } }
     internal LayerStorageUsage GetStorageUsage()
     {
+        // Status polling must not stat every blob under the metadata mutex.
+        // Disk usage is observational and may lag writes by up to ten seconds.
+        if (Environment.TickCount64 - Interlocked.Read(ref _usageCheckedAt) >= 10000 && Monitor.TryEnter(_usageGate))
+        {
+            try
+            {
+                long diskBytes = 0;
+                if (Directory.Exists(_root))
+                    foreach (var file in new DirectoryInfo(_root).EnumerateFiles())
+                        try { diskBytes += file.Length; } catch (FileNotFoundException) { }
+                Interlocked.Exchange(ref _diskBytes, diskBytes);
+                Interlocked.Exchange(ref _usageCheckedAt, Environment.TickCount64);
+            }
+            finally { Monitor.Exit(_usageGate); }
+        }
         lock (_gate)
         {
-            EnsureAvailable();
-            long diskBytes = 0;
-            foreach (var path in Directory.EnumerateFiles(_root))
-            {
-                try { diskBytes += new FileInfo(path).Length; }
-                catch (FileNotFoundException) { }
-            }
-            return new(diskBytes, _records.Values.Sum(r => r.StoredBytes),
+            return new(Interlocked.Read(ref _diskBytes), _records.Values.Sum(r => r.StoredBytes),
                 _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir));
         }
+    }
+    internal Record? GetPublishedRecord(string key)
+    {
+        lock (_gate) return _records.GetValueOrDefault(key);
     }
     private void EnsureAvailable()
     {
         if (File.Exists(Path.Combine(_root, "objects.db"))) return;
         if (_records.Count > 0 && !_recoverable) throw new IOException("Persistent layer storage was removed: " + _root);
-        if (_recoverable) _records.Clear();
+        if (_recoverable) { _records.Clear(); _recordSizes.Clear(); _metadataBytes = 0; }
         Directory.CreateDirectory(_root);
         SqliteConnection.ClearAllPools();
         using var connection = Connect();
@@ -194,16 +213,26 @@ internal sealed class ObjectDatabase
                     }
                     transaction.Commit();
                 }
-                foreach (var key in removed) _records.Remove(key);
-                foreach (var update in updates) _records[update.Key] = update.Value;
+                foreach (var key in removed)
+                {
+                    _records.Remove(key);
+                    if (_recordSizes.Remove(key, out var size)) _metadataBytes -= size;
+                }
+                foreach (var update in updates)
+                {
+                    if (_recordSizes.TryGetValue(update.Key, out var oldSize)) _metadataBytes -= oldSize;
+                    long size = CacheBudgets.Estimate(update.Key, update.Value.Value);
+                    _recordSizes[update.Key] = size; _metadataBytes += size;
+                    _records[update.Key] = update.Value;
+                }
                 if (_recoverable)
                 {
-                    long metadata = _records.Values.Sum(r => CacheBudgets.Estimate(r.Path, r.Value));
+                    if (_records.Count > CacheBudgets.MaxObjects || _metadataBytes > CacheBudgets.MetadataBytes)
                     foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
                     {
-                        if (_records.Count <= CacheBudgets.MaxObjects && metadata <= CacheBudgets.MetadataBytes) break;
+                        if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= CacheBudgets.MetadataBytes) break;
                         _records.Remove(record.Path);
-                        metadata -= CacheBudgets.Estimate(record.Path, record.Value);
+                        _metadataBytes -= _recordSizes[record.Path]; _recordSizes.Remove(record.Path);
                     }
                 }
                 }
