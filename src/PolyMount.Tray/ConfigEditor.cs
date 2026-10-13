@@ -49,8 +49,7 @@ internal sealed class ConfigEditor : QWidget
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "editor.title");
         Resize(1000, 820);
-        SetMinimumSize(900, 720);
-        var root = new QVBoxLayout(this);
+        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900, 720));
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         var heading = Plain("", "pageTitle");

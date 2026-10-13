@@ -37,8 +37,7 @@ internal sealed class StatsWindow : QWidget
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "stats.title");
         Resize(1180, 960);
-        SetMinimumSize(900, 700);
-        var root = new QVBoxLayout(this);
+        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900, 900));
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         var header = new QHBoxLayout();

@@ -143,6 +143,23 @@ internal static class Program
                 if (I18n.T("dashboard.title") == "dashboard.title") failure = "Qt resource translation lookup failed";
                 I18n.SetLanguage(original);
             }
+            if (ticks == 45)
+            {
+                dashboard.Resize(560, 420);
+                editor.Resize(560, 420);
+                stats.Resize(560, 420);
+            }
+            if (ticks == 50)
+            {
+                if (dashboard.Width > 560 || editor.Width > 560 || stats.Width > 560)
+                    failure = "Workspace windows could not shrink to the requested size";
+                if (capture != null)
+                {
+                    dashboard.Capture(Path.Combine(capture, "dashboard-small.png"));
+                    editor.Capture(Path.Combine(capture, "layers-small.png"));
+                    stats.Capture(Path.Combine(capture, "stats-small.png"));
+                }
+            }
             if (ticks >= 60)
             {
                 timer.Stop();

@@ -36,10 +36,9 @@ internal sealed class Dashboard : QWidget
         SetObjectName("dashboard");
         SetWindowIcon(TrayIcons.App);
         Resize(1280, 820);
-        SetMinimumSize(1080, 720);
         SetStyleSheet(TrayTheme.StyleSheet);
         I18n.Bind(SetWindowTitle, "dashboard.title");
-        var root = new QHBoxLayout(this);
+        var root = new QHBoxLayout(WindowScrollArea.Create(this, 1080, 720));
         root.SetContentsMargins(0, 0, 0, 0);
         root.SetSpacing(0);
 
