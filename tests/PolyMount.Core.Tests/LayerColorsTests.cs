@@ -19,8 +19,29 @@ public class LayerColorsTests
     [TestMethod]
     public void Builtin_layers_have_distinct_preset_colors()
     {
-        var colors = new[] { "overlay", "cache", "svn", "dir" }.Select(LayerColors.Auto).ToArray();
+        var colors = new[] { "overlay", "cache", "svn", "dir", "memory-cache", "prediction-cache" }.Select(LayerColors.Auto).ToArray();
         CollectionAssert.AllItemsAreUnique(colors);
+        foreach (string color in colors) CollectionAssert.Contains(LayerColors.OriginPalette.ToArray(), color);
+    }
+
+    [TestMethod]
+    public void Unknown_layer_defaults_are_exact_palette_colors_and_case_insensitive()
+    {
+        for (int i = 0; i < 100; i++)
+        {
+            string type = "plugin-layer-" + i;
+            CollectionAssert.Contains(LayerColors.OriginPalette.ToArray(), LayerColors.Auto(type));
+            Assert.AreEqual(LayerColors.Auto(type), LayerColors.Auto(type.ToUpperInvariant()));
+        }
+    }
+
+    [TestMethod]
+    public void Builtin_layer_descriptors_use_distinct_semantic_icons()
+    {
+        var icons = new[] { "overlay", "cache", "dir", "memory-cache", "prediction-cache" }
+            .Select(type => LayerRegistry.Describe(type).Icon).ToArray();
+        CollectionAssert.AllItemsAreUnique(icons);
+        Assert.IsFalse(icons.Contains("layers"));
     }
 
     [TestMethod]

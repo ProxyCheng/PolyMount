@@ -13,7 +13,7 @@ public static class LayerRegistry
         Register("prediction-cache", (c, ctx) => new PredictionCacheLayer(MemoryCapacity(c), ctx.LowerGeneration,
             new ReadPredictionOptions { Enabled = true }, Path.Combine(ctx.State, "prediction.json")),
             c => { if (MemoryCapacity(c) < 1 || MemoryCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
-            new LayerDescriptor { Type = "prediction-cache", Title = new("Predictive preload", "预测预载"),
+            new LayerDescriptor { Type = "prediction-cache", Title = new("Predictive preload", "预测预载"), Icon = "predict-path",
                 Description = new("Learns object access order and warms a read cache below this layer; does not serve cache hits itself.",
                     "学习文件与目录的访问顺序，提前加载到下方读取缓存；本层不提供读取命中。"),
                 Fields = new() { new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576,

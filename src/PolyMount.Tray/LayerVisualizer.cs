@@ -18,6 +18,7 @@ internal sealed class LayerVisualizer : QWidget
     private bool _updatingBoundary;
     private Task<ControlResponse>? _pending;
     private ProbeResult? _probe;
+    private List<PolyMount.Core.LayerDescriptor> _descriptors = new();
     private readonly List<QWidget> _rows = new();
 
     private LayerVisualizer(string path)
@@ -114,6 +115,7 @@ internal sealed class LayerVisualizer : QWidget
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok || response.Probe == null) throw new InvalidOperationException(response.Error ?? "No probe data");
             _probe = response.Probe;
+            _descriptors = response.LayerDescriptors;
             _diagram.SetProbe(_probe);
             PopulateBoundary();
             _status.SetText(I18n.T("refreshed"));
@@ -136,10 +138,17 @@ internal sealed class LayerVisualizer : QWidget
             card.SetStyleSheet($"background: #ffffff; border: 1px solid #e2e8f0; border-left: 4px solid {color}; border-radius: 8px;");
             var layout = new QVBoxLayout(card);
             layout.SetContentsMargins(16, 14, 16, 14);
+            var identity = new QHBoxLayout();
+            var icon = new QLabel();
+            var descriptor = _descriptors.FirstOrDefault(d => d.Type.Equals(layer.Type, StringComparison.OrdinalIgnoreCase));
+            icon.SetPixmap(TrayIcons.Get(descriptor?.Icon ?? "layers", layer.Color).Pixmap(24, 24));
+            icon.SetFixedSize(28, 28);
+            identity.AddWidget(icon);
             var name = new QLabel(layer.Name + " · " + I18n.T(layer.Writable ? "writable" : "readonly"));
             name.SetStyleSheet("border: none; font-size: 16px; font-weight: 600;");
             name.SetTextFormat(Qt.TextFormat.PlainText);
-            layout.AddWidget(name);
+            identity.AddWidget(name, 1);
+            layout.AddLayout(identity);
             string state = I18n.T(layer.Effective ? "probe.effective" : layer.Exists ? "probe.shadowed" : "probe.unknown");
             var description = new QLabel(state + " · " + (layer.Exists ? layer.IsDir ? I18n.T("probe.directory") : layer.Size + " B" : I18n.T("probe.fallthrough")));
             description.SetStyleSheet($"border: none; color: {color};");

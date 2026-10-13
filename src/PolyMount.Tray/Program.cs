@@ -13,10 +13,36 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        _app = new QApplication(args);
+        // Qt argv includes the executable name; Main(args) omits it.
+        _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
         I18n.Initialize();
+        using var options = new QCommandLineParser();
+        options.SetApplicationDescription("PolyMount tray and object layer management.");
+        using var help = options.AddHelpOption();
+        using var install = new QCommandLineOption("install-shell-menu", "Register the Explorer context menu for the current user.");
+        using var smoke = new QCommandLineOption("ui-smoke", "Run bounded UI checks without saving mount configuration.");
+        using var captureOption = new QCommandLineOption("capture", "Save UI smoke screenshots to an existing directory.", "directory");
+        using var manage = new QCommandLineOption(new[] { "manage-cache", "probe" }, "Open object cache boundary management (repeatable).", "path");
+        options.AddOption(install);
+        options.AddOption(smoke);
+        options.AddOption(captureOption);
+        options.AddOption(manage);
+        options.AddPositionalArgument("paths", "Additional objects to manage with --manage-cache.", "[paths...]");
+        if (!options.Parse(QCoreApplication.Arguments()))
+        {
+            Console.Error.WriteLine(options.ErrorText());
+            return 2;
+        }
+        if (options.IsSet(help)) { Console.WriteLine(options.HelpText()); return 0; }
+        if (options.IsSet(captureOption) && !options.IsSet(smoke) ||
+            options.PositionalArguments().Length > 0 && !options.IsSet(manage) ||
+            new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage) }.Count(set => set) > 1)
+        {
+            Console.Error.WriteLine("Choose one mode; --capture requires --ui-smoke and object paths require --manage-cache.");
+            return 2;
+        }
 
-        if (Array.IndexOf(args, "--install-shell-menu") >= 0)
+        if (options.IsSet(install))
         {
             ShellMenuInstaller.Install(Environment.ProcessPath!);
             Console.WriteLine("Explorer file/folder cache boundary menu registered.");
@@ -24,16 +50,25 @@ internal static class Program
         }
 
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
-        if (Array.IndexOf(args, "--ui-smoke") >= 0)
-            return RunUiSmoke(args);
+        if (options.IsSet(smoke))
+            return RunUiSmoke(options.IsSet(captureOption) ? options.Value(captureOption) : null);
 
         // Launched from the Explorer context menu: show just the layer view, no tray.
-        int probeIdx = Array.IndexOf(args, "--manage-cache");
-        if (probeIdx < 0) probeIdx = Array.IndexOf(args, "--probe");
-        if (probeIdx >= 0 && probeIdx + 1 < args.Length)
+        if (options.IsSet(manage))
         {
-            foreach (string path in args.Skip(probeIdx + 1).Distinct(StringComparer.OrdinalIgnoreCase)) LayerVisualizer.Open(path);
+            foreach (string path in options.Values(manage).Concat(options.PositionalArguments()).Distinct(StringComparer.OrdinalIgnoreCase)) LayerVisualizer.Open(path);
             return _app.Exec();
+        }
+
+        string settingsDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount");
+        Directory.CreateDirectory(settingsDirectory);
+        using var instanceLock = new QLockFile(Path.Combine(settingsDirectory, "tray.lock"));
+        instanceLock.SetStaleLockTime(0);
+        if (!instanceLock.TryLock(0))
+        {
+            Console.Error.WriteLine(instanceLock.Error() == QLockFile.LockError.LockFailedError
+                ? "PolyMount Tray is already running." : "Unable to acquire the PolyMount Tray instance lock: " + instanceLock.Error());
+            return instanceLock.Error() == QLockFile.LockError.LockFailedError ? 0 : 2;
         }
 
         // Closing the dashboard must not quit the app; the tray keeps it alive.
@@ -111,7 +146,7 @@ internal static class Program
         _dashboard.ShowWindow();
     }
 
-    private static int RunUiSmoke(string[] args)
+    private static int RunUiSmoke(string? capture)
     {
         var dashboard = new Dashboard();
         var editor = new ConfigEditor("L10");
@@ -123,8 +158,6 @@ internal static class Program
         var timer = new QTimer();
         int ticks = 0;
         string original = I18n.Language;
-        int captureIndex = Array.IndexOf(args, "--capture");
-        string? capture = captureIndex >= 0 && captureIndex + 1 < args.Length ? args[captureIndex + 1] : null;
         string? failure = null;
         ApiRuntime.UnhandledCallbackException += (context, ex) => failure = context + ": " + ex;
         timer.Timeout += () =>

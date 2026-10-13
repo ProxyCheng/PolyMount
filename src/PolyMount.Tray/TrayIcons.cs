@@ -66,6 +66,29 @@ internal static class TrayIcons
             case "layers": Path((3, 8), (12, 3), (21, 8), (12, 13), (3, 8)); Path((3, 12), (12, 17), (21, 12)); Path((3, 16), (12, 21), (21, 16)); break;
             case "drive": p.DrawRoundedRect(3, 5, 18, 14, 3, 3); Line(3, 14, 21, 14); Line(16, 17, 18, 17); break;
             case "folder": Path((3, 7), (3, 19), (21, 19), (21, 7), (11, 7), (9, 4), (3, 4), (3, 7)); break;
+            case "edit-layer":
+                Path((4, 16), (4, 21), (9, 21), (20, 10), (15, 5), (4, 16));
+                Line(12, 8, 17, 13); Line(4, 16, 9, 21); Line(4, 4, 9, 4); Line(4, 8, 7, 8);
+                break;
+            case "disk-cache":
+                p.DrawRoundedRect(3, 3, 18, 18, 3, 3);
+                p.DrawEllipse(6, 6, 9, 9); p.DrawEllipse(9, 9, 3, 3);
+                Path((20, 12), (17, 17), (21, 17), (18, 21));
+                break;
+            case "memory-chip":
+                p.DrawRoundedRect(6, 6, 12, 12, 2, 2); p.DrawRect(9, 9, 6, 6);
+                for (int pin = 8; pin <= 16; pin += 4)
+                { Line(pin, 3, pin, 6); Line(pin, 18, pin, 21); Line(3, pin, 6, pin); Line(18, pin, 21, pin); }
+                break;
+            case "predict-path":
+                p.DrawEllipse(3, 15, 5, 5);
+                Path((8, 17.5), (11, 17.5), (11, 7), (18, 7)); Path((15, 4), (18, 7), (15, 10));
+                Line(20, 13, 20, 19); Line(17, 16, 23, 16);
+                break;
+            case "repository":
+                p.DrawEllipse(3, 3, 5, 5); p.DrawEllipse(3, 16, 5, 5); p.DrawEllipse(16, 3, 5, 5);
+                Line(5, 8, 5, 16); Path((18.5, 8), (18.5, 11), (5.5, 15));
+                break;
             case "plus": Line(12, 5, 12, 19); Line(5, 12, 19, 12); break;
             case "check": p.DrawEllipse(3, 3, 18, 18); Path((7, 12), (10, 15), (17, 8)); break;
             case "alert": Path((12, 3), (22, 20), (2, 20), (12, 3)); Line(12, 9, 12, 13); Line(12, 16, 12, 17); break;
@@ -75,6 +98,7 @@ internal static class TrayIcons
             case "trash": Line(4, 6, 20, 6); Path((6, 6), (7, 21), (17, 21), (18, 6)); Path((9, 6), (9, 3), (15, 3), (15, 6)); Line(10, 10, 10, 17); Line(14, 10, 14, 17); break;
             case "refresh": p.DrawArc(4, 4, 16, 16, 40 * 16, 280 * 16); Path((20, 3), (20, 9), (14, 9)); break;
             case "settings": p.DrawEllipse(8, 8, 8, 8); for (int i = 0; i < 8; i++) { p.Save(); p.Translate(12, 12); p.Rotate(i * 45); Line(0, 7, 0, 10); p.Restore(); } break;
+            default: Path((3, 8), (12, 3), (21, 8), (12, 13), (3, 8)); Path((3, 12), (12, 17), (21, 12)); break;
         }
         p.End();
         using var pixmap = QPixmap.FromImage(image);

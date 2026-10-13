@@ -1,5 +1,3 @@
-using System.Globalization;
-
 namespace PolyMount.Core;
 
 /// <summary>
@@ -17,13 +15,15 @@ public static class LayerColors
         return Array.AsReadOnly(System.Text.RegularExpressions.Regex.Matches(reader.ReadToEnd(), "0x([0-9A-F]{6})")
             .Select(m => "#" + m.Groups[1].Value).ToArray());
     }
-    // A few hand-picked colors for the well-known built-in layers; everything else is hashed.
+    // Defaults always have an exact Explorer overlay counterpart.
     private static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
     {
         ["overlay"] = OriginPalette[0],
         ["cache"] = OriginPalette[1],
         ["svn"] = OriginPalette[2],
-        ["dir"] = OriginPalette[3]
+        ["dir"] = OriginPalette[3],
+        ["prediction-cache"] = OriginPalette[4],
+        ["memory-cache"] = OriginPalette[5]
     };
 
     /// <summary>Deterministic auto color for an arbitrary layer key, as "#RRGGBB".</summary>
@@ -31,11 +31,7 @@ public static class LayerColors
     {
         if (Defaults.TryGetValue(key, out var preset)) return preset;
 
-        uint h = Fnv1a(key);
-        double hue = h % 360;                 // spread across the wheel
-        double sat = 0.60 + (h >> 9) % 25 / 100.0;  // 0.60..0.84
-        double light = 0.45 + (h >> 17) % 15 / 100.0; // 0.45..0.59
-        return HslToHex(hue, sat, light);
+        return OriginPalette[(int)(Fnv1a(key.ToUpperInvariant()) % (uint)OriginPalette.Count)];
     }
 
     /// <summary>
@@ -69,26 +65,4 @@ public static class LayerColors
         return hash;
     }
 
-    private static string HslToHex(double h, double s, double l)
-    {
-        double c = (1 - Math.Abs(2 * l - 1)) * s;
-        double x = c * (1 - Math.Abs(h / 60.0 % 2 - 1));
-        double m = l - c / 2;
-        double r = 0, g = 0, b = 0;
-        switch ((int)(h / 60) % 6)
-        {
-            case 0: r = c; g = x; break;
-            case 1: r = x; g = c; break;
-            case 2: g = c; b = x; break;
-            case 3: g = x; b = c; break;
-            case 4: r = x; b = c; break;
-            default: r = c; b = x; break;
-        }
-        int R = (int)Math.Round((r + m) * 255);
-        int G = (int)Math.Round((g + m) * 255);
-        int B = (int)Math.Round((b + m) * 255);
-        return "#" + R.ToString("X2", CultureInfo.InvariantCulture)
-                   + G.ToString("X2", CultureInfo.InvariantCulture)
-                   + B.ToString("X2", CultureInfo.InvariantCulture);
-    }
 }

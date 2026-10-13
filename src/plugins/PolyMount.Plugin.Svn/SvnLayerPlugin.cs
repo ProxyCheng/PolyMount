@@ -29,7 +29,7 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     throw new ArgumentException("SVN requires an absolute repository URL and nonnegative revision");
             }, new LayerDescriptor
             {
-                Type = "svn", Title = new("SVN repository", "SVN 仓库"), Icon = "drive",
+                Type = "svn", Title = new("SVN repository", "SVN 仓库"), Icon = "repository",
                 Description = new("Reads repository objects at a pinned revision without checkout.", "无需 checkout，读取指定版本的仓库对象。"),
                 Fields = new()
                 {

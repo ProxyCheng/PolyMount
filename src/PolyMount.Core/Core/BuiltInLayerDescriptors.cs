@@ -7,6 +7,7 @@ internal static class BuiltInLayerDescriptors
     public static LayerDescriptor Storage(string type, bool cache) => new()
     {
         Type = type,
+        Icon = cache ? "disk-cache" : "edit-layer",
         Title = cache ? new("Read cache", "读取缓存") : new("Local changes", "本地修改"),
         Description = cache ? new("Caches reads from lower layers.", "缓存下层读取的对象。") : new("Stores local file changes.", "持久保存本地文件修改。"),
         Fields = new List<LayerFieldDescriptor>()
@@ -22,7 +23,7 @@ internal static class BuiltInLayerDescriptors
 
     public static LayerDescriptor Memory() => new()
     {
-        Type = "memory-cache", Title = new("Memory cache", "内存缓存"),
+        Type = "memory-cache", Title = new("Memory cache", "内存缓存"), Icon = "memory-chip",
         Description = new("Caches directory listings and repeated file range reads and writes. Place above the writable layer. Directory snapshots track committed writes; flush/close writes through to durable storage.",
             "缓存目录清单并加速文件片段的重复读写。请放在可写层上方；目录清单随已提交修改更新，Flush/关闭时提交到持久层。"),
         Fields = new()
