@@ -4,4 +4,7 @@
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/PolyMount.Core.Tests/PolyMount.Core.Tests.csproj" />
+  </Folder>
 </Solution>

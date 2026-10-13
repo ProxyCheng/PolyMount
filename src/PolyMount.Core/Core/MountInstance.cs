@@ -134,7 +134,7 @@ public sealed class MountInstance : IDisposable
     // target must NOT already exist. A pre-existing (even empty) directory causes
     // STATUS_OBJECT_NAME_COLLISION (0xC0000035). Drive-letter mount points (e.g. "X:") are
     // left untouched.
-    private static void PrepareMountPoint(string mountPoint)
+    internal static void PrepareMountPoint(string mountPoint)
     {
         if (string.IsNullOrWhiteSpace(mountPoint)) return;
 
