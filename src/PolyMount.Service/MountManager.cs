@@ -81,6 +81,9 @@ public sealed class MountManager
                 case ControlCommands.Unmount:
                     Find(request.Name).Unmount();
                     break;
+                case ControlCommands.Probe:
+                    response.Probe = ProbePath(request.Path);
+                    break;
                 default:
                     throw new InvalidOperationException("unknown command: " + request.Cmd);
             }
@@ -106,6 +109,32 @@ public sealed class MountManager
             ? _instances.FirstOrDefault()
             : _instances.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
         return instance ?? throw new InvalidOperationException("no such mount: " + name);
+    }
+
+    // Maps a full local path (e.g. D:\L10\sub\file.txt) to the owning mount instance and the
+    // path relative to its mount point, then probes the layer stack.
+    private ProbeResult ProbePath(string? fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+            throw new InvalidOperationException("probe requires a path");
+
+        var full = Path.GetFullPath(fullPath).TrimEnd('\\');
+
+        lock (_gate)
+        {
+            foreach (var inst in _instances)
+            {
+                var mp = Path.GetFullPath(inst.MountPoint).TrimEnd('\\');
+                if (full.Equals(mp, StringComparison.OrdinalIgnoreCase))
+                    return inst.Probe(string.Empty);
+
+                var prefix = mp + "\\";
+                if (full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return inst.Probe(VfsPath.Normalize(full.Substring(prefix.Length)));
+            }
+        }
+
+        throw new InvalidOperationException("path is not under any PolyMount mount point: " + full);
     }
 
     private static void Log(string message, Exception ex)

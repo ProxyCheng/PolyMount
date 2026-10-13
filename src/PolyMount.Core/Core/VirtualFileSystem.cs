@@ -1,5 +1,7 @@
 namespace PolyMount.Core;
 
+using PolyMount.Core.Ipc;
+
 public sealed class VirtualFileSystem
 {
     private readonly List<ILayer> _layers;
@@ -128,5 +130,41 @@ public sealed class VirtualFileSystem
             if (passedTarget && l.TryGetEntry(rel, out _)) return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Reports, for every layer in resolution order, whether <paramref name="rel"/> exists there,
+    /// which layer's entry is effective, which are shadowed, and which carry a tombstone. Mirrors
+    /// the resolution rules of <see cref="TryLookup"/>.
+    /// </summary>
+    public List<LayerProbe> Probe(string rel)
+    {
+        // Resolve the effective layer the same way TryLookup does: top-down, a tombstone hides
+        // everything below it, otherwise the first layer with an entry wins.
+        int effectiveIndex = -1;
+        for (int i = 0; i < _layers.Count; i++)
+        {
+            if (_layers[i].IsDeleted(rel)) break;              // hidden; nothing below is effective
+            if (_layers[i].TryGetEntry(rel, out _)) { effectiveIndex = i; break; }
+        }
+
+        var result = new List<LayerProbe>(_layers.Count);
+        for (int i = 0; i < _layers.Count; i++)
+        {
+            var l = _layers[i];
+            bool exists = l.TryGetEntry(rel, out var e);
+            result.Add(new LayerProbe
+            {
+                Name = l.Name,
+                Exists = exists,
+                IsDir = exists && e.IsDir,
+                Size = exists && !e.IsDir ? e.Size : 0,
+                Effective = i == effectiveIndex,
+                Shadowed = exists && i != effectiveIndex,
+                Tombstoned = l.IsDeleted(rel),
+                Generation = l.Generation
+            });
+        }
+        return result;
     }
 }

@@ -106,6 +106,21 @@ public sealed class MountInstance : IDisposable
 
     public void ClearCache() => Cache?.Purge();
 
+    public ProbeResult Probe(string rel)
+    {
+        var layers = Vfs.Probe(rel);
+        var effective = layers.FirstOrDefault(l => l.Effective);
+        return new ProbeResult
+        {
+            Mount = Profile.Name,
+            MountPoint = Profile.MountPoint,
+            Rel = rel,
+            Found = effective != null,
+            IsDir = effective?.IsDir ?? false,
+            Layers = layers
+        };
+    }
+
     public MountStatus GetStatus()
     {
         var status = new MountStatus
