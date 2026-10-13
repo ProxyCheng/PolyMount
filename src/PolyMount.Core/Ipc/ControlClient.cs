@@ -20,13 +20,18 @@ public static class ControlClient
     {
         using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut);
         pipe.Connect(ConnectTimeoutMs);
-        using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-        using var reader = new StreamReader(pipe, Encoding.UTF8);
 
-        writer.WriteLine(JsonSerializer.Serialize(request, Options));
-        var line = reader.ReadLine();
-        if (line == null) throw new IOException("empty control response");
-        return JsonSerializer.Deserialize<ControlResponse>(line) ?? new ControlResponse();
+        // leaveOpen: true on both so disposing the reader/writer does NOT close the pipe out from
+        // under the other (the reader closes first, then the writer's flush-on-dispose would hit a
+        // closed pipe -> "Cannot access a closed pipe"). Only the pipe's own using closes it.
+        using (var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
+        using (var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true))
+        {
+            writer.WriteLine(JsonSerializer.Serialize(request, Options));
+            var line = reader.ReadLine();
+            if (line == null) throw new IOException("empty control response");
+            return JsonSerializer.Deserialize<ControlResponse>(line) ?? new ControlResponse();
+        }
     }
 
     public static ControlResponse Status()

@@ -8,6 +8,7 @@ internal static class Program
     private static QApplication _app = null!;
     private static Dashboard? _dashboard;
     private static QSystemTrayIcon? _tray;
+    private static QMenu? _menu;
 
     [STAThread]
     private static int Main(string[] args)
@@ -28,13 +29,20 @@ internal static class Program
         _tray = new QSystemTrayIcon();
         _tray.SetIcon(QApplication.Style().StandardIcon(QStyle.StandardPixmap.SP_DriveHDIcon));
         _tray.SetToolTip("PolyMount");
-        _tray.SetContextMenu(BuildMenu());
+        _menu = BuildMenu();            // keep a reference so it is not garbage-collected
+        _tray.SetContextMenu(_menu);
         _tray.Activated += reason =>
         {
             if (reason is QSystemTrayIcon.ActivationReason.Trigger or QSystemTrayIcon.ActivationReason.DoubleClick)
                 ShowDashboard();
         };
-        _tray.Show();
+        _tray.SetVisible(true);
+
+        // Surface the icon: Windows parks new tray icons in the overflow area, so pop a balloon
+        // and open the dashboard once so the user can find it.
+        if (QSystemTrayIcon.IsSystemTrayAvailable())
+            _tray.ShowMessage("PolyMount", "Running in the system tray. Double-click the icon or use the menu.",
+                QSystemTrayIcon.MessageIcon.Information, 4000);
 
         ShowDashboard();
         return _app.Exec();
@@ -46,6 +54,12 @@ internal static class Program
 
         var open = menu.AddAction("Open Dashboard");
         open.Triggered += _ => ShowDashboard();
+
+        var startSvc = menu.AddAction("Start Service");
+        startSvc.Triggered += _ => ServiceControl.Start();
+
+        var stopSvc = menu.AddAction("Stop Service");
+        stopSvc.Triggered += _ => ServiceControl.Stop();
 
         var shell = menu.AddAction("Explorer context menu");
         shell.SetCheckable(true);

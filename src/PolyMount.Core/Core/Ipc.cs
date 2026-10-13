@@ -106,6 +106,7 @@ public static class ControlCommands
     public const string SaveConfig = "saveConfig";
     public const string Reload = "reload";
     public const string Metrics = "metrics";
+    public const string Shutdown = "shutdown";
 }
 
 // Per-layer read analytics within a recent time window.

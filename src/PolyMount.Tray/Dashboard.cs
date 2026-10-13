@@ -57,6 +57,14 @@ internal sealed class Dashboard
 
         bar.AddStretch(1);
 
+        var startSvc = new QPushButton("Start service");
+        startSvc.Clicked += _ => { _status.SetText(ServiceControl.Start()); };
+        bar.AddWidget(startSvc);
+
+        var stopSvc = new QPushButton("Stop service");
+        stopSvc.Clicked += _ => { _status.SetText(ServiceControl.Stop()); };
+        bar.AddWidget(stopSvc);
+
         var edit = new QPushButton("Edit config...");
         edit.Clicked += _ => { _editor ??= new ConfigEditor(); _editor.ShowWindow(); };
         bar.AddWidget(edit);

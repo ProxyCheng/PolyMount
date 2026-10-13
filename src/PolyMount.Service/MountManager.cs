@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Hosting;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
 
@@ -9,11 +10,13 @@ public sealed class MountManager
     private readonly List<MountInstance> _instances = new();
     private readonly Dictionary<string, string> _errors = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
+    private readonly IHostApplicationLifetime? _lifetime;
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
 
-    public MountManager()
+    public MountManager(IHostApplicationLifetime? lifetime = null)
     {
+        _lifetime = lifetime;
         ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
         BuildInstances();
@@ -164,6 +167,16 @@ public sealed class MountManager
                 case ControlCommands.Metrics:
                     lock (_gate)
                         response.Metrics = _instances.Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
+                    break;
+                case ControlCommands.Shutdown:
+                    // Respond first, then unmount and stop the host shortly after so the reply flushes.
+                    System.Threading.Tasks.Task.Run(async () =>
+                    {
+                        await System.Threading.Tasks.Task.Delay(300);
+                        try { UnmountAll(); } catch { }
+                        _lifetime?.StopApplication();
+                        if (_lifetime == null) Environment.Exit(0);
+                    });
                     break;
                 default:
                     throw new InvalidOperationException("unknown command: " + request.Cmd);
