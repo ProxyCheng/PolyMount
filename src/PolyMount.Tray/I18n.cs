@@ -64,8 +64,9 @@ internal static class I18n
         confirm.layer.cache|清空此层的运行时缓存？本地修改会保留。|Clear this layer’s runtime cache? Local modifications are kept.
         confirm.layer.head|将此 SVN 层的运行版本更新到 HEAD？本地修改会保留。|Update this SVN layer’s runtime revision to HEAD? Local modifications are kept.
         operation.done|层操作已完成|Layer operation completed
+        layer.compression|压缩文件对象（Brotli）|Compress file objects (Brotli)
         overlay.clear|清除本层所有修改|Clear all changes in this layer
-        confirm.overlay.clear|清除本层所有本地文件、目录和删除墓碑？下层内容将重新显现。此操作不可撤销，执行时会短暂卸载当前实例，请先关闭相关文件。|Clear every local file, folder and deletion tombstone in this layer? Lower content will become visible again. This cannot be undone. The instance is briefly unmounted; close its files first.
+        confirm.overlay.clear|清除本层所有文件对象和目录清单修改？下层内容将重新显现。此操作不可撤销，执行时会短暂卸载当前实例，请先关闭相关文件。|Clear all file objects and directory-list changes in this layer? Lower content will become visible again. This cannot be undone. The instance is briefly unmounted; close its files first.
         layer.operation.saveFirst|请先保存并应用配置，再操作对应运行层。|Save and apply the configuration before operating on the runtime layer.
         stats.layerShare|逐层读取命中占比|Read share by layer
         stats.series.count|{0} 个层|{0} layers
@@ -198,7 +199,7 @@ internal static class I18n
         layer.cache|LRU 磁盘缓存|LRU disk cache
         layer.svn|SVN 仓库|SVN repository
         layer.dir|本地目录|Local directory
-        layer.overlay.hint|保存本地改动并遮蔽远端删除项|Stores local changes and deletion tombstones
+        layer.overlay.hint|持久化文件对象与目录清单修改|Persists file objects and directory-list changes
         layer.cache.hint|缓存下层文件，按 LRU 自动淘汰|Caches lower files with automatic LRU eviction
         layer.svn.hint|按需读取指定版本的 SVN 文件|Reads SVN files on demand at a selected revision
         layer.dir.hint|将本地目录作为数据源|Uses a local directory as a source
@@ -245,14 +246,14 @@ internal static class I18n
         bytes|字节数|Bytes
         layer|层|Layer
         probe.title|PolyMount · 文件分层|PolyMount · File layers
-        probe.legend|绿=生效 · 琥珀=被覆盖 · 红=墓碑 · 灰=未命中|Green: effective · Amber: shadowed · Red: tombstone · Gray: not found
+        probe.legend|绿=生效 · 琥珀=被覆盖或目录清单不可见 · 灰=未命中|Green: effective · Amber: shadowed or excluded by directory listing · Gray: not found
         probe.restore|恢复本地墓碑|Restore tombstone
         probe.hide|墓碑遮蔽|Hide with tombstone
         probe.drop|丢弃本地改动|Discard local changes
         probe.evict|清除此文件缓存|Evict file cache
         probe.failed|探测失败：|Probe failed:
         probe.effective|生效层：|Effective layer:
-        probe.invisible|不可见（墓碑或无生效层）|Not visible (tombstoned or missing)
+        probe.invisible|不可见（目录清单未包含或对象不存在）|Not visible (excluded by directory listing or object missing)
         probe.deleted|墓碑|Tombstone
         probe.shadowed|被覆盖|Shadowed
         probe.unknown|未命中|Unknown

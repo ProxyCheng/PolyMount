@@ -105,7 +105,7 @@ internal sealed class LayerVisualizer
         _header.SetText(_path + "\n" + (_probe.Found ? I18n.T("probe.effective") + _probe.EffectiveLayer : I18n.T("probe.invisible")));
         foreach (var layer in _probe.Layers)
         {
-            string color = layer.Tombstoned ? "#dc2626" : layer.Effective ? "#059669" : layer.Exists ? "#d97706" : "#94a3b8";
+            string color = layer.Effective ? "#059669" : layer.Exists ? "#d97706" : "#94a3b8";
             var card = new QWidget();
             card.SetAttribute(Qt.WidgetAttribute.WA_StyledBackground);
             card.SetStyleSheet($"background: #ffffff; border: 1px solid #e2e8f0; border-left: 4px solid {color}; border-radius: 8px;");
@@ -115,15 +115,13 @@ internal sealed class LayerVisualizer
             name.SetStyleSheet("border: none; font-size: 16px; font-weight: 600;");
             name.SetTextFormat(Qt.TextFormat.PlainText);
             layout.AddWidget(name);
-            string state = I18n.T(layer.Tombstoned ? "probe.deleted" : layer.Effective ? "probe.effective" : layer.Exists ? "probe.shadowed" : "probe.unknown");
+            string state = I18n.T(layer.Effective ? "probe.effective" : layer.Exists ? "probe.shadowed" : "probe.unknown");
             var description = new QLabel(state + " · " + (layer.Exists ? layer.IsDir ? I18n.T("probe.directory") : layer.Size + " B" : I18n.T("probe.fallthrough")));
             description.SetStyleSheet($"border: none; color: {color};");
             layout.AddWidget(description);
             var actions = new QHBoxLayout();
             if (layer.Type == "overlay" || layer.Name == "overlay")
             {
-                AddAction(actions, layer, "probe.restore", LayerActions.Restore, layer.DirectTombstone);
-                AddAction(actions, layer, "probe.hide", LayerActions.Hide, true);
                 AddAction(actions, layer, "probe.drop", LayerActions.DropLocal, layer.Exists);
             }
             if (layer.Type == "cache" || layer.Name == "cache") AddAction(actions, layer, "probe.evict", LayerActions.EvictCache, layer.Exists);
@@ -140,7 +138,7 @@ internal sealed class LayerVisualizer
         button.Clicked += _ =>
         {
             if (_pending != null) return;
-            if ((action is LayerActions.Hide or LayerActions.DropLocal) && QMessageBox.Question(_window, I18n.T("confirm"),
+            if (action == LayerActions.DropLocal && QMessageBox.Question(_window, I18n.T("confirm"),
                 I18n.T(key) + "\n" + _path, I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
             _status.SetText(I18n.T("working"));
             _pending = Task.Run(() => ControlClient.LayerAction(_path, layer.Name, action));

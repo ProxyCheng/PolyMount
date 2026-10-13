@@ -12,6 +12,7 @@ internal sealed class ConfigEditor
     private readonly QListWidget _mountList, _layerList;
     private readonly QLineEdit _name, _mountPoint, _storage, _cacheStorage, _capacity, _url, _revision, _trust, _user, _password, _dirPath, _color, _layerName;
     private readonly QCheckBox _enabled, _writable, _layerEnabled;
+    private readonly QCheckBox _compression, _cacheCompression;
     private readonly QPushButton _colorPreview;
     private readonly QLabel _status, _layerTitle, _layerDescription, _id;
     private readonly QPushButton _save, _removeLayer;
@@ -19,6 +20,7 @@ internal sealed class ConfigEditor
     private readonly QTimer _timer;
     private AppConfig _config = new();
     private List<string> _sourceTypes = new();
+    private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
     private bool _loading, _dirty;
@@ -147,11 +149,19 @@ internal sealed class ConfigEditor
         _overlayFields = new QWidget();
         var overlayForm = new QFormLayout(_overlayFields);
         _storage = Edit(overlayForm, "layer.storage");
+        _compression = new QCheckBox();
+        I18n.Bind(_compression.SetText, "layer.compression");
+        _compression.Toggled += _ => Dirty();
+        overlayForm.AddRow("", _compression);
         overlayForm.AddRow("", Button("overlay.clear", () => LayerOperation(ControlCommands.ClearLocalChanges), "trash"));
         right.AddWidget(_overlayFields);
         _cacheFields = new QWidget();
         var cacheForm = new QFormLayout(_cacheFields);
         _cacheStorage = Edit(cacheForm, "layer.storage");
+        _cacheCompression = new QCheckBox();
+        I18n.Bind(_cacheCompression.SetText, "layer.compression");
+        _cacheCompression.Toggled += _ => Dirty();
+        cacheForm.AddRow("", _cacheCompression);
         _capacity = Edit(cacheForm, "cache.limit");
         cacheForm.AddRow("", Button("cache.layer.clear", () => LayerOperation(ControlCommands.ClearCache)));
         right.AddWidget(_cacheFields);
@@ -280,6 +290,8 @@ internal sealed class ConfigEditor
             _loading = true;
             _config = AppConfig.FromJson(response.Config);
             _sourceTypes = response.SourceTypes;
+            _presetDefinitions = response.Presets;
+            UpdatePresets();
             foreach (var mount in _config.Mounts) mount.Layers = mount.GetLayers();
             _current = -1;
             _layer = null;
@@ -389,6 +401,8 @@ internal sealed class ConfigEditor
         _color.SetText(_layer == null ? "" : LayerColor(_layer));
         _storage.SetText(_layer?.Path ?? "");
         _cacheStorage.SetText(_layer?.Path ?? "");
+        _compression.SetChecked(_layer?.Compression == true);
+        _cacheCompression.SetChecked(_layer?.Compression == true);
         string defaultStorage = Current == null || _layer == null ? "" : Path.Combine(Current.GetStoreRoot(), _layer.Id);
         _storage.SetPlaceholderText(defaultStorage);
         _cacheStorage.SetPlaceholderText(defaultStorage);
@@ -423,6 +437,8 @@ internal sealed class ConfigEditor
         _layer.Enabled = _layerEnabled.IsChecked();
         if (_layer.Type == "overlay") _layer.Path = _storage.Text.Trim();
         if (_layer.Type == "cache") _layer.Path = _cacheStorage.Text.Trim();
+        if (_layer.Type == "overlay") _layer.Compression = _compression.IsChecked();
+        if (_layer.Type == "cache") _layer.Compression = _cacheCompression.IsChecked();
         if (_layer.Type == "cache")
         {
             if (!long.TryParse(_capacity.Text, out var mb) || mb <= 0 || mb > long.MaxValue / 1048576)
@@ -542,16 +558,12 @@ internal sealed class ConfigEditor
     private void ApplyPreset()
     {
         if (Current == null || !Confirm("preset.confirm")) return;
-        Current.Layers = new List<LayerConfig> { new() { Id = "overlay", Type = "overlay" } };
-        if (_presets.CurrentIndex == 0)
-        {
-            Current.Layers.Add(new() { Id = "cache", Type = "cache" });
-            Current.Layers.Add(new() { Id = "svn", Type = "svn", Source = new() { Type = "svn" } });
-        }
-        else Current.Layers.Add(new() { Id = "dir", Type = "dir", Source = new() { Type = "dir" } });
+        int index = _presets.CurrentIndex;
+        if (index < 0 || index >= _presetDefinitions.Count) return;
+        Current.Layers = AppConfig.FromJson(new AppConfig { Mounts = new() { new() { Layers = _presetDefinitions[index].Layers } } }.ToJson()).Mounts[0].Layers;
         _layer = null;
         RebuildLayers();
-        _layerList.SetCurrentRow(Current.Layers.Count - 1);
+        _layerList.SetCurrentRow(Current.Layers!.Count - 1);
         Dirty();
     }
 
@@ -562,7 +574,6 @@ internal sealed class ConfigEditor
         {
             CommitMount();
             var draft = Current == null ? null : AppConfig.FromJson(new AppConfig { Mounts = new() { Current } }.ToJson()).Mounts[0];
-            if (draft != null) draft.ValidateLayers();
             _saving = true;
             string? originalName = _originalName;
             _pending = Task.Run(() =>
@@ -575,7 +586,6 @@ internal sealed class ConfigEditor
                 if (draft == null) { if (index >= 0) config.Mounts.RemoveAt(index); }
                 else if (index >= 0) config.Mounts[index] = draft;
                 else config.Mounts.Add(draft);
-                config.Validate();
                 return ControlClient.SaveConfig(config.ToJson());
             });
             _saveName = draft?.Name;
@@ -640,17 +650,19 @@ internal sealed class ConfigEditor
     private void Dirty() { if (!_loading) { _dirty = true; _status.SetText(T("unsaved")); } }
     private void Translate()
     {
-        int index = Math.Max(0, _presets.CurrentIndex);
-        _presets.Clear();
-        _presets.AddItem(T("preset.svn"));
-        _presets.AddItem(T("preset.dir"));
-        _presets.SetCurrentIndex(index);
+        UpdatePresets();
         RebuildMounts();
         RebuildLayers();
-        // Re-label the form without replacing in-progress edits.
         _layerTitle.SetText(_layer == null ? T("layer.select") : T("layer." + _layer.Type));
         _layerDescription.SetText(_layer == null ? "" : T("layer." + _layer.Type + ".hint"));
         _status.SetText(T(_dirty ? "unsaved" : "refreshed"));
+    }
+    private void UpdatePresets()
+    {
+        int index = Math.Max(0, _presets.CurrentIndex);
+        _presets.Clear();
+        foreach (var preset in _presetDefinitions) _presets.AddItem(preset.Titles.GetValueOrDefault(I18n.Language) ?? preset.Titles.GetValueOrDefault("en") ?? preset.Id);
+        _presets.SetCurrentIndex(index);
     }
     private static QLabel Plain(string text, string name)
     {
