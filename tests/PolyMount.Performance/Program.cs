@@ -105,6 +105,9 @@ try
             engine.PrintBreakdown("FullyWarm");
             engine.WaitForPersistence();
             engine.MetadataMicrobench(threads);
+            Run(backend, "EngineHandleWarm", threads, repeat, bytes, operations,
+                (index, measure) => engine.Load(index, threads, engineRounds, measure));
+            engine.PrintBreakdown("HandleWarm");
         }
     }
     if (!engineOnly)

@@ -61,16 +61,28 @@ internal sealed class EngineWorkload : IDisposable
     public void MetadataMicrobench(int workers)
     {
         if (_cache == null) return;
-        foreach (string mode in new[] { "FileExists", "CacheHeader", "VfsLookup" })
+        string[] blobs = Directory.GetFiles(_root + ".cache/reads/objects-v2", "*.blob");
+        foreach (string mode in new[] { "FileExists", "CacheHeader", "VfsLookup", "NativeOpen", "NativeSharedOpen", "NativeBlobOpen", "CacheOpen", "VfsOpen" })
         {
             using var ready = new CountdownEvent(workers);
             using var go = new ManualResetEventSlim();
             var tasks = Enumerable.Range(0, workers).Select(index => Task.Factory.StartNew(() =>
             {
                 ready.Signal(); go.Wait();
-                for (int i = 0; i < 1000; i++)
+                for (int i = 0; i < (mode.EndsWith("Open") ? 200 : 1000); i++)
                 {
                     string path = $"d{index % _directories}/f{i % _files}";
+                    if (mode.EndsWith("Open"))
+                    {
+                        Stream stream;
+                        if (mode == "NativeOpen") stream = File.OpenRead(Path.Combine(_root, path));
+                        else if (mode == "NativeSharedOpen") stream = new FileStream(Path.Combine(_root, path), FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                        else if (mode == "NativeBlobOpen") stream = new FileStream(blobs[(index * 16 + i) % blobs.Length], FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                        else if (mode == "VfsOpen") stream = _vfs!.OpenRead(path, out _);
+                        else if (!_cache.TryOpenRead(path, out _, out stream!)) throw new InvalidDataException("Cache open missed");
+                        stream.Dispose();
+                        continue;
+                    }
                     bool exists = mode == "FileExists" ? File.Exists(Path.Combine(_root, path))
                         : mode == "CacheHeader" ? _cache.TryGetEntry(path, out _) : _vfs!.TryLookup(path, out _);
                     if (!exists) throw new InvalidDataException("Microbench lookup missed");
@@ -78,7 +90,8 @@ internal sealed class EngineWorkload : IDisposable
             }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
             ready.Wait();
             var watch = System.Diagnostics.Stopwatch.StartNew(); go.Set(); Task.WaitAll(tasks);
-            Console.WriteLine($"  Microbench {mode}: workers={workers} operations={workers * 1000} seconds={watch.Elapsed.TotalSeconds:0.000} ops/s={workers * 1000 / watch.Elapsed.TotalSeconds:0.0}");
+            int operations = workers * (mode.EndsWith("Open") ? 200 : 1000);
+            Console.WriteLine($"  Microbench {mode}: workers={workers} operations={operations} seconds={watch.Elapsed.TotalSeconds:0.000} ops/s={operations / watch.Elapsed.TotalSeconds:0.0}");
         }
     }
     public void Load(int worker, int workers, int rounds, Action<Action> measure)
@@ -110,7 +123,12 @@ internal sealed class EngineWorkload : IDisposable
                 });
                 Measure("OpenAndRead", measure, () =>
                 {
-                    using Stream stream = _vfs != null ? _vfs.OpenRead(path, out _) : File.OpenRead(Path.Combine(_root, path));
+                    long openStart = System.Diagnostics.Stopwatch.GetTimestamp();
+                    Stream stream = _vfs != null ? _vfs.OpenRead(path, out _) : File.OpenRead(Path.Combine(_root, path));
+                    RecordTiming("Open", openStart);
+                    using (stream)
+                    {
+                    long readStart = System.Diagnostics.Stopwatch.GetTimestamp();
                     // Read a header and a non-sequential page from each resource.
                     byte[] buffer = new byte[4096];
                     stream.ReadExactly(buffer);
@@ -118,9 +136,16 @@ internal sealed class EngineWorkload : IDisposable
                     stream.Position = 8192;
                     stream.ReadExactly(buffer);
                     if (buffer.Any(b => b != (byte)((directory * 17 + file) % 251))) throw new InvalidDataException("Random page mismatch");
+                    RecordTiming("ReadAndVerify", readStart);
+                    }
                 });
             }
         }
+    }
+    private void RecordTiming(string kind, long start)
+    {
+        double ms = System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        _timings.AddOrUpdate(kind, (1, ms), (_, old) => (old.Count + 1, old.Ms + ms));
     }
     public void WaitForPersistence()
     {
