@@ -2,7 +2,7 @@ using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
-public sealed class SvnLayer : ILayer
+public sealed class SvnLayer : ILayer, IRevisionSource
 {
     private readonly SvnClient _svn;
     private readonly string _pinPath;
