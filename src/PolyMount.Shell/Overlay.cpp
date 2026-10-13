@@ -1,0 +1,184 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shlobj.h>
+#include <string>
+#include <vector>
+#include <map>
+#include <deque>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+#include <algorithm>
+#include <cwctype>
+
+// Explorer reserves the overlay position (bottom-left). Seven fixed icons avoid
+// allocating one of Windows' scarce overlay slots for every configured layer.
+static HMODULE module;
+static std::atomic<long> objects{0};
+static std::atomic<bool> workerStarted{false};
+static const COLORREF palette[] = {
+#define PM_COLOR(hex) RGB(((hex)>>16)&255,((hex)>>8)&255,(hex)&255),
+#include "../PolyMount.Core/Core/OriginPalette.inc"
+#undef PM_COLOR
+};
+static const GUID baseId = {0x7d619ac0,0xdbe2,0x4f33,{0x9a,0x11,0x6c,0xc2,0xc8,0x32,0x90,0x01}};
+struct Cached { int slot = -1; ULONGLONG expires = 0; bool pending = false; };
+static std::mutex gate;
+static std::condition_variable wake;
+static std::map<std::wstring,Cached> entries;
+static std::deque<std::wstring> requests;
+static std::vector<std::wstring> roots;
+
+static std::wstring Normalize(std::wstring s) {
+    std::transform(s.begin(),s.end(),s.begin(),[](wchar_t c){return (wchar_t)towlower(c);});
+    while(s.size()>3 && (s.back()==L'\\' || s.back()==L'/')) s.pop_back();
+    return s;
+}
+static std::string Utf8(const std::wstring& s) {
+    int n=WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),nullptr,0,nullptr,nullptr);
+    std::string result(n,0); WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),result.data(),n,nullptr,nullptr); return result;
+}
+static std::wstring Wide(const std::string& s) {
+    int n=MultiByteToWideChar(CP_UTF8,0,s.data(),(int)s.size(),nullptr,0);
+    std::wstring result(n,0); MultiByteToWideChar(CP_UTF8,0,s.data(),(int)s.size(),result.data(),n); return result;
+}
+static std::string Escape(const std::string& s) {
+    std::string result;
+    for(unsigned char c:s) { if(c=='"'||c=='\\') result+='\\'; if(c<32) return ""; result+=c; } return result;
+}
+// Extract JSON string fields, decoding the escaped paths emitted by System.Text.Json.
+static std::vector<std::string> Fields(const std::string& json,const std::string& key) {
+    std::vector<std::string> out; size_t pos=0;
+    const std::string token="\""+key+"\"";
+    while((pos=json.find(token,pos))!=std::string::npos) {
+        pos=json.find(':',pos+token.size()); if(pos==std::string::npos) break;
+        pos=json.find_first_not_of(" \t\r\n",pos+1); if(pos==std::string::npos) break;
+        if(json[pos]!='"') { ++pos; continue; } ++pos; std::string value;
+        while(pos<json.size()) {
+            char c=json[pos++]; if(c=='"') break;
+            if(c=='\\' && pos<json.size()) {
+                c=json[pos++];
+                if(c=='u' && pos+4<=json.size()) {
+                    unsigned long code=strtoul(json.substr(pos,4).c_str(),nullptr,16); pos+=4;
+                    std::wstring decoded(1,(wchar_t)code);
+                    if(code>=0xd800 && code<=0xdbff && json.substr(pos,2)=="\\u" && pos+6<=json.size()) {
+                        decoded+=(wchar_t)strtoul(json.substr(pos+2,4).c_str(),nullptr,16); pos+=6;
+                    }
+                    value+=Utf8(decoded); continue;
+                }
+                if(c=='n') c='\n'; else if(c=='r') c='\r'; else if(c=='t') c='\t';
+            }
+            value+=c;
+        } out.push_back(value);
+    } return out;
+}
+static bool Exchange(const std::string& request,std::string& response) {
+    HANDLE pipe=CreateFileW(L"\\\\.\\pipe\\PolyMount.Control",GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
+    if(pipe==INVALID_HANDLE_VALUE) return false;
+    auto io=[&](bool write,void* data,DWORD length,DWORD& count) {
+        OVERLAPPED op{}; op.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+        BOOL ok=write?WriteFile(pipe,data,length,&count,&op):ReadFile(pipe,data,length,&count,&op);
+        if(!ok && GetLastError()==ERROR_IO_PENDING) {
+            if(WaitForSingleObject(op.hEvent,2000)==WAIT_OBJECT_0) ok=GetOverlappedResult(pipe,&op,&count,FALSE);
+            else { CancelIoEx(pipe,&op); GetOverlappedResult(pipe,&op,&count,TRUE); ok=FALSE; }
+        }
+        CloseHandle(op.hEvent); return ok!=FALSE;
+    };
+    std::string message=request+"\n"; DWORD count=0;
+    bool ok=io(true,message.data(),(DWORD)message.size(),count) && count==message.size();
+    char buffer[4096];
+    while(ok && response.size()<1024*1024) {
+        ok=io(false,buffer,sizeof(buffer),count); if(!ok || !count) break;
+        response.append(buffer,count); if(response.find('\n')!=std::string::npos) break;
+    }
+    CloseHandle(pipe); return ok && response.find('\n')!=std::string::npos;
+}
+static int ColorSlot(const std::string& color) {
+    if(color.size()!=7 || color[0]!='#') return -1;
+    unsigned long rgb=strtoul(color.substr(1).c_str(),nullptr,16);
+    int r=(rgb>>16)&255,g=(rgb>>8)&255,b=rgb&255,slot=0,best=INT_MAX;
+    for(int i=0;i<7;++i) { int dr=r-GetRValue(palette[i]),dg=g-GetGValue(palette[i]),db=b-GetBValue(palette[i]); int d=dr*dr+dg*dg+db*db; if(d<best){best=d;slot=i;} } return slot;
+}
+static bool UnderRoot(const std::wstring& path) {
+    for(const auto& root:roots) if(path==root || (path.size()>root.size() && path.compare(0,root.size(),root)==0 && path[root.size()]==L'\\')) return true;
+    return false;
+}
+static void Worker() {
+    ULONGLONG refresh=0;
+    for(;;) {
+        if(GetTickCount64()>=refresh) {
+            std::string response; std::vector<std::wstring> next;
+            if(Exchange("{\"Cmd\":\"status\"}",response)) for(const auto& root:Fields(response,"MountPoint")) next.push_back(Normalize(Wide(root)));
+            bool changed;
+            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next; }
+            refresh=GetTickCount64()+5000;
+            // Ask Explorer to re-evaluate icons after initial discovery/config changes.
+            if(changed) for(const auto& root:next) SHChangeNotify(SHCNE_UPDATEDIR,SHCNF_PATHW,root.c_str(),nullptr);
+        }
+        std::wstring path;
+        { std::unique_lock<std::mutex> lock(gate); wake.wait_for(lock,std::chrono::milliseconds(500),[]{return !requests.empty();});
+          if(requests.empty()) continue; path=requests.front(); requests.pop_front(); }
+        std::string response;
+        int slot=-1;
+        if(Exchange("{\"Cmd\":\"probe\",\"Path\":\""+Escape(Utf8(path))+"\"}",response)) {
+            auto colors=Fields(response,"EffectiveColor"); if(!colors.empty()) slot=ColorSlot(colors[0]);
+        }
+        bool changed;
+        { std::lock_guard<std::mutex> lock(gate); auto& e=entries[path]; changed=e.slot!=slot; e.slot=slot; e.expires=GetTickCount64()+5000; e.pending=false; }
+        if(changed) SHChangeNotify(SHCNE_UPDATEITEM,SHCNF_PATHW,path.c_str(),nullptr);
+    }
+}
+
+class Overlay final : public IShellIconOverlayIdentifier {
+    std::atomic<ULONG> refs{1}; int slot;
+public:
+    explicit Overlay(int s):slot(s){++objects;}
+    ~Overlay(){--objects;}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {
+        if(!out) return E_POINTER; *out=nullptr;
+        if(iid==IID_IUnknown || iid==IID_IShellIconOverlayIdentifier){*out=static_cast<IShellIconOverlayIdentifier*>(this);AddRef();return S_OK;} return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release() override{ULONG n=--refs;if(!n)delete this;return n;}
+    HRESULT STDMETHODCALLTYPE GetOverlayInfo(LPWSTR file,int size,int* index,DWORD* flags) override {
+        if(!file||!index||!flags) return E_POINTER;
+        wchar_t location[MAX_PATH]; GetModuleFileNameW(module,location,MAX_PATH);
+        std::wstring path(location); path=path.substr(0,path.find_last_of(L"\\/"))+L"\\icons\\palette-dot-"+std::to_wstring(slot)+L".ico";
+        if(path.size()+1>(size_t)size) return E_INVALIDARG;
+        wcscpy_s(file,size,path.c_str());*index=0;*flags=ISIOI_ICONFILE|ISIOI_ICONINDEX;return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPriority(int* priority) override{if(!priority)return E_POINTER;*priority=0;return S_OK;}
+    HRESULT STDMETHODCALLTYPE IsMemberOf(LPCWSTR file,DWORD) override {
+        if(!file) return S_FALSE;
+        bool expected=false; if(workerStarted.compare_exchange_strong(expected,true)) std::thread(Worker).detach();
+        std::wstring path=Normalize(file);
+        std::lock_guard<std::mutex> lock(gate);
+        if(!UnderRoot(path)) return S_FALSE;
+        if(entries.size()>10000) { for(auto it=entries.begin();it!=entries.end();) if(!it->second.pending) it=entries.erase(it); else ++it; }
+        auto& e=entries[path];
+        if(!e.pending && e.expires<=GetTickCount64() && requests.size()<512) { e.pending=true;requests.push_back(path);wake.notify_one(); }
+        return e.slot==slot ? S_OK : S_FALSE;
+    }
+};
+class Factory final : public IClassFactory {
+    std::atomic<ULONG> refs{1};int slot;
+public:
+    explicit Factory(int s):slot(s){++objects;} ~Factory(){--objects;}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid,void** out) override {
+        if(!out)return E_POINTER;*out=nullptr;if(iid==IID_IUnknown||iid==IID_IClassFactory){*out=this;AddRef();return S_OK;}return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override{return ++refs;}
+    ULONG STDMETHODCALLTYPE Release() override{ULONG n=--refs;if(!n)delete this;return n;}
+    HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown* outer,REFIID iid,void** out) override {
+        if(outer)return CLASS_E_NOAGGREGATION;auto* instance=new Overlay(slot);auto result=instance->QueryInterface(iid,out);instance->Release();return result;
+    }
+    HRESULT STDMETHODCALLTYPE LockServer(BOOL lock) override {if(lock)++objects;else --objects;return S_OK;}
+};
+STDAPI DllGetClassObject(REFCLSID clsid,REFIID iid,void** out) {
+    GUID test=clsid;int slot=(int)(test.Data1-baseId.Data1);test.Data1=baseId.Data1;
+    if(test!=baseId||slot<0||slot>=7)return CLASS_E_CLASSNOTAVAILABLE;
+    auto* factory=new Factory(slot);HRESULT result=factory->QueryInterface(iid,out);factory->Release();return result;
+}
+STDAPI DllCanUnloadNow(){return !objects&&!workerStarted ? S_OK:S_FALSE;}
+BOOL WINAPI DllMain(HINSTANCE handle,DWORD reason,LPVOID){if(reason==DLL_PROCESS_ATTACH){module=handle;DisableThreadLibraryCalls(handle);}return TRUE;}
