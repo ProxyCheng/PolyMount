@@ -9,6 +9,7 @@ public sealed class AppConfig
     public string WinFspBin { get; set; } = @"C:\Program Files (x86)\WinFsp\bin";
     public string ControlPipe { get; set; } = "PolyMount.Control";
     public List<MountProfile> Mounts { get; set; } = new();
+    public List<PluginConfig> Plugins { get; set; } = new();
 
     // Optional per-layer color overrides (key = layer name/type e.g. "overlay"/"svn"/"dir",
     // value = "#RRGGBB"). Missing keys use the deterministic auto color.
@@ -57,23 +58,13 @@ public sealed class AppConfig
                 throw new ArgumentException($"invalid color '{kv.Value}' for layer '{kv.Key}'");
     }
 
-    public static AppConfig Default() => new()
-    {
-        Mounts = new List<MountProfile>
-        {
-            new()
-            {
-                Name = "L10",
-                MountPoint = @"D:\L10",
-                StoreRoot = @"D:\L10.store",
-                Source = new SourceConfig
-                {
-                    Type = "svn",
-                    Url = "https://svn-l10.leihuo.netease.com/svn/L10/branches/L10-Messiah/demo1"
-                }
-            }
-        }
-    };
+    public static AppConfig Default() => new();
+}
+
+public sealed class PluginConfig
+{
+    public string AssemblyPath { get; set; } = "";
+    public bool Enabled { get; set; } = true;
 }
 
 public sealed class MountProfile
@@ -85,8 +76,7 @@ public sealed class MountProfile
     public long CacheCapacityBytes { get; set; } = 4L * 1024 * 1024 * 1024;
     public SourceConfig Source { get; set; } = new();
 
-    // Null keeps the legacy overlay -> cache -> source configuration working.
-    public List<LayerConfig>? Layers { get; set; }
+    public List<LayerConfig>? Layers { get; set; } = new();
 
     public string GetStoreRoot() => string.IsNullOrWhiteSpace(StoreRoot)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "stores",
@@ -95,12 +85,7 @@ public sealed class MountProfile
     public string GetLayerStorage(LayerConfig layer) => string.IsNullOrWhiteSpace(layer.Path)
         ? Path.Combine(GetStoreRoot(), layer.Id) : layer.Path;
 
-    public List<LayerConfig> GetLayers() => Layers ?? new List<LayerConfig>
-    {
-        new() { Id = "overlay", Type = "overlay" },
-        new() { Id = "cache", Type = "cache", CacheCapacityBytes = CacheCapacityBytes },
-        new() { Id = Source.Type, Type = Source.Type, Source = Source }
-    }.Where(l => l.Type != "cache" || !string.Equals(Source.Type, "dir", StringComparison.OrdinalIgnoreCase)).ToList();
+    public List<LayerConfig> GetLayers() => Layers ?? new();
 
     public void ValidateLayers()
     {
@@ -131,6 +116,7 @@ public sealed class LayerConfig
     public long CacheCapacityBytes { get; set; } = 4L * 1024 * 1024 * 1024;
     public SourceConfig Source { get; set; } = new();
     public string Color { get; set; } = "";
+    public bool Compression { get; set; }
 }
 
 public sealed class SourceConfig

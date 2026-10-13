@@ -19,11 +19,18 @@ public sealed class MountManager
         _lifetime = lifetime;
         ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
+        LoadPlugins(Config);
         BuildInstances();
     }
 
     public AppConfig Config { get; private set; }
     public string ConfigPath { get; }
+
+    private static void LoadPlugins(AppConfig config)
+    {
+        var errors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory);
+        if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
+    }
 
     private void BuildInstances()
     {
@@ -80,8 +87,11 @@ public sealed class MountManager
     // Rebuild every mount instance from the current on-disk config and remount.
     public void Reload()
     {
+        var next = AppConfig.LoadOrCreate(ConfigPath);
+        LoadPlugins(next);
+        next.Validate();
         UnmountAll();
-        Config = AppConfig.LoadOrCreate(ConfigPath);
+        Config = next;
         BuildInstances();
         MountAll();
     }
@@ -115,7 +125,7 @@ public sealed class MountManager
 
     public ControlResponse Handle(ControlRequest request)
     {
-        var response = new ControlResponse { SourceTypes = SourceRegistry.Types.ToList() };
+        var response = new ControlResponse { SourceTypes = SourceRegistry.Types.ToList(), Presets = LayerPresetRegistry.All.ToList() };
         try
         {
             switch (request.Cmd)
@@ -157,6 +167,7 @@ public sealed class MountManager
                     if (string.IsNullOrWhiteSpace(request.Config))
                         throw new InvalidOperationException("saveConfig requires a Config payload");
                     var parsed = AppConfig.FromJson(request.Config);
+                    LoadPlugins(parsed);
                     parsed.Validate();
                     _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
                     AppConfig.Save(ConfigPath, parsed);

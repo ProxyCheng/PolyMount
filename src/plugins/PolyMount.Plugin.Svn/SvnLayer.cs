@@ -66,7 +66,6 @@ public sealed class SvnLayer : ILayer, IRevisionSource
 
     public string Generation => Revision.ToString();
 
-    public bool IsDeleted(string rel) => false;
 
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
@@ -122,9 +121,12 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         return true;
     }
 
-    public Stream Create(string rel, out VfsEntry entry) => throw new NotSupportedException("svn layer is read-only");
-    public Stream OpenExistingWrite(string rel, out VfsEntry entry) =>         throw new NotSupportedException("svn layer is read-only");
-    public void CreateDirectory(string rel) =>         throw new NotSupportedException("svn layer is read-only");
-    public void Delete(string rel, bool shadowedBelow) =>         throw new NotSupportedException("svn layer is read-only");
-    public void Rename(string rel, string dst, bool replace, bool shadowedBelow) =>         throw new NotSupportedException("svn layer is read-only");
+    public bool TryReadObject(string path, out VirtualObject value)
+    {
+        value = null!;
+        if (!TryGetEntry(path, out var header)) return false;
+        value = new(header, header.IsDir ? ListOwn(path) : null);
+        return true;
+    }
+    public bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
 }

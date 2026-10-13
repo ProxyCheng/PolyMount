@@ -330,7 +330,7 @@ public sealed class WinFspMount : FileSystemBase
         fileInfo = default;
         try
         {
-            if ((fileDesc as FsHandle)?.Stream is FileStream fs) fs.Flush(true);
+            if ((fileDesc as FsHandle)?.Stream is { } stream) stream.Flush();
             return GetFileInfo(fileNode, fileDesc, out fileInfo);
         }
         catch (Exception ex) { Log("Flush", ex); return NtStatus.UnexpectedIoError; }

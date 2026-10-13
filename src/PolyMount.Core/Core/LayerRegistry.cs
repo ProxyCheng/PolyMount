@@ -9,13 +9,15 @@ public static class LayerRegistry
     private static readonly Dictionary<string, Registration> Registrations = new(StringComparer.OrdinalIgnoreCase);
     static LayerRegistry()
     {
-        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, Path.Combine(ctx.State, "tombstones")));
-        Register("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes),
+        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression));
+        Register("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); });
     }
     public static void Register(string type, Func<LayerConfig, LayerBuildContext, ILayer> create, Action<LayerConfig>? validate = null)
         => Registrations[type] = new(create, validate);
     public static bool Contains(string type) => Registrations.ContainsKey(type) || SourceRegistry.Contains(type);
+    public static IEnumerable<string> Types => Registrations.Keys.Concat(SourceRegistry.Types).Distinct(StringComparer.OrdinalIgnoreCase);
+    internal static void Unregister(string type) => Registrations.Remove(type);
     public static void Validate(LayerConfig config)
     {
         if (Registrations.TryGetValue(config.Type, out var registration)) registration.Validate?.Invoke(config);

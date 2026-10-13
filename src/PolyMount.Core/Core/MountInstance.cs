@@ -188,9 +188,7 @@ public sealed class MountInstance : IDisposable
             case OverlayLayer overlay:
                 switch (action)
                 {
-                    case LayerActions.Restore:   overlay.ClearTombstone(rel); break;
-                    case LayerActions.Hide:      overlay.Delete(rel, shadowedBelow: true); break;
-                    case LayerActions.DropLocal: overlay.Delete(rel, shadowedBelow: false); break;
+                    case LayerActions.DropLocal: overlay.DropObject(rel); break;
                     default: throw new NotSupportedException($"overlay has no action '{action}'");
                 }
                 break;

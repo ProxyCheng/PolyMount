@@ -52,6 +52,7 @@ public sealed class ControlResponse
     public string? Error { get; set; }
     public List<MountStatus> Mounts { get; set; } = new();
     public List<string> SourceTypes { get; set; } = new();
+    public List<LayerPreset> Presets { get; set; } = new();
 
     // Populated by the "probe" command.
     public ProbeResult? Probe { get; set; }
@@ -74,14 +75,12 @@ public sealed class LayerProbe
     public long Size { get; set; }
     public bool Effective { get; set; }   // this layer's entry is the one that wins
     public bool Shadowed { get; set; }     // exists here but hidden by a layer above
-    public bool Tombstoned { get; set; }   // this layer hides the path (effective tombstone)
-    public bool DirectTombstone { get; set; } // tombstone set on this exact path (removable)
     public string Generation { get; set; } = "";
     public string Color { get; set; } = "";   // layer-identity color "#RRGGBB"
 
     // exists / deleted / unknown
     public string State =>
-        Exists ? "exists" : Tombstoned ? "deleted" : "unknown";
+        Exists ? "exists" : "unknown";
 }
 
 public sealed class ProbeResult
@@ -140,8 +139,6 @@ public sealed class MountMetrics
 // Action names accepted by the "layerAction" command.
 public static class LayerActions
 {
-    public const string Restore = "restore";       // overlay: deleted -> unknown (remove tombstone)
-    public const string Hide = "hide";             // overlay: -> deleted (delete copy + tombstone)
     public const string DropLocal = "dropLocal";   // overlay: exists -> unknown (discard local copy, reveal below)
     public const string EvictCache = "evict";      // cache: exists -> unknown (evict this path)
 }

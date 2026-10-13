@@ -39,6 +39,33 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
 
     public string Root => _root;
 
+    public bool TryApply(IReadOnlyList<ObjectChange> changes)
+    {
+        if (!_writable) return false;
+        // This provider writes the physical tree. Directory objects remove absent children.
+        foreach (var change in changes.Where(c => c.Object != null))
+        {
+            var value = change.Object!;
+            if (value.Header.IsDir) Directory.CreateDirectory(LocalPath(change.Path));
+            else
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LocalPath(change.Path))!);
+                using var file = File.Create(LocalPath(change.Path));
+                change.Content!.CopyTo(file);
+            }
+        }
+        foreach (var change in changes.Where(c => c.Object?.Header.IsDir == true))
+        {
+            var members = change.Object!.Children!.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(LocalPath(change.Path)))
+                if (!members.Contains(Path.GetFileName(entry)))
+                { if (Directory.Exists(entry)) Directory.Delete(entry, true); else File.Delete(entry); }
+        }
+        foreach (var change in changes.Where(c => c.Object == null))
+        { var path = LocalPath(change.Path); if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path); }
+        return true;
+    }
+
     public string LocalPath(string rel) => Path.Combine(_root, rel.Replace('/', '\\'));
 
     public bool IsDeleted(string rel) => false;
