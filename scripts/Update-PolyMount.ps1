@@ -115,6 +115,7 @@ try {
     if (-not (Test-Path -LiteralPath $serviceExe) -or -not (Test-Path -LiteralPath $trayExe)) {
         throw 'Published executables were not found.'
     }
+    & (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $serviceDir 'plugins') -Configuration $Configuration
     Write-Host '[3/3] Restarting service and tray...'
     Start-PolyMount
     Write-Host 'Update complete.' -ForegroundColor Green

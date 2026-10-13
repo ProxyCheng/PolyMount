@@ -25,6 +25,7 @@ foreach ($project in @('Service','Tray')) {
     # A distribution must not contain this workstation's repository config.
     Remove-Item -LiteralPath (Join-Path $output 'config.json') -Force -ErrorAction SilentlyContinue
 }
+& (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $payload 'Service\plugins') -Configuration Release
 & (Join-Path $PSScriptRoot 'Build-Shell.ps1') -OutputDirectory (Join-Path $payload 'Shell')
 $dependencies = Join-Path $payload 'Dependencies'
 New-Item -ItemType Directory -Path $dependencies -Force | Out-Null

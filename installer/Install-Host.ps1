@@ -40,7 +40,7 @@ try {
         'Install' {
             New-Item -ItemType Directory -Path $data -Force | Out-Null
             if (-not (Test-Path -LiteralPath $config)) {
-                @{ WinFspBin = (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'); ControlPipe = 'PolyMount.Control'; Mounts = @(); LayerColors = @{} } |
+                @{ WinFspBin = (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'); ControlPipe = 'PolyMount.Control'; Plugins = @(); Mounts = @(); LayerColors = @{} } |
                     ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $config -Encoding UTF8
             }
             $exe = Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'
