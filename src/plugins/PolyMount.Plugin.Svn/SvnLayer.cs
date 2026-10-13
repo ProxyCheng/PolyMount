@@ -8,6 +8,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource
     private readonly string _pinPath;
     private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VfsEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Lazy<IReadOnlyList<VfsEntry>>> _listingRequests = new(StringComparer.OrdinalIgnoreCase);
 
     private long _rev;
     private DateTime _pinMtime = DateTime.MinValue;
@@ -106,28 +107,48 @@ public sealed class SvnLayer : ILayer, IRevisionSource
             canonical = VfsPath.Child(canonical, header.Name);
         }
         rel = canonical;
-        var generation = Generation;
+        long revision = Revision;
+        var generation = revision.ToString();
         var key = generation + "|" + rel;
+        Lazy<IReadOnlyList<VfsEntry>> pending;
         lock (_gate)
         {
             if (_memo.TryGetValue(key, out var cached)) return cached;
+            if (!_listingRequests.TryGetValue(key, out pending!))
+            {
+                string directory = rel;
+                pending = new(() =>
+                {
+                    try
+                    {
+                        return _svn.List(revision, directory)
+                            .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc }).ToArray();
+                    }
+                    catch (SvnNotFoundException) { return Array.Empty<VfsEntry>(); }
+                }, LazyThreadSafetyMode.ExecutionAndPublication);
+                _listingRequests[key] = pending;
+            }
         }
-
-        IReadOnlyList<VfsEntry> list;
         try
         {
-            list = _svn.List(Revision, rel)
-                .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc })
-                .ToList();
+            // Same-directory callers share one request; different directories can
+            // execute svn list concurrently without holding the metadata mutex.
+            var list = pending.Value;
+            lock (_gate)
+            {
+                if (_rev == revision)
+                {
+                    _memo[key] = list;
+                    foreach (var child in list) _entries[generation + "|" + VfsPath.Child(rel, child.Name)] = child;
+                }
+            }
+            return list;
         }
-        catch (SvnNotFoundException) { list = Array.Empty<VfsEntry>(); }
-
-        lock (_gate)
+        finally
         {
-            _memo[key] = list;
-            foreach (var child in list) _entries[generation + "|" + VfsPath.Child(rel, child.Name)] = child;
+            lock (_gate)
+                if (_listingRequests.TryGetValue(key, out var current) && current == pending) _listingRequests.Remove(key);
         }
-        return list;
     }
 
     public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)

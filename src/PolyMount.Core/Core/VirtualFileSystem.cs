@@ -6,7 +6,9 @@ namespace PolyMount.Core;
 public sealed class VirtualFileSystem
 {
     private readonly List<ILayer> _layers;
-    private readonly object _gate = new();
+    // Only mutations coordinate parent snapshot updates. Provider reads never
+    // take this lock, including network-backed metadata and directory queries.
+    private readonly object _mutationGate = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
     public VirtualFileSystem(IEnumerable<ILayer> layers) => _layers = layers.ToList();
     public IReadOnlyList<ILayer> Layers => _layers;
@@ -64,31 +66,24 @@ public sealed class VirtualFileSystem
             entry = new VfsEntry { Name = VfsPath.Name(path), Size = open.Length, TimeUtc = open.LastWriteTimeUtc };
             return true;
         }
-        request?.Stage("waiting VFS lock");
-        lock (_gate)
-        {
-            request?.Stage("resolving metadata");
-            path = VfsPath.Normalize(path);
-            entry = null!;
-            return Visible(path) && ResolveHeader(path, out entry, out _);
-        }
+        request?.Stage("resolving metadata");
+        entry = null!;
+        return Visible(path) && ResolveHeader(path, out entry, out _);
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
     public List<VfsEntry> List(string path, bool recordAccess = true)
     {
         using var request = RequestDiagnostics.Begin("VFS.List", path, Diagnostics);
-        request?.Stage("waiting VFS lock");
-        lock (_gate)
-        {
-            request?.Stage("resolving directory");
-            path = VfsPath.Normalize(path);
-            var watch = System.Diagnostics.Stopwatch.StartNew();
-            if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
-            if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
-            // Resolve headers from overridden child objects without merging directory membership.
-            return value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _)
-                ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
-        }
+        request?.Stage("resolving directory");
+        path = VfsPath.Normalize(path);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
+        // Provider objects are immutable directory snapshots. Copy before merging
+        // upper child headers so unrelated reads and mutations can proceed.
+        var items = value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _)
+            ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
+        return items;
     }
     public Stream OpenRead(string path, out VfsEntry entry)
     {
@@ -160,7 +155,7 @@ public sealed class VirtualFileSystem
     }
     public Stream OpenWrite(string path, bool truncate, out VfsEntry entry)
     {
-        lock (_gate)
+        lock (_mutationGate)
         {
             path = VfsPath.Normalize(path);
             if (path.Length == 0) throw new IOException("Cannot write the root as a file");
@@ -185,7 +180,7 @@ public sealed class VirtualFileSystem
                 scratch.Position = 0;
                 var file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
                 {
-                    lock (_gate)
+                    lock (_mutationGate)
                     {
                         var current = new VfsEntry { Name = VfsPath.Name(path), Size = snapshot.Length, TimeUtc = DateTime.UtcNow };
                         // Parent changes are merged at each commit; concurrent siblings are retained.
@@ -203,7 +198,7 @@ public sealed class VirtualFileSystem
     }
     public void CreateDirectory(string path)
     {
-        lock (_gate)
+        lock (_mutationGate)
         {
             path = VfsPath.Normalize(path);
             if (TryLookup(path, out _)) throw new IOException("Path already exists");
@@ -215,7 +210,7 @@ public sealed class VirtualFileSystem
     }
     public void Delete(string path)
     {
-        lock (_gate)
+        lock (_mutationGate)
         {
             path = VfsPath.Normalize(path);
             if (path.Length == 0) throw new UnauthorizedAccessException("Cannot delete the root");
@@ -229,7 +224,7 @@ public sealed class VirtualFileSystem
     }
     public void Rename(string path, string destination, bool replace)
     {
-        lock (_gate)
+        lock (_mutationGate)
         {
             path = VfsPath.Normalize(path); destination = VfsPath.Normalize(destination);
             if (path.Length == 0 || destination.Length == 0 || destination.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase))
@@ -274,23 +269,19 @@ public sealed class VirtualFileSystem
     public List<LayerProbe> Probe(string path)
     {
         using var request = RequestDiagnostics.Begin("VFS.Probe", path, Diagnostics);
-        request?.Stage("waiting VFS lock");
-        lock (_gate)
+        request?.Stage("resolving origins");
+        path = VfsPath.Normalize(path);
+        // Source inspection must not populate caches or change the origin it observes.
+        bool visible = Visible(path, false);
+        ResolveHeader(path, out _, out int effective);
+        return _layers.Select((layer, index) =>
         {
-            request?.Stage("resolving origins");
-            path = VfsPath.Normalize(path);
-            // Source inspection must not populate caches or change the origin it observes.
-            bool visible = Visible(path, false);
-            ResolveHeader(path, out _, out int effective);
-            return _layers.Select((layer, index) =>
-            {
-                using var layerRequest = RequestDiagnostics.Begin("Layer.Probe:" + layer.Name, path);
-                bool exists = layer.TryGetEntry(path, out var header);
-                return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header.IsDir,
-                    Size = exists ? header.Size : 0, Effective = visible && exists && index == effective,
-                    Shadowed = exists && (!visible || index != effective), Generation = layer.Generation };
-            }).ToList();
-        }
+            using var layerRequest = RequestDiagnostics.Begin("Layer.Probe:" + layer.Name, path);
+            bool exists = layer.TryGetEntry(path, out var header);
+            return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header.IsDir,
+                Size = exists ? header.Size : 0, Effective = visible && exists && index == effective,
+                Shadowed = exists && (!visible || index != effective), Generation = layer.Generation };
+        }).ToList();
     }
 }
 
