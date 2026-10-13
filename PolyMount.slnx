@@ -3,6 +3,7 @@
     <Project Path="src/PolyMount.Core/PolyMount.Core.csproj" />
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
+    <Project Path="src/PolyMount.QtUI/PolyMount.QtUI.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/PolyMount.Core.Tests/PolyMount.Core.Tests.csproj" />

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PolyMount.QtUI</AssemblyName>
+    <RootNamespace>PolyMount.QtUI</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <!-- QtSharp binding + runtime + native/Qt DLL copies. Adjust QtSharpRoot if QtSharp moves. -->
+  <PropertyGroup>
+    <QtSharpRoot>D:\QtSharp\</QtSharpRoot>
+  </PropertyGroup>
+  <Import Project="$(QtSharpRoot)QtSharp.Api.props" />
+
+  <ItemGroup>
+    <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
+  </ItemGroup>
+
+</Project>
