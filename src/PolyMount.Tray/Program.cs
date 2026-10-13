@@ -14,6 +14,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         _app = new QApplication(args);
+        I18n.Initialize();
 
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
         if (Array.IndexOf(args, "--ui-smoke") >= 0)
@@ -106,6 +107,7 @@ internal static class Program
         var dashboard = new Dashboard();
         var editor = new ConfigEditor("L10");
         var stats = new StatsWindow("L10");
+        LayerVisualizer.Open("D:\\L10\\20260924");
         dashboard.ShowWindow();
         editor.ShowWindow();
         stats.ShowWindow();

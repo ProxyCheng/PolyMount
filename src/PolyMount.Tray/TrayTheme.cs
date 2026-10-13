@@ -2,58 +2,12 @@ namespace PolyMount.Tray;
 
 internal static class TrayTheme
 {
-    public const string StyleSheet = """
-        QWidget { font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; color: #26354b; }
-        QWidget#dashboard { background: #f3f6fb; }
-        QWidget#surface { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; }
-        QWidget#sidebar { background: #142237; }
-        QLabel { background: transparent; border: none; }
-        QLabel#sidebarMuted { color: #93a4bd; font-size: 12px; }
-        QLabel#navActive { color: #c9dcff; background: #253d61; border-radius: 8px; padding: 12px; font-weight: 600; }
-        QLabel#serviceBadge { font-weight: 600; padding: 6px 0; }
-        QLabel#pageTitle { color: #17243b; font-size: 26px; font-weight: 700; }
-        QLabel#sectionTitle { font-size: 16px; font-weight: 600; }
-        QLabel#detailTitle { font-size: 21px; font-weight: 700; color: #17243b; }
-        QLabel#muted, QLabel#metricHint { color: #718096; font-size: 12px; }
-        QLabel#metricValue { font-size: 28px; font-weight: 700; color: #17243b; }
-        QLabel#eyebrow { color: #718096; font-size: 11px; font-weight: 600; padding-top: 7px; }
-        QLabel#detailValue { color: #334155; font-size: 13px; }
-        QLabel#layerChain { background: #f5f7fb; border: 1px solid #e5ebf3; border-radius: 8px; padding: 12px; color: #425777; }
-        QLabel#emptyState { color: #718096; padding: 28px 12px; font-size: 14px; }
-        QLabel#errorBox { color: #b42335; background: #fff1f2; border-radius: 8px; padding: 12px; }
-        QPushButton { background: #ffffff; border: 1px solid #dbe3ef; border-radius: 7px; padding: 9px 13px; font-weight: 600; }
-        QPushButton:hover { background: #f0f5ff; border-color: #9db8e6; }
-        QPushButton:pressed { background: #e1ebfc; }
-        QPushButton:focus { border: 1px solid #2563eb; }
-        QPushButton:disabled { background: #f6f8fb; color: #a3afc0; border-color: #e8edf4; }
-        QPushButton#primary { background: #2563eb; border-color: #2563eb; color: #ffffff; }
-        QPushButton#primary:hover { background: #1d4ed8; }
-        QPushButton#primary:pressed { background: #1e40af; }
-        QPushButton#primary:disabled { background: #c9d8f4; border-color: #c9d8f4; color: #f8faff; }
-        QPushButton#navButton { background: transparent; border: 1px solid #33445d; color: #c8d4e6; text-align: left; padding: 10px 12px; }
-        QPushButton#navButton:hover { background: #253d61; border-color: #5277a8; }
-        QPushButton#navButton:disabled { color: #63758d; border-color: #263750; }
-        QLineEdit, QComboBox { background: #ffffff; border: 1px solid #dbe3ef; border-radius: 7px; padding: 8px 10px; selection-background-color: #2563eb; }
-        QLineEdit:focus, QComboBox:focus { border-color: #2563eb; }
-        QLineEdit:disabled { background: #f5f7fb; color: #9ca9bc; }
-        QComboBox::drop-down { border: none; width: 24px; }
-        QComboBox QAbstractItemView { background: white; selection-background-color: #eaf1ff; selection-color: #1d4ed8; padding: 4px; }
-        QTableWidget { background: #ffffff; border: none; selection-background-color: #eaf1ff; selection-color: #1e40af; }
-        QTableWidget::item { padding: 8px 10px; border-bottom: 1px solid #eef2f7; }
-        QTableWidget::item:hover { background: #f4f7fc; }
-        QTableWidget::item:selected { background: #eaf1ff; color: #1e40af; }
-        QHeaderView::section { background: #f7f9fc; color: #718096; border: none; border-bottom: 1px solid #e5ebf3; padding: 11px 10px; font-size: 12px; font-weight: 600; }
-        QScrollArea, QScrollArea > QWidget > QWidget { background: #ffffff; border: none; }
-        QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
-        QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 4px; min-height: 28px; }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-        QSplitter::handle { background: transparent; width: 14px; }
-        QProgressBar { background: #edf1f7; border: none; border-radius: 3px; }
-        QProgressBar::chunk { background: #4c82ef; border-radius: 3px; }
-        QListWidget { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 6px; }
-        QListWidget::item { padding: 12px; border-radius: 6px; }
-        QListWidget::item:selected { background: #eaf1ff; color: #1e40af; }
-        QToolTip { color: #ffffff; background: #26354b; border: none; padding: 6px; }
-        """;
+    public static string StyleSheet { get; } = Load();
+    private static string Load()
+    {
+        using var stream = typeof(TrayTheme).Assembly.GetManifestResourceStream("PolyMount.theme.qss")
+            ?? throw new InvalidOperationException("Theme resource is missing");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 }

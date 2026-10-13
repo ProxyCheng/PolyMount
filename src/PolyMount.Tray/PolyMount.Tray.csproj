@@ -13,11 +13,15 @@
   <!-- QtSharp binding + runtime + native/Qt DLL copies. Adjust QtSharpRoot if QtSharp moves. -->
   <PropertyGroup>
     <QtSharpRoot>D:\QtSharp\</QtSharpRoot>
+    <QtSharpCompileBinding>false</QtSharpCompileBinding>
   </PropertyGroup>
   <Import Project="$(QtSharpRoot)QtSharp.Api.props" />
 
   <ItemGroup>
+    <EmbeddedResource Include="resources\theme.qss" LogicalName="PolyMount.theme.qss" />
+    <EmbeddedResource Include="translations\*.qm" LogicalName="PolyMount.translations.%(Filename)%(Extension)" />
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
+    <ProjectReference Include="..\PolyMount.QtBinding\PolyMount.QtBinding.csproj" />
   </ItemGroup>
 
 </Project>

@@ -4,14 +4,15 @@ using QtSharp.Api;
 namespace PolyMount.Tray;
 
 /// <summary>Per-file provider cards with actions bound to actual layer identities.</summary>
-internal sealed class LayerVisualizer
+internal sealed class LayerVisualizer : QWidget
 {
     private static readonly List<LayerVisualizer> Windows = new();
     private readonly string _path;
-    private readonly QWidget _window;
     private readonly QVBoxLayout _cardLayout;
     private readonly QLabel _header, _status;
     private readonly QTimer _timer;
+    private readonly LayerBoundaryView _diagram;
+    private readonly QPushButton _release;
     private Task<ControlResponse>? _pending;
     private ProbeResult? _probe;
     private readonly List<QWidget> _rows = new();
@@ -19,13 +20,12 @@ internal sealed class LayerVisualizer
     private LayerVisualizer(string path)
     {
         _path = path;
-        _window = new QWidget();
-        _window.SetObjectName("dashboard");
-        _window.SetStyleSheet(TrayTheme.StyleSheet);
-        _window.SetWindowIcon(TrayIcons.App);
-        I18n.Bind(_window.SetWindowTitle, "probe.title");
-        _window.Resize(700, 700);
-        var root = new QVBoxLayout(_window);
+        SetObjectName("dashboard");
+        SetStyleSheet(TrayTheme.StyleSheet);
+        SetWindowIcon(TrayIcons.App);
+        I18n.Bind(SetWindowTitle, "probe.title");
+        Resize(700, 700);
+        var root = new QVBoxLayout(this);
         root.SetContentsMargins(24, 24, 24, 20);
         var title = new QLabel();
         title.SetObjectName("pageTitle");
@@ -40,6 +40,15 @@ internal sealed class LayerVisualizer
         legend.SetWordWrap(true);
         I18n.Bind(legend.SetText, "probe.legend");
         root.AddWidget(legend);
+        _diagram = new LayerBoundaryView();
+        root.AddWidget(_diagram);
+        _release = new QPushButton();
+        _diagram.BoundaryChanged += () => _release.SetEnabled(_pending == null && _diagram.Boundary > 0);
+        I18n.Bind(_release.SetText, "object.releaseAbove");
+        _release.SetObjectName("primary");
+        _release.SetEnabled(false);
+        _release.Clicked += _ => Release();
+        root.AddWidget(_release);
         var scroll = new QScrollArea();
         scroll.SetWidgetResizable(true);
         scroll.SetFrameShape(QFrame.Shape.NoFrame);
@@ -57,10 +66,9 @@ internal sealed class LayerVisualizer
         refresh.SetIcon(TrayIcons.Get("refresh"));
         refresh.Clicked += _ => Refresh();
         root.AddWidget(refresh);
-        _timer = new QTimer(_window);
+        _timer = new QTimer(this);
         _timer.Timeout += Complete;
         _timer.Start(100);
-        I18n.Changed += Render;
         Refresh();
     }
 
@@ -68,9 +76,9 @@ internal sealed class LayerVisualizer
     {
         var view = new LayerVisualizer(path);
         Windows.Add(view);
-        view._window.Show();
-        view._window.Raise();
-        view._window.ActivateWindow();
+        view.Show();
+        view.Raise();
+        view.ActivateWindow();
         return true;
     }
 
@@ -90,7 +98,9 @@ internal sealed class LayerVisualizer
         {
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok || response.Probe == null) throw new InvalidOperationException(response.Error ?? "No probe data");
-            _probe = response.Probe;
+        _probe = response.Probe;
+            _diagram.SetProbe(_probe);
+            _release.SetEnabled(_diagram.Boundary > 0);
             _status.SetText(I18n.T("refreshed"));
             Render();
         }
@@ -130,6 +140,23 @@ internal sealed class LayerVisualizer
             _rows.Add(card);
         }
     }
+    public override void ChangeEvent(QEvent e)
+    {
+        base.ChangeEvent(e);
+        if (e.type() == QEvent.Type.LanguageChange && _rows != null) Render();
+    }
+
+    private void Release()
+    {
+        if (_pending != null || _probe == null || _diagram.Boundary == 0) return;
+        if (QMessageBox.Question(this, I18n.T("confirm"), I18n.T("object.releaseConfirm"),
+            I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
+        var request = new ControlRequest { Cmd = ControlCommands.ReleaseAbove, Path = _path,
+            Boundary = _diagram.Boundary, ExpectedLayers = _probe.Layers.Select(l => l.Name).ToList() };
+        _release.SetEnabled(false);
+        _status.SetText(I18n.T("working"));
+        _pending = Task.Run(() => ControlClient.Send(request));
+    }
 
     private void AddAction(QHBoxLayout layout, LayerProbe layer, string key, string action, bool enabled)
     {
@@ -138,11 +165,72 @@ internal sealed class LayerVisualizer
         button.Clicked += _ =>
         {
             if (_pending != null) return;
-            if (action == LayerActions.DropLocal && QMessageBox.Question(_window, I18n.T("confirm"),
+            if (action == LayerActions.DropLocal && QMessageBox.Question(this, I18n.T("confirm"),
                 I18n.T(key) + "\n" + _path, I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
             _status.SetText(I18n.T("working"));
             _pending = Task.Run(() => ControlClient.LayerAction(_path, layer.Name, action));
         };
         layout.AddWidget(button);
+    }
+}
+
+/// <summary>A draggable boundary across the actual provider records, not a fixed layer layout.</summary>
+internal sealed class LayerBoundaryView : QWidget
+{
+    private ProbeResult? _probe;
+    private bool _dragging;
+    public int Boundary { get; private set; }
+    public event Action? BoundaryChanged;
+    private const int Top = 28, Row = 66;
+    public LayerBoundaryView()
+    {
+        SetMinimumHeight(180);
+        SetMouseTracking(true);
+        I18n.Changed += Update;
+    }
+    public void SetProbe(ProbeResult probe)
+    {
+        _probe = probe;
+        Boundary = Math.Min(Boundary, probe.Layers.Count);
+        SetFixedHeight(Top + probe.Layers.Count * Row + 28);
+        Update();
+    }
+    private void MoveBoundary(QMouseEvent e)
+    {
+        Boundary = Math.Clamp((int)Math.Round((e.Position().Y() - Top) / Row), 0, _probe?.Layers.Count ?? 0);
+        Update(); BoundaryChanged?.Invoke();
+    }
+    public override void MousePressEvent(QMouseEvent e) { _dragging = true; MoveBoundary(e); }
+    public override void MouseMoveEvent(QMouseEvent e) { if (_dragging) MoveBoundary(e); }
+    public override void MouseReleaseEvent(QMouseEvent e) { MoveBoundary(e); _dragging = false; }
+    public override void PaintEvent(QPaintEvent e)
+    {
+        using var p = new QPainter(AsQPaintDevice());
+        p.SetRenderHint(QPainter.RenderHint.Antialiasing);
+        try
+        {
+            if (_probe == null) return;
+            for (int i = 0; i < _probe.Layers.Count; i++)
+            {
+                var layer = _probe.Layers[i];
+                int y = Top + i * Row + 7;
+                p.SetPen(new QPen(new QColor(layer.Effective ? "#059669" : "#dbe3ef")));
+                p.SetBrush(new QBrush(new QColor(i < Boundary && layer.Manageable ? "#fff1f2" : "#ffffff")));
+                p.DrawRoundedRect(20, y, Width - 40, Row - 14, 8, 8);
+                p.SetBrush(new QBrush(new QColor(string.IsNullOrEmpty(layer.Color) ? "#94a3b8" : layer.Color)));
+                p.DrawEllipse(34, y + 18, 14, 14);
+                p.SetPen(new QPen(new QColor("#26354b")));
+                p.DrawText(60, y + 21, layer.Name + " · " + I18n.T(layer.Effective ? "object.active" : layer.Exists ? "object.recorded" : "object.absent"));
+                p.SetPen(new QPen(new QColor("#718096")));
+                p.DrawText(60, y + 40, I18n.T(!layer.Manageable ? "object.skipReadonly" : i < Boundary ? "object.willRelease" : "object.keep"));
+            }
+            int lineY = Top + Boundary * Row;
+            using var pen = new QPen(new QColor("#2563eb")); pen.SetWidthF(3); p.SetPen(pen);
+            p.DrawLine(10, lineY, Width - 10, lineY);
+            p.SetBrush(new QBrush(new QColor("#2563eb"))); p.DrawEllipse(1, lineY - 7, 14, 14);
+            p.SetPen(new QPen(new QColor("#2563eb")));
+            p.DrawText(22, 18, I18n.T("object.dragBoundary"));
+        }
+        finally { p.End(); }
     }
 }

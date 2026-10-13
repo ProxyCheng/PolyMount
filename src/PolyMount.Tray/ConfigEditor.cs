@@ -6,9 +6,9 @@ using QtSharp.Api;
 namespace PolyMount.Tray;
 
 /// <summary>A draft mount editor with an actual draggable provider chain and type-specific forms.</summary>
-internal sealed class ConfigEditor
+internal sealed class ConfigEditor : QWidget
 {
-    private readonly QWidget _window, _fields, _overlayFields, _cacheFields, _svnFields, _dirFields;
+    private readonly QWidget _fields, _overlayFields, _cacheFields, _svnFields, _dirFields;
     private readonly QListWidget _mountList, _layerList;
     private readonly QLineEdit _name, _mountPoint, _storage, _cacheStorage, _capacity, _url, _revision, _trust, _user, _password, _dirPath, _color, _layerName;
     private readonly QCheckBox _enabled, _writable, _layerEnabled;
@@ -18,6 +18,12 @@ internal sealed class ConfigEditor
     private readonly QPushButton _save, _removeLayer;
     private readonly QComboBox _presets;
     private readonly QTimer _timer;
+    private readonly QLabel _overlayUsage, _cacheUsage;
+    private readonly QProgressBar _cacheProgress;
+    private Task<ControlResponse>? _usagePending;
+    private DateTime _nextUsage;
+    private List<ProviderInfo> _runtimeProviders = new();
+    private bool _usageOnline;
     private AppConfig _config = new();
     private List<string> _sourceTypes = new();
     private List<LayerPreset> _presetDefinitions = new();
@@ -38,14 +44,13 @@ internal sealed class ConfigEditor
         _openName = mountName;
         _originalName = mountName;
         _addAfterLoad = create;
-        _window = new QWidget();
-        _window.SetObjectName("dashboard");
-        _window.SetStyleSheet(TrayTheme.StyleSheet);
-        _window.SetWindowIcon(TrayIcons.App);
-        I18n.Bind(_window.SetWindowTitle, "editor.title");
-        _window.Resize(1000, 820);
-        _window.SetMinimumSize(900, 720);
-        var root = new QVBoxLayout(_window);
+        SetObjectName("dashboard");
+        SetStyleSheet(TrayTheme.StyleSheet);
+        SetWindowIcon(TrayIcons.App);
+        I18n.Bind(SetWindowTitle, "editor.title");
+        Resize(1000, 820);
+        SetMinimumSize(900, 720);
+        var root = new QVBoxLayout(this);
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         var heading = Plain("", "pageTitle");
@@ -148,6 +153,8 @@ internal sealed class ConfigEditor
 
         _overlayFields = new QWidget();
         var overlayForm = new QFormLayout(_overlayFields);
+        _overlayUsage = Plain("", "layerChain");
+        overlayForm.AddRow(_overlayUsage);
         _storage = Edit(overlayForm, "layer.storage");
         _compression = new QCheckBox();
         I18n.Bind(_compression.SetText, "layer.compression");
@@ -157,6 +164,13 @@ internal sealed class ConfigEditor
         right.AddWidget(_overlayFields);
         _cacheFields = new QWidget();
         var cacheForm = new QFormLayout(_cacheFields);
+        _cacheUsage = Plain("", "detailValue");
+        cacheForm.AddRow(_cacheUsage);
+        _cacheProgress = new QProgressBar();
+        _cacheProgress.SetRange(0, 1000);
+        _cacheProgress.SetTextVisible(false);
+        _cacheProgress.SetFixedHeight(10);
+        cacheForm.AddRow(_cacheProgress);
         _cacheStorage = Edit(cacheForm, "layer.storage");
         _cacheCompression = new QCheckBox();
         I18n.Bind(_cacheCompression.SetText, "layer.compression");
@@ -198,10 +212,9 @@ internal sealed class ConfigEditor
         _save.SetIcon(TrayIcons.Get("check", "#ffffff"));
         footer.AddWidget(_save);
         root.AddLayout(footer);
-        _timer = new QTimer(_window);
-        _timer.Timeout += CompleteRequest;
+        _timer = new QTimer(this);
+        _timer.Timeout += () => { CompleteRequest(); UpdateUsageRequest(); };
         _timer.Start(100);
-        I18n.Changed += Translate;
         Translate();
         ShowLayer();
         Load();
@@ -209,17 +222,17 @@ internal sealed class ConfigEditor
 
     public void ShowWindow(string? mountName = null, bool create = false)
     {
-        bool wasVisible = _window.IsVisible();
-        _window.Show();
-        _window.Raise();
-        _window.ActivateWindow();
+        bool wasVisible = IsVisible();
+        Show();
+        Raise();
+        ActivateWindow();
         if (_pending != null) { _openName = mountName; _addAfterLoad |= create; return; }
         if (create) OnAdd();
         else if (mountName != null) SelectByName(mountName);
         else if (!_dirty && !wasVisible) Load();
     }
 
-    internal void Capture(string path) { using var image = _window.Grab(); image.Save(path); }
+    internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
     internal void SmokeInteractions()
     {
@@ -271,6 +284,7 @@ internal sealed class ConfigEditor
         {
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok) throw new InvalidOperationException(response.Error);
+            AcceptUsage(response);
             if (_layerOperation)
             {
                 _layerOperation = false;
@@ -283,7 +297,7 @@ internal sealed class ConfigEditor
                 var failures = response.Mounts.Where(m => !string.IsNullOrWhiteSpace(m.Error)).Select(m => m.Name + ": " + m.Error).ToArray();
                 _status.SetText(failures.Length > 0 ? T("saved.errors") + " " + string.Join("; ", failures) : T(_dirty ? "unsaved" : "saved"));
                 Saved?.Invoke();
-                if (_saveName == null) _window.Hide();
+                if (_saveName == null) Hide();
                 return;
             }
             if (response.Config == null) throw new InvalidOperationException("Empty configuration");
@@ -426,6 +440,7 @@ internal sealed class ConfigEditor
         _layerEnabled.SetEnabled(_layer != null);
         _removeLayer.SetEnabled(_layer != null);
         _loading = false;
+        RenderUsage();
     }
 
     private void CommitLayer()
@@ -481,7 +496,7 @@ internal sealed class ConfigEditor
     private void ChooseLayer()
     {
         if (Current == null) return;
-        var dialog = new QDialog(_window);
+        var dialog = new QDialog(this);
         dialog.SetWindowTitle(T("layer.choose"));
         dialog.SetStyleSheet(TrayTheme.StyleSheet);
         dialog.Resize(420, 320);
@@ -642,11 +657,11 @@ internal sealed class ConfigEditor
     }
     private void ChooseColor()
     {
-        using var dialog = new QColorDialog(new QColor(_color.Text), _window);
+        using var dialog = new QColorDialog(new QColor(_color.Text), this);
         dialog.SetWindowTitle(T("color.choose"));
         if (dialog.Exec() == 1) _color.SetText(dialog.SelectedColor().Name());
     }
-    private bool Confirm(string key) => QMessageBox.Question(_window, T("confirm"), T(key), T("confirm"), T("cancel"), null, 1, 1) == 0;
+    private bool Confirm(string key) => QMessageBox.Question(this, T("confirm"), T(key), T("confirm"), T("cancel"), null, 1, 1) == 0;
     private void Dirty() { if (!_loading) { _dirty = true; _status.SetText(T("unsaved")); } }
     private void Translate()
     {
@@ -656,6 +671,12 @@ internal sealed class ConfigEditor
         _layerTitle.SetText(_layer == null ? T("layer.select") : T("layer." + _layer.Type));
         _layerDescription.SetText(_layer == null ? "" : T("layer." + _layer.Type + ".hint"));
         _status.SetText(T(_dirty ? "unsaved" : "refreshed"));
+        RenderUsage();
+    }
+    public override void ChangeEvent(QEvent e)
+    {
+        base.ChangeEvent(e);
+        if (e.type() == QEvent.Type.LanguageChange && _presets != null) Translate();
     }
     private void UpdatePresets()
     {
@@ -663,6 +684,51 @@ internal sealed class ConfigEditor
         _presets.Clear();
         foreach (var preset in _presetDefinitions) _presets.AddItem(preset.Titles.GetValueOrDefault(I18n.Language) ?? preset.Titles.GetValueOrDefault("en") ?? preset.Id);
         _presets.SetCurrentIndex(index);
+    }
+    private void UpdateUsageRequest()
+    {
+        if (_usagePending is { IsCompleted: true })
+        {
+            var pending = _usagePending; _usagePending = null;
+            try { AcceptUsage(pending.GetAwaiter().GetResult()); }
+            catch (Exception) { _usageOnline = false; RenderUsage(); }
+            _nextUsage = DateTime.UtcNow.AddSeconds(2);
+        }
+        if (IsVisible() && _originalName != null && _pending == null && _usagePending == null && DateTime.UtcNow >= _nextUsage)
+            _usagePending = Task.Run(ControlClient.Status);
+    }
+    private void AcceptUsage(ControlResponse response)
+    {
+        var mount = response.Mounts.FirstOrDefault(m => m.Name == _originalName);
+        _usageOnline = response.Ok && mount != null;
+        _runtimeProviders = mount?.Providers ?? new();
+        RenderUsage();
+    }
+    private void RenderUsage()
+    {
+        var provider = _layer == null ? null : _runtimeProviders.FirstOrDefault(p => p.Name == _layer.Id);
+        var usage = _usageOnline ? provider?.StorageUsage : null;
+        if (usage == null)
+        {
+            string text = provider?.StorageError == null ? T(_usageOnline ? "usage.inactive" : "usage.offline") : T("usage.failed") + provider.StorageError;
+            SetUsageText(_overlayUsage, text); SetUsageText(_cacheUsage, text);
+            _cacheProgress.SetEnabled(false); _cacheProgress.SetValue(0); return;
+        }
+        SetUsageText(_overlayUsage, I18n.F("usage.overlay", UsageBytes(usage.DiskBytes), usage.DurableObjects, usage.FileObjects, usage.DirectoryObjects));
+        int value = usage.CacheCapacity <= 0 ? 0 : (int)Math.Clamp(1000.0 * usage.CacheBytes / usage.CacheCapacity, 0, 1000);
+        _cacheProgress.SetEnabled(true);
+        if (_cacheProgress.Value != value) _cacheProgress.SetValue(value);
+        SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.CacheBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
+            I18n.F("usage.cacheDetails", UsageBytes(usage.DiskBytes), UsageBytes(usage.DurableBytes), usage.DurableObjects));
+        _cacheProgress.SetToolTip(T("usage.capacityHint"));
+    }
+    private static void SetUsageText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
+    private static string UsageBytes(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB" };
+        double amount = bytes; int unit = 0;
+        while (amount >= 1024 && unit < units.Length - 1) { amount /= 1024; unit++; }
+        return amount.ToString("0.#", I18n.Culture) + " " + units[unit];
     }
     private static QLabel Plain(string text, string name)
     {

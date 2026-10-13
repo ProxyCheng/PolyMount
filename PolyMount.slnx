@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/PolyMount.Core/PolyMount.Core.csproj" />
+    <Project Path="src/PolyMount.QtBinding/PolyMount.QtBinding.csproj" />
     <Project Path="src/PolyMount.Plugin.Testing/PolyMount.Plugin.Testing.csproj" />
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
@@ -13,6 +14,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/PolyMount.Core.Tests/PolyMount.Core.Tests.csproj" />
+    <Project Path="tests/PolyMount.Performance/PolyMount.Performance.csproj" />
     <Project Path="tests/PolyMount.Plugin.Tests/PolyMount.Plugin.Tests.csproj" />
   </Folder>
 </Solution>

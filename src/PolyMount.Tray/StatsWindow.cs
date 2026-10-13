@@ -4,20 +4,22 @@ using QtSharp.Api;
 namespace PolyMount.Tray;
 
 /// <summary>Task-manager style performance charts, sampled asynchronously once per second.</summary>
-internal sealed class StatsWindow
+internal sealed class StatsWindow : QWidget
 {
-    private readonly QWidget _window;
     private readonly QComboBox _mount;
     private readonly string? _instanceName;
     private readonly QPushButton _pause;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
     private readonly QLabel _layerLegend;
+    private readonly LayerAccessPie _accessPie;
+    private readonly QLabel _accessLegend;
+    private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
     private readonly Dictionary<string, List<Sample>> _history = new();
     private List<MountMetrics> _latest = new();
-    private Task<ControlResponse>? _pending;
+    private Task<(ControlResponse Trends, ControlResponse Access)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -27,14 +29,13 @@ internal sealed class StatsWindow
     public StatsWindow(string? instanceName = null)
     {
         _instanceName = instanceName;
-        _window = new QWidget();
-        _window.SetObjectName("dashboard");
-        _window.SetStyleSheet(TrayTheme.StyleSheet);
-        _window.SetWindowIcon(TrayIcons.App);
-        I18n.Bind(_window.SetWindowTitle, "stats.title");
-        _window.Resize(1080, 800);
-        _window.SetMinimumSize(900, 700);
-        var root = new QVBoxLayout(_window);
+        SetObjectName("dashboard");
+        SetStyleSheet(TrayTheme.StyleSheet);
+        SetWindowIcon(TrayIcons.App);
+        I18n.Bind(SetWindowTitle, "stats.title");
+        Resize(1180, 960);
+        SetMinimumSize(900, 700);
+        var root = new QVBoxLayout(this);
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         var header = new QHBoxLayout();
@@ -75,6 +76,14 @@ internal sealed class StatsWindow
         _layerLegend.SetObjectName("muted");
         root.AddWidget(_layerLegend);
         root.AddWidget(Label("stats.share.definition", "muted"));
+        var access = new QHBoxLayout();
+        _accessPie = new LayerAccessPie();
+        access.AddWidget(_accessPie);
+        _accessLegend = new QLabel();
+        _accessLegend.SetTextFormat(Qt.TextFormat.RichText);
+        _accessLegend.SetWordWrap(true);
+        access.AddWidget(_accessLegend, 1);
+        root.AddLayout(access);
         root.AddWidget(Label("stats.layer", "sectionTitle"));
         _table = new QTableWidget();
         _table.SetColumnCount(7);
@@ -89,22 +98,21 @@ internal sealed class StatsWindow
         _status.SetObjectName("muted");
         _status.SetTextFormat(Qt.TextFormat.PlainText);
         root.AddWidget(_status);
-        _timer = new QTimer(_window);
+        _timer = new QTimer(this);
         _timer.Timeout += Tick;
         _timer.Start(100);
-        I18n.Changed += Translate;
         Translate();
     }
 
     public void ShowWindow()
     {
-        _window.Show();
-        _window.Raise();
-        _window.ActivateWindow();
+        Show();
+        Raise();
+        ActivateWindow();
         _requested = true;
     }
 
-    internal void Capture(string path) { using var image = _window.Grab(); image.Save(path); }
+    internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
     private void TogglePause()
     {
@@ -117,7 +125,7 @@ internal sealed class StatsWindow
 
     private void Tick()
     {
-        bool visible = _window.IsVisible();
+        bool visible = IsVisible();
         if (!visible && _wasVisible) _epoch++;
         if (_pending is { IsCompleted: true })
         {
@@ -125,9 +133,12 @@ internal sealed class StatsWindow
             _pending = null;
             try
             {
-                var response = task.GetAwaiter().GetResult();
+                var sample = task.GetAwaiter().GetResult();
+                var response = sample.Trends;
                 if (!response.Ok) throw new InvalidOperationException(response.Error);
-                if (_requestEpoch == _epoch && !_paused && visible) Accept(response.Metrics);
+                if (!sample.Access.Ok) throw new InvalidOperationException(sample.Access.Error);
+                if (_requestEpoch == _epoch && !_paused && visible)
+                { _accessMetrics = sample.Access.Metrics; Accept(response.Metrics); }
             }
             catch (Exception ex)
             {
@@ -139,7 +150,7 @@ internal sealed class StatsWindow
             _requested = false;
             _requestEpoch = _epoch;
             _next = DateTime.UtcNow.AddSeconds(1);
-            _pending = Task.Run(() => ControlClient.Metrics(1, _instanceName));
+            _pending = Task.Run(() => (ControlClient.Metrics(1, _instanceName), ControlClient.Metrics(60, _instanceName)));
         }
         _wasVisible = visible;
     }
@@ -195,6 +206,17 @@ internal sealed class StatsWindow
         }
         var mounts = _latest.Where(m => selected == "" || m.Mount == selected).ToList();
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();
+        var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
+            .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
+        long total = accessRows.Sum(r => r.Layer.Hits + r.Layer.Writes);
+        var slices = accessRows.Select(r => new AccessSlice(selected == "" ? r.Mount + "/" + r.Layer.Name
+            : string.IsNullOrEmpty(r.Layer.DisplayName) ? r.Layer.Name : r.Layer.DisplayName,
+            string.IsNullOrEmpty(r.Layer.Color) ? "#64748B" : r.Layer.Color, r.Layer.Hits, r.Layer.Writes)).ToList();
+        _accessPie.SetSlices(slices);
+        string accessLegend = "<b>" + T("stats.access.title") + "</b><br>" + string.Join("<br>", slices.Select(s =>
+            $"<span style='color:{s.Color}'>●</span> " + System.Net.WebUtility.HtmlEncode(s.Name) + " · " +
+            I18n.F("stats.access.counts", s.Reads, s.Writes, total == 0 ? 0 : 100.0 * (s.Reads + s.Writes) / total)));
+        if (_accessLegend.Text != accessLegend) _accessLegend.SetText(accessLegend);
         _charts[1].SetSeries(rows.Select(row => new ChartSeries(
             selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
             string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
@@ -232,6 +254,11 @@ internal sealed class StatsWindow
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
+    }
+    public override void ChangeEvent(QEvent e)
+    {
+        base.ChangeEvent(e);
+        if (e.type() == QEvent.Type.LanguageChange && _table != null) Translate();
     }
 
     private static QLabel Label(string key, string name)

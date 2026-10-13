@@ -5,9 +5,8 @@ using QtSharp.Api;
 namespace PolyMount.Tray;
 
 /// <summary>Mount workspace. The Qt timer delivers background IPC results on the UI thread.</summary>
-internal sealed class Dashboard
+internal sealed class Dashboard : QWidget
 {
-    private readonly QWidget _window;
     private readonly QTableWidget _table;
     private readonly QLineEdit _search;
     private readonly QComboBox _filter, _language;
@@ -34,14 +33,13 @@ internal sealed class Dashboard
 
     public Dashboard()
     {
-        _window = new QWidget();
-        _window.SetObjectName("dashboard");
-        _window.SetWindowIcon(TrayIcons.App);
-        _window.Resize(1280, 820);
-        _window.SetMinimumSize(1080, 720);
-        _window.SetStyleSheet(TrayTheme.StyleSheet);
-        I18n.Bind(_window.SetWindowTitle, "dashboard.title");
-        var root = new QHBoxLayout(_window);
+        SetObjectName("dashboard");
+        SetWindowIcon(TrayIcons.App);
+        Resize(1280, 820);
+        SetMinimumSize(1080, 720);
+        SetStyleSheet(TrayTheme.StyleSheet);
+        I18n.Bind(SetWindowTitle, "dashboard.title");
+        var root = new QHBoxLayout(this);
         root.SetContentsMargins(0, 0, 0, 0);
         root.SetSpacing(0);
 
@@ -200,8 +198,7 @@ internal sealed class Dashboard
         _updated.SetWordWrap(false);
         footer.AddWidget(_updated);
         content.AddLayout(footer);
-        I18n.Changed += Translate;
-        _timer = new QTimer(_window);
+        _timer = new QTimer(this);
         _timer.Timeout += Tick;
         _timer.Start(100);
         Translate();
@@ -210,13 +207,13 @@ internal sealed class Dashboard
 
     public void ShowWindow()
     {
-        _window.Show();
-        _window.Raise();
-        _window.ActivateWindow();
+        Show();
+        Raise();
+        ActivateWindow();
         if (_pending == null) Refresh(quiet: true);
     }
 
-    internal void Capture(string path) { using var image = _window.Grab(); image.Save(path); }
+    internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
     internal void SmokeSilentUpdate()
     {
@@ -296,7 +293,7 @@ internal sealed class Dashboard
             UpdateActions();
             if (_queued is { } queued) { _queued = null; queued(); }
         }
-        bool visible = _window.IsVisible();
+        bool visible = IsVisible();
         if (visible && _pending == null && (!_wasVisible || DateTime.UtcNow >= _nextRefresh)) Refresh(quiet: true);
         _wasVisible = visible;
     }
@@ -310,6 +307,11 @@ internal sealed class Dashboard
         FillTable();
         _feedback.SetText(T(_connected ? "connected" : "connecting"));
         _updated.SetText(T("auto.refresh"));
+    }
+    public override void ChangeEvent(QEvent e)
+    {
+        base.ChangeEvent(e);
+        if (e.type() == QEvent.Type.LanguageChange && _table != null) Translate();
     }
 
     private void UpdateFilters()
@@ -492,7 +494,7 @@ internal sealed class Dashboard
         UpdateActions();
     }
 
-    private bool Confirm(string titleKey, string message) => QMessageBox.Question(_window, T(titleKey), message,
+    private bool Confirm(string titleKey, string message) => QMessageBox.Question(this, T(titleKey), message,
         T("confirm"), T("cancel"), null, 1, 1) == 0;
 
     private void Feedback(string text, bool error = false)

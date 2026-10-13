@@ -9,7 +9,6 @@ namespace PolyMount.Tray;
 public static class ShellMenuInstaller
 {
     private const string KeyName = "PolyMountLayers";
-    private const string Label = "PolyMount: Show layers";
 
     private static readonly string[] Types = { "*", "Directory" };
 
@@ -26,9 +25,13 @@ public static class ShellMenuInstaller
         foreach (var type in Types)
         {
             using var shell = Registry.CurrentUser.CreateSubKey(ShellPath(type));
-            shell.SetValue(null, Label);
+            shell.SetValue("MUIVerb", "PolyMount");
+            shell.SetValue("SubCommands", "");
             shell.SetValue("Icon", $"\"{exePath}\"");
-            using var cmd = shell.CreateSubKey("command");
+            shell.DeleteSubKeyTree("command", throwOnMissingSubKey: false);
+            using var action = shell.CreateSubKey(@"shell\ManageObject");
+            action.SetValue(null, I18n.T("object.manage"));
+            using var cmd = action.CreateSubKey("command");
             cmd.SetValue(null, $"\"{exePath}\" --probe \"%1\"");
         }
     }
