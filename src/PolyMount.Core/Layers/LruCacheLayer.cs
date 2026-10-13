@@ -21,7 +21,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     private readonly object _gate = new(), _persistGate = new();
     private readonly Dictionary<string, Item> _items = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<(string Key, Item Item)> _queue = Channel.CreateBounded<(string, Item)>(
-        new BoundedChannelOptions(128) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
+        new BoundedChannelOptions(4096) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private Task? _worker;
     private readonly Timer _storageCheck;
     private int _checkingStorage;
@@ -130,7 +130,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         lock (_gate)
         {
             if (_disposed || estimate > Capacity || estimate > MaxPendingBytes ||
-                _pendingBytes + estimate > MaxPendingBytes || _queue.Reader.Count >= 128 || _items.ContainsKey(key)) return;
+                _pendingBytes + estimate > MaxPendingBytes || _queue.Reader.Count >= 4096 || _items.ContainsKey(key)) return;
             CacheContent? captured = null;
             try
             {
@@ -165,13 +165,19 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     {
         while (true)
         {
-            (string Key, Item Item) work;
+            var batch = new List<(string Key, Item Item)>();
             lock (_gate)
             {
-                if (!_queue.Reader.TryRead(out work)) { _worker = null; return; }
+                long size = 0;
+                while (batch.Count < 64 && size < 8L * 1024 * 1024 && _queue.Reader.TryRead(out var work))
+                {
+                    batch.Add(work); size += work.Item.Reservation;
+                }
+                if (batch.Count == 0) { _worker = null; return; }
             }
-            Stream? stream = null;
-            using var request = RequestDiagnostics.Begin("Cache.Persist", work.Key, Diagnostics);
+            var changes = new List<ObjectChange>();
+            var streams = new List<Stream>();
+            using var request = RequestDiagnostics.Begin("Cache.Persist", $"batch={batch.Count}", Diagnostics);
             try
             {
                 request?.Stage("waiting persistence lock");
@@ -179,26 +185,36 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
                 {
                     lock (_gate)
                     {
-                        if (_disposed || !_items.TryGetValue(work.Key, out var current) || current != work.Item) continue;
-                        stream = work.Item.Content?.Acquire();
+                        foreach (var work in batch)
+                        {
+                            if (_disposed || !_items.TryGetValue(work.Key, out var current) || current != work.Item) continue;
+                            var stream = work.Item.Content?.Acquire();
+                            if (stream != null) streams.Add(stream);
+                            changes.Add(new ObjectChange(work.Key, work.Item.Value, stream));
+                        }
                     }
+                    if (changes.Count == 0) continue;
                     BeforePersist?.Invoke();
-                    request?.Stage("writing blob and SQLite record");
-                    _reads.Apply(new[] { new ObjectChange(work.Key, work.Item.Value, stream) });
-                    var record = _reads.Records.Single(r => r.Path == work.Key);
+                    request?.Stage($"writing blobs and SQLite batch records={changes.Count}");
+                    _reads.Apply(changes);
+                    var records = _reads.Records;
+                    var published = records.ToDictionary(r => r.Path, StringComparer.OrdinalIgnoreCase);
                     lock (_gate)
                     {
+                        foreach (var work in batch)
+                        {
                         if (_items.TryGetValue(work.Key, out var current) && current == work.Item)
                         {
+                            if (!published.TryGetValue(work.Key, out var record)) continue;
                             _bytes += record.StoredBytes - current.Bytes;
                             current.Bytes = record.StoredBytes;
                             current.Record = record;
                             current.Content?.Dispose(); current.Content = null;
                         }
+                        }
                     }
                     // Disk eviction follows the same immediately visible memory LRU index.
                     string[] obsolete;
-                    var records = _reads.Records;
                     lock (_gate)
                     {
                         while (_bytes > Capacity && _items.Count > 0) Remove(_items.MinBy(p => p.Value.Access).Key);
@@ -213,13 +229,14 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
                 lock (_gate)
                 {
                     LastPersistenceError = ex.Message;
-                    if (_items.TryGetValue(work.Key, out var current) && current == work.Item) Remove(work.Key);
+                    foreach (var work in batch)
+                        if (_items.TryGetValue(work.Key, out var current) && current == work.Item) Remove(work.Key);
                 }
             }
             finally
             {
-                stream?.Dispose();
-                lock (_gate) _pendingBytes -= work.Item.Reservation;
+                foreach (var stream in streams) stream.Dispose();
+                lock (_gate) _pendingBytes -= batch.Sum(work => work.Item.Reservation);
             }
         }
     }

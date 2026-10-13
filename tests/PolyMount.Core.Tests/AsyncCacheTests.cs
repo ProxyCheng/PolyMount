@@ -13,7 +13,7 @@ public sealed class AsyncCacheTests
         using var temp = new TempDir();
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
-        using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 1048576);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 16 * 1048576);
         cache.BeforePersist = () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(10)); };
         try
         {
@@ -21,9 +21,9 @@ public sealed class AsyncCacheTests
             Assert.IsTrue(entered.Wait(TimeSpan.FromSeconds(5)));
             await Task.Run(() =>
             {
-                for (int i = 0; i < 200; i++) cache.StoreObject("dir" + i, VirtualObject.Directory("dir" + i, Array.Empty<VfsEntry>()));
-                Assert.IsTrue(cache.Count <= 129);
-                Assert.IsFalse(cache.TryGetEntry("dir199", out _));
+                for (int i = 0; i < 5000; i++) cache.StoreObject("dir" + i, VirtualObject.Directory("dir" + i, Array.Empty<VfsEntry>()));
+                Assert.IsTrue(cache.Count <= 4097);
+                Assert.IsFalse(cache.TryGetEntry("dir4999", out _));
                 Assert.IsTrue(cache.TryGetEntry("first", out _));
             }).WaitAsync(TimeSpan.FromSeconds(2));
         }
