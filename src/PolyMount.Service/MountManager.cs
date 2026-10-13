@@ -14,10 +14,10 @@ public sealed class MountManager
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
 
-    public MountManager(IHostApplicationLifetime? lifetime = null)
+    public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null)
     {
         _lifetime = lifetime;
-        ConfigPath = Path.Combine(AppContext.BaseDirectory, "config.json");
+        ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
         BuildInstances();
     }
@@ -130,6 +130,9 @@ public sealed class MountManager
                     break;
                 case ControlCommands.ClearCache:
                     Find(request.Name).ClearCache(request.Layer);
+                    break;
+                case ControlCommands.ClearLocalChanges:
+                    Find(request.Name).ClearLocalChanges(request.Layer ?? "", Config.WinFspBin);
                     break;
                 case ControlCommands.Mount:
                     Find(request.Name).Mount(Config.WinFspBin);

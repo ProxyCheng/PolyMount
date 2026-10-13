@@ -9,13 +9,21 @@ namespace PolyMount.Core;
 /// </summary>
 public static class LayerColors
 {
+    public static IReadOnlyList<string> OriginPalette { get; } = LoadPalette();
+    private static IReadOnlyList<string> LoadPalette()
+    {
+        using var stream = typeof(LayerColors).Assembly.GetManifestResourceStream("PolyMount.OriginPalette")!;
+        using var reader = new StreamReader(stream);
+        return Array.AsReadOnly(System.Text.RegularExpressions.Regex.Matches(reader.ReadToEnd(), "0x([0-9A-F]{6})")
+            .Select(m => "#" + m.Groups[1].Value).ToArray());
+    }
     // A few hand-picked colors for the well-known built-in layers; everything else is hashed.
     private static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["overlay"] = "#2563EB", // blue   - local writable
-        ["cache"] = "#8B5CF6",   // violet - cache
-        ["svn"] = "#059669",     // green  - svn source
-        ["dir"] = "#D97706"      // amber - local dir source
+        ["overlay"] = OriginPalette[0],
+        ["cache"] = OriginPalette[1],
+        ["svn"] = OriginPalette[2],
+        ["dir"] = OriginPalette[3]
     };
 
     /// <summary>Deterministic auto color for an arbitrary layer key, as "#RRGGBB".</summary>

@@ -16,7 +16,7 @@ public sealed class MountInstance : IDisposable
     {
         Profile = profile;
         profile.ValidateLayers();
-        var state = Path.Combine(profile.StoreRoot, "state");
+        var state = Path.Combine(profile.GetStoreRoot(), "state");
         Directory.CreateDirectory(state);
         _logPath = Path.Combine(state, "polymount.log");
 
@@ -30,7 +30,7 @@ public sealed class MountInstance : IDisposable
             bool legacyId = cfg.Id == cfg.Type;
             string layerState = legacyId ? state : Path.Combine(state, cfg.Id);
             Directory.CreateDirectory(layerState);
-            string storage = string.IsNullOrWhiteSpace(cfg.Path) ? Path.Combine(profile.StoreRoot, cfg.Id) : cfg.Path;
+            string storage = profile.GetLayerStorage(cfg);
             int index = i;
             var provider = LayerRegistry.Create(cfg, new LayerBuildContext(storage, layerState, () =>
                 {
@@ -130,6 +130,16 @@ public sealed class MountInstance : IDisposable
     public void ClearCache(string? layer = null)
     {
         foreach (var cache in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<LruCacheLayer>()) cache.Purge();
+    }
+
+    public void ClearLocalChanges(string layer, string winFspBin)
+    {
+        if (!_providers.TryGetValue(layer, out var provider) || provider is not OverlayLayer overlay)
+            throw new NotSupportedException($"layer '{layer}' cannot clear local changes");
+        bool remount = Mounted;
+        Unmount();
+        try { overlay.ClearLocalChanges(); Vfs.InvalidateCaches(); }
+        finally { if (remount) Mount(winFspBin); }
     }
 
     public MountMetrics GetMetrics(int windowSeconds)

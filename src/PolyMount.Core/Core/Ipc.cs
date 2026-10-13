@@ -102,6 +102,7 @@ public static class ControlCommands
     public const string SetPin = "setPin";
     public const string RefreshHead = "refreshHead";
     public const string ClearCache = "clearCache";
+    public const string ClearLocalChanges = "clearLocalChanges";
     public const string Mount = "mount";
     public const string Unmount = "unmount";
     public const string Probe = "probe";

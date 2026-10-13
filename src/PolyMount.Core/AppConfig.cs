@@ -50,7 +50,6 @@ public sealed class AppConfig
             if (string.IsNullOrWhiteSpace(m.Name)) throw new ArgumentException("a mount has an empty Name");
             if (!names.Add(m.Name)) throw new ArgumentException("duplicate mount name: " + m.Name);
             if (string.IsNullOrWhiteSpace(m.MountPoint)) throw new ArgumentException($"mount '{m.Name}' has no MountPoint");
-            if (string.IsNullOrWhiteSpace(m.StoreRoot)) throw new ArgumentException($"mount '{m.Name}' has no StoreRoot");
             m.ValidateLayers();
         }
         foreach (var kv in LayerColors)
@@ -88,6 +87,13 @@ public sealed class MountProfile
 
     // Null keeps the legacy overlay -> cache -> source configuration working.
     public List<LayerConfig>? Layers { get; set; }
+
+    public string GetStoreRoot() => string.IsNullOrWhiteSpace(StoreRoot)
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "stores",
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Name)))[..16])
+        : StoreRoot;
+    public string GetLayerStorage(LayerConfig layer) => string.IsNullOrWhiteSpace(layer.Path)
+        ? Path.Combine(GetStoreRoot(), layer.Id) : layer.Path;
 
     public List<LayerConfig> GetLayers() => Layers ?? new List<LayerConfig>
     {

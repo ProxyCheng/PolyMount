@@ -139,6 +139,17 @@ public sealed class OverlayLayer : ILayer
 
     // ---- tombstones ----
 
+    public void ClearLocalChanges()
+    {
+        foreach (var entry in Directory.EnumerateFileSystemEntries(_root))
+        {
+            if ((File.GetAttributes(entry) & FileAttributes.Directory) != 0) Directory.Delete(entry, true);
+            else File.Delete(entry);
+        }
+        File.WriteAllText(_tombstonePath, "");
+        _tombstones.Clear();
+    }
+
     // Does this layer directly tombstone this exact path (i.e. explicitly "deleted", as opposed to
     // inheriting a tombstone from an ancestor directory)?
     public bool HasTombstone(string rel) => _tombstones.Contains(rel);

@@ -256,6 +256,40 @@ public sealed class LayerChainTests
         Assert.AreEqual("First source", metrics.Layers[0].DisplayName);
     }
 
+    [TestMethod]
+    public void Clear_local_changes_restores_source_and_only_resets_selected_overlay()
+    {
+        using var temp = new TempDir();
+        Directory.CreateDirectory(temp.Sub("source"));
+        File.WriteAllText(temp.Sub("source", "original"), "source");
+        var profile = Profile(temp,
+            new() { Id = "second", Type = "overlay", Path = temp.Sub("second-data") },
+            new() { Id = "dir", Type = "dir", Source = new() { Path = temp.Sub("source") } });
+        using var mount = new MountInstance(profile);
+        mount.Vfs.Delete("original");
+        using (var write = mount.Vfs.OpenWrite("new", true, out _)) write.Write("new"u8);
+        File.WriteAllText(temp.Sub("second-data", "keep"), "keep");
+        mount.ClearLocalChanges("overlay", "");
+        Assert.IsTrue(mount.Vfs.TryLookup("original", out _));
+        Assert.IsFalse(mount.Vfs.TryLookup("new", out _));
+        Assert.IsTrue(File.Exists(temp.Sub("second-data", "keep")));
+        Assert.IsTrue(Directory.Exists(profile.GetLayerStorage(profile.Layers![0])));
+        Assert.AreEqual("", File.ReadAllText(temp.Sub("store", "state", "tombstones")));
+    }
+
+    [TestMethod]
+    public void Layer_paths_keep_legacy_defaults_and_honor_explicit_storage()
+    {
+        using var temp = new TempDir();
+        var profile = new MountProfile { Name = "test", StoreRoot = temp.Sub("legacy") };
+        var layer = new LayerConfig { Id = "overlay" };
+        Assert.AreEqual(temp.Sub("legacy", "overlay"), profile.GetLayerStorage(layer));
+        layer.Path = temp.Sub("custom");
+        Assert.AreEqual(temp.Sub("custom"), profile.GetLayerStorage(layer));
+        profile.StoreRoot = "";
+        Assert.IsTrue(Path.IsPathFullyQualified(profile.GetStoreRoot()));
+    }
+
     private static MountProfile Profile(TempDir temp, params LayerConfig[] sources) => new()
     {
         Name = "test", MountPoint = temp.Sub("mount"), StoreRoot = temp.Sub("store"),

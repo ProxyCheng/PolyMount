@@ -10,7 +10,7 @@ internal sealed class ConfigEditor
 {
     private readonly QWidget _window, _fields, _overlayFields, _cacheFields, _svnFields, _dirFields;
     private readonly QListWidget _mountList, _layerList;
-    private readonly QLineEdit _name, _mountPoint, _storeRoot, _storage, _capacity, _url, _revision, _trust, _user, _password, _dirPath, _color, _layerName;
+    private readonly QLineEdit _name, _mountPoint, _storage, _cacheStorage, _capacity, _url, _revision, _trust, _user, _password, _dirPath, _color, _layerName;
     private readonly QCheckBox _enabled, _writable, _layerEnabled;
     private readonly QPushButton _colorPreview;
     private readonly QLabel _status, _layerTitle, _layerDescription, _id;
@@ -68,7 +68,6 @@ internal sealed class ConfigEditor
         var mountForm = new QFormLayout();
         _name = Edit(mountForm, "name");
         _mountPoint = Edit(mountForm, "mount.location");
-        _storeRoot = Edit(mountForm, "store.root");
         _enabled = new QCheckBox();
         I18n.Bind(_enabled.SetText, "enabled");
         _enabled.Toggled += _ => Dirty();
@@ -128,7 +127,7 @@ internal sealed class ConfigEditor
         _colorPreview = Button("color.choose", ChooseColor);
         colorLayout.AddWidget(_colorPreview);
         var palette = new QHBoxLayout();
-        foreach (string color in new[] { "#2563EB", "#8B5CF6", "#059669", "#D97706", "#DC2626", "#0891B2", "#64748B" })
+        foreach (string color in LayerColors.OriginPalette)
         {
             var swatch = new QPushButton();
             swatch.SetFixedSize(24, 24);
@@ -148,9 +147,11 @@ internal sealed class ConfigEditor
         _overlayFields = new QWidget();
         var overlayForm = new QFormLayout(_overlayFields);
         _storage = Edit(overlayForm, "layer.storage");
+        overlayForm.AddRow("", Button("overlay.clear", () => LayerOperation(ControlCommands.ClearLocalChanges), "trash"));
         right.AddWidget(_overlayFields);
         _cacheFields = new QWidget();
         var cacheForm = new QFormLayout(_cacheFields);
+        _cacheStorage = Edit(cacheForm, "layer.storage");
         _capacity = Edit(cacheForm, "cache.limit");
         cacheForm.AddRow("", Button("cache.layer.clear", () => LayerOperation(ControlCommands.ClearCache)));
         right.AddWidget(_cacheFields);
@@ -328,7 +329,6 @@ internal sealed class ConfigEditor
         var m = Current;
         _name.SetText(m?.Name ?? "");
         _mountPoint.SetText(m?.MountPoint ?? "");
-        _storeRoot.SetText(m?.StoreRoot ?? "");
         _enabled.SetChecked(m?.Enabled == true);
         _loading = false;
         RebuildLayers();
@@ -340,9 +340,9 @@ internal sealed class ConfigEditor
     {
         if (Current is not { } m || _loading) return;
         CommitLayer();
+        m.StoreRoot = m.GetStoreRoot();
         m.Name = _name.Text.Trim();
         m.MountPoint = _mountPoint.Text.Trim();
-        m.StoreRoot = _storeRoot.Text.Trim();
         m.Enabled = _enabled.IsChecked();
         // Compatibility fields remain useful to older clients and service error status.
         var source = m.Layers!.FirstOrDefault(l => SourceRegistry.Contains(l.Type));
@@ -388,6 +388,12 @@ internal sealed class ConfigEditor
         _layerEnabled.SetChecked(_layer?.Enabled == true);
         _color.SetText(_layer == null ? "" : LayerColor(_layer));
         _storage.SetText(_layer?.Path ?? "");
+        _cacheStorage.SetText(_layer?.Path ?? "");
+        string defaultStorage = Current == null || _layer == null ? "" : Path.Combine(Current.GetStoreRoot(), _layer.Id);
+        _storage.SetPlaceholderText(defaultStorage);
+        _cacheStorage.SetPlaceholderText(defaultStorage);
+        _storage.SetToolTip(defaultStorage);
+        _cacheStorage.SetToolTip(defaultStorage);
         _capacity.SetText(((_layer?.CacheCapacityBytes ?? 0) / 1048576).ToString());
         _url.SetText(_layer?.Source.Url ?? "");
         _revision.SetText((_layer?.Source.PinnedRevision ?? 0).ToString());
@@ -396,7 +402,7 @@ internal sealed class ConfigEditor
         _password.SetText(_layer?.Source.Password ?? "");
         _dirPath.SetText(_layer?.Source.Path ?? "");
         _writable.SetChecked(_layer?.Source.Writable == true);
-        _overlayFields.SetVisible(_layer?.Type is "overlay" or "cache");
+        _overlayFields.SetVisible(_layer?.Type == "overlay");
         _cacheFields.SetVisible(_layer?.Type == "cache");
         _svnFields.SetVisible(_layer?.Type == "svn");
         _dirFields.SetVisible(_layer?.Type == "dir");
@@ -415,7 +421,8 @@ internal sealed class ConfigEditor
         _layer.Color = color;
         _layer.Name = _layerName.Text.Trim();
         _layer.Enabled = _layerEnabled.IsChecked();
-        if (_layer.Type is "overlay" or "cache") _layer.Path = _storage.Text.Trim();
+        if (_layer.Type == "overlay") _layer.Path = _storage.Text.Trim();
+        if (_layer.Type == "cache") _layer.Path = _cacheStorage.Text.Trim();
         if (_layer.Type == "cache")
         {
             if (!long.TryParse(_capacity.Text, out var mb) || mb <= 0 || mb > long.MaxValue / 1048576)
@@ -605,7 +612,8 @@ internal sealed class ConfigEditor
     {
         if (_pending != null || _layer == null || _originalName == null || !_layer.Enabled) return;
         string id = _layer.Id;
-        if (!Confirm(command == ControlCommands.ClearCache ? "confirm.layer.cache" : "confirm.layer.head")) return;
+        if (_dirty) { _status.SetText(T("layer.operation.saveFirst")); return; }
+        if (!Confirm(command == ControlCommands.ClearLocalChanges ? "confirm.overlay.clear" : command == ControlCommands.ClearCache ? "confirm.layer.cache" : "confirm.layer.head")) return;
         var request = new ControlRequest { Cmd = command, Name = _originalName, Layer = id };
         _saving = false;
         _layerOperation = true;

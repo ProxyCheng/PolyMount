@@ -64,6 +64,9 @@ internal static class I18n
         confirm.layer.cache|清空此层的运行时缓存？本地修改会保留。|Clear this layer’s runtime cache? Local modifications are kept.
         confirm.layer.head|将此 SVN 层的运行版本更新到 HEAD？本地修改会保留。|Update this SVN layer’s runtime revision to HEAD? Local modifications are kept.
         operation.done|层操作已完成|Layer operation completed
+        overlay.clear|清除本层所有修改|Clear all changes in this layer
+        confirm.overlay.clear|清除本层所有本地文件、目录和删除墓碑？下层内容将重新显现。此操作不可撤销，执行时会短暂卸载当前实例，请先关闭相关文件。|Clear every local file, folder and deletion tombstone in this layer? Lower content will become visible again. This cannot be undone. The instance is briefly unmounted; close its files first.
+        layer.operation.saveFirst|请先保存并应用配置，再操作对应运行层。|Save and apply the configuration before operating on the runtime layer.
         stats.layerShare|逐层读取命中占比|Read share by layer
         stats.series.count|{0} 个层|{0} layers
         stats.share.definition|命中占比 = 该层提供的成功读取 / 全部成功读取；无读取时显示 0%。|Read share = successful reads served by this layer / all successful reads; 0% when idle.
