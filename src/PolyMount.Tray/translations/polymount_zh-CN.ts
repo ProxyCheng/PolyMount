@@ -799,7 +799,7 @@
     </message>
     <message>
       <source>preset.confirm</source>
-      <translation>套用预设将替换当前实例的层配置，继续吗？</translation>
+      <translation>按预设调整层顺序，保留已有层的配置并补齐缺少的层？其他层将保留在末尾。</translation>
     </message>
     <message>
       <source>remove.mount.confirm</source>

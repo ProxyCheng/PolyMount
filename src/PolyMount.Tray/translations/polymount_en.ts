@@ -799,7 +799,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>preset.confirm</source>
-      <translation>Applying a preset replaces this instance’s layer configuration. Continue?</translation>
+      <translation>Apply the preset order, keep existing layer settings and add missing layers? Extra layers will be kept at the end.</translation>
     </message>
     <message>
       <source>remove.mount.confirm</source>

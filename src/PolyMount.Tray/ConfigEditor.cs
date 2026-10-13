@@ -622,13 +622,16 @@ internal sealed class ConfigEditor : QWidget
 
     private void ApplyPreset()
     {
-        if (Current == null || !Confirm("preset.confirm")) return;
+        if (Current == null) return;
         int index = _presets.CurrentIndex;
         if (index < 0 || index >= _presetDefinitions.Count) return;
-        Current.Layers = AppConfig.FromJson(new AppConfig { Mounts = new() { new() { Layers = _presetDefinitions[index].Layers } } }.ToJson()).Mounts[0].Layers;
-        _layer = null;
+        try { CommitLayer(); }
+        catch (ArgumentException ex) { _status.SetText(ex.Message); return; }
+        if (!Confirm("preset.confirm")) return;
+        Current.Layers = LayerPresetMerger.Merge(Current.GetLayers(), _presetDefinitions[index]);
         RebuildLayers();
-        _layerList.SetCurrentRow(Current.Layers!.Count - 1);
+        _layerList.SetCurrentRow(_layer == null ? Current.Layers.Count - 1 : Current.Layers.IndexOf(_layer));
+        ShowLayer();
         Dirty();
     }
 
