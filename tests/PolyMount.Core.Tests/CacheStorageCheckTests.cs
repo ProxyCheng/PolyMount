@@ -8,6 +8,29 @@ namespace PolyMount.Core.Tests;
 public sealed class CacheStorageCheckTests
 {
     [TestMethod]
+    public async Task Reused_blob_handles_have_independent_positions_and_survive_eviction()
+    {
+        using var temp = new TempDir();
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 1048576);
+        using (var content = new MemoryStream("abcdefgh"u8.ToArray()))
+            cache.StoreObject("file", new(new VfsEntry { Name = "file", Size = 8 }), content);
+        await cache.WaitForPendingFillsAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsTrue(cache.TryOpenRead("file", out _, out var first));
+        Assert.IsTrue(cache.TryOpenRead("file", out _, out var second));
+        using (first)
+        using (second)
+        {
+            first.Position = 5;
+            Assert.AreEqual((int)'f', first.ReadByte());
+            Assert.AreEqual((int)'a', second.ReadByte());
+            cache.Purge();
+            Assert.IsFalse(cache.TryGetEntry("file", out _));
+            Assert.AreEqual((int)'g', first.ReadByte());
+            Assert.AreEqual((int)'b', second.ReadByte());
+        }
+    }
+
+    [TestMethod]
     public async Task Blocked_storage_validation_does_not_block_metadata_hits()
     {
         using var temp = new TempDir();

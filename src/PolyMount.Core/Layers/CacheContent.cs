@@ -9,6 +9,7 @@ internal sealed class CacheContent : IDisposable
     private CacheContent(FileStream file) { _file = file; Length = file.Length; }
     private CacheContent(byte[] bytes) { _bytes = bytes; Length = bytes.Length; }
     public long Length { get; }
+    internal static CacheContent Own(FileStream file) => new(file);
 
     public static CacheContent? Capture(Stream stream)
     {

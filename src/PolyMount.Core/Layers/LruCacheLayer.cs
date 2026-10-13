@@ -11,6 +11,7 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         public VirtualObject Value = value;
         public long Bytes = bytes, Access = Environment.TickCount64;
         public CacheContent? Content = content;
+        public CacheContent? OpenContent;
         public ObjectDatabase.Record? Record = record;
         public long Reservation = bytes;
     }
@@ -25,6 +26,10 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
     private readonly Timer _storageCheck;
     private int _checkingStorage;
     private long _bytes, _pendingBytes;
+    private int _openCount;
+    private long _openBytes;
+    private const int MaxOpenFiles = 2048;
+    private const long MaxOpenBytes = 64L * 1024 * 1024;
     private bool _disposed;
     private const long MaxPendingBytes = 256L * 1024 * 1024;
     public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false)
@@ -58,6 +63,13 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
         if (!_items.Remove(key, out var item)) return;
         _bytes -= item.Bytes;
         item.Content?.Dispose(); item.Content = null;
+        ReleaseOpen(item);
+    }
+    private void ReleaseOpen(Item item)
+    {
+        if (item.OpenContent == null) return;
+        _openCount--; _openBytes -= item.OpenContent.Length;
+        item.OpenContent.Dispose(); item.OpenContent = null;
     }
     private bool TryGet(string key, out Item item)
     {
@@ -225,9 +237,38 @@ public sealed class LruCacheLayer : ICacheLayer, IObjectCache, IObjectManagement
             if (!TryGet(key, out var item) || item.Value.Header.IsDir) return false;
             entry = item.Value.Header;
             if (item.Content != null) { stream = item.Content.Acquire()!; return stream != null; }
+            if (item.OpenContent != null) { stream = item.OpenContent.Acquire()!; return stream != null; }
             record = item.Record;
         }
-        try { return _reads.TryOpenRecord(record!, out stream); }
+        try
+        {
+            if (!_reads.TryOpenRecord(record!, out stream)) return false;
+            if (record!.Compressed || stream is not FileStream file || file.Length > MaxOpenBytes) return true;
+            // Open outside the index lock. Publish a shared immutable handle only
+            // if this record is still current; each reader has an independent offset.
+            var opened = CacheContent.Own(file);
+            lock (_gate)
+            {
+                if (_disposed || !_items.TryGetValue(key, out var current) || current.Record != record)
+                {
+                    stream = opened.Acquire()!;
+                    opened.Dispose();
+                    return true;
+                }
+                if (current.OpenContent != null)
+                {
+                    opened.Dispose();
+                    stream = current.OpenContent.Acquire()!;
+                    return true;
+                }
+                while (_openCount >= MaxOpenFiles || _openBytes + opened.Length > MaxOpenBytes)
+                    ReleaseOpen(_items.Values.Where(i => i.OpenContent != null).MinBy(i => i.Access)!);
+                current.OpenContent = opened;
+                _openCount++; _openBytes += opened.Length;
+                stream = opened.Acquire()!;
+                return true;
+            }
+        }
         catch (FileNotFoundException) { ForgetRecord(key, record); return false; }
         catch (DirectoryNotFoundException) { ForgetRecord(key, record); return false; }
     }
