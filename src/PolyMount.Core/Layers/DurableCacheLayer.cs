@@ -23,6 +23,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         public long Metadata;
         /// <summary>Queued but not yet written, so it has no durable copy to fall back to.</summary>
         public bool Pending;
+        /// <summary>Admission epoch, so a purge can retire writes already in flight.</summary>
+        public long Epoch;
     }
 
     private const int MaxQueuedWrites = 4096;
@@ -44,6 +46,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private Task? _worker;
     private int _checkingStorage, _storageCursor;
     private long _bytes, _pendingBytes, _metadataBytes;
+    private long _epoch;
     private bool _disposed;
 
     /// <param name="store">Durable record store backing this cache.</param>
@@ -247,6 +250,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 if (!_queue.Writer.TryWrite((key, item))) { ReleaseItem(item); return; }
                 _items[key] = item;
                 item.Pending = true;
+                item.Epoch = _epoch;
                 _bytes += estimate;
                 _pendingBytes += estimate;
                 _metadataBytes += metadata;
@@ -294,7 +298,14 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                     {
                         foreach (var work in batch)
                         {
-                            if (_disposed || !_items.TryGetValue(work.Key, out var current) || current != work.Item) continue;
+                            if (_disposed) continue;
+                            bool resident = _items.TryGetValue(work.Key, out var current) && current == work.Item;
+                            // A namespace record dropped from the index before the writer
+                            // reached it would be lost outright, and it is tiny, so write
+                            // it anyway. Content that lost its slot is reclaimed instead.
+                            // A purge retires everything admitted before it.
+                            bool namespaceRecord = work.Item.Value.Header.IsDir && work.Item.Epoch == _epoch;
+                            if (!resident && !namespaceRecord) continue;
                             var stream = AcquireContent(work.Item);
                             if (stream != null) streams.Add(stream);
                             changes.Add(new ObjectChange(work.Key, work.Item.Value, stream));
@@ -397,7 +408,21 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     {
         lock (_persistGate)
         {
-            lock (_gate) foreach (var key in _items.Keys.ToArray()) Remove(key);
+            lock (_gate)
+            {
+                _epoch++;
+                // Discard fills that have not been written yet. The worker persists
+                // queued namespace records even after they leave the index, so without
+                // this a cleared cache would repopulate itself from its own backlog.
+                long dropped = 0;
+                while (_queue.Reader.TryRead(out var queued))
+                {
+                    dropped += queued.Item.Reservation;
+                    ReleaseItem(queued.Item);
+                }
+                _pendingBytes -= dropped;
+                foreach (var key in _items.Keys.ToArray()) Remove(key);
+            }
             _store.Clear();
         }
     }
