@@ -13,11 +13,15 @@ public sealed class ProviderInfo
     public long BlockCacheHits { get; set; }
     public long BlockCacheMisses { get; set; }
     public long BlockWriteBacks { get; set; }
+    /// <summary>Localised format for the block-cache summary.</summary>
+    public LocalizedText? MemoryDetail { get; set; }
     /// <summary>Transitions the predictive preloader has learned. It never serves reads, so
     /// its hit count stays zero and these are the numbers that show whether it is working.</summary>
     public long LearnedTransitions { get; set; }
     public long PreloadsStarted { get; set; }
     public long PreloadsCompleted { get; set; }
+    /// <summary>Format string for the preload summary, localised by the core.</summary>
+    public LocalizedText? PredictionDetail { get; set; }
 }
 
 public sealed class MountStatus
@@ -148,11 +152,15 @@ public sealed class LayerMetric
     public long LearnedTransitions { get; set; }
     public long PreloadsStarted { get; set; }
     public long PreloadsCompleted { get; set; }
+    /// <summary>Localised format for the row: completed preloads, then learned transitions.</summary>
+    public LocalizedText? Detail { get; set; }
 }
 
 public sealed class MountMetrics
 {
     public string Mount { get; set; } = "";
+    /// <summary>Why a predictive row reports no hits, for the rows that do.</summary>
+    public LocalizedText? PredictiveHint { get; set; }
     public int WindowSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }

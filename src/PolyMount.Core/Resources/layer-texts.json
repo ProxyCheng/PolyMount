@@ -39,5 +39,9 @@
   "prediction.transitions": { "en": "Learned transitions", "zh-CN": "可学习访问顺序条数" },
   "prediction.transitions.description": { "en": "At capacity, new transitions evict the least used ones.", "zh-CN": "满员后新顺序会淘汰使用最少的旧顺序。" },
   "prediction.filebytes": { "en": "Max preloaded file (MiB)", "zh-CN": "单个预载文件上限（MiB）" },
-  "prediction.filebytes.description": { "en": "Files larger than this are never preloaded.", "zh-CN": "超过该大小的文件不做预载。" }
+  "prediction.filebytes.description": { "en": "Files larger than this are never preloaded.", "zh-CN": "超过该大小的文件不做预载。" },
+  "metrics.predictive.detail": { "en": "preloads {0} · learned {1}", "zh-CN": "预载 {0} · 已学 {1}" },
+  "metrics.predictive.hint": { "en": "This layer serves no reads; it warms the caches below, so a hit count for it is always zero.", "zh-CN": "此层不提供读取命中，只把数据预热到下层缓存，因此它的命中数恒为 0。" },
+  "provider.prediction": { "en": "{0} learned transitions\n{1} preloads · {2} completed", "zh-CN": "已学习 {0} 条访问顺序\n预载 {1} 次 · 完成 {2} 次" },
+  "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" }
 }

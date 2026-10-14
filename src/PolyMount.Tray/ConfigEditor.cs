@@ -252,15 +252,15 @@ internal sealed class ConfigEditor : QWidget
         var originalLayer = _layer;
         var descriptor = new LayerDescriptor
         {
-            Type = "ui-smoke-provider", Title = new("Smoke provider", "测试层"),
+            Type = "ui-smoke-provider", Title = new("Smoke provider", "Smoke provider"),
             Fields = new()
             {
-                new() { Path = "Parameters.Endpoint", Title = new("Endpoint", "地址") },
+                new() { Path = "Parameters.Endpoint", Title = new("Endpoint", "Endpoint") },
                 new() { Path = "Parameters.Secret", Kind = LayerFieldKind.Secret, Trim = false },
                 new() { Path = "Parameters.Count", Kind = LayerFieldKind.Integer, Minimum = 0, DefaultValue = "1" },
                 new() { Path = "Parameters.Enabled", Kind = LayerFieldKind.Boolean },
                 new() { Path = "Parameters.Mode", Kind = LayerFieldKind.Choice, DefaultValue = "fast",
-                    Choices = new() { new() { Value = "fast", Title = new("Fast", "快速") } } }
+                    Choices = new() { new() { Value = "fast", Title = new("Fast", "Fast") } } }
             }
         };
         _layerDescriptors.Add(descriptor);
@@ -820,13 +820,13 @@ internal sealed class ConfigEditor : QWidget
         {
             // This layer never serves a read — it warms the cache below — so its hit count
             // is zero by design. Show what actually moves: the model it learned and the
-            // preloads it ran.
+            // preloads it ran, worded by the core catalog.
             _overlayUsage.SetVisible(false);
             _cacheUsage.SetVisible(true);
             _cacheProgress.SetVisible(false);
-            SetUsageText(_cacheUsage, I18n.Language == "zh-CN"
-                ? $"已学习 {provider.LearnedTransitions} 条访问顺序\n预载 {provider.PreloadsStarted} 次 · 完成 {provider.PreloadsCompleted} 次"
-                : $"{provider.LearnedTransitions} learned transitions\n{provider.PreloadsStarted} preloads · {provider.PreloadsCompleted} completed");
+            var template = provider.PredictionDetail?.Resolve(I18n.Language);
+            SetUsageText(_cacheUsage, template == null ? "" : string.Format(I18n.Culture, template,
+                provider.LearnedTransitions, provider.PreloadsStarted, provider.PreloadsCompleted));
             return;
         }
         var usage = _usageOnline ? provider?.StorageUsage : null;
@@ -846,11 +846,10 @@ internal sealed class ConfigEditor : QWidget
         SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.CacheBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
             I18n.F("usage.cacheDetails", UsageBytes(usage.DiskBytes), UsageBytes(usage.DurableBytes), usage.DurableObjects));
         _cacheProgress.SetToolTip(T("usage.capacityHint"));
-        if (provider?.Type == "memory-cache")
+        if (provider?.Type == "memory-cache" && provider.MemoryDetail != null)
             SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.MemoryBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
-                (I18n.Language == "zh-CN"
-                    ? $"RAM · 命中 {provider.BlockCacheHits} · 未命中 {provider.BlockCacheMisses} · 回写 {provider.BlockWriteBacks}"
-                    : $"RAM · {provider.BlockCacheHits} hits · {provider.BlockCacheMisses} misses · {provider.BlockWriteBacks} write-backs"));
+                string.Format(I18n.Culture, provider.MemoryDetail.Resolve(I18n.Language),
+                    provider.BlockCacheHits, provider.BlockCacheMisses, provider.BlockWriteBacks));
     }
     private static void SetUsageText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
     private static string UsageBytes(long bytes)

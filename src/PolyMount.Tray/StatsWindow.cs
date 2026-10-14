@@ -276,12 +276,11 @@ internal sealed class StatsWindow : QWidget
         {
             var (mount, layer) = rows[row];
             // The predictive preloader serves no reads, so its hit count is always zero.
-            // Render what it actually did instead of a row of zeros that reads as broken.
-            bool zh = I18n.Language == "zh-CN";
+            // Core supplies the localised wording for what it did instead.
             string[] values = layer.Predictive
                 ? new[] { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName,
-                    zh ? $"预载 {layer.PreloadsCompleted}" : $"preloads {layer.PreloadsCompleted}",
-                    zh ? $"已学 {layer.LearnedTransitions} 条" : $"{layer.LearnedTransitions} learned", "—", "—", "—" }
+                    layer.Detail == null ? "" : string.Format(I18n.Culture, layer.Detail.Resolve(I18n.Language), layer.PreloadsCompleted, layer.LearnedTransitions),
+                    "—", "—", "—", "—" }
                 : new[] { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName, layer.Hits.ToString("N0", I18n.Culture), layer.SharePercent.ToString("0.#", I18n.Culture),
                     layer.AvgCostMs.ToString("0.##", I18n.Culture), layer.MaxCostMs.ToString("0.##", I18n.Culture), ByteUnits.Format(layer.Bytes) };
             for (int col = 0; col < values.Length; col++)
@@ -294,9 +293,7 @@ internal sealed class StatsWindow : QWidget
                     _table.SetItem(row, col, item);
                 }
                 else if (item.Text() != values[col]) item.SetText(values[col]);
-                if (layer.Predictive)
-                    item.SetToolTip(zh ? "此层不提供读取命中，只把数据预热到下层缓存；上方「命中」栏对它恒为 0。"
-                                       : "This layer serves no reads; it warms the caches below, so a hit count for it is always 0.");
+                if (layer.Predictive) item.SetToolTip(mount.PredictiveHint?.Resolve(I18n.Language) ?? "");
             }
             if (layer.Color.Length > 0) _table.Item(row, 1).SetForeground(new QBrush(new QColor(layer.Color)));
             _table.SetRowHeight(row, 36);
