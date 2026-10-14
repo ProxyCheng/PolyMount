@@ -3,9 +3,8 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>
-/// Read-through cache for file content. When a directory cache sits below this layer the
-/// namespace belongs to it, so this layer admits only files; otherwise it keeps caching
-/// directories so a chain without one behaves exactly as before.
+/// Read-through cache for file content and the directory namespace. Namespace records
+/// are never evicted from the store; content is bounded by capacity.
 /// </summary>
 public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayerStorageUsage
 {
@@ -26,11 +25,11 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
     private long _openBytes;
 
     public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false,
-        long metadataBudget = CacheBudgets.MetadataBytes, bool cacheDirectories = true)
+        long metadataBudget = CacheBudgets.MetadataBytes)
         : base(new ObjectDatabase(Path.Combine(root, "reads"), compression, recoverable: true,
                 preferredPrefix: version() + "|", metadataBudget: metadataBudget),
             Path.Combine(root, "reads", "objects-v2"), version, capacityBytes, metadataBudget,
-            value => cacheDirectories || !value.Header.IsDir)
+            _ => true)
     {
         _writes = new(Path.Combine(root, "writes"), compression);
     }
@@ -81,9 +80,14 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
     private protected override bool IsBacked(Item item) =>
         item.Record?.Blob == null || File.Exists(Path.Combine(StoreRoot, item.Record.Blob));
 
-    /// <summary>Index eviction and store eviction stay in step for a content cache.</summary>
+    /// <summary>
+    /// Content is evicted to keep the store within its capacity, but namespace records
+    /// are never deleted: the whole ancestor chain has to stay resolvable, and losing one
+    /// directory costs a source fetch for every path beneath it. Dropping them from the
+    /// index alone is free because TryReadObject reads them back from the store.
+    /// </summary>
     private protected override string[] ObsoleteKeys(IReadOnlyList<ObjectDatabase.Record> written) =>
-        written.Where(r => !Contains(r.Path)).Select(r => r.Path).ToArray();
+        written.Where(r => !r.Value.Header.IsDir && !Contains(r.Path)).Select(r => r.Path).ToArray();
 
     private void ReleaseOpen(ContentItem content)
     {

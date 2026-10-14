@@ -105,20 +105,72 @@ internal sealed class ObjectDatabase
         lock (_gate)
         {
             value = null!;
-            // Absent objects cannot become hits by checking the database file.
-            // Keep misses (especially empty overlay/write stores) entirely in memory.
-            if (!_records.TryGetValue(key, out var record)) return false;
-            EnsureAvailable();
-            if (!_records.TryGetValue(key, out record)) return false;
-            if (record.Blob != null && !File.Exists(Path.Combine(_root, record.Blob)))
+            bool resident = _records.TryGetValue(key, out var record);
+            if (resident)
+            {
+                // The store may have been removed underneath us; this drops the stale index.
+                EnsureAvailable();
+                if (!_records.TryGetValue(key, out record)) return false;
+            }
+            else
+            {
+                // An unrecoverable store must surface a removed database rather than
+                // report its objects as absent.
+                if (!_recoverable) { EnsureAvailable(); return false; }
+                // A recoverable store keeps a bounded resident index over a complete
+                // table, so a miss in memory is not a miss on disk.
+                record = LoadRecord(key);
+                if (record == null) return false;
+            }
+            if (record!.Blob != null && !File.Exists(Path.Combine(_root, record.Blob)))
             {
                 if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
                 Apply(new[] { new ObjectChange(key, null) });
                 return false;
             }
-            _records[key] = record with { Access = DateTime.UtcNow.Ticks };
+            record = record with { Access = DateTime.UtcNow.Ticks };
+            // Admission can evict the row again straight away under a tight budget; the
+            // record just read stays valid, so answer from it either way.
+            if (_records.ContainsKey(key)) _records[key] = record;
+            else Admit(record);
             value = record.Value;
             return true;
+        }
+    }
+
+    /// <summary>Reads one row. Called only on a resident-index miss, where a pooled
+    /// connection open costs far less than the source fetch it avoids.</summary>
+    private Record? LoadRecord(string key)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT record FROM objects WHERE path=$path";
+        command.Parameters.AddWithValue("$path", key);
+        return command.ExecuteScalar() is string json ? JsonSerializer.Deserialize<Record>(json) : null;
+    }
+
+    /// <summary>Adds a record to the resident index and re-applies its bound.</summary>
+    private void Admit(Record record)
+    {
+        if (_recordSizes.TryGetValue(record.Path, out var previous)) _metadataBytes -= previous;
+        long size = CacheBudgets.Estimate(record.Path, record.Value);
+        _recordSizes[record.Path] = size;
+        _metadataBytes += size;
+        _records[record.Path] = record;
+        EvictResident();
+    }
+
+    /// <summary>Drops the least recently used resident records. Never issues a delete.</summary>
+    private void EvictResident()
+    {
+        if (!_recoverable) return;
+        if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) return;
+        foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
+        {
+            if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) break;
+            _records.Remove(record.Path);
+            if (_recordSizes.Remove(record.Path, out var size)) _metadataBytes -= size;
         }
     }
     public bool TryOpen(string key, out VirtualObject value, out Stream stream)
@@ -235,16 +287,7 @@ internal sealed class ObjectDatabase
                     _recordSizes[update.Key] = size; _metadataBytes += size;
                     _records[update.Key] = update.Value;
                 }
-                if (_recoverable)
-                {
-                    if (_records.Count > CacheBudgets.MaxObjects || _metadataBytes > _metadataBudget)
-                    foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
-                    {
-                        if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) break;
-                        _records.Remove(record.Path);
-                        _metadataBytes -= _recordSizes[record.Path]; _recordSizes.Remove(record.Path);
-                    }
-                }
+                if (_recoverable) EvictResident();
                 }
             }
             catch
@@ -254,5 +297,27 @@ internal sealed class ObjectDatabase
             }
             foreach (var blob in obsolete) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
     }
-    public void Clear() => Apply(Records.Select(r => new ObjectChange(r.Path, null)).ToArray());
+    // Records is only the resident subset, so clearing through it would leave rows behind
+    // for a bounded index — they would reappear on the next restart. Delete the table.
+    public void Clear()
+    {
+        var changes = new List<ObjectChange>();
+        var blobs = new List<string>();
+        lock (_gate)
+        {
+            EnsureAvailable();
+            using var connection = Connect();
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT path, record FROM objects";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                changes.Add(new ObjectChange(reader.GetString(0), null));
+                var record = JsonSerializer.Deserialize<Record>(reader.GetString(1));
+                if (record?.Blob != null) blobs.Add(record.Blob);
+            }
+        }
+        if (changes.Count > 0) Apply(changes);
+        foreach (var blob in blobs) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
+    }
 }

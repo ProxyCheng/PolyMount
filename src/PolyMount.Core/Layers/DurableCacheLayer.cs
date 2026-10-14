@@ -21,6 +21,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         public ObjectDatabase.Record? Record = record;
         public long Reservation = bytes;
         public long Metadata;
+        /// <summary>Queued but not yet written, so it has no durable copy to fall back to.</summary>
+        public bool Pending;
     }
 
     private const int MaxQueuedWrites = 4096;
@@ -64,13 +66,6 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         using (ExecutionContext.SuppressFlow())
             _storageCheck = new Timer(_ => ValidateStorage(), null, 1000, 1000);
     }
-
-    /// <summary>
-    /// True when the durable store, not the in-memory index, decides whether a path is
-    /// cached. Such a cache must fall back to the store on an index miss: reporting a miss
-    /// would send the virtual file system to the source for data it already holds locally.
-    /// </summary>
-    private protected virtual bool DurableIsAuthoritative => false;
 
     /// <summary>Whether a value belongs in this cache at all.</summary>
     private bool KeepIndexed(VirtualObject value) => _keep(value);
@@ -175,13 +170,39 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         _items[key] = item;
         _bytes += bytes;
         _metadataBytes += metadata;
-        while (Evictable() && _items.Count > 0) Remove(OldestKey());
+        Trim();
     }
 
     private bool Evictable() =>
         _bytes > _indexCapacity || _metadataBytes > _metadataBudget || _items.Count > CacheBudgets.MaxObjects;
 
-    private string OldestKey() => _items.MinBy(p => p.Value.Access).Key;
+    /// <summary>
+    /// Oldest entry in the requested class. Dropping an entry the store already owns costs
+    /// a local re-read, while dropping one that is still queued throws away the pending
+    /// write, so <see cref="Trim"/> drains the durable class first and only reaches for
+    /// queued entries when the writer has fallen far enough behind that nothing else is left.
+    /// </summary>
+    private string? OldestEvictableKey(bool pending)
+    {
+        string? oldest = null;
+        long oldestAccess = long.MaxValue;
+        foreach (var pair in _items)
+        {
+            if (pair.Value.Pending != pending || pair.Value.Access >= oldestAccess) continue;
+            oldestAccess = pair.Value.Access;
+            oldest = pair.Key;
+        }
+        return oldest;
+    }
+
+    private void Trim()
+    {
+        while (Evictable())
+        {
+            if ((OldestEvictableKey(pending: false) ?? OldestEvictableKey(pending: true)) is not { } key) return;
+            Remove(key);
+        }
+    }
 
     public override bool TryReadObject(string path, out VirtualObject value)
     {
@@ -189,10 +210,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         lock (_gate)
         {
             if (TryGet(key, out var item)) { value = item.Value; return true; }
-            if (!DurableIsAuthoritative) { value = null!; return false; }
         }
         // The store is the authority, so a resident-index miss is a local read rather
-        // than a source read. Re-admit so the next lookup comes from memory again.
+        // than a source read. Namespace records in particular must survive being dropped
+        // from the index: losing one costs every path beneath it. Re-admit so the next
+        // lookup comes from memory again.
         if (!_store.TryGet(key, out value) || !KeepIndexed(value)) { value = null!; return false; }
         lock (_gate) Reindex(key, value);
         return true;
@@ -224,10 +246,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 if (!Prepare(item, value, content)) { ReleaseItem(item); return; }
                 if (!_queue.Writer.TryWrite((key, item))) { ReleaseItem(item); return; }
                 _items[key] = item;
+                item.Pending = true;
                 _bytes += estimate;
                 _pendingBytes += estimate;
                 _metadataBytes += metadata;
-                while (Evictable() && _items.Count > 0) Remove(OldestKey());
+                Trim();
                 StartWorker();
             }
             catch (Exception ex)
@@ -292,6 +315,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                             _bytes += record.StoredBytes - current.Bytes;
                             current.Bytes = record.StoredBytes;
                             current.Record = record;
+                            current.Pending = false;
                             SettleItem(current);
                         }
                     }
@@ -299,7 +323,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                     string[] obsolete;
                     lock (_gate)
                     {
-                        while (Evictable() && _items.Count > 0) Remove(OldestKey());
+                        Trim();
                         obsolete = ObsoleteKeys(records);
                     }
                     if (obsolete.Length > 0) _store.Apply(obsolete.Select(k => new ObjectChange(k, null)).ToArray());
