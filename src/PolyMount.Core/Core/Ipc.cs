@@ -13,6 +13,11 @@ public sealed class ProviderInfo
     public long BlockCacheHits { get; set; }
     public long BlockCacheMisses { get; set; }
     public long BlockWriteBacks { get; set; }
+    /// <summary>Transitions the predictive preloader has learned. It never serves reads, so
+    /// its hit count stays zero and these are the numbers that show whether it is working.</summary>
+    public long LearnedTransitions { get; set; }
+    public long PreloadsStarted { get; set; }
+    public long PreloadsCompleted { get; set; }
 }
 
 public sealed class MountStatus

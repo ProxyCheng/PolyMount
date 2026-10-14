@@ -816,6 +816,19 @@ internal sealed class ConfigEditor : QWidget
     private void RenderUsage()
     {
         var provider = _layer == null ? null : _runtimeProviders.FirstOrDefault(p => p.Name == _layer.Id);
+        if (provider?.Type == "prediction-cache")
+        {
+            // This layer never serves a read — it warms the cache below — so its hit count
+            // is zero by design. Show what actually moves: the model it learned and the
+            // preloads it ran.
+            _overlayUsage.SetVisible(false);
+            _cacheUsage.SetVisible(true);
+            _cacheProgress.SetVisible(false);
+            SetUsageText(_cacheUsage, I18n.Language == "zh-CN"
+                ? $"已学习 {provider.LearnedTransitions} 条访问顺序\n预载 {provider.PreloadsStarted} 次 · 完成 {provider.PreloadsCompleted} 次"
+                : $"{provider.LearnedTransitions} learned transitions\n{provider.PreloadsStarted} preloads · {provider.PreloadsCompleted} completed");
+            return;
+        }
         var usage = _usageOnline ? provider?.StorageUsage : null;
         _overlayUsage.SetVisible(usage != null && usage.CacheCapacity <= 0);
         _cacheUsage.SetVisible(usage?.CacheCapacity > 0);

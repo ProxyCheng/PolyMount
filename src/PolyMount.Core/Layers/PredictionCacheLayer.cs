@@ -42,6 +42,16 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         });
     }
     internal IDisposable? Observe(string path) => _predictor?.Demand(path);
+
+    /// <summary>
+    /// This layer is a pass-through: it warms the caches below it and never answers a read
+    /// itself, so its hit count is zero by construction. These counters are what show it
+    /// working, and a nonzero preload count is the point — the reads it warms show up as
+    /// hits on the layer underneath.
+    /// </summary>
+    public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
+    public long PreloadsStarted => _predictor?.Predictions ?? 0;
+    public long PreloadsCompleted => _predictor?.Completed ?? 0;
     public override bool TryGetEntry(string path, out VfsEntry entry) { entry = null!; return false; }
     public override IReadOnlyList<VfsEntry> ListOwn(string path) => Array.Empty<VfsEntry>();
     public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)

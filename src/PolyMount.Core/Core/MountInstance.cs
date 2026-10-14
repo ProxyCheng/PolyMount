@@ -264,6 +264,12 @@ public sealed class MountInstance : IDisposable
             {
                 info.BlockCacheHits = memory.Hits; info.BlockCacheMisses = memory.Misses; info.BlockWriteBacks = memory.WriteBacks;
             }
+            if (_providers[layer.Name] is PredictionCacheLayer prediction)
+            {
+                info.LearnedTransitions = prediction.LearnedTransitions;
+                info.PreloadsStarted = prediction.PreloadsStarted;
+                info.PreloadsCompleted = prediction.PreloadsCompleted;
+            }
             if (_providers[layer.Name] is ILayerStorageUsage storage)
             {
                 try { info.StorageUsage = storage.GetStorageUsage(); }
