@@ -56,6 +56,14 @@ public interface IObjectLayer
 public interface IObjectCache
 {
     void StoreObject(string path, VirtualObject value, Stream? content = null);
+
+    /// <summary>
+    /// Refreshes this cache's recency for a path that a higher layer served. Layers are
+    /// consulted top down and the first hit wins, so without this an entry that a higher
+    /// cache keeps answering never observes a read of its own and a recency-ordered
+    /// eviction discards precisely the objects that are still in use.
+    /// </summary>
+    void TouchObject(string path);
 }
 
 /// <summary>Remove this layer's record without deleting the virtual object in lower layers.</summary>

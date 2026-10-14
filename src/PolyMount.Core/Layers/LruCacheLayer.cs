@@ -135,6 +135,11 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
             return found;
         }
     }
+    public void TouchObject(string path)
+    {
+        // Same recency update a hit performs, for reads a higher cache answered.
+        lock (_gate) TryGet(Key(path), out _);
+    }
     public override bool TryApply(IReadOnlyList<ObjectChange> changes) { _writes.Apply(changes); return true; }
     public void StoreObject(string path, VirtualObject value, Stream? content = null)
     {

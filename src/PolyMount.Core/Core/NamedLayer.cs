@@ -23,4 +23,9 @@ internal sealed class NamedCacheLayer(string name, ICacheLayer inner) : NamedLay
         if (inner is IObjectCache cache) cache.StoreObject(path, value, content);
         else if (!value.Header.IsDir && content != null) inner.Store(path, inner.Generation, value.Header, content);
     }
+
+    public void TouchObject(string path)
+    {
+        if (inner is IObjectCache cache) cache.TouchObject(path);
+    }
 }

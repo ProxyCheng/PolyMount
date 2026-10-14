@@ -49,6 +49,7 @@ public sealed class VirtualFileSystem
         {
             using var request = RequestDiagnostics.Begin("Layer.ReadObject:" + _layers[index].Name, path);
             if (!((IObjectLayer)_layers[index]).TryReadObject(path, out value!)) continue;
+            TouchBelow(path, index);
             if (fill && value.Header.IsDir)
                 lock (_cacheUpdateGate)
                     if (epoch == Interlocked.Read(ref _resolutionEpoch)) Fill(path, value, null, index);
@@ -57,6 +58,16 @@ public sealed class VirtualFileSystem
         value = null!;
         if (path.Length == 0) { value = VirtualObject.Directory("", Array.Empty<VfsEntry>()); return true; }
         return false;
+    }
+
+    // Layers resolve top down and the first hit wins, so a cache that keeps answering a
+    // path hides it from every cache underneath. Those entries would never record a read
+    // and a recency-ordered eviction would then discard the objects still in use, which
+    // is most of the damage for directories: losing one costs every path below it.
+    private void TouchBelow(string path, int hit)
+    {
+        for (int i = hit + 1; i < _layers.Count; i++)
+            if (_layers[i] is IObjectCache cache) cache.TouchObject(path);
     }
 
     private bool Visible(string path, bool fill = true)
@@ -78,7 +89,9 @@ public sealed class VirtualFileSystem
         for (index = 0; index < (limit ?? _layers.Count); index++)
         {
             using var request = RequestDiagnostics.Begin("Layer.GetEntry:" + _layers[index].Name, path);
-            if (_layers[index].TryGetEntry(path, out entry!)) return true;
+            if (!_layers[index].TryGetEntry(path, out entry!)) continue;
+            TouchBelow(path, index);
+            return true;
         }
         entry = null!;
         if (path.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
@@ -144,6 +157,7 @@ public sealed class VirtualFileSystem
                 var layer = _layers[i];
                 request?.Stage("opening content: " + layer.Name);
                 if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
+                TouchBelow(path, i);
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
                 try
                 {

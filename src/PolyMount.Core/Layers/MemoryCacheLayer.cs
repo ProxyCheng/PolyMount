@@ -67,14 +67,22 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            CheckDirectoryGeneration();
-            if (_directories.TryGetValue(Normalize(path), out var item))
-            {
-                _lru.Remove(item.Node); _lru.AddFirst(item.Node);
-                value = item.Value; return true;
-            }
-            value = null!; return false;
+            bool found = TryGetDirectory(path, out var item);
+            value = found ? item.Value : null!;
+            return found;
         }
+    }
+    public void TouchObject(string path)
+    {
+        // Same recency update a hit performs, for reads a higher cache answered.
+        lock (_gate) { ObjectDisposedException.ThrowIf(_disposed, this); TryGetDirectory(path, out _); }
+    }
+    private bool TryGetDirectory(string path, out DirectorySnapshot item)
+    {
+        CheckDirectoryGeneration();
+        if (!_directories.TryGetValue(Normalize(path), out var found)) { item = null!; return false; }
+        _lru.Remove(found.Node); _lru.AddFirst(found.Node);
+        item = found; return true;
     }
     public override bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
     public override bool TryGetEntry(string path, out VfsEntry entry)
