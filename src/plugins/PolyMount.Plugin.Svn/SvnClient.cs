@@ -6,20 +6,12 @@ using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
-internal sealed class SvnEntry
-{
-    public string Name = string.Empty;
-    public bool IsDir;
-    public long Size;
-    public DateTime TimeUtc;
-}
-
-internal sealed class SvnNotFoundException : Exception
-{
-    public SvnNotFoundException(string message) : base(message) { }
-}
-
-internal sealed class SvnClient
+/// <summary>
+/// Repository access by invoking the svn command line client. Each request spawns a
+/// process, so this backend is reserved for URL schemes the HTTP transport cannot
+/// serve and as the fallback when that transport is refused.
+/// </summary>
+internal sealed class SvnClient : ISvnBackend
 {
     private const string Exe = "svn.exe";
 
@@ -37,6 +29,9 @@ internal sealed class SvnClient
     }
 
     public string Url => _url;
+
+    // Each request owns its process; nothing is held between calls.
+    public void Dispose() { }
 
     private string UrlFor(string rel, long rev)
     {

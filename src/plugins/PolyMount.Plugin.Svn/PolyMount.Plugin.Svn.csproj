@@ -8,4 +8,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PolyMount.Plugin.Svn.Tests" />
+  </ItemGroup>
 </Project>

@@ -2,9 +2,9 @@ using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
-public sealed class SvnLayer : ILayer, IRevisionSource
+public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
 {
-    private readonly SvnClient _svn;
+    private readonly ISvnBackend _svn;
     private readonly string _pinPath;
     private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VfsEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
@@ -42,16 +42,33 @@ public sealed class SvnLayer : ILayer, IRevisionSource
         foreach (var child in list) _entries[generation + "|" + VfsPath.Child(path, child.Name)] = child;
     }
 
-    private SvnLayer(SvnClient svn, string pinPath)
+    private SvnLayer(ISvnBackend svn, string pinPath)
     {
         _svn = svn;
         _pinPath = pinPath;
         Directory.CreateDirectory(Path.GetDirectoryName(pinPath)!);
     }
 
+    /// <summary>
+    /// Prefers the in-process HTTP transport for http(s) repositories, which avoids the
+    /// per-request process spawn, and falls back to the svn command line client when the
+    /// server refuses that transport or the mount relies on the svn credential store.
+    /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
         string? username = null, string? password = null)
-        => new(new SvnClient(url, trustFailures, username, password), pinPath);
+    {
+        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return new(new FallbackSvnBackend(
+                new SvnHttpClient(url, trustFailures, username, password),
+                () => new SvnClient(url, trustFailures, username, password)), pinPath);
+        return new(new SvnClient(url, trustFailures, username, password), pinPath);
+    }
+
+    public void Dispose() => _svn.Dispose();
+
+    /// <summary>The transport serving this layer; exposed so tests can assert the selection.</summary>
+    internal ISvnBackend Backend => _svn;
 
     public string Name => "svn";
     public bool Writable => false;
