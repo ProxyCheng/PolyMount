@@ -20,6 +20,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     private readonly ObjectDatabase _reads, _writes;
     private readonly Func<string> _version;
     private readonly string _readRoot;
+    private readonly long _metadataBudget;
     private readonly object _gate = new(), _persistGate = new();
     private readonly Dictionary<string, Item> _items = new(StringComparer.OrdinalIgnoreCase);
     private readonly Channel<(string Key, Item Item)> _queue = Channel.CreateBounded<(string, Item)>(
@@ -37,11 +38,13 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
     private const long MaxOpenBytes = 64L * 1024 * 1024;
     private bool _disposed;
     private const long MaxPendingBytes = 256L * 1024 * 1024;
-    public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false)
+    public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false,
+        long metadataBudget = CacheBudgets.MetadataBytes)
     {
-        _version = version; Capacity = capacityBytes;
+        _version = version; Capacity = capacityBytes; _metadataBudget = metadataBudget;
         _readRoot = Path.Combine(root, "reads", "objects-v2");
-        _reads = new(Path.Combine(root, "reads"), compression, recoverable: true, preferredPrefix: version() + "|");
+        _reads = new(Path.Combine(root, "reads"), compression, recoverable: true,
+            preferredPrefix: version() + "|", metadataBudget: metadataBudget);
         _writes = new(Path.Combine(root, "writes"), compression);
         foreach (var record in _reads.Records)
         {
@@ -150,7 +153,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
         long metadata = CacheBudgets.Estimate(key, value);
         lock (_gate)
         {
-            if (_disposed || metadata > CacheBudgets.MetadataBytes || estimate > Capacity || estimate > MaxPendingBytes ||
+            if (_disposed || metadata > _metadataBudget || estimate > Capacity || estimate > MaxPendingBytes ||
                 _pendingBytes + estimate > MaxPendingBytes || _queue.Reader.Count >= 4096 || _items.ContainsKey(key)) return;
             CacheContent? captured = null;
             try
@@ -163,7 +166,7 @@ public sealed class LruCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IObje
                 if (!_queue.Writer.TryWrite((key, item))) { captured?.Dispose(); return; }
                 _items[key] = item; _bytes += estimate; _pendingBytes += estimate;
                 _metadataBytes += metadata;
-                while ((_bytes > Capacity || _metadataBytes > CacheBudgets.MetadataBytes || _items.Count > CacheBudgets.MaxObjects) && _items.Count > 0)
+                while ((_bytes > Capacity || _metadataBytes > _metadataBudget || _items.Count > CacheBudgets.MaxObjects) && _items.Count > 0)
                     Remove(_items.MinBy(p => p.Value.Access).Key);
                 if (_worker == null)
                 {

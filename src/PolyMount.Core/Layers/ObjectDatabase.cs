@@ -16,15 +16,18 @@ internal sealed class ObjectDatabase
     private readonly Dictionary<string, long> _recordSizes = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _compress;
     private readonly bool _recoverable;
+    private readonly long _metadataBudget;
     private long _usageCheckedAt;
     private long _diskBytes;
     private readonly object _usageGate = new();
-    public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null)
+    public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null,
+        long metadataBudget = CacheBudgets.MetadataBytes)
     {
         _root = Path.Combine(root, "objects-v2");
         _connectionString = new SqliteConnectionStringBuilder { DataSource = Path.Combine(_root, "objects.db"), Pooling = true, DefaultTimeout = 30 }.ToString();
         _compress = compress;
         _recoverable = recoverable;
+        _metadataBudget = metadataBudget;
         Directory.CreateDirectory(_root);
         using var connection = Connect();
         using var command = connection.CreateCommand();
@@ -45,7 +48,7 @@ internal sealed class ObjectDatabase
         {
             var record = JsonSerializer.Deserialize<Record>(reader.GetString(0))!;
             long size = CacheBudgets.Estimate(record.Path, record.Value);
-            if (_recoverable && (_records.Count >= CacheBudgets.MaxObjects || metadata + size > CacheBudgets.MetadataBytes)) continue;
+            if (_recoverable && (_records.Count >= CacheBudgets.MaxObjects || metadata + size > _metadataBudget)) continue;
             _records[record.Path] = record; metadata += size;
             _recordSizes[record.Path] = size;
         }
@@ -234,10 +237,10 @@ internal sealed class ObjectDatabase
                 }
                 if (_recoverable)
                 {
-                    if (_records.Count > CacheBudgets.MaxObjects || _metadataBytes > CacheBudgets.MetadataBytes)
+                    if (_records.Count > CacheBudgets.MaxObjects || _metadataBytes > _metadataBudget)
                     foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
                     {
-                        if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= CacheBudgets.MetadataBytes) break;
+                        if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) break;
                         _records.Remove(record.Path);
                         _metadataBytes -= _recordSizes[record.Path]; _recordSizes.Remove(record.Path);
                     }
