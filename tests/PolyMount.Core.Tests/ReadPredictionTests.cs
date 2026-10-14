@@ -165,4 +165,25 @@ public sealed class ReadPredictionTests
         Assert.AreEqual(30, resolved.TickIntervalMs);
         Assert.AreEqual(ReadPredictionProfiles.IdleOptions().MaxInFlight, resolved.MaxInFlight);
     }
+
+    [TestMethod]
+    public async Task Guesses_the_reader_actually_takes_are_counted_as_hits()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer(); source.AddFile("a", "a"); source.AddFile("b", "b");
+        var vfs = new VirtualFileSystem(new[] { source });
+        using var loaded = new ManualResetEventSlim();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { IdleDelayMs = 100 },
+            temp.Sub("hits.json"), path => { if (path == "b") loaded.Set(); });
+        // Two passes teach a -> b, then asking for "a" guesses "b".
+        using (prediction.Demand("a")) { }
+        using (prediction.Demand("b")) { }
+        using (prediction.Demand("a"))
+            Assert.IsTrue(await Task.Run(() => loaded.Wait(TimeSpan.FromSeconds(5))));
+        Assert.AreEqual(0, prediction.PreloadHits, "a guess that was never read back is not a hit");
+        using (prediction.Demand("b")) { }
+        Assert.AreEqual(1, prediction.PreloadHits, "reading the guessed path is the guess paying off");
+        using (prediction.Demand("b")) { }
+        Assert.AreEqual(1, prediction.PreloadHits, "a guess is only credited once");
+    }
 }

@@ -72,9 +72,16 @@ public sealed class ReadPrediction : IDisposable
     private int _activeDemand;
     private readonly List<Task> _inFlight = new();
     private long _epoch;
+    // Paths that were guessed, so a later read of one can be counted as the guess paying off.
+    private const int MaxGuesses = 8192;
+    private readonly HashSet<string> _guessed = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _guessOrder = new();
     public int LearnedTransitions { get { lock (_gate) return _edges.Count; } }
     public long Predictions { get; private set; }
     public long Completed { get; private set; }
+    /// <summary>Guessed paths that the reader went on to request. Divided by
+    /// <see cref="Predictions"/> this is how often the guess was right.</summary>
+    public long PreloadHits { get; private set; }
 
     public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath, Action<string>? preload = null)
     {
@@ -99,6 +106,7 @@ public sealed class ReadPrediction : IDisposable
         lock (_gate)
         {
             _activeDemand++; _lastDemand = Environment.TickCount64;
+            if (_guessed.Remove(path)) PreloadHits++;
             if (path.Length > 4096) return new DemandScope(this);
             if (_previous != null && !string.Equals(_previous, path, StringComparison.OrdinalIgnoreCase))
             {
@@ -126,6 +134,15 @@ public sealed class ReadPrediction : IDisposable
     {
         public void Dispose() { lock (owner._gate) { owner._activeDemand--; owner._lastDemand = Environment.TickCount64; } }
     }
+    /// <summary>Remembers a guess so a later read of it counts. Bounded: a guess older than
+    /// the window is dropped rather than credited much later.</summary>
+    private void NoteGuess(string path)
+    {
+        if (!_guessed.Add(path)) return;
+        _guessOrder.Enqueue(path);
+        while (_guessOrder.Count > MaxGuesses) _guessed.Remove(_guessOrder.Dequeue());
+    }
+
     private void Tick()
     {
         lock (_gate)
@@ -135,6 +152,7 @@ public sealed class ReadPrediction : IDisposable
                 _inFlight.Count >= _options.MaxInFlight ||
                 (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
             string candidate = _candidates.Dequeue(); Predictions++;
+            NoteGuess(candidate);
             long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
             {
@@ -162,7 +180,8 @@ public sealed class ReadPrediction : IDisposable
             // Queued candidates from the old model cannot begin after this reset.
             _epoch++;
             _edges.Clear(); _previous = null; _candidates.Clear();
-            Predictions = 0; Completed = 0;
+            _guessed.Clear(); _guessOrder.Clear();
+            Predictions = 0; Completed = 0; PreloadHits = 0;
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
             string temp = _modelPath + ".tmp";
             File.WriteAllText(temp, "[]");

@@ -167,7 +167,11 @@ internal sealed class StatsWindow : QWidget
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
-                    _accessMetrics = sample.Access.Metrics; Accept(response.Metrics);
+                    _accessMetrics = sample.Access.Metrics;
+                    // The table and legend show the recent average; the one-second sample
+                    // only feeds the per-second chart history, where a gap would otherwise
+                    // read as "every layer served nothing".
+                    Accept(response.Metrics, sample.Access.Metrics);
                     ui.Stop();
                     _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds));
                     while (_responseSamples.Count > 60) _responseSamples.Dequeue();
@@ -196,14 +200,14 @@ internal sealed class StatsWindow : QWidget
         _wasVisible = visible;
     }
 
-    private void Accept(List<MountMetrics> metrics)
+    private void Accept(List<MountMetrics> trends, List<MountMetrics> metrics)
     {
         _latest = metrics;
         DateTime now = DateTime.UtcNow;
         var alive = metrics.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
-        foreach (var mount in metrics) Add(mount.Mount, CaptureLayers(now, new[] { mount }));
-        Add("", CaptureLayers(now, metrics));
+        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }));
+        Add("", CaptureLayers(now, trends));
         string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
         var names = metrics.Select(m => m.Mount).ToArray();
         if (_mount.Count != names.Length + 1 || names.Where((name, i) => _mount.ItemText(i + 1) != name).Any())
@@ -279,7 +283,8 @@ internal sealed class StatsWindow : QWidget
             // Core supplies the localised wording for what it did instead.
             string[] values = layer.Predictive
                 ? new[] { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName,
-                    layer.Detail == null ? "" : string.Format(I18n.Culture, layer.Detail.Resolve(I18n.Language), layer.PreloadsCompleted, layer.LearnedTransitions),
+                    layer.Detail == null ? "" : string.Format(I18n.Culture, layer.Detail.Resolve(I18n.Language),
+                        layer.PreloadsCompleted, layer.PreloadsStarted == 0 ? 0 : 100 * layer.PreloadHits / layer.PreloadsStarted, layer.LearnedTransitions),
                     "—", "—", "—", "—" }
                 : new[] { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName, layer.Hits.ToString("N0", I18n.Culture), layer.SharePercent.ToString("0.#", I18n.Culture),
                     layer.AvgCostMs.ToString("0.##", I18n.Culture), layer.MaxCostMs.ToString("0.##", I18n.Culture), ByteUnits.Format(layer.Bytes) };

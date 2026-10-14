@@ -20,6 +20,7 @@ public sealed class ProviderInfo
     public long LearnedTransitions { get; set; }
     public long PreloadsStarted { get; set; }
     public long PreloadsCompleted { get; set; }
+    public long PreloadHits { get; set; }
     /// <summary>Format string for the preload summary, localised by the core.</summary>
     public LocalizedText? PredictionDetail { get; set; }
 }
@@ -152,7 +153,8 @@ public sealed class LayerMetric
     public long LearnedTransitions { get; set; }
     public long PreloadsStarted { get; set; }
     public long PreloadsCompleted { get; set; }
-    /// <summary>Localised format for the row: completed preloads, then learned transitions.</summary>
+    public long PreloadHits { get; set; }
+    /// <summary>Localised format for the row: preloads, hit rate, learned transitions.</summary>
     public LocalizedText? Detail { get; set; }
 }
 

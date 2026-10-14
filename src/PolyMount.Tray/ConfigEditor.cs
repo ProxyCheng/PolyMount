@@ -826,7 +826,8 @@ internal sealed class ConfigEditor : QWidget
             _cacheProgress.SetVisible(false);
             var template = provider.PredictionDetail?.Resolve(I18n.Language);
             SetUsageText(_cacheUsage, template == null ? "" : string.Format(I18n.Culture, template,
-                provider.LearnedTransitions, provider.PreloadsStarted, provider.PreloadsCompleted));
+                provider.LearnedTransitions, provider.PreloadsStarted, provider.PreloadsCompleted,
+                provider.PreloadsStarted == 0 ? 0 : 100 * provider.PreloadHits / provider.PreloadsStarted));
             return;
         }
         var usage = _usageOnline ? provider?.StorageUsage : null;

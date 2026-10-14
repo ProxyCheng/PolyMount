@@ -180,6 +180,7 @@ public sealed class MountInstance : IDisposable
                 lm.LearnedTransitions = prediction.LearnedTransitions;
                 lm.PreloadsStarted = prediction.PreloadsStarted;
                 lm.PreloadsCompleted = prediction.PreloadsCompleted;
+                lm.PreloadHits = prediction.PreloadHits;
                 lm.Detail = LayerTexts.Get("metrics.predictive.detail");
                 m.PredictiveHint = LayerTexts.Get("metrics.predictive.hint");
             }
@@ -283,6 +284,7 @@ public sealed class MountInstance : IDisposable
                 info.LearnedTransitions = prediction.LearnedTransitions;
                 info.PreloadsStarted = prediction.PreloadsStarted;
                 info.PreloadsCompleted = prediction.PreloadsCompleted;
+                info.PreloadHits = prediction.PreloadHits;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");
             }
             if (_providers[layer.Name] is ILayerStorageUsage storage)

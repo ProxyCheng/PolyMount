@@ -52,6 +52,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
     public long PreloadsStarted => _predictor?.Predictions ?? 0;
     public long PreloadsCompleted => _predictor?.Completed ?? 0;
+    public long PreloadHits => _predictor?.PreloadHits ?? 0;
     public override bool TryGetEntry(string path, out VfsEntry entry) { entry = null!; return false; }
     public override IReadOnlyList<VfsEntry> ListOwn(string path) => Array.Empty<VfsEntry>();
     public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
