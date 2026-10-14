@@ -367,11 +367,15 @@ public sealed class VirtualFileSystem
         {
             Interlocked.Increment(ref _resolutionEpoch);
             int hit = _layers.IndexOf(target);
-            for (int i = 0; i < _layers.Count; i++)
+            // Only layers above the write target can hold stale data: they are resolved
+            // first, so a write shadows whatever they cached. A cache below the target
+            // holds the lower layers' own view, which the write does not change, and
+            // invalidating it would throw away the entire read cache on every save.
+            for (int i = 0; i < hit; i++)
             {
                 if (_layers[i] is not ICacheLayer cache) continue;
                 var inner = _layers[i] is NamedLayer named ? named.Inner : _layers[i];
-                if (i < hit && inner is IWriteAwareCache tracking) tracking.UpdateAfterWrite(changes);
+                if (inner is IWriteAwareCache tracking) tracking.UpdateAfterWrite(changes);
                 else cache.Invalidate();
             }
         }

@@ -105,4 +105,29 @@ public sealed class NamespaceResidencyTests
         Assert.AreEqual("leaf.txt", vfs.List("a/b/c").Single().Name);
         Assert.AreEqual(reads, source.ListedDirectories.Count, "re-resolving the chain must not go back to the source");
     }
+
+    [TestMethod]
+    public void A_write_leaves_caches_below_it_intact()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        source.AddFile("dir/file", "source");
+        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1024 * 1024);
+        var vfs = new VirtualFileSystem(new ILayer[] { overlay, cache, source });
+
+        Assert.AreEqual("file", vfs.List("dir").Single().Name);        // caches "dir" from the source
+        int reads = source.ListedDirectories.Count;
+
+        // An unrelated write used to purge the whole read cache, namespace included.
+        using (var write = vfs.OpenWrite("elsewhere.txt", true, out _))
+        {
+            write.Write(new byte[] { 1, 2, 3 });
+            write.Flush();
+        }
+
+        Assert.IsTrue(cache.TryReadObject("dir", out _), "the namespace record should have survived the write");
+        Assert.AreEqual("file", vfs.List("dir").Single().Name);
+        Assert.AreEqual(reads, source.ListedDirectories.Count, "the listing should still come from the cache");
+    }
 }
