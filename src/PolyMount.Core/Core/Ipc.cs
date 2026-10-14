@@ -20,8 +20,13 @@ public sealed class ProviderInfo
     public long LearnedTransitions { get; set; }
     public long PreloadsStarted { get; set; }
     public long PreloadsCompleted { get; set; }
-    public long PreloadHits { get; set; }
-    /// <summary>Format string for the preload summary, localised by the core.</summary>
+    /// <summary>Reads served from the read-ahead layer's own copy.</summary>
+    public long HeldHits { get; set; }
+    /// <summary>Read-ahead entries evicted without ever being read.</summary>
+    public long HeldWasted { get; set; }
+    public long HeldBytes { get; set; }
+    public long HeldCapacity { get; set; }
+    /// <summary>Format string for the read-ahead summary, localised by the core.</summary>
     public LocalizedText? PredictionDetail { get; set; }
 }
 
@@ -147,22 +152,11 @@ public sealed class LayerMetric
     public double AvgCostMs { get; set; }    // average read-resolution latency
     public double MaxCostMs { get; set; }
     public long Bytes { get; set; }          // bytes served
-    /// <summary>Only meaningful for the predictive preloader, which serves no reads of its
-    /// own: its hit count is always zero, so these are what show it working.</summary>
-    public bool Predictive { get; set; }
-    public long LearnedTransitions { get; set; }
-    public long PreloadsStarted { get; set; }
-    public long PreloadsCompleted { get; set; }
-    public long PreloadHits { get; set; }
-    /// <summary>Localised format for the row: preloads, hit rate, learned transitions.</summary>
-    public LocalizedText? Detail { get; set; }
 }
 
 public sealed class MountMetrics
 {
     public string Mount { get; set; } = "";
-    /// <summary>Why a predictive row reports no hits, for the rows that do.</summary>
-    public LocalizedText? PredictiveHint { get; set; }
     public int WindowSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }

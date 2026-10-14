@@ -40,8 +40,8 @@
   "prediction.transitions.description": { "en": "At capacity, new transitions evict the least used ones.", "zh-CN": "满员后新顺序会淘汰使用最少的旧顺序。" },
   "prediction.filebytes": { "en": "Max preloaded file (MiB)", "zh-CN": "单个预载文件上限（MiB）" },
   "prediction.filebytes.description": { "en": "Files larger than this are never preloaded.", "zh-CN": "超过该大小的文件不做预载。" },
-  "metrics.predictive.detail": { "en": "preloads {0} · {1}% hit · learned {2}", "zh-CN": "预载 {0} · 命中率 {1}% · 已学 {2}" },
-  "metrics.predictive.hint": { "en": "This layer serves no reads; it warms the caches below, so a hit count for it is always zero.", "zh-CN": "此层不提供读取命中，只把数据预热到下层缓存，因此它的命中数恒为 0。" },
-  "provider.prediction": { "en": "{0} learned transitions\n{1} preloads · {2} completed", "zh-CN": "已学习 {0} 条访问顺序\n预载 {1} 次 · 完成 {2} 次" },
+  "provider.prediction": { "en": "RAM {0} of {1}\n{2} learned · {3} preloads · {4} served · {5} wasted", "zh-CN": "内存 {0} / {1}\n已学 {2} 条 · 预载 {3} 次 · 命中 {4} 次 · 失配 {5} 次" },
+  "prediction.retention": { "en": "Forget after (minutes)", "zh-CN": "遗忘时限（分钟）" },
+  "prediction.retention.description": { "en": "A transition not seen for this long is dropped, so a sequence the loader has moved on from stops being predicted. 0 keeps transitions until the capacity bound recycles them.", "zh-CN": "超过该时间未被观察到的转移会被丢弃，避免加载器已经不再使用的旧顺序一直被预测并向后传递。0 表示只按容量上限回收。" },
   "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" }
 }

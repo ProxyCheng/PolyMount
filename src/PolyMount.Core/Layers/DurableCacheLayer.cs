@@ -47,6 +47,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private int _checkingStorage, _storageCursor;
     private long _bytes, _pendingBytes, _metadataBytes;
     private long _epoch;
+    // Keys explicitly removed; a write still queued for one must not resurrect it.
+    private readonly HashSet<string> _retired = new(StringComparer.OrdinalIgnoreCase);
     private bool _disposed;
 
     /// <param name="store">Durable record store backing this cache.</param>
@@ -251,6 +253,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 _items[key] = item;
                 item.Pending = true;
                 item.Epoch = _epoch;
+                _retired.Remove(key);
                 _bytes += estimate;
                 _pendingBytes += estimate;
                 _metadataBytes += metadata;
@@ -299,6 +302,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                         foreach (var work in batch)
                         {
                             if (_disposed) continue;
+                            if (_retired.Remove(work.Key)) continue;
                             bool resident = _items.TryGetValue(work.Key, out var current) && current == work.Item;
                             // A namespace record dropped from the index before the writer
                             // reached it would be lost outright, and it is tiny, so write
@@ -411,6 +415,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
             lock (_gate)
             {
                 _epoch++;
+                _retired.Clear();
                 // Discard fills that have not been written yet. The worker persists
                 // queued namespace records even after they leave the index, so without
                 // this a cleared cache would repopulate itself from its own backlog.
@@ -432,7 +437,14 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         string key = Key(path);
         lock (_persistGate)
         {
-            lock (_gate) Remove(key);
+            lock (_gate)
+            {
+                // The store row goes now, so a write still queued for this key has to be
+                // retired or it would put the entry back after the eviction.
+                if (_retired.Count > 8192) _retired.Clear();
+                _retired.Add(key);
+                Remove(key);
+            }
             _store.Apply(new[] { new ObjectChange(key, null) });
         }
     }

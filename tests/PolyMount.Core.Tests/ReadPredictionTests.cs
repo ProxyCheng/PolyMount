@@ -57,51 +57,26 @@ public sealed class ReadPredictionTests
     }
 
     [TestMethod]
-    public async Task Directory_access_sequence_predicts_complete_listing_into_lower_cache()
+    public async Task A_predicted_directory_lands_in_the_layer_that_guessed_it()
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("a/file", "a"); source.AddFile("b/child/file", "b");
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
         using var prediction = new PredictionCacheLayer(1048576, () => source.Generation,
-            new ReadPredictionOptions { Enabled = true, IdleDelayMs = 100 }, temp.Sub("directory-model.json"));
+            new ReadPredictionOptions { Enabled = true }, temp.Sub("directory-model.json"));
         prediction.Attach(new VirtualFileSystem(new ILayer[] { cache, source }));
         var vfs = new VirtualFileSystem(new ILayer[] { prediction, cache, source });
         foreach (var path in new[] { "a", "b", "a", "b" }) vfs.List(path);
-        cache.Purge();
+        prediction.Clear();                                   // keep the learned order, drop the data
+
         vfs.List("a");
         var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (!cache.TryReadObject("b", out _) && DateTime.UtcNow < deadline) await Task.Delay(50);
-        Assert.IsTrue(cache.TryReadObject("b", out var directory));
+        while (!prediction.TryReadObject("b", out _) && DateTime.UtcNow < deadline) await Task.Delay(50);
+
+        Assert.IsTrue(prediction.TryReadObject("b", out var directory), "the guess should be held by the layer that made it");
         Assert.IsTrue(directory.Header.IsDir);
         Assert.AreEqual("child", directory.Children!.Single().Name);
-        Assert.IsTrue(directory.Children!.Single().IsDir);
-        Assert.IsFalse(prediction.TryGetEntry("b", out _));
-        Assert.AreEqual("cache", vfs.Probe("b").Single(p => p.Effective).Name);
-    }
-
-    [TestMethod]
-    public async Task Prediction_layer_fills_lower_cache_but_never_serves_frontend_hits()
-    {
-        using var temp = new TempDir();
-        var source = new FakeSourceLayer(); source.AddFile("a", "a"); source.AddFile("b", "payload");
-        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
-        using var prediction = new PredictionCacheLayer(1048576, () => source.Generation,
-            new ReadPredictionOptions { Enabled = true, IdleDelayMs = 100 }, temp.Sub("model.json"));
-        prediction.Attach(new VirtualFileSystem(new ILayer[] { cache, source }));
-        var vfs = new VirtualFileSystem(new ILayer[] { prediction, cache, source });
-        foreach (var path in new[] { "a", "b", "a", "b" }) using (vfs.OpenRead(path, out _)) { }
-        cache.Purge();
-        using (vfs.OpenRead("a", out _)) { }
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (!cache.TryGetEntry("b", out _) && DateTime.UtcNow < deadline) await Task.Delay(50);
-        Assert.IsTrue(cache.TryGetEntry("b", out _));
-        Assert.IsFalse(prediction.TryGetEntry("b", out _));
-        Assert.IsTrue(prediction.MemoryBytes <= 1048576);
-        int opens = source.OpenReadCount;
-        using (var reader = new StreamReader(vfs.OpenRead("b", out _))) Assert.AreEqual("payload", reader.ReadToEnd());
-        Assert.AreEqual(opens, source.OpenReadCount);
-        source.BumpGeneration("new");
-        Assert.IsFalse(cache.TryGetEntry("b", out _));
+        Assert.AreEqual("prediction-cache", vfs.Probe("b").Single(p => p.Effective).Name, "and it should serve the read");
     }
 
     [TestMethod]
@@ -138,8 +113,9 @@ public sealed class ReadPredictionTests
         var idle = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Idle, () => throw new Exception("custom unused"));
         var steady = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Steady, () => throw new Exception("custom unused"));
         var eager = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Eager, () => throw new Exception("custom unused"));
-        Assert.AreEqual(1, idle.MaxActiveDemandForPreload);
-        Assert.AreEqual(100, idle.TickIntervalMs);
+        Assert.IsTrue(idle.MaxActiveDemandForPreload >= 1);
+        // Continuous by default: no quiet period is required before read-ahead may start.
+        Assert.AreEqual(0, idle.IdleDelayMs);
         Assert.IsTrue(steady.MaxActiveDemandForPreload > idle.MaxActiveDemandForPreload);
         Assert.IsTrue(steady.TickIntervalMs < idle.TickIntervalMs);
         Assert.IsTrue(eager.MaxInFlight > steady.MaxInFlight);
@@ -167,23 +143,51 @@ public sealed class ReadPredictionTests
     }
 
     [TestMethod]
-    public async Task Guesses_the_reader_actually_takes_are_counted_as_hits()
+    public void Kept_entries_that_are_read_are_hits_and_ones_evicted_unread_are_waste()
     {
         using var temp = new TempDir();
-        var source = new FakeSourceLayer(); source.AddFile("a", "a"); source.AddFile("b", "b");
-        var vfs = new VirtualFileSystem(new[] { source });
-        using var loaded = new ManualResetEventSlim();
-        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { IdleDelayMs = 100 },
-            temp.Sub("hits.json"), path => { if (path == "b") loaded.Set(); });
-        // Two passes teach a -> b, then asking for "a" guesses "b".
-        using (prediction.Demand("a")) { }
-        using (prediction.Demand("b")) { }
-        using (prediction.Demand("a"))
-            Assert.IsTrue(await Task.Run(() => loaded.Wait(TimeSpan.FromSeconds(5))));
-        Assert.AreEqual(0, prediction.PreloadHits, "a guess that was never read back is not a hit");
-        using (prediction.Demand("b")) { }
-        Assert.AreEqual(1, prediction.PreloadHits, "reading the guessed path is the guess paying off");
-        using (prediction.Demand("b")) { }
-        Assert.AreEqual(1, prediction.PreloadHits, "a guess is only credited once");
+        // A one-child listing costs about 1 KB, so this holds two and the third evicts one.
+        using var layer = new PredictionCacheLayer(2500, () => "v1", new ReadPredictionOptions(), temp.Sub("held.json"));
+        var children = new[] { new VfsEntry { Name = "x" } };
+        layer.StoreObject("kept", VirtualObject.Directory("kept", children));
+        layer.StoreObject("unread", VirtualObject.Directory("unread", children));
+
+        Assert.IsTrue(layer.TryReadObject("kept", out _), "a kept entry is served from this layer");
+        Assert.AreEqual(1, layer.CacheHits);
+        Assert.AreEqual(0, layer.Wasted);
+
+        layer.StoreObject("third", VirtualObject.Directory("third", children));
+        Assert.IsFalse(layer.TryReadObject("unread", out _), "the untouched entry is the one LRU takes");
+        Assert.AreEqual(1, layer.Wasted, "evicting an entry nobody read is the guess not paying off");
+        Assert.IsTrue(layer.TryReadObject("kept", out _), "the entry that was used survives");
+    }
+
+    [TestMethod]
+    public void A_kept_file_is_served_from_memory()
+    {
+        using var temp = new TempDir();
+        using var layer = new PredictionCacheLayer(65536, () => "v1", new ReadPredictionOptions(), temp.Sub("held.json"));
+        using (var content = new MemoryStream(new byte[] { 7, 8, 9 }))
+            layer.Store("data", "v1", new VfsEntry { Name = "data", IsDir = false, Size = 3 }, content);
+
+        Assert.IsTrue(layer.TryOpenRead("data", out var entry, out var stream));
+        using (stream)
+        {
+            Assert.AreEqual(3, entry.Size);
+            Assert.AreEqual(7, stream.ReadByte());
+            Assert.IsTrue(stream.CanSeek, "the mounted file system needs a seekable handle");
+        }
+        Assert.AreEqual(1, layer.CacheHits);
+    }
+
+    [TestMethod]
+    public void An_entry_larger_than_the_whole_budget_is_refused()
+    {
+        using var temp = new TempDir();
+        using var layer = new PredictionCacheLayer(4096, () => "v1", new ReadPredictionOptions(), temp.Sub("held.json"));
+        layer.StoreObject("huge", VirtualObject.Directory("huge",
+            Enumerable.Range(0, 500).Select(i => new VfsEntry { Name = new string('x', 200) + i }).ToArray()));
+        Assert.IsFalse(layer.TryReadObject("huge", out _));
+        Assert.AreEqual(0L, layer.MemoryBytes);
     }
 }

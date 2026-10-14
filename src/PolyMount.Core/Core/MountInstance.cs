@@ -172,18 +172,6 @@ public sealed class MountInstance : IDisposable
         {
             lm.Color = ResolveColor(lm.Name);
             lm.DisplayName = _configs[lm.Name].Name;
-            if (_providers[lm.Name] is PredictionCacheLayer prediction)
-            {
-                // A pass-through layer: report what it did rather than a hit count that is
-                // zero by construction. The wording is localised here, where the catalog lives.
-                lm.Predictive = true;
-                lm.LearnedTransitions = prediction.LearnedTransitions;
-                lm.PreloadsStarted = prediction.PreloadsStarted;
-                lm.PreloadsCompleted = prediction.PreloadsCompleted;
-                lm.PreloadHits = prediction.PreloadHits;
-                lm.Detail = LayerTexts.Get("metrics.predictive.detail");
-                m.PredictiveHint = LayerTexts.Get("metrics.predictive.hint");
-            }
         }
         return m;
     }
@@ -284,7 +272,10 @@ public sealed class MountInstance : IDisposable
                 info.LearnedTransitions = prediction.LearnedTransitions;
                 info.PreloadsStarted = prediction.PreloadsStarted;
                 info.PreloadsCompleted = prediction.PreloadsCompleted;
-                info.PreloadHits = prediction.PreloadHits;
+                info.HeldHits = prediction.CacheHits;
+                info.HeldWasted = prediction.Wasted;
+                info.HeldBytes = prediction.MemoryBytes;
+                info.HeldCapacity = prediction.Capacity;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");
             }
             if (_providers[layer.Name] is ILayerStorageUsage storage)

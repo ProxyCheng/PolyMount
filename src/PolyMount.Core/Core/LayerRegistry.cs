@@ -40,7 +40,9 @@ public static class LayerRegistry
                     new() { Path = "Parameters.MaxTransitions", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 1048576,
                         DefaultValue = "4096", Title = LayerTexts.Get("prediction.transitions"), Description = LayerTexts.Get("prediction.transitions.description") },
                     new() { Path = "Parameters.MaxFileBytes", Kind = LayerFieldKind.Integer, Scale = 1048576, Minimum = 1, Maximum = 256,
-                        DefaultValue = "8", Title = LayerTexts.Get("prediction.filebytes"), Description = LayerTexts.Get("prediction.filebytes.description") }
+                        DefaultValue = "8", Title = LayerTexts.Get("prediction.filebytes"), Description = LayerTexts.Get("prediction.filebytes.description") },
+                    new() { Path = "Parameters.RetentionMinutes", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 10080,
+                        DefaultValue = "60", Title = LayerTexts.Get("prediction.retention"), Description = LayerTexts.Get("prediction.retention.description") }
                 } });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
@@ -73,6 +75,7 @@ public static class LayerRegistry
         baseline.MaxActiveDemandForPreload = Number(config, "MaxActiveDemand", baseline.MaxActiveDemandForPreload);
         baseline.MaxInFlight = Number(config, "MaxInFlight", baseline.MaxInFlight);
         baseline.MaxTransitions = Number(config, "MaxTransitions", baseline.MaxTransitions);
+        baseline.RetentionMs = Number(config, "RetentionMinutes", baseline.RetentionMs / 60000) * 60000;
         if (config.Parameters.TryGetValue("MaxFileBytes", out var bytes) && bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
             baseline.MaxFileBytes = bytes.GetInt64() * 1048576;
         return baseline;

@@ -7,8 +7,10 @@ public sealed class ReadPredictionOptions
     public bool Enabled { get; set; }
     public int MaxTransitions { get; set; } = 4096;
     public long MaxFileBytes { get; set; } = 8L * 1024 * 1024;
-    /// <summary>Quiet period after the last demand before preloading may start.</summary>
-    public int IdleDelayMs { get; set; } = 250;
+    /// <summary>Quiet period required before preloading starts when nothing is in flight.
+    /// Zero — the default — means learning and predicting run continuously, bounded only by
+    /// the in-flight limit; raise it to keep read-ahead out of the way of a busy reader.</summary>
+    public int IdleDelayMs { get; set; }
     /// <summary>How many demands may be in flight while preloading still runs. The loader
     /// spends most of its time inside a demand, so a low value leaves it no window.</summary>
     public int MaxActiveDemandForPreload { get; set; } = 1;
@@ -16,6 +18,10 @@ public sealed class ReadPredictionOptions
     /// window never lands inside one.</summary>
     public int TickIntervalMs { get; set; } = 100;
     public int MaxInFlight { get; set; } = 1;
+    /// <summary>How long an unobserved transition is remembered. Without this a sequence the
+    /// loader stopped using keeps being predicted, and the stale guess propagates forward.
+    /// Zero keeps transitions until the capacity bound recycles them.</summary>
+    public int RetentionMs { get; set; } = 3600000;
 }
 
 /// <summary>
@@ -33,17 +39,17 @@ public static class ReadPredictionProfiles
 
     /// <summary>Today's behaviour: one speculative load, only in a quiet gap.</summary>
     public static ReadPredictionOptions IdleOptions() => new()
-    { Enabled = true, TickIntervalMs = 100, IdleDelayMs = 250, MaxActiveDemandForPreload = 1, MaxInFlight = 1, MaxTransitions = 4096 };
+    { Enabled = true, TickIntervalMs = 50, IdleDelayMs = 0, MaxActiveDemandForPreload = 2, MaxInFlight = 1, MaxTransitions = 8192 };
 
     /// <summary>Preloads while a few reads are in flight, so a loader that pauses between
     /// resources still gets files ahead of asking for them.</summary>
     public static ReadPredictionOptions SteadyOptions() => new()
-    { Enabled = true, TickIntervalMs = 50, IdleDelayMs = 120, MaxActiveDemandForPreload = 4, MaxInFlight = 2, MaxTransitions = 16384 };
+    { Enabled = true, TickIntervalMs = 25, IdleDelayMs = 0, MaxActiveDemandForPreload = 8, MaxInFlight = 2, MaxTransitions = 32768 };
 
     /// <summary>Keeps up with a continuously busy loader. Competes with it for the source,
     /// which helps when the source is latency-bound and hurts when it is bandwidth-bound.</summary>
     public static ReadPredictionOptions EagerOptions() => new()
-    { Enabled = true, TickIntervalMs = 25, IdleDelayMs = 50, MaxActiveDemandForPreload = 16, MaxInFlight = 4, MaxTransitions = 65536 };
+    { Enabled = true, TickIntervalMs = 10, IdleDelayMs = 0, MaxActiveDemandForPreload = 32, MaxInFlight = 4, MaxTransitions = 131072 };
 
     public static ReadPredictionOptions Resolve(string? profile, Func<ReadPredictionOptions> custom) => profile switch
     {
@@ -57,7 +63,7 @@ public static class ReadPredictionProfiles
 /// <summary>Bounded next-file predictor. One speculative load, only after demand becomes idle.</summary>
 public sealed class ReadPrediction : IDisposable
 {
-    private sealed record Edge(string From, string To, int Hits);
+    private sealed record Edge(string From, string To, int Hits, long LastSeen);
     private readonly object _gate = new();
     private readonly Dictionary<string, Edge> _edges = new(StringComparer.OrdinalIgnoreCase);
     private readonly VirtualFileSystem _vfs;
@@ -72,29 +78,31 @@ public sealed class ReadPrediction : IDisposable
     private int _activeDemand;
     private readonly List<Task> _inFlight = new();
     private long _epoch;
-    // Paths that were guessed, so a later read of one can be counted as the guess paying off.
-    private const int MaxGuesses = 8192;
-    private readonly HashSet<string> _guessed = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> _guessOrder = new();
+    private const int SweepInterval = 50;
+    private int _sweepCounter;
     public int LearnedTransitions { get { lock (_gate) return _edges.Count; } }
     public long Predictions { get; private set; }
     public long Completed { get; private set; }
-    /// <summary>Guessed paths that the reader went on to request. Divided by
-    /// <see cref="Predictions"/> this is how often the guess was right.</summary>
-    public long PreloadHits { get; private set; }
 
     public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath, Action<string>? preload = null)
     {
         if (options.MaxTransitions is < 1 or > 1048576 || options.MaxFileBytes is <= 0 or > 256L * 1024 * 1024 ||
             options.IdleDelayMs is < 0 or > 60000 || options.TickIntervalMs is < 10 or > 10000 ||
-            options.MaxInFlight is < 1 or > 64 || options.MaxActiveDemandForPreload is < 0 or > 1024)
+            options.MaxInFlight is < 1 or > 64 || options.MaxActiveDemandForPreload is < 0 or > 1024 ||
+            options.RetentionMs is < 0 or > 7 * 24 * 3600000)
             throw new ArgumentException("Invalid read prediction budgets");
         _vfs = vfs; _options = options; _modelPath = modelPath; _preload = preload;
         try
         {
             if (File.Exists(modelPath) && new FileInfo(modelPath).Length <= 8 * 1024 * 1024)
+            {
+                long horizon = DateTime.UtcNow.Ticks - TimeSpan.FromMilliseconds(options.RetentionMs).Ticks;
                 foreach (var edge in JsonSerializer.Deserialize<Edge[]>(File.ReadAllText(modelPath)) ?? [])
-                    if (_edges.Count < options.MaxTransitions) _edges[edge.From] = edge;
+                    // A file written before transitions carried a timestamp reads as expired,
+                    // so an old model is dropped rather than resumed.
+                    if (_edges.Count < options.MaxTransitions && (options.RetentionMs <= 0 || edge.LastSeen >= horizon))
+                        _edges[edge.From] = edge;
+            }
         }
         catch (IOException) { }
         catch (JsonException) { }
@@ -106,17 +114,16 @@ public sealed class ReadPrediction : IDisposable
         lock (_gate)
         {
             _activeDemand++; _lastDemand = Environment.TickCount64;
-            if (_guessed.Remove(path)) PreloadHits++;
             if (path.Length > 4096) return new DemandScope(this);
             if (_previous != null && !string.Equals(_previous, path, StringComparison.OrdinalIgnoreCase))
             {
                 if (_edges.TryGetValue(_previous, out var edge) && edge.To.Equals(path, StringComparison.OrdinalIgnoreCase))
-                    _edges[_previous] = edge with { Hits = Math.Min(10000, edge.Hits + 1) };
+                    _edges[_previous] = edge with { Hits = Math.Min(10000, edge.Hits + 1), LastSeen = DateTime.UtcNow.Ticks };
                 else
                 {
                     if (!_edges.ContainsKey(_previous) && _edges.Count >= _options.MaxTransitions)
                         _edges.Remove(_edges.MinBy(p => p.Value.Hits).Key);
-                    _edges[_previous] = new(_previous, path, 1);
+                    _edges[_previous] = new(_previous, path, 1, DateTime.UtcNow.Ticks);
                 }
             }
             _previous = path;
@@ -134,25 +141,26 @@ public sealed class ReadPrediction : IDisposable
     {
         public void Dispose() { lock (owner._gate) { owner._activeDemand--; owner._lastDemand = Environment.TickCount64; } }
     }
-    /// <summary>Remembers a guess so a later read of it counts. Bounded: a guess older than
-    /// the window is dropped rather than credited much later.</summary>
-    private void NoteGuess(string path)
+    /// <summary>Drops transitions that have not been observed for the retention window, so a
+    /// pattern the loader has moved on from stops being predicted.</summary>
+    private void ForgetStale()
     {
-        if (!_guessed.Add(path)) return;
-        _guessOrder.Enqueue(path);
-        while (_guessOrder.Count > MaxGuesses) _guessed.Remove(_guessOrder.Dequeue());
+        if (_options.RetentionMs <= 0 || ++_sweepCounter < SweepInterval) return;
+        _sweepCounter = 0;
+        long horizon = DateTime.UtcNow.Ticks - TimeSpan.FromMilliseconds(_options.RetentionMs).Ticks;
+        foreach (var pair in _edges.Where(p => p.Value.LastSeen < horizon).ToArray()) _edges.Remove(pair.Key);
     }
 
     private void Tick()
     {
         lock (_gate)
         {
+            ForgetStale();
             _inFlight.RemoveAll(task => task.IsCompleted);
             if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload || _candidates.Count == 0 ||
                 _inFlight.Count >= _options.MaxInFlight ||
                 (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
             string candidate = _candidates.Dequeue(); Predictions++;
-            NoteGuess(candidate);
             long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
             {
@@ -180,8 +188,7 @@ public sealed class ReadPrediction : IDisposable
             // Queued candidates from the old model cannot begin after this reset.
             _epoch++;
             _edges.Clear(); _previous = null; _candidates.Clear();
-            _guessed.Clear(); _guessOrder.Clear();
-            Predictions = 0; Completed = 0; PreloadHits = 0;
+            Predictions = 0; Completed = 0;
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
             string temp = _modelPath + ".tmp";
             File.WriteAllText(temp, "[]");
