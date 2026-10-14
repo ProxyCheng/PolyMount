@@ -34,7 +34,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     private readonly LinkedList<string> _lru = new();
     private ReadPrediction? _predictor;
     private string? _generationSnapshot;
-    private long _bytes, _hits, _wasted, _fetchBytes;
+    private long _bytes, _hits, _used, _wasted, _fetchBytes;
 
     public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
     {
@@ -51,6 +51,8 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     public int HeldObjects { get { lock (_gate) return _entries.Count; } }
     /// <summary>Reads served from this layer's own copy.</summary>
     public long CacheHits { get { lock (_gate) return _hits; } }
+    /// <summary>Held entries that were read at least once — a guess that paid off.</summary>
+    public long Used { get { lock (_gate) return _used; } }
     /// <summary>Kept entries evicted without ever being read — the guesses that did not pay off.</summary>
     public long Wasted { get { lock (_gate) return _wasted; } }
     public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
@@ -115,7 +117,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             CheckGeneration();
             if (!_entries.TryGetValue(path, out var entry)) { value = null!; return false; }
-            entry.Reads++;
+            if (entry.Reads++ == 0) _used++;
             _hits++;
             _lru.Remove(entry.Node!);
             _lru.AddFirst(entry.Node!);
@@ -131,7 +133,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
             CheckGeneration();
             entry = null!; stream = null!;
             if (!_entries.TryGetValue(path, out var kept) || kept.Content == null) return false;
-            kept.Reads++;
+            if (kept.Reads++ == 0) _used++;
             _hits++;
             _lru.Remove(kept.Node!);
             _lru.AddFirst(kept.Node!);

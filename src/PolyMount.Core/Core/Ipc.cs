@@ -110,6 +110,11 @@ public sealed class LayerProbe
 public sealed class ProbeResult
 {
     public string Mount { get; set; } = "";
+    /// <summary>Wording for the read-ahead outcome chart, localised by the core.</summary>
+    public LocalizedText? PredictiveTitle { get; set; }
+    public LocalizedText? PredictiveUsed { get; set; }
+    public LocalizedText? PredictiveWasted { get; set; }
+    public LocalizedText? PredictiveHeld { get; set; }
     public string MountPoint { get; set; } = "";
     public string Rel { get; set; } = "";
     public bool Found { get; set; }        // an effective (visible) entry exists
@@ -152,11 +157,22 @@ public sealed class LayerMetric
     public double AvgCostMs { get; set; }    // average read-resolution latency
     public double MaxCostMs { get; set; }
     public long Bytes { get; set; }          // bytes served
+    /// <summary>Outcome split for a read-ahead layer, whose entries are either read, wasted
+    /// on eviction, or still held — the three add up to everything it kept.</summary>
+    public bool Predictive { get; set; }
+    public long HeldUsed { get; set; }
+    public long HeldWasted { get; set; }
+    public long HeldCount { get; set; }
 }
 
 public sealed class MountMetrics
 {
     public string Mount { get; set; } = "";
+    /// <summary>Wording for the read-ahead outcome chart, localised by the core.</summary>
+    public LocalizedText? PredictiveTitle { get; set; }
+    public LocalizedText? PredictiveUsed { get; set; }
+    public LocalizedText? PredictiveWasted { get; set; }
+    public LocalizedText? PredictiveHeld { get; set; }
     public int WindowSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }

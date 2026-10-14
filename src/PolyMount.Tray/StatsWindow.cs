@@ -1,3 +1,4 @@
+using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 using System.Diagnostics;
@@ -20,13 +21,15 @@ internal sealed class StatsWindow : QWidget
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
+    private readonly PerformanceChart _outcome;
     private readonly Dictionary<string, List<Sample>> _history = new();
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
-    private sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes);
+    private sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes,
+        double Used = 0, double Wasted = 0, double Held = 0);
     private sealed record Sample(DateTime Time, Dictionary<string, LayerSample> Layers);
     private static string T(string key) => I18n.T(key);
 
@@ -69,9 +72,12 @@ internal sealed class StatsWindow : QWidget
             new PerformanceChart("stats.latency", "#8b5cf6", "ms"),
             new PerformanceChart("stats.bytes", "#0891b2", "B")
         };
+        _outcome = new PerformanceChart("stats.bytes", "#059669", "");
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
+        grid.AddWidget(_outcome, _charts.Length / 2, _charts.Length % 2);
+        _outcome.SetVisible(false);
         root.AddLayout(grid, 1);
         _layerLegend = new QLabel();
         _layerLegend.SetWordWrap(true);
@@ -229,7 +235,8 @@ internal sealed class StatsWindow : QWidget
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
         double reads = rows.Sum(r => r.Layer.Hits);
         return new(time, rows.ToDictionary(r => r.Key, r => new LayerSample(r.Layer.Hits,
-            reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes)));
+            reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
+            r.Layer.HeldUsed, r.Layer.HeldWasted, r.Layer.HeldCount)));
     }
 
     private void Add(string name, Sample sample)
@@ -256,6 +263,24 @@ internal sealed class StatsWindow : QWidget
                 {
                     var layer = s.Layers.GetValueOrDefault(row.m.Mount + "/" + row.l.Name);
                     return (s.Time, layer == null ? 0 : metric switch { 0 => layer.Reads, 1 => layer.Bytes, 2 => layer.Cost, _ => layer.WriteBytes });
+                }).ToList())).ToList(), end);
+        }
+        var outcomeMount = mounts.FirstOrDefault(m => m.PredictiveTitle != null);
+        _outcome.SetVisible(outcomeMount != null);
+        if (outcomeMount != null)
+        {
+            string key = outcomeMount.Mount + "/prediction-cache";
+            _outcome.SetTitle(() => outcomeMount.PredictiveTitle?.Resolve(I18n.Language));
+            var outcomes = new (LocalizedText? Text, string Color)[]
+            {
+                (outcomeMount.PredictiveUsed, "#059669"), (outcomeMount.PredictiveWasted, "#dc2626"), (outcomeMount.PredictiveHeld, "#94a3b8")
+            };
+            _outcome.SetSeries(outcomes.Select((slice, index) => new ChartSeries(
+                slice.Text?.Resolve(I18n.Language) ?? "", slice.Color,
+                samples.Select(s =>
+                {
+                    var layer = s.Layers.GetValueOrDefault(key);
+                    return (s.Time, layer == null ? 0 : index switch { 0 => layer.Used, 1 => layer.Wasted, _ => layer.Held });
                 }).ToList())).ToList(), end);
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
@@ -337,6 +362,7 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
 internal sealed class PerformanceChart : QWidget
 {
     private readonly string _titleKey, _color, _unit;
+    private Func<string>? _title;
     private DateTime _end;
     private List<ChartSeries> _series = new();
     public PerformanceChart(string titleKey, string color, string unit)
@@ -348,6 +374,8 @@ internal sealed class PerformanceChart : QWidget
     }
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
+    /// <summary>Overrides the tray-catalog title for a chart worded by the core.</summary>
+    public void SetTitle(Func<string>? title) { _title = title; Update(); }
     public void SetSeries(List<ChartSeries> series, DateTime end)
     {
         _series = series;
@@ -387,7 +415,7 @@ internal sealed class PerformanceChart : QWidget
             titleFont.SetBold(true);
             p.SetFont(titleFont);
             p.SetPen(new QPen(new QColor("#334155")));
-            p.DrawText(18, 29, I18n.T(_titleKey));
+            p.DrawText(18, 29, _title?.Invoke() ?? I18n.T(_titleKey));
             var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
             var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => Math.Max(0, sample.Value))).ToArray();
             var totals = times.Select(time => valuesBySeries.Sum(s => s.GetValueOrDefault(time))).ToArray();

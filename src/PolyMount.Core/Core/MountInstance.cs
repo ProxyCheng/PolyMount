@@ -172,6 +172,20 @@ public sealed class MountInstance : IDisposable
         {
             lm.Color = ResolveColor(lm.Name);
             lm.DisplayName = _configs[lm.Name].Name;
+            if (_providers[lm.Name] is PredictionCacheLayer readAhead)
+            {
+                lm.Predictive = true;
+                lm.HeldUsed = readAhead.Used;
+                lm.HeldWasted = readAhead.Wasted;
+                lm.HeldCount = readAhead.HeldObjects;
+                if (m.PredictiveTitle == null)
+                {
+                    m.PredictiveTitle = LayerTexts.Get("prediction.outcome.title");
+                    m.PredictiveUsed = LayerTexts.Get("prediction.outcome.used");
+                    m.PredictiveWasted = LayerTexts.Get("prediction.outcome.wasted");
+                    m.PredictiveHeld = LayerTexts.Get("prediction.outcome.held");
+                }
+            }
         }
         return m;
     }
