@@ -218,7 +218,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>Read bytes by layer</translation>
+      <translation>Resolved read bytes · Last second</translation>
     </message>
     <message>
       <source>stats.series.count</source>
@@ -226,7 +226,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>All four charts stack layer contributions: total height is the total, and each colored band's thickness is that layer's value. Latency uses request-weighted contributions to the overall average. Missing observations remain gaps.</translation>
+      <translation>Charts show read requests, resolved read bytes, average read-resolution time and written bytes in the last second. Resolved read bytes count file sizes resolved by VFS, not physical disk throughput. Layer contributions stack; latency is request-weighted. Byte units scale automatically (1024 per unit).</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -866,7 +866,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.reads</source>
-      <translation>Read requests</translation>
+      <translation>Read requests · Per second</translation>
     </message>
     <message>
       <source>stats.hit</source>
@@ -874,11 +874,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.latency</source>
-      <translation>Read latency</translation>
+      <translation>Average read-resolution time</translation>
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>Resolved file sizes</translation>
+      <translation>Written bytes · Last second</translation>
     </message>
     <message>
       <source>stats.layer</source>

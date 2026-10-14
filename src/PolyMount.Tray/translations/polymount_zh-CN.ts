@@ -218,7 +218,7 @@
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>逐层读取命中字节数</translation>
+      <translation>读取解析字节 · 最近 1 秒</translation>
     </message>
     <message>
       <source>stats.series.count</source>
@@ -226,7 +226,7 @@
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>四个图按层堆叠：总高度是总计量，各颜色带的厚度是该层贡献。延迟按请求数加权，堆叠总量为总体平均延迟；缺失采样保留断点。</translation>
+      <translation>图表依次为读取请求数、读取解析字节、平均读取解析耗时和写入字节。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -866,7 +866,7 @@
     </message>
     <message>
       <source>stats.reads</source>
-      <translation>读取请求</translation>
+      <translation>读取请求数 · 每秒</translation>
     </message>
     <message>
       <source>stats.hit</source>
@@ -874,11 +874,11 @@
     </message>
     <message>
       <source>stats.latency</source>
-      <translation>读取延迟</translation>
+      <translation>平均读取解析耗时</translation>
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>解析文件量</translation>
+      <translation>写入字节 · 最近 1 秒</translation>
     </message>
     <message>
       <source>stats.layer</source>
