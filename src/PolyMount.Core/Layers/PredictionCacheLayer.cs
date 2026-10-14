@@ -34,7 +34,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     private readonly LinkedList<string> _lru = new();
     private ReadPrediction? _predictor;
     private string? _generationSnapshot;
-    private long _bytes, _hits, _used, _wasted, _fetchBytes;
+    private long _bytes, _hits, _used, _wasted, _wastedBytes, _fetchBytes;
 
     public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
     {
@@ -55,6 +55,8 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     public long Used { get { lock (_gate) return _used; } }
     /// <summary>Kept entries evicted without ever being read — the guesses that did not pay off.</summary>
     public long Wasted { get { lock (_gate) return _wasted; } }
+    /// <summary>Size of everything wasted, so the read-ahead cost is visible in bytes too.</summary>
+    public long WastedBytes { get { lock (_gate) return _wastedBytes; } }
     public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
     public long PreloadsStarted => _predictor?.Predictions ?? 0;
     public long PreloadsCompleted => _predictor?.Completed ?? 0;
@@ -191,7 +193,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             var key = tail.Value;
             var entry = _entries[key];
-            if (entry.Reads == 0) _wasted++;
+            if (entry.Reads == 0) { _wasted++; _wastedBytes += entry.Bytes; }
             _bytes -= entry.Bytes;
             _entries.Remove(key);
             _lru.RemoveLast();

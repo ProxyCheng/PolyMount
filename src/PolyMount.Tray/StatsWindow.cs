@@ -21,15 +21,15 @@ internal sealed class StatsWindow : QWidget
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
-    private readonly PerformanceChart _outcome;
     private readonly Dictionary<string, List<Sample>> _history = new();
+    private readonly Dictionary<string, (long Count, long Bytes)> _wasteSteps = new();
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
     private sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes,
-        double Used = 0, double Wasted = 0, double Held = 0);
+        double Wasted = 0, double WastedBytes = 0);
     private sealed record Sample(DateTime Time, Dictionary<string, LayerSample> Layers);
     private static string T(string key) => I18n.T(key);
 
@@ -72,12 +72,9 @@ internal sealed class StatsWindow : QWidget
             new PerformanceChart("stats.latency", "#8b5cf6", "ms"),
             new PerformanceChart("stats.bytes", "#0891b2", "B")
         };
-        _outcome = new PerformanceChart("stats.bytes", "#059669", "");
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
-        grid.AddWidget(_outcome, _charts.Length / 2, _charts.Length % 2);
-        _outcome.SetVisible(false);
         root.AddLayout(grid, 1);
         _layerLegend = new QLabel();
         _layerLegend.SetWordWrap(true);
@@ -230,13 +227,21 @@ internal sealed class StatsWindow : QWidget
         _status.SetText(T("stats.live") + " · " + DateTime.Now.ToString("HH:mm:ss"));
     }
 
-    private static Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts)
+    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts)
     {
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
         double reads = rows.Sum(r => r.Layer.Hits);
-        return new(time, rows.ToDictionary(r => r.Key, r => new LayerSample(r.Layer.Hits,
-            reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
-            r.Layer.HeldUsed, r.Layer.HeldWasted, r.Layer.HeldCount)));
+        // Waste arrives as a running total; the charts plot rates, so take the step.
+        return new(time, rows.ToDictionary(r => r.Key, r =>
+        {
+            var (waste, wasteBytes) = _wasteSteps.TryGetValue(r.Key, out var previous)
+                ? (r.Layer.HeldWasted - previous.Count, r.Layer.HeldWastedBytes - previous.Bytes)
+                : (r.Layer.HeldWasted, r.Layer.HeldWastedBytes);
+            _wasteSteps[r.Key] = (r.Layer.HeldWasted, r.Layer.HeldWastedBytes);
+            return new LayerSample(r.Layer.Hits,
+                reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
+                Math.Max(0, waste), Math.Max(0, wasteBytes));
+        }));
     }
 
     private void Add(string name, Sample sample)
@@ -253,35 +258,36 @@ internal sealed class StatsWindow : QWidget
         DateTime end = samples.LastOrDefault()?.Time ?? DateTime.UtcNow;
         var mounts = _latest.Where(m => selected == "" || m.Mount == selected).ToList();
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();
+        var predictive = rows.FirstOrDefault(row => row.l.Predictive);
+        string? predictiveKey = predictive.l == null ? null : predictive.m.Mount + "/" + predictive.l.Name;
+        (string Name, string Color)? outcomes = predictive.l == null
+            ? null
+            : ((predictive.m.PredictiveWasted?.Resolve(I18n.Language) ?? "") + " · " +
+               (string.IsNullOrEmpty(predictive.l.DisplayName) ? predictive.l.Name : predictive.l.DisplayName), "#dc2626");
         for (int chart = 0; chart < _charts.Length; chart++)
         {
             int metric = chart;
-            _charts[chart].SetSeries(rows.Select(row => new ChartSeries(
+            var drawn = rows.Select(row => new ChartSeries(
                 selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
                 string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
                 samples.Select(s =>
                 {
                     var layer = s.Layers.GetValueOrDefault(row.m.Mount + "/" + row.l.Name);
                     return (s.Time, layer == null ? 0 : metric switch { 0 => layer.Reads, 1 => layer.Bytes, 2 => layer.Cost, _ => layer.WriteBytes });
-                }).ToList())).ToList(), end);
-        }
-        var outcomeMount = mounts.FirstOrDefault(m => m.PredictiveTitle != null);
-        _outcome.SetVisible(outcomeMount != null);
-        if (outcomeMount != null)
-        {
-            string key = outcomeMount.Mount + "/prediction-cache";
-            _outcome.SetTitle(() => outcomeMount.PredictiveTitle?.Resolve(I18n.Language));
-            var outcomes = new (LocalizedText? Text, string Color)[]
+                }).ToList())).ToList();
+            // A guess that had to be evicted unread is drawn below the zero line, so a
+            // read-ahead layer that is guessing badly pulls its own chart downward.
+            if (metric <= 1 && outcomes != null)
             {
-                (outcomeMount.PredictiveUsed, "#059669"), (outcomeMount.PredictiveWasted, "#dc2626"), (outcomeMount.PredictiveHeld, "#94a3b8")
-            };
-            _outcome.SetSeries(outcomes.Select((slice, index) => new ChartSeries(
-                slice.Text?.Resolve(I18n.Language) ?? "", slice.Color,
-                samples.Select(s =>
+                var (name, color) = outcomes.Value;
+                drawn.Add(new ChartSeries(name, color, samples.Select(s =>
                 {
-                    var layer = s.Layers.GetValueOrDefault(key);
-                    return (s.Time, layer == null ? 0 : index switch { 0 => layer.Used, 1 => layer.Wasted, _ => layer.Held });
-                }).ToList())).ToList(), end);
+                    var layer = s.Layers.GetValueOrDefault(predictiveKey!);
+                    double step = layer == null ? 0 : metric == 0 ? layer.Wasted : layer.WastedBytes;
+                    return (s.Time, -step);
+                }).ToList()));
+            }
+            _charts[chart].SetSeries(drawn, end);
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
@@ -362,7 +368,6 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
 internal sealed class PerformanceChart : QWidget
 {
     private readonly string _titleKey, _color, _unit;
-    private Func<string>? _title;
     private DateTime _end;
     private List<ChartSeries> _series = new();
     public PerformanceChart(string titleKey, string color, string unit)
@@ -374,8 +379,6 @@ internal sealed class PerformanceChart : QWidget
     }
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
-    /// <summary>Overrides the tray-catalog title for a chart worded by the core.</summary>
-    public void SetTitle(Func<string>? title) { _title = title; Update(); }
     public void SetSeries(List<ChartSeries> series, DateTime end)
     {
         _series = series;
@@ -415,10 +418,13 @@ internal sealed class PerformanceChart : QWidget
             titleFont.SetBold(true);
             p.SetFont(titleFont);
             p.SetPen(new QPen(new QColor("#334155")));
-            p.DrawText(18, 29, _title?.Invoke() ?? I18n.T(_titleKey));
+            p.DrawText(18, 29, I18n.T(_titleKey));
             var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
-            var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => Math.Max(0, sample.Value))).ToArray();
+            var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
             var totals = times.Select(time => valuesBySeries.Sum(s => s.GetValueOrDefault(time))).ToArray();
+            // A read-ahead layer draws its wasted entries below the line, so the domain has
+            // to reach under zero and the headline is the net.
+            double trough = times.Select(time => valuesBySeries.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
             double value = totals.LastOrDefault();
             using var numberFont = new QFont("Segoe UI", 20);
             numberFont.SetBold(true);
@@ -443,7 +449,7 @@ internal sealed class PerformanceChart : QWidget
             }
 
             int top = summariesWidth <= width - 36 && summaries.Length > 0 ? 108 : 88, right = width - 18, bottom = height - 46;
-            double peak = totals.DefaultIfEmpty(0).Max();
+            double peak = times.Select(time => valuesBySeries.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
             var axis = _unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: _unit);
             double max = Math.Max(_unit == "ms" || _unit == "B" ? 1 : 5, peak / axis.Scale * 1.15);
             double targetIntervals = Math.Max(2, (bottom - top) / 36.0);
@@ -459,11 +465,15 @@ internal sealed class PerformanceChart : QWidget
                 valueIntervals = (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
                 max = TickValue(valueIntervals, step);
             }
+            // Reach below zero only as far as something actually went, rounded to the grid.
+            int belowZero = valueStep <= 0 ? 0 : (int)Math.Ceiling(-trough / axis.Scale / valueStep);
+            double floor = -belowZero * valueStep;
+            int gridLines = valueIntervals + belowZero;
             using var smallFont = new QFont("Segoe UI", 8);
             p.SetFont(smallFont);
             using var fontMetrics = new QFontMetrics(smallFont);
-            int labelWidth = Enumerable.Range(0, valueIntervals + 1)
-                .Max(i => fontMetrics.HorizontalAdvance(TickText(TickValue(i, valueStep), valueStep)));
+            int labelWidth = Enumerable.Range(0, gridLines + 1)
+                .Max(i => fontMetrics.HorizontalAdvance(TickText(floor + TickValue(i, valueStep), valueStep)));
             int left = 18 + labelWidth + 10;
             int timeLabelWidth = fontMetrics.HorizontalAdvance("−60s") + 24;
             double timeStep = Math.Max(1, NiceStep(60 / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth))));
@@ -474,12 +484,12 @@ internal sealed class PerformanceChart : QWidget
             p.DrawText(right - fontMetrics.HorizontalAdvance(I18n.T("stats.now")), height - 10, I18n.T("stats.now"));
             using var gridPen = new QPen(new QColor("#e7edf5"));
             using var labelPen = new QPen(new QColor("#718096"));
-            for (int i = 0; i <= valueIntervals; i++)
+            for (int i = 0; i <= gridLines; i++)
             {
-                int y = bottom - (int)Math.Round((bottom - top) * i / (double)valueIntervals);
+                int y = bottom - (int)Math.Round((bottom - top) * i / (double)gridLines);
                 p.SetPen(gridPen);
                 p.DrawLine(left, y, right, y);
-                string label = TickText(TickValue(i, valueStep), valueStep);
+                string label = TickText(floor + TickValue(i, valueStep), valueStep);
                 p.SetPen(labelPen);
                 p.DrawText(left - 10 - fontMetrics.HorizontalAdvance(label), y + 4, label);
             }
@@ -496,22 +506,24 @@ internal sealed class PerformanceChart : QWidget
             }
 
             double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / 60, 0, 1) * (right - left);
-            double Y(double number) => bottom - Math.Clamp(number / axis.Scale / max, 0, 1) * (bottom - top);
+            double Y(double number) => bottom - (number / axis.Scale - floor) / (max - floor) * (bottom - top);
             var baseline = new double[times.Length];
             // The last provider is the bottom of the chain and of the area stack.
             for (int layer = _series.Count - 1; layer >= 0; layer--)
             {
                 var series = _series[layer];
-                var upper = times.Select((time, index) => baseline[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
+                // A negative contribution hangs below the line instead of cutting into the stack.
+                var lower = times.Select((time, index) => valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
+                var upper = times.Select((time, index) => lower[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
                 int start = 0;
                 while (start < times.Length)
                 {
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= 2.5) finish++;
                 using var fill = new QPainterPath();
-                fill.MoveTo(X(times[start]), Y(baseline[start]));
+                fill.MoveTo(X(times[start]), Y(lower[start]));
                 for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
-                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(baseline[index]));
+                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
                 fill.CloseSubpath();
                 using var fillColor = new QColor(series.Color);
                 fillColor.SetAlpha(155);
@@ -528,7 +540,8 @@ internal sealed class PerformanceChart : QWidget
                 p.DrawPath(line);
                 start = finish;
                 }
-                baseline = upper;
+                for (int index = 0; index < times.Length; index++)
+                    if (upper[index] > baseline[index]) baseline[index] = upper[index];
             }
             if (times.Length == 0)
             {

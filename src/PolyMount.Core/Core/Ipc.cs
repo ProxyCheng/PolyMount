@@ -110,11 +110,8 @@ public sealed class LayerProbe
 public sealed class ProbeResult
 {
     public string Mount { get; set; } = "";
-    /// <summary>Wording for the read-ahead outcome chart, localised by the core.</summary>
-    public LocalizedText? PredictiveTitle { get; set; }
-    public LocalizedText? PredictiveUsed { get; set; }
+    /// <summary>Name for the read-ahead waste series, localised by the core.</summary>
     public LocalizedText? PredictiveWasted { get; set; }
-    public LocalizedText? PredictiveHeld { get; set; }
     public string MountPoint { get; set; } = "";
     public string Rel { get; set; } = "";
     public bool Found { get; set; }        // an effective (visible) entry exists
@@ -163,16 +160,14 @@ public sealed class LayerMetric
     public long HeldUsed { get; set; }
     public long HeldWasted { get; set; }
     public long HeldCount { get; set; }
+    public long HeldWastedBytes { get; set; }
 }
 
 public sealed class MountMetrics
 {
     public string Mount { get; set; } = "";
-    /// <summary>Wording for the read-ahead outcome chart, localised by the core.</summary>
-    public LocalizedText? PredictiveTitle { get; set; }
-    public LocalizedText? PredictiveUsed { get; set; }
+    /// <summary>Name for the read-ahead waste series, localised by the core.</summary>
     public LocalizedText? PredictiveWasted { get; set; }
-    public LocalizedText? PredictiveHeld { get; set; }
     public int WindowSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }

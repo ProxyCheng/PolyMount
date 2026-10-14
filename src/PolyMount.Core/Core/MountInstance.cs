@@ -178,13 +178,8 @@ public sealed class MountInstance : IDisposable
                 lm.HeldUsed = readAhead.Used;
                 lm.HeldWasted = readAhead.Wasted;
                 lm.HeldCount = readAhead.HeldObjects;
-                if (m.PredictiveTitle == null)
-                {
-                    m.PredictiveTitle = LayerTexts.Get("prediction.outcome.title");
-                    m.PredictiveUsed = LayerTexts.Get("prediction.outcome.used");
-                    m.PredictiveWasted = LayerTexts.Get("prediction.outcome.wasted");
-                    m.PredictiveHeld = LayerTexts.Get("prediction.outcome.held");
-                }
+                lm.HeldWastedBytes = readAhead.WastedBytes;
+                m.PredictiveWasted ??= LayerTexts.Get("prediction.outcome.wasted");
             }
         }
         return m;
