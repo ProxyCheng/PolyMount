@@ -218,20 +218,22 @@ public sealed class MountInstance : IDisposable
     public ProbeResult ApplyLayerAction(string layer, string rel, string action)
     {
         if (!_providers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
-        if (provider.Writable) Vfs.InvalidateCaches();
         switch (provider)
         {
             case OverlayLayer overlay:
-                switch (action)
-                {
-                    case LayerActions.DropLocal: overlay.DropObject(rel); break;
-                    default: throw new NotSupportedException($"overlay has no action '{action}'");
-                }
+                if (action != LayerActions.DropLocal) throw new NotSupportedException($"overlay has no action '{action}'");
+                // Discarding a local copy changes what is visible beneath it, so anything
+                // cached above the overlay for this tree is now stale.
+                overlay.DropObject(rel);
+                Vfs.InvalidateCaches();
                 break;
 
             case LruCacheLayer cache:
-                if (action != LayerActions.EvictCache)
-                    throw new NotSupportedException($"cache has no action '{action}'");
+                if (action != LayerActions.EvictCache) throw new NotSupportedException($"cache has no action '{action}'");
+                // A cached path is not visible state: dropping one says nothing about any
+                // other, so this must not discard the rest of the cache. The layer reports
+                // Writable because it can be a write target in a chain without an overlay,
+                // which is why this cannot be decided from Writable alone.
                 cache.InvalidateEntry(rel);
                 break;
 
