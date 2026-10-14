@@ -260,10 +260,13 @@ internal sealed class StatsWindow : QWidget
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();
         var predictive = rows.FirstOrDefault(row => row.l.Predictive);
         string? predictiveKey = predictive.l == null ? null : predictive.m.Mount + "/" + predictive.l.Name;
+        // Waste belongs to the read-ahead layer, so it keeps that layer's colour and is
+        // told apart by hatch and dash instead.
         (string Name, string Color)? outcomes = predictive.l == null
             ? null
             : ((predictive.m.PredictiveWasted?.Resolve(I18n.Language) ?? "") + " · " +
-               (string.IsNullOrEmpty(predictive.l.DisplayName) ? predictive.l.Name : predictive.l.DisplayName), "#dc2626");
+               (string.IsNullOrEmpty(predictive.l.DisplayName) ? predictive.l.Name : predictive.l.DisplayName),
+               string.IsNullOrEmpty(predictive.l.Color) ? "#64748B" : predictive.l.Color);
         for (int chart = 0; chart < _charts.Length; chart++)
         {
             int metric = chart;
@@ -285,7 +288,7 @@ internal sealed class StatsWindow : QWidget
                     var layer = s.Layers.GetValueOrDefault(predictiveKey!);
                     double step = layer == null ? 0 : metric == 0 ? layer.Wasted : layer.WastedBytes;
                     return (s.Time, -step);
-                }).ToList()));
+                }).ToList()) { Hatched = true });
             }
             _charts[chart].SetSeries(drawn, end);
         }
@@ -363,7 +366,12 @@ internal sealed class StatsWindow : QWidget
 }
 
 /// <summary>Time-scaled stacked layer areas. Missing observations remain gaps.</summary>
-internal sealed record ChartSeries(string Name, string Color, List<(DateTime Time, double Value)> Samples);
+internal sealed record ChartSeries(string Name, string Color, List<(DateTime Time, double Value)> Samples)
+{
+    /// <summary>Same colour as the layer, drawn as a hatched and dashed variation so a second
+    /// series for one layer reads as that layer rather than as a different one.</summary>
+    public bool Hatched { get; init; }
+}
 
 internal sealed class PerformanceChart : QWidget
 {
@@ -528,12 +536,19 @@ internal sealed class PerformanceChart : QWidget
                 using var fillColor = new QColor(series.Color);
                 fillColor.SetAlpha(155);
                 p.SetPen(new QPen(Qt.PenStyle.NoPen));
-                p.SetBrush(new QBrush(fillColor));
+                if (series.Hatched)
+                {
+                    using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
+                    hatch.SetColor(fillColor);
+                    p.SetBrush(hatch);
+                }
+                else p.SetBrush(new QBrush(fillColor));
                 p.DrawPath(fill);
                 using var line = new QPainterPath();
                 line.MoveTo(X(times[start]), Y(upper[start]));
                 for (int index = start + 1; index < finish; index++) line.LineTo(X(times[index]), Y(upper[index]));
                 using var pen = new QPen(new QColor(series.Color));
+                if (series.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
                 pen.SetWidthF(1.8);
                 p.SetPen(pen);
                 p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
