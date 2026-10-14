@@ -131,4 +131,38 @@ public sealed class ReadPredictionTests
         Assert.AreEqual(opens, source.OpenReadCount);
         vfs.Prediction = null;
     }
+
+    [TestMethod]
+    public void Named_profiles_map_to_increasingly_eager_options()
+    {
+        var idle = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Idle, () => throw new Exception("custom unused"));
+        var steady = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Steady, () => throw new Exception("custom unused"));
+        var eager = ReadPredictionProfiles.Resolve(ReadPredictionProfiles.Eager, () => throw new Exception("custom unused"));
+        Assert.AreEqual(1, idle.MaxActiveDemandForPreload);
+        Assert.AreEqual(100, idle.TickIntervalMs);
+        Assert.IsTrue(steady.MaxActiveDemandForPreload > idle.MaxActiveDemandForPreload);
+        Assert.IsTrue(steady.TickIntervalMs < idle.TickIntervalMs);
+        Assert.IsTrue(eager.MaxInFlight > steady.MaxInFlight);
+        Assert.IsTrue(eager.MaxTransitions > steady.MaxTransitions);
+        // An unrecognised value must fall back to the shipped behaviour, not to something eager.
+        var unknown = ReadPredictionProfiles.Resolve("nonsense", () => throw new Exception("custom unused"));
+        Assert.AreEqual(idle.MaxActiveDemandForPreload, unknown.MaxActiveDemandForPreload);
+        Assert.AreEqual(idle.IdleDelayMs, unknown.IdleDelayMs);
+    }
+
+    [TestMethod]
+    public void Custom_profile_uses_the_layer_parameters()
+    {
+        using var temp = new TempDir();
+        var config = new LayerConfig { Id = "predict", Type = "prediction-cache", Parameters = new()
+        {
+            ["Profile"] = System.Text.Json.JsonSerializer.SerializeToElement(ReadPredictionProfiles.Custom),
+            ["MaxActiveDemand"] = System.Text.Json.JsonSerializer.SerializeToElement(9),
+            ["TickIntervalMs"] = System.Text.Json.JsonSerializer.SerializeToElement(30),
+        } };
+        var resolved = ReadPredictionProfiles.Resolve("custom", () => LayerRegistry.PredictionOptionsForTest(config));
+        Assert.AreEqual(9, resolved.MaxActiveDemandForPreload);
+        Assert.AreEqual(30, resolved.TickIntervalMs);
+        Assert.AreEqual(ReadPredictionProfiles.IdleOptions().MaxInFlight, resolved.MaxInFlight);
+    }
 }

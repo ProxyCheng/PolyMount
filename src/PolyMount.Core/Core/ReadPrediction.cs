@@ -7,8 +7,51 @@ public sealed class ReadPredictionOptions
     public bool Enabled { get; set; }
     public int MaxTransitions { get; set; } = 4096;
     public long MaxFileBytes { get; set; } = 8L * 1024 * 1024;
+    /// <summary>Quiet period after the last demand before preloading may start.</summary>
     public int IdleDelayMs { get; set; } = 250;
+    /// <summary>How many demands may be in flight while preloading still runs. The loader
+    /// spends most of its time inside a demand, so a low value leaves it no window.</summary>
     public int MaxActiveDemandForPreload { get; set; } = 1;
+    /// <summary>How often the gate is evaluated. Too coarse relative to a read and the
+    /// window never lands inside one.</summary>
+    public int TickIntervalMs { get; set; } = 100;
+    public int MaxInFlight { get; set; } = 1;
+}
+
+/// <summary>
+/// Recommended pacing tiers. Preloading cannot reduce the number of source reads, only
+/// move them earlier so they overlap the reader; how much of that is possible is a
+/// trade-off against competing with the foreground load for the source.
+/// </summary>
+public static class ReadPredictionProfiles
+{
+    public const string Idle = "idle";
+    public const string Steady = "steady";
+    public const string Eager = "eager";
+    public const string Custom = "custom";
+    public static IReadOnlyList<string> Names { get; } = [Idle, Steady, Eager, Custom];
+
+    /// <summary>Today's behaviour: one speculative load, only in a quiet gap.</summary>
+    public static ReadPredictionOptions IdleOptions() => new()
+    { Enabled = true, TickIntervalMs = 100, IdleDelayMs = 250, MaxActiveDemandForPreload = 1, MaxInFlight = 1, MaxTransitions = 4096 };
+
+    /// <summary>Preloads while a few reads are in flight, so a loader that pauses between
+    /// resources still gets files ahead of asking for them.</summary>
+    public static ReadPredictionOptions SteadyOptions() => new()
+    { Enabled = true, TickIntervalMs = 50, IdleDelayMs = 120, MaxActiveDemandForPreload = 4, MaxInFlight = 2, MaxTransitions = 16384 };
+
+    /// <summary>Keeps up with a continuously busy loader. Competes with it for the source,
+    /// which helps when the source is latency-bound and hurts when it is bandwidth-bound.</summary>
+    public static ReadPredictionOptions EagerOptions() => new()
+    { Enabled = true, TickIntervalMs = 25, IdleDelayMs = 50, MaxActiveDemandForPreload = 16, MaxInFlight = 4, MaxTransitions = 65536 };
+
+    public static ReadPredictionOptions Resolve(string? profile, Func<ReadPredictionOptions> custom) => profile switch
+    {
+        Steady => SteadyOptions(),
+        Eager => EagerOptions(),
+        Custom => custom(),
+        _ => IdleOptions()
+    };
 }
 
 /// <summary>Bounded next-file predictor. One speculative load, only after demand becomes idle.</summary>
@@ -27,7 +70,7 @@ public sealed class ReadPrediction : IDisposable
     private readonly Queue<string> _candidates = new();
     private long _lastDemand;
     private int _activeDemand;
-    private Task? _loading;
+    private readonly List<Task> _inFlight = new();
     private long _epoch;
     public int LearnedTransitions { get { lock (_gate) return _edges.Count; } }
     public long Predictions { get; private set; }
@@ -35,7 +78,9 @@ public sealed class ReadPrediction : IDisposable
 
     public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath, Action<string>? preload = null)
     {
-        if (options.MaxTransitions is < 1 or > 65536 || options.MaxFileBytes is <= 0 or > 256L * 1024 * 1024 || options.IdleDelayMs < 100)
+        if (options.MaxTransitions is < 1 or > 1048576 || options.MaxFileBytes is <= 0 or > 256L * 1024 * 1024 ||
+            options.IdleDelayMs is < 0 or > 60000 || options.TickIntervalMs is < 10 or > 10000 ||
+            options.MaxInFlight is < 1 or > 64 || options.MaxActiveDemandForPreload is < 0 or > 1024)
             throw new ArgumentException("Invalid read prediction budgets");
         _vfs = vfs; _options = options; _modelPath = modelPath; _preload = preload;
         try
@@ -46,7 +91,8 @@ public sealed class ReadPrediction : IDisposable
         }
         catch (IOException) { }
         catch (JsonException) { }
-        using (ExecutionContext.SuppressFlow()) _timer = new Timer(_ => Tick(), null, 100, 100);
+        using (ExecutionContext.SuppressFlow())
+            _timer = new Timer(_ => Tick(), null, options.TickIntervalMs, options.TickIntervalMs);
     }
     public IDisposable Demand(string path)
     {
@@ -84,12 +130,13 @@ public sealed class ReadPrediction : IDisposable
     {
         lock (_gate)
         {
+            _inFlight.RemoveAll(task => task.IsCompleted);
             if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload || _candidates.Count == 0 ||
-                _loading is { IsCompleted: false } ||
+                _inFlight.Count >= _options.MaxInFlight ||
                 (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
             string candidate = _candidates.Dequeue(); Predictions++;
             long epoch = _epoch;
-            using (ExecutionContext.SuppressFlow()) _loading = Task.Run(() =>
+            using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
             {
                 try
                 {
@@ -104,7 +151,7 @@ public sealed class ReadPrediction : IDisposable
                 }
                 catch (IOException) { }
                 catch (Exception ex) { using var trace = RequestDiagnostics.Begin("Predict.Failed", candidate, _vfs.Diagnostics); trace?.Stage(ex.GetType().Name); }
-            });
+            }));
         }
     }
     public void Reset()
@@ -125,9 +172,9 @@ public sealed class ReadPrediction : IDisposable
     public void Dispose()
     {
         _timer.Dispose(); _stop.Cancel();
-        Task? loading;
-        lock (_gate) loading = _loading;
-        loading?.GetAwaiter().GetResult();
+        Task[] running;
+        lock (_gate) running = _inFlight.ToArray();
+        try { Task.WaitAll(running); } catch (AggregateException) { }
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
