@@ -142,6 +142,12 @@ public sealed class LayerMetric
     public double AvgCostMs { get; set; }    // average read-resolution latency
     public double MaxCostMs { get; set; }
     public long Bytes { get; set; }          // bytes served
+    /// <summary>Only meaningful for the predictive preloader, which serves no reads of its
+    /// own: its hit count is always zero, so these are what show it working.</summary>
+    public bool Predictive { get; set; }
+    public long LearnedTransitions { get; set; }
+    public long PreloadsStarted { get; set; }
+    public long PreloadsCompleted { get; set; }
 }
 
 public sealed class MountMetrics

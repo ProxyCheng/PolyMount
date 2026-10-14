@@ -172,6 +172,15 @@ public sealed class MountInstance : IDisposable
         {
             lm.Color = ResolveColor(lm.Name);
             lm.DisplayName = _configs[lm.Name].Name;
+            if (_providers[lm.Name] is PredictionCacheLayer prediction)
+            {
+                // A pass-through layer: report what it did rather than a hit count that is
+                // zero by construction.
+                lm.Predictive = true;
+                lm.LearnedTransitions = prediction.LearnedTransitions;
+                lm.PreloadsStarted = prediction.PreloadsStarted;
+                lm.PreloadsCompleted = prediction.PreloadsCompleted;
+            }
         }
         return m;
     }
