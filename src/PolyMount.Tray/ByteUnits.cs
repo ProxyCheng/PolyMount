@@ -12,7 +12,14 @@ internal static class ByteUnits
     }
     public static string Format(double bytes)
     {
+        var (number, unit) = Split(bytes);
+        return number + " " + unit;
+    }
+
+    /// <summary>Number and unit apart, for a figure that sets its unit in smaller type.</summary>
+    public static (string Number, string Unit) Split(double bytes)
+    {
         var (scale, unit) = Select(bytes);
-        return (bytes / scale).ToString("0.##", I18n.Culture) + " " + unit;
+        return ((bytes / scale).ToString("0.##", I18n.Culture), unit);
     }
 }

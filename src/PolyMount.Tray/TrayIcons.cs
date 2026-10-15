@@ -98,6 +98,7 @@ internal static class TrayIcons
             case "chart": Line(3, 3, 3, 21); Line(3, 21, 21, 21); Path((6, 16), (10, 10), (14, 14), (20, 5)); break;
             case "trash": Line(4, 6, 20, 6); Path((6, 6), (7, 21), (17, 21), (18, 6)); Path((9, 6), (9, 3), (15, 3), (15, 6)); Line(10, 10, 10, 17); Line(14, 10, 14, 17); break;
             case "refresh": p.DrawArc(4, 4, 16, 16, 40 * 16, 280 * 16); Path((20, 3), (20, 9), (14, 9)); break;
+            case "export": Path((4, 15), (4, 20), (20, 20), (20, 15)); Line(12, 16, 12, 5); Path((7.5, 9.5), (12, 5), (16.5, 9.5)); break;
             case "settings": p.DrawEllipse(8, 8, 8, 8); for (int i = 0; i < 8; i++) { p.Save(); p.Translate(12, 12); p.Rotate(i * 45); Line(0, 7, 0, 10); p.Restore(); } break;
             default: Path((3, 8), (12, 3), (21, 8), (12, 13), (3, 8)); Path((3, 12), (12, 17), (21, 12)); break;
         }

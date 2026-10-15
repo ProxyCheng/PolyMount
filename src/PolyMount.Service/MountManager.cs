@@ -30,6 +30,38 @@ public sealed class MountManager
     public AppConfig Config { get; private set; }
     public string ConfigPath { get; }
 
+    /// <summary>The service's own log, written next to the executable by the host.</summary>
+    public const string ServiceLogName = "polymount-service.log";
+
+    // What an export should carry: each instance's request diagnostics, plus this process's
+    // own log. Both are rolled on size, so the family is listed rather than a single name.
+    private List<LogFile> CollectLogs()
+    {
+        var logs = new List<LogFile>();
+        lock (_gate)
+            foreach (var instance in _instances)
+                foreach (string file in instance.GetLogFiles())
+                    logs.Add(Describe(file, instance.Name));
+        foreach (string file in Match(AppContext.BaseDirectory, ServiceLogName)) logs.Add(Describe(file, "service"));
+        return logs;
+
+        static LogFile Describe(string path, string group)
+        {
+            long bytes = 0;
+            try { bytes = new FileInfo(path).Length; }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return new LogFile { Name = group + "/" + Path.GetFileName(path), Source = path, Bytes = bytes };
+        }
+    }
+
+    /// <summary>Every segment of a rolled log, current one included.</summary>
+    private static IEnumerable<string> Match(string directory, string fileName)
+    {
+        try { return Directory.GetFiles(directory, Path.GetFileNameWithoutExtension(fileName) + "*.log").Order(StringComparer.Ordinal).ToList(); }
+        catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
+    }
+
     private static void LoadPlugins(AppConfig config)
     {
         var errors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory);
@@ -192,6 +224,9 @@ public sealed class MountManager
                     lock (_gate)
                         response.Metrics = _instances.Where(i => request.Name == null || string.Equals(i.Name, request.Name, StringComparison.OrdinalIgnoreCase))
                             .Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
+                    break;
+                case ControlCommands.Logs:
+                    response.Logs = CollectLogs();
                     break;
                 case ControlCommands.Shutdown:
                     // Respond first, then unmount and stop the host shortly after so the reply flushes.

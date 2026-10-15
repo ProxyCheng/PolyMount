@@ -909,6 +909,58 @@ Close applications using mounted files first.</translation>
       <translation>Now</translation>
     </message>
     <message>
+      <source>stats.figure.average</source>
+      <translation>Avg</translation>
+    </message>
+    <message>
+      <source>stats.figure.peak</source>
+      <translation>Peak</translation>
+    </message>
+    <message>
+      <source>stats.figure.total</source>
+      <translation>Total</translation>
+    </message>
+    <message>
+      <source>stats.figure.p95</source>
+      <translation>P95</translation>
+    </message>
+    <message>
+      <source>stats.export</source>
+      <translation>Export</translation>
+    </message>
+    <message>
+      <source>stats.export.choose</source>
+      <translation>Choose where to export</translation>
+    </message>
+    <message>
+      <source>stats.export.running</source>
+      <translation>Exporting…</translation>
+    </message>
+    <message>
+      <source>stats.export.done</source>
+      <translation>Export complete</translation>
+    </message>
+    <message>
+      <source>stats.export.body</source>
+      <translation>Written to {0}&lt;br&gt;{1} sample records · {2} logs</translation>
+    </message>
+    <message>
+      <source>stats.export.open</source>
+      <translation>Open folder</translation>
+    </message>
+    <message>
+      <source>stats.export.close</source>
+      <translation>Close</translation>
+    </message>
+    <message>
+      <source>stats.export.status</source>
+      <translation>Exported: {0}</translation>
+    </message>
+    <message>
+      <source>stats.export.failed</source>
+      <translation>Export failed: </translation>
+    </message>
+    <message>
       <source>hits</source>
       <translation>Reads</translation>
     </message>
@@ -990,11 +1042,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.response.waiting</source>
-      <translation>Response overhead 路 Waiting for samples</translation>
+      <translation>Response overhead · Waiting for samples</translation>
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>Response overhead 路 Request avg {0:0.00} ms / P95 {1:0.00} ms 路 UI dispatch {2:0.00} ms 路 UI update {3:0.00} ms 路 {4} samples (two IPC requests per sample; excludes painting)</translation>
+      <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (two IPC requests per sample; excludes painting)</translation>
     </message>
   </context>
 </TS>

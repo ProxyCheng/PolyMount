@@ -487,7 +487,7 @@ internal sealed class Dashboard : QWidget
     internal StatsWindow OpenPerformance(string name) => (StatsWindow)_tabs.Open("stats:" + name,
         () => new StatsWindow(name), () => I18n.F("stats.instance", name));
 
-    internal void SmokeTabs() => _tabs.SmokeInteractions("editor:L10", "stats:L10");
+    internal void SmokeTabs(string statsInstance) => _tabs.SmokeInteractions("editor:L10", "stats:" + statsInstance);
 
     private void OnConfigSaved() => Refresh();
 

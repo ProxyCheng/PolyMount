@@ -91,6 +91,9 @@ public sealed class ControlResponse
 
     // Populated by "metrics": per-mount read analytics.
     public List<MountMetrics> Metrics { get; set; } = new();
+
+    // Populated by "logs": the diagnostics files an export can bundle.
+    public List<LogFile> Logs { get; set; } = new();
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -143,7 +146,19 @@ public static class ControlCommands
     public const string SaveConfig = "saveConfig";
     public const string Reload = "reload";
     public const string Metrics = "metrics";
+    public const string Logs = "logs";
     public const string Shutdown = "shutdown";
+}
+
+/// <summary>One diagnostics file an export can bundle. The service reports where the file
+/// lives; the front-end copies it, so a growing log is read once and never quoted.</summary>
+public sealed class LogFile
+{
+    /// <summary>Where the file belongs inside an export, relative and slash-separated
+    /// (for example <c>L10/requests.log</c>).</summary>
+    public string Name { get; set; } = "";
+    public string Source { get; set; } = "";
+    public long Bytes { get; set; }
 }
 
 // Per-layer read analytics within a recent time window.

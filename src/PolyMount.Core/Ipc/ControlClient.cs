@@ -82,4 +82,7 @@ public static class ControlClient
 
     public static ControlResponse Metrics(int windowSeconds = 300, string? name = null)
         => Send(new ControlRequest { Cmd = ControlCommands.Metrics, WindowSeconds = windowSeconds, Name = name });
+
+    public static ControlResponse Logs()
+        => Send(new ControlRequest { Cmd = ControlCommands.Logs });
 }

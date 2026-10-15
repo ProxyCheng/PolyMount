@@ -149,12 +149,21 @@ internal static class Program
         _dashboard.ShowWindow();
     }
 
+    /// <summary>The first instance the service is running, so a smoke run charts live data
+    /// rather than an empty window.</summary>
+    private static string? LiveInstance()
+    {
+        try { return ControlClient.Status().Mounts.FirstOrDefault(mount => mount.Enabled && mount.Mounted)?.Name; }
+        catch { return null; }
+    }
+
     private static int RunUiSmoke(string? capture)
     {
         TrayActivation.Smoke();
         var dashboard = new Dashboard();
         var editor = dashboard.OpenEditor("L10")!;
-        var stats = dashboard.OpenPerformance("L10");
+        string instance = LiveInstance() ?? "L10";
+        var stats = dashboard.OpenPerformance(instance);
         LayerVisualizer.Open("D:\\L10\\20260924");
         dashboard.ShowWindow();
         var timer = new QTimer();
@@ -167,7 +176,7 @@ internal static class Program
             ticks++;
             if (ticks == 2)
             {
-                try { dashboard.SmokeTabs(); } catch (Exception ex) { failure = ex.ToString(); }
+                try { dashboard.SmokeTabs(instance); } catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks == 18 && capture != null)
             {
@@ -214,7 +223,13 @@ internal static class Program
             if (ticks >= 60)
             {
                 timer.Stop();
-                try { stats.VerifyResponseSampling(); stats.VerifyChartScale(); } catch (Exception ex) { failure = ex.Message; }
+                try
+                {
+                    stats.VerifyResponseSampling();
+                    stats.VerifyChartScale();
+                    stats.VerifyExport(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
+                }
+                catch (Exception ex) { failure = ex.Message; }
                 Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }

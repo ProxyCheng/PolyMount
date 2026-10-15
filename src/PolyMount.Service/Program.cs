@@ -7,7 +7,7 @@ using Serilog;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.ClearProviders();
-builder.Services.AddSerilog(AsyncFileLog.Create(Path.Combine(AppContext.BaseDirectory, "polymount-service.log")), dispose: true);
+builder.Services.AddSerilog(AsyncFileLog.Create(Path.Combine(AppContext.BaseDirectory, MountManager.ServiceLogName)), dispose: true);
 builder.Services.AddWindowsService(options => options.ServiceName = "PolyMount");
 int configIndex = Array.IndexOf(args, "--config");
 string? configPath = configIndex >= 0 && configIndex + 1 < args.Length ? Path.GetFullPath(args[configIndex + 1]) : null;

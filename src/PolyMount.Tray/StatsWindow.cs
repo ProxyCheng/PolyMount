@@ -2,6 +2,7 @@ using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 using System.Diagnostics;
+using System.Text.Json;
 
 namespace PolyMount.Tray;
 
@@ -11,6 +12,7 @@ internal sealed class StatsWindow : QWidget
     private readonly QComboBox _mount;
     private readonly string? _instanceName;
     private readonly QPushButton _pause;
+    private readonly QPushButton _export;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
     private readonly QLabel _layerLegend;
@@ -28,8 +30,12 @@ internal sealed class StatsWindow : QWidget
     /// <summary>Sampling runs once a second; a step spanning more than this is a pause in
     /// observation rather than a rate.</summary>
     private const double SamplingGapSeconds = 3;
+    /// <summary>The window every chart, the sample history and the response overhead share.</summary>
+    private const int HistorySeconds = 60;
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
+    private Task<ExportOutcome>? _pendingExport;
+    private string _exportDirectory;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -41,6 +47,7 @@ internal sealed class StatsWindow : QWidget
     public StatsWindow(string? instanceName = null)
     {
         _instanceName = instanceName;
+        _exportDirectory = StatsExport.LoadDirectory();
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
@@ -68,14 +75,17 @@ internal sealed class StatsWindow : QWidget
         _pause = new QPushButton();
         _pause.Clicked += _ => TogglePause();
         header.AddWidget(_pause);
+        _export = new QPushButton();
+        _export.Clicked += _ => Export();
+        header.AddWidget(_export);
         root.AddLayout(header);
 
         _charts = new[]
         {
-            new PerformanceChart("stats.reads", "#2563eb", "/s"),
-            new PerformanceChart("stats.layerBytes", "#059669", "B"),
-            new PerformanceChart("stats.latency", "#8b5cf6", "ms"),
-            new PerformanceChart("stats.bytes", "#0891b2", "B")
+            new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume),
+            new PerformanceChart("stats.layerBytes", "#059669", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.latency", "#8b5cf6", "ms", ChartSummary.Latency),
+            new PerformanceChart("stats.bytes", "#0891b2", "B", ChartSummary.Volume)
         };
         var grid = new QGridLayout();
         grid.SetSpacing(16);
@@ -171,6 +181,40 @@ internal sealed class StatsWindow : QWidget
             }
     }
 
+    /// <summary>Smoke check: the chart summaries describe their samples, the charts carry the
+    /// figures their metric is described by, and an export writes parts that agree with each
+    /// other. Neither needs a running service.</summary>
+    internal void VerifyExport(string directory)
+    {
+        var stats = ChartStatistics.Of(new[] { 1.0, 2.0, 3.0, 4.0, 10.0 });
+        if (stats.Current != 10 || stats.Average != 4 || stats.Peak != 10 || stats.P95 != 10 || stats.Total != 20 || stats.Samples != 5)
+            throw new InvalidOperationException($"Chart statistics do not describe their samples: {stats}");
+        if (ChartStatistics.Of(Array.Empty<double>()).Samples != 0)
+            throw new InvalidOperationException("An empty window reported samples");
+        if (ByteUnits.Split(1536) != ("1.5", "KiB"))
+            throw new InvalidOperationException("Byte figures no longer split into a number and a unit");
+        // Milliseconds are summed by nothing: a latency chart reports its tail, not a total.
+        if (_charts.Length != 4 || _charts[2].Figures.Contains(ChartFigure.Total))
+            throw new InvalidOperationException("Charts do not carry the figures their metric is described by");
+        // A card too narrow for every figure keeps the first ones instead of clipping one.
+        if (PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 150) != 2 ||
+            PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
+            PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
+            throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
+
+        var outcome = StatsExport.Write(directory, Snapshot());
+        using var summary = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "summary.json")));
+        var root = summary.RootElement;
+        if (root.GetProperty("charts").GetArrayLength() != _charts.Length)
+            throw new InvalidOperationException("Export did not describe every chart");
+        if (root.GetProperty("export").GetProperty("samples").GetInt32() != outcome.Samples)
+            throw new InvalidOperationException("Export sample count does not match its own summary");
+        if (File.ReadAllLines(Path.Combine(outcome.Directory, "samples.csv")).Length != outcome.Samples + 1)
+            throw new InvalidOperationException("Exported records do not match their summary");
+        if (!root.TryGetProperty("logs", out _) || !root.TryGetProperty("response", out _))
+            throw new InvalidOperationException("Export summary is missing its logs or response overhead");
+    }
+
     private void TogglePause()
     {
         _paused = !_paused;
@@ -205,7 +249,7 @@ internal sealed class StatsWindow : QWidget
                     Accept(response.Metrics, sample.Access.Metrics);
                     ui.Stop();
                     _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds));
-                    while (_responseSamples.Count > 60) _responseSamples.Dequeue();
+                    while (_responseSamples.Count > HistorySeconds) _responseSamples.Dequeue();
                     RenderResponseCost();
                 }
             }
@@ -213,6 +257,12 @@ internal sealed class StatsWindow : QWidget
             {
                 if (!_paused && visible) _status.SetText(T("stats.gap") + " · " + ex.Message);
             }
+        }
+        if (_pendingExport is { IsCompleted: true })
+        {
+            var task = _pendingExport;
+            _pendingExport = null;
+            ReportExport(task);
         }
         if (visible && !_paused && _pending == null && (_requested || !_wasVisible || DateTime.UtcNow >= _next))
         {
@@ -223,13 +273,67 @@ internal sealed class StatsWindow : QWidget
             {
                 var watch = Stopwatch.StartNew();
                 var trends = ControlClient.Metrics(1, _instanceName);
-                var access = ControlClient.Metrics(60, _instanceName);
+                var access = ControlClient.Metrics(HistorySeconds, _instanceName);
                 watch.Stop();
                 return (trends, access, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
             });
         }
         _wasVisible = visible;
     }
+
+    /// <summary>Freezes the window and writes what it shows: the figures, the per-second records
+    /// behind them and the service's logs. Sampling is held first, because an export that keeps
+    /// advancing is not a snapshot of anything the reader saw.</summary>
+    private void Export()
+    {
+        string? parent = QFileDialog.GetExistingDirectory(this, T("stats.export.choose"), _exportDirectory);
+        if (string.IsNullOrEmpty(parent)) return;
+        _exportDirectory = parent;
+        StatsExport.SaveDirectory(parent);
+        if (!_paused) TogglePause();
+        _status.SetText(T("stats.export.running"));
+        var snapshot = Snapshot();
+        _pendingExport = Task.Run(() => StatsExport.Write(parent, snapshot));
+    }
+
+    private void ReportExport(Task<ExportOutcome> task)
+    {
+        try
+        {
+            var outcome = task.GetAwaiter().GetResult();
+            _status.SetText(I18n.F("stats.export.status", outcome.Directory));
+            bool opened = QMessageBox.Information(this, T("stats.export.done"),
+                I18n.F("stats.export.body", System.Net.WebUtility.HtmlEncode(outcome.Directory), outcome.Samples, outcome.Logs),
+                T("stats.export.open"), T("stats.export.close"), null, 0, 1) == 0;
+            if (opened) QDesktopServices.OpenUrl(QUrl.FromLocalFile(outcome.Directory));
+        }
+        catch (Exception ex) { _status.SetText(T("stats.export.failed") + ex.Message); }
+    }
+
+    /// <summary>Everything an export carries, copied off the live window on the UI thread so the
+    /// writer never reads a collection that is still being appended to.</summary>
+    private StatsSnapshot Snapshot() => new()
+    {
+        Scope = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText),
+        Language = I18n.Language,
+        Frozen = _paused,
+        WindowSeconds = HistorySeconds,
+        Charts = _charts.Select(chart => new ChartRecord(chart.TitleKey, chart.Unit, chart.Statistics)).ToList(),
+        Metrics = _accessMetrics,
+        Samples = _history.Where(mount => mount.Key.Length > 0)
+            .SelectMany(mount => mount.Value.SelectMany(sample => sample.Layers.Select(layer =>
+                new SampleRecord(sample.Time, mount.Key, Relative(layer.Key, mount.Key),
+                    layer.Value.Reads, layer.Value.Bytes, layer.Value.Cost,
+                    layer.Value.WriteBytes, layer.Value.Wasted, layer.Value.WastedBytes))))
+            .OrderBy(row => row.Time).ToList(),
+        ResponseRequest = _responseSamples.Select(sample => sample.Request).ToList(),
+        ResponseDispatch = _responseSamples.Select(sample => sample.Dispatch).ToList(),
+        ResponseUi = _responseSamples.Select(sample => sample.Ui).ToList()
+    };
+
+    /// <summary>A layer key is "mount/layer"; the records carry the two apart.</summary>
+    private static string Relative(string key, string mount) =>
+        key.StartsWith(mount + "/", StringComparison.Ordinal) ? key[(mount.Length + 1)..] : key;
 
     private void Accept(List<MountMetrics> trends, List<MountMetrics> metrics)
     {
@@ -296,7 +400,7 @@ internal sealed class StatsWindow : QWidget
     {
         if (!_history.TryGetValue(name, out var samples)) _history[name] = samples = new();
         samples.Add(sample);
-        samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-60));
+        samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-HistorySeconds));
     }
 
     private void Render()
@@ -384,6 +488,8 @@ internal sealed class StatsWindow : QWidget
     {
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _pause.SetIcon(TrayIcons.Get(_paused ? "play" : "stop"));
+        _export.SetText(T("stats.export"));
+        _export.SetIcon(TrayIcons.Get("export"));
         _mount.SetItemText(0, T("stats.all"));
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
@@ -394,8 +500,7 @@ internal sealed class StatsWindow : QWidget
     {
         if (_responseSamples.Count == 0) { _responseCost.SetText(T("stats.response.waiting")); return; }
         var requests = _responseSamples.Select(s => s.Request).Order().ToArray();
-        double p95 = requests[Math.Clamp((int)Math.Ceiling(requests.Length * .95) - 1, 0, requests.Length - 1)];
-        _responseCost.SetText(I18n.F("stats.response.cost", requests.Average(), p95,
+        _responseCost.SetText(I18n.F("stats.response.cost", requests.Average(), ChartStatistics.Percentile(requests, 0.95),
             _responseSamples.Average(s => s.Dispatch), _responseSamples.Average(s => s.Ui), _responseSamples.Count));
     }
     public override void ChangeEvent(QEvent e)
@@ -419,6 +524,41 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
     /// <summary>Same colour as the layer, drawn as a hatched and dashed variation so a second
     /// series for one layer reads as that layer rather than as a different one.</summary>
     public bool Hatched { get; init; }
+}
+
+/// <summary>What a chart's window adds up to, over the same samples the plot draws: an idle
+/// instance still reports the peak it reached earlier in the window.</summary>
+internal readonly record struct ChartStatistics(double Current, double Average, double Peak, double P95, double Total, int Samples)
+{
+    public static ChartStatistics Of(IEnumerable<double> values)
+    {
+        var samples = values.ToArray();
+        if (samples.Length == 0) return default;
+        var sorted = samples.Order().ToArray();
+        return new(samples[^1], samples.Average(), sorted[^1], Percentile(sorted, 0.95), samples.Sum(), samples.Length);
+    }
+
+    /// <summary>Nearest-rank percentile: the value the given fraction of the sorted set falls
+    /// at or below. Used for the response overhead and the latency chart's tail alike.</summary>
+    internal static double Percentile(IReadOnlyList<double> sorted, double fraction)
+        => sorted.Count == 0 ? 0 : sorted[Math.Clamp((int)Math.Ceiling(sorted.Count * fraction) - 1, 0, sorted.Count - 1)];
+}
+
+/// <summary>Which summary numbers a chart carries. A rate is worth knowing the average, the peak
+/// and the window's volume of; a latency is worth knowing its average and its tail.</summary>
+internal enum ChartSummary
+{
+    Volume,
+    Latency
+}
+
+/// <summary>One secondary figure in a chart's header.</summary>
+internal enum ChartFigure
+{
+    Average,
+    Peak,
+    Total,
+    P95
 }
 
 /// <summary>The vertical domain of one chart, in that chart's own display unit.</summary>
@@ -471,14 +611,24 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
 
 internal sealed class PerformanceChart : QWidget
 {
+    /// <summary>Text baselines in the card's header, shared by the headline, its figures and the
+    /// per-layer values so the three rows read as one column.</summary>
+    private const int HeadlineBaseline = 63, SeriesBaseline = 80;
+    /// <summary>Gap between the headline and the first figure, and between figures.</summary>
+    private const int FigureGap = 20;
     private readonly string _titleKey, _color, _unit;
+    private readonly ChartFigure[] _figures;
     private DateTime _end;
     private List<ChartSeries> _series = new();
-    public PerformanceChart(string titleKey, string color, string unit)
+    private ChartStatistics _stats;
+    public PerformanceChart(string titleKey, string color, string unit, ChartSummary summary)
     {
         _titleKey = titleKey;
         _color = color;
         _unit = unit;
+        _figures = summary == ChartSummary.Latency
+            ? new[] { ChartFigure.Average, ChartFigure.P95, ChartFigure.Peak }
+            : new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total };
         SetMinimumSize(330, 210);
     }
     public override void ChangeEvent(QEvent e)
@@ -487,15 +637,114 @@ internal sealed class PerformanceChart : QWidget
     {
         _series = series;
         _end = end;
-        SetToolTip(string.Join("\n", series.Select(s => s.Name + ": " + FormatValue(s.Samples.LastOrDefault().Value))));
+        // Every series is built from the same sample list, so the window's totals are the sum
+        // of the series at each observation.
+        var times = series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
+        var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+        _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
+        var lines = series.Select(s => s.Name + ": " + FormatValue(s.Samples.LastOrDefault().Value)).ToList();
+        if (_stats.Samples > 0) lines.Add(string.Join(" · ", _figures.Select(f => I18n.T(FigureKey(f)) + " " + FormatFigure(f))));
+        SetToolTip(string.Join("\n", lines));
         Update();
     }
     private string FormatValue(double value) => _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
+
+    /// <summary>A figure in the chart's own unit. The window total is an amount rather than a
+    /// rate, so the per-second charts drop their suffix there.</summary>
+    private string FormatFigure(ChartFigure figure)
+    {
+        double value = figure switch
+        {
+            ChartFigure.Average => _stats.Average,
+            ChartFigure.Peak => _stats.Peak,
+            ChartFigure.P95 => _stats.P95,
+            _ => _stats.Total
+        };
+        if (figure == ChartFigure.Total && _unit == "/s") return value.ToString("0.##", I18n.Culture);
+        return _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
+    }
+
+    private static string FigureKey(ChartFigure figure) => figure switch
+    {
+        ChartFigure.Average => "stats.figure.average",
+        ChartFigure.Peak => "stats.figure.peak",
+        ChartFigure.P95 => "stats.figure.p95",
+        _ => "stats.figure.total"
+    };
+
+    /// <summary>The current value as the card's figure, with the rest of the window's summary
+    /// beside it. Figures are dropped from the least important end when the card is too narrow
+    /// to hold them, so a narrow card keeps the average instead of clipping a value.</summary>
+    private void DrawHeadline(QPainter p, int width, bool hasData)
+    {
+        using var numberFont = new QFont("Segoe UI", 20);
+        numberFont.SetBold(true);
+        using var unitFont = new QFont("Segoe UI", 11);
+        using var numberMetrics = new QFontMetrics(numberFont);
+        using var unitMetrics = new QFontMetrics(unitFont);
+        var (number, unit) = _unit == "B" ? ByteUnits.Split(_stats.Current) : (_stats.Current.ToString("0.##", I18n.Culture), _unit);
+        string text = hasData ? number : "—";
+        p.SetFont(numberFont);
+        p.SetPen(new QPen(new QColor(_color)));
+        p.DrawText(18, HeadlineBaseline, text);
+        int headRight = 18 + numberMetrics.HorizontalAdvance(text);
+        if (hasData && unit.Length > 0)
+        {
+            p.SetFont(unitFont);
+            p.SetPen(new QPen(new QColor("#718096")));
+            p.DrawText(headRight + 5, HeadlineBaseline, unit);
+            headRight += 5 + unitMetrics.HorizontalAdvance(unit);
+        }
+        if (!hasData) return;
+
+        using var labelFont = new QFont("Segoe UI", 8);
+        using var figureFont = new QFont("Segoe UI", 11);
+        figureFont.SetBold(true);
+        using var labelMetrics = new QFontMetrics(labelFont);
+        using var figureMetrics = new QFontMetrics(figureFont);
+        var labels = _figures.Select(FigureKey).Select(I18n.T).ToArray();
+        var values = _figures.Select(FormatFigure).ToArray();
+        int[] widths = labels.Select((label, i) => labelMetrics.HorizontalAdvance(label) + 6 + figureMetrics.HorizontalAdvance(values[i])).ToArray();
+        int right = width - 18;
+        int[] ends = new int[widths.Length + 1];
+        for (int i = 0; i < widths.Length; i++) ends[i + 1] = ends[i] + (i == 0 ? 0 : FigureGap) + widths[i];
+        int keep = Fitted(ends, right - FigureGap - headRight);
+        int x = right - ends[keep];
+        for (int i = 0; i < keep; i++)
+        {
+            p.SetFont(labelFont);
+            p.SetPen(new QPen(new QColor("#718096")));
+            p.DrawText(x, HeadlineBaseline, labels[i]);
+            x += labelMetrics.HorizontalAdvance(labels[i]) + 6;
+            p.SetFont(figureFont);
+            p.SetPen(new QPen(new QColor("#334155")));
+            p.DrawText(x, HeadlineBaseline, values[i]);
+            x += figureMetrics.HorizontalAdvance(values[i]) + FigureGap;
+        }
+    }
+
     private static string TickText(double value, double step)
     {
         int decimals = Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15);
         return value.ToString("F" + decimals, I18n.Culture);
     }
+
+    /// <summary>How many summary figures fit in the room left of the headline, counted from the
+    /// most important. The group is right-aligned, so a card too narrow to hold them all keeps the
+    /// first ones rather than clipping a value. <paramref name="ends"/> is each figure's width
+    /// added up, gaps included.</summary>
+    internal static int Fitted(int[] ends, int room)
+    {
+        for (int count = ends.Length - 1; count > 0; count--)
+            if (ends[count] <= room) return count;
+        return 0;
+    }
+
+    /// <summary>What the card is showing, for the export and its own smoke check.</summary>
+    internal string TitleKey => _titleKey;
+    internal string Unit => _unit;
+    internal IReadOnlyList<ChartFigure> Figures => _figures;
+    internal ChartStatistics Statistics => _stats;
 
     public override void PaintEvent(QPaintEvent e)
     {
@@ -514,27 +763,26 @@ internal sealed class PerformanceChart : QWidget
             p.DrawText(18, 29, I18n.T(_titleKey));
             var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
             var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-            var totals = times.Select(time => valuesBySeries.Sum(s => s.GetValueOrDefault(time))).ToArray();
-            double value = totals.LastOrDefault();
-            using var numberFont = new QFont("Segoe UI", 20);
-            numberFont.SetBold(true);
-            p.SetFont(numberFont);
-            p.SetPen(new QPen(new QColor(_color)));
-            p.DrawText(18, 63, times.Length == 0 ? "—" : FormatValue(value));
+            DrawHeadline(p, width, times.Length > 0);
 
             using var detailFont = new QFont("Segoe UI", 8);
             using var detailMetrics = new QFontMetrics(detailFont);
             var summaries = _series.Select(s => (s.Color, Text: s.Name + " " + FormatValue(s.Samples.LastOrDefault().Value))).ToArray();
-            int summariesWidth = summaries.Sum(s => detailMetrics.HorizontalAdvance(s.Text) + 18);
-            if (summariesWidth <= width - 36)
+            int summariesWidth = summaries.Sum(s => detailMetrics.HorizontalAdvance(s.Text) + 28);
+            if (summariesWidth <= width - 36 && summaries.Length > 0)
             {
                 p.SetFont(detailFont);
                 int x = 18;
                 foreach (var summary in summaries)
                 {
-                    p.SetPen(new QPen(new QColor(summary.Color)));
-                    p.DrawText(x, 80, summary.Text);
-                    x += detailMetrics.HorizontalAdvance(summary.Text) + 18;
+                    // The dot carries the layer's colour and the value stays in ink, so a light
+                    // layer hue cannot leave its own number unreadable.
+                    p.SetPen(new QPen(Qt.PenStyle.NoPen));
+                    p.SetBrush(new QBrush(new QColor(summary.Color)));
+                    p.DrawEllipse(x + 1, SeriesBaseline - 6, 6, 6);
+                    p.SetPen(new QPen(new QColor("#334155")));
+                    p.DrawText(x + 14, SeriesBaseline, summary.Text);
+                    x += detailMetrics.HorizontalAdvance(summary.Text) + 28;
                 }
             }
 

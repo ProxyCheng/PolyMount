@@ -6,7 +6,10 @@ namespace PolyMount.Core;
 
 public sealed class MountInstance : IDisposable
 {
+    /// <summary>Rolled by Serilog, so the reader matches the family rather than one name.</summary>
+    private const string DiagnosticsLogName = "requests.log";
     private readonly string _logPath;
+    private readonly string _statePath;
     private readonly object _gate = new();
     private FileSystemHost? _host;
     private bool _unmounting;
@@ -21,6 +24,7 @@ public sealed class MountInstance : IDisposable
         profile.ValidateLayers();
         var state = Path.Combine(profile.GetStoreRoot(), "state");
         Directory.CreateDirectory(state);
+        _statePath = state;
         _logPath = Path.Combine(state, "polymount.log");
 
         var configs = profile.GetLayers().Where(l => l.Enabled).ToList();
@@ -51,7 +55,7 @@ public sealed class MountInstance : IDisposable
         var layers = built.ToList();
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
-        Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, "requests.log"));
+        Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, DiagnosticsLogName));
         foreach (var cache in _providers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
         for (int i = 0; i < configs.Count; i++)
             if (_providers[configs[i].Id] is PredictionCacheLayer prediction)
@@ -71,6 +75,14 @@ public sealed class MountInstance : IDisposable
 
     public string Name => Profile.Name;
     public string MountPoint => Profile.MountPoint;
+
+    /// <summary>Request diagnostics this instance has written, oldest segment first. Serilog
+    /// rolls them, so a busy instance holds more than one file.</summary>
+    public IReadOnlyList<string> GetLogFiles()
+    {
+        try { return Directory.GetFiles(_statePath, Path.GetFileNameWithoutExtension(DiagnosticsLogName) + "*.log").Order(StringComparer.Ordinal).ToList(); }
+        catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
+    }
 
     public bool Mounted
     {

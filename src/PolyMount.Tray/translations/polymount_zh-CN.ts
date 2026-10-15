@@ -909,6 +909,58 @@
       <translation>现在</translation>
     </message>
     <message>
+      <source>stats.figure.average</source>
+      <translation>平均</translation>
+    </message>
+    <message>
+      <source>stats.figure.peak</source>
+      <translation>峰值</translation>
+    </message>
+    <message>
+      <source>stats.figure.total</source>
+      <translation>合计</translation>
+    </message>
+    <message>
+      <source>stats.figure.p95</source>
+      <translation>P95</translation>
+    </message>
+    <message>
+      <source>stats.export</source>
+      <translation>导出</translation>
+    </message>
+    <message>
+      <source>stats.export.choose</source>
+      <translation>选择导出位置</translation>
+    </message>
+    <message>
+      <source>stats.export.running</source>
+      <translation>正在导出…</translation>
+    </message>
+    <message>
+      <source>stats.export.done</source>
+      <translation>导出完成</translation>
+    </message>
+    <message>
+      <source>stats.export.body</source>
+      <translation>已写入 {0}&lt;br&gt;采样记录 {1} 条 · 日志 {2} 个</translation>
+    </message>
+    <message>
+      <source>stats.export.open</source>
+      <translation>打开文件夹</translation>
+    </message>
+    <message>
+      <source>stats.export.close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>stats.export.status</source>
+      <translation>已导出：{0}</translation>
+    </message>
+    <message>
+      <source>stats.export.failed</source>
+      <translation>导出失败：</translation>
+    </message>
+    <message>
       <source>hits</source>
       <translation>读取次数</translation>
     </message>
@@ -990,11 +1042,11 @@
     </message>
     <message>
       <source>stats.response.waiting</source>
-      <translation>鍝嶅簲寮€閿€ 路 绛夊緟閲囨牱</translation>
+      <translation>响应开销 · 等待采样</translation>
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>鍝嶅簲寮€閿€ 路 璇锋眰骞冲潎 {0:0.00} ms / P95 {1:0.00} ms 路 涓荤嚎绋嬭皟搴?{2:0.00} ms 路 鐣岄潰鏇存柊 {3:0.00} ms 路 {4} 娆￠噰鏍凤紙姣忔鍚袱涓?IPC 璇锋眰锛屼笉鍚粯鍒讹級</translation>
+      <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次含两个 IPC 请求，不含绘制）</translation>
     </message>
   </context>
 </TS>
