@@ -230,6 +230,7 @@ internal static class Program
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
+                editor.CaptureCacheAction(Path.Combine(capture, "cache-action.png"));
             }
             if (ticks == 20)
             {
@@ -246,10 +247,14 @@ internal static class Program
                 catch (Exception ex) { failure = ex.ToString(); }
                 dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
                 editor.Capture(Path.Combine(capture, "layers-alternate.png"));
+                editor.CaptureCacheAction(Path.Combine(capture, "cache-action-alternate.png"));
             }
             if (ticks == 40)
             {
-                if (I18n.T("dashboard.title") == "dashboard.title") failure = "Qt resource translation lookup failed";
+                // A catalog that is missing a key answers with the key itself, which is what the
+                // window would then show, so every string these windows name is asked for here.
+                foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done" })
+                    if (I18n.T(key) == key) failure = "Qt resource translation lookup failed: " + key;
                 I18n.SetLanguage(original);
             }
             if (ticks == 45)
@@ -266,6 +271,7 @@ internal static class Program
                     editor.Capture(Path.Combine(capture, "layers-small.png"));
                     stats.Capture(Path.Combine(capture, "stats-small.png"));
                     stats.CaptureRecording(Path.Combine(capture, "recording-small.png"));
+                    editor.CaptureCacheAction(Path.Combine(capture, "cache-action-small.png"));
                 }
             }
             if (ticks >= 60)

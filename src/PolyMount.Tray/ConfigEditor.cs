@@ -18,7 +18,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private readonly QCheckBox _enabled, _layerEnabled;
     private readonly QPushButton _colorPreview;
     private readonly QLabel _status, _layerTitle, _layerDescription, _id;
-    private readonly QPushButton _save, _removeLayer;
+    private readonly QPushButton _save, _removeLayer, _clearCache;
     private readonly QComboBox _presets;
     private readonly QTimer _timer;
     private readonly QLabel _overlayUsage, _cacheUsage;
@@ -37,6 +37,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private Task<ControlResponse>? _pending;
     private bool _saving;
     private bool _layerOperation;
+    private bool _clearingCache;
     private string? _openName;
     private bool _addAfterLoad;
     private string? _originalName;
@@ -99,6 +100,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _layerList.SetMinimumHeight(285);
         _layerList.SetStyleSheet("QListWidget::item { background: #f5f7fb; border: 1px solid #e2e8f0; padding: 15px 12px; } QListWidget::item:selected { background: #eaf1ff; border-color: #7ba3e5; color: #1e40af; }");
         _layerList.CurrentRowChanged += _ => OnLayerSelected();
+        _layerList.ItemClicked += _ => OnLayerSelected();
         _layerList.Model().RowsMoved += (_, _, _, _, _) => ReorderLayers();
         center.AddWidget(_layerList, 1);
         var layerButtons = new QHBoxLayout();
@@ -180,6 +182,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var footer = new QHBoxLayout();
         _status = Plain("", "muted");
         footer.AddWidget(_status, 1);
+        _clearCache = Button("cache.clear", ClearCaches, "disk-cache");
+        _clearCache.SetEnabled(false);
+        footer.AddWidget(_clearCache);
         footer.AddWidget(Button("mount.delete", OnRemove, "trash"));
         _save = Button("save", OnSave, "check");
         _save.SetObjectName("primary");
@@ -208,6 +213,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
+    /// <summary>The instance actions sit below what a window shot reaches - the content scrolls -
+    /// so the smoke grabs this button on its own to check its label and icon in both languages.</summary>
+    internal void CaptureCacheAction(string path) { using var image = _clearCache.Grab(); image.Save(path); }
+
     internal void SmokeInteractions()
     {
         SmokePropertyForm();
@@ -221,6 +230,18 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 throw new InvalidOperationException("Layer model refused a reorder");
             if (Current.Layers![^1].Id != before[0]) throw new InvalidOperationException("Visual layer order differs from configuration");
             _layerList.Model().MoveRows(parent, layers.Count - 1, 1, parent, 0);
+        }
+        // After a reorder the panel still has to follow the list. Selecting a layer that shows the
+        // previous one's properties is the same as editing something you cannot see, and only this
+        // assertion notices: asking the editor state anything about the layer it already holds
+        // passes whether or not the click got through.
+        for (int i = 0; i < layers.Count; i++)
+        {
+            _layerList.SetCurrentRow(i);
+            string expected = _layerList.Item(i).Data((int)Qt.ItemDataRole.UserRole).ToString();
+            if (_layer?.Id != expected)
+                throw new InvalidOperationException(
+                    $"Selecting row {i} of the reordered stack shows '{_layer?.Id}', not '{expected}'");
         }
         _layerList.SetCurrentRow(0);
         if (_layer != null)
@@ -301,11 +322,18 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var task = _pending;
         _pending = null;
         _save.SetEnabled(true);
+        UpdateInstanceActions();
         try
         {
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok) throw new InvalidOperationException(response.Error);
             AcceptUsage(response);
+            if (_clearingCache)
+            {
+                _clearingCache = false;
+                _status.SetText(T("cache.done"));
+                return;
+            }
             if (_layerOperation)
             {
                 _layerOperation = false;
@@ -355,8 +383,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             _saving = false;
             _closeAfterSave = null;
             UpdateDocumentTitle();
-            _status.SetText(T(_layerOperation ? "operation.failed" : _saving ? "save.failed" : "load.failed") + ex.Message);
+            _status.SetText(T(_layerOperation || _clearingCache ? "operation.failed" : _saving ? "save.failed" : "load.failed") + ex.Message);
             _layerOperation = false;
+            _clearingCache = false;
         }
     }
 
@@ -430,11 +459,18 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private void OnLayerSelected()
     {
         if (_loading) return;
-        try { CommitLayer(); }
-        catch (ArgumentException ex) { _status.SetText(ex.Message); RebuildLayers(); return; }
+        // Which layer the list is on is read first, and shown whatever happens next: committing
+        // the layer being left can fail on a value the reader typed, and that failure used to
+        // return before anything was displayed -- leaving the panel on the old layer, rebuilding
+        // the list back to it, and doing the same thing on the next click. Clicking through the
+        // stack then looked like a panel that had stopped responding, when the real problem was
+        // one rejected value somewhere behind it.
         int row = _layerList.CurrentRow;
         string? id = row < 0 ? null : _layerList.Item(row).Data((int)Qt.ItemDataRole.UserRole).ToString();
-        _layer = Current?.Layers?.FirstOrDefault(l => l.Id == id);
+        var selected = Current?.Layers?.FirstOrDefault(l => l.Id == id);
+        try { CommitLayer(); }
+        catch (ArgumentException ex) { _status.SetText(ex.Message); }
+        if (selected != null) _layer = selected;
         ShowLayer();
     }
 
@@ -453,6 +489,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _layerName.SetEnabled(_layer != null);
         _layerEnabled.SetEnabled(_layer != null);
         _removeLayer.SetEnabled(_layer != null);
+        UpdateInstanceActions();
         _loading = false;
         RenderUsage();
     }
@@ -713,6 +750,35 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         item.SetForeground(new QBrush(new QColor(_layer.Enabled ? "#26354B" : "#94A3B8")));
     }
     private void SetColor(string color) => _color.SetText(color);
+
+    // An instance is clearable while the draft still names the profile the service runs, and no
+    // new draft is one: nothing in the service answers to a name that was never saved.
+    private bool ManagesRunningInstance => _originalName != null && Current is { } current && current.Name == _originalName;
+    private void UpdateInstanceActions() => _clearCache.SetEnabled(ManagesRunningInstance && _pending == null);
+
+    /// <summary>
+    /// Drops the cached records of every cacheable layer of the running instance at once - disk,
+    /// memory and learned read-ahead alike - so the next read comes from the source again. The
+    /// overlay and the source layers are untouched: user writes and the remote view stay as they
+    /// are. A pending draft is not a reason to refuse: what is cleared is what is running, and the
+    /// confirmation names it.
+    /// </summary>
+    private void ClearCaches()
+    {
+        if (_pending != null || !ManagesRunningInstance) return;
+        long bytes = _runtimeProviders
+            .Where(p => p.StorageUsage is { CacheCapacity: > 0 })
+            .Sum(p => p.StorageUsage!.CacheBytes);
+        if (QMessageBox.Question(this, T("confirm"), I18n.F("confirm.cache", _originalName!, UsageBytes(bytes)),
+            T("confirm"), T("cancel"), null, 1, 1) != 0) return;
+        _saving = false;
+        _clearingCache = true;
+        _pending = Task.Run(() => ControlClient.Send(new ControlRequest { Cmd = ControlCommands.ClearCache, Name = _originalName }));
+        _save.SetEnabled(false);
+        _clearCache.SetEnabled(false);
+        _status.SetText(T("working"));
+    }
+
     private void LayerOperation(LayerActionDescriptor action)
     {
         if (_pending != null || _layer == null || _originalName == null || !_layer.Enabled) return;
