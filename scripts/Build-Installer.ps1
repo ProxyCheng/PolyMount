@@ -15,13 +15,9 @@ foreach ($project in @('Service','Tray')) {
     $output = Join-Path $payload $project
     & dotnet publish (Join-Path $repo "src\PolyMount.$project\PolyMount.$project.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $output --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw "$project publish failed." }
-    if ($project -eq 'Tray') {
-        $qt = 'D:\QtSharp'
-        Copy-Item -LiteralPath (Join-Path $qt 'out\api\QtSharp.Api.dll') -Destination $output
-        Copy-Item -Path (Join-Path $qt 'Qt\6.11.0\runtime\*.dll') -Destination $output
-        New-Item -ItemType Directory -Path (Join-Path $output 'platforms') -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path $qt 'Qt\6.11.0\runtime\platforms\qwindows.dll') -Destination (Join-Path $output 'platforms')
-    }
+    # The Qt binding, its native glue and the Qt runtime DLLs arrive with the QtSharp.Api package,
+    # which copies them into the publish output (buildTransitive targets) - no local QtSharp clone
+    # is involved. The MSVC runtime is not part of it; the setup installs vc_redist.x64.exe below.
     # A distribution must not contain this workstation's repository config.
     Remove-Item -LiteralPath (Join-Path $output 'config.json') -Force -ErrorAction SilentlyContinue
 }

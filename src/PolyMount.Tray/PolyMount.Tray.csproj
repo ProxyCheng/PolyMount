@@ -10,17 +10,15 @@
     <InvariantGlobalization>false</InvariantGlobalization>
   </PropertyGroup>
 
-  <!-- QtSharp binding + runtime + native/Qt DLL copies. Adjust QtSharpRoot if QtSharp moves. -->
-  <PropertyGroup>
-    <QtSharpRoot>D:\QtSharp\</QtSharpRoot>
-    <QtSharpCompileBinding>false</QtSharpCompileBinding>
-  </PropertyGroup>
-  <Import Project="$(QtSharpRoot)QtSharp.Api.props" />
-
   <ItemGroup>
+    <!-- The Qt binding, its native glue and the Qt runtime DLLs. The package's buildTransitive
+         props/targets set PlatformTarget=x64 and copy the native payload next to the executable on
+         Build and on Publish, so nothing else has to know where QtSharp lives.
+         Restore reads it from the "qtsharp" source in nuget.config - run scripts/Fetch-QtSharp.ps1
+         first in a fresh clone. -->
+    <PackageReference Include="QtSharp.Api" Version="0.1.0" />
     <Content Include="resources\polymount.rcc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
-    <ProjectReference Include="..\PolyMount.QtBinding\PolyMount.QtBinding.csproj" />
   </ItemGroup>
 
 </Project>

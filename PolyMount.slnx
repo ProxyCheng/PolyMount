@@ -1,7 +1,6 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/PolyMount.Core/PolyMount.Core.csproj" />
-    <Project Path="src/PolyMount.QtBinding/PolyMount.QtBinding.csproj" />
     <Project Path="src/PolyMount.Plugin.Testing/PolyMount.Plugin.Testing.csproj" />
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
