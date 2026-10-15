@@ -72,8 +72,17 @@ public interface IObjectManagement
     void ReleaseObject(string path);
 }
 
+/// <summary>Where a store's object lookups spent their time. A directory listing probes every
+/// layer above the provider once per child, so a lookup that costs milliseconds shows up as
+/// seconds of listing latency; this splits that cost into the shared metadata gate, the
+/// filesystem check that answers "is the store still there", and reading a record back. Counts
+/// are cumulative since the store was opened, so a rate is <see cref="TotalUs"/> over
+/// <see cref="Calls"/>.</summary>
+public sealed record LookupProfile(long Calls, long TotalUs, long GateWaitUs, long ExistsUs, long LoadUs, long MaxUs);
+
 public sealed record LayerStorageUsage(long DiskBytes, long ObjectBytes, int FileObjects, int DirectoryObjects,
-    long CacheBytes = 0, long CacheCapacity = 0, long DurableBytes = 0, int DurableObjects = 0, long MemoryBytes = 0);
+    long CacheBytes = 0, long CacheCapacity = 0, long DurableBytes = 0, int DurableObjects = 0, long MemoryBytes = 0,
+    LookupProfile? Lookups = null);
 
 public interface ILayerStorageUsage
 {

@@ -175,6 +175,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
         var writes = _writes.GetStorageUsage();
         return new(reads.DiskBytes + writes.DiskBytes, reads.ObjectBytes + writes.ObjectBytes,
             reads.FileObjects + writes.FileObjects, reads.DirectoryObjects + writes.DirectoryObjects,
-            TotalBytes, Capacity, writes.ObjectBytes, writes.FileObjects + writes.DirectoryObjects);
+            TotalBytes, Capacity, writes.ObjectBytes, writes.FileObjects + writes.DirectoryObjects,
+            Lookups: reads.Lookups);
     }
 }

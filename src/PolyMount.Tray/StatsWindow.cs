@@ -32,6 +32,8 @@ internal sealed class StatsWindow : QWidget
     private const double SamplingGapSeconds = 3;
     /// <summary>The window every chart, the sample history and the response overhead share.</summary>
     private const int HistorySeconds = 60;
+    /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
+    private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
     private Task<ExportOutcome>? _pendingExport;
@@ -114,7 +116,9 @@ internal sealed class StatsWindow : QWidget
         _table.VerticalHeader().Hide();
         _table.HorizontalHeader().SetSectionResizeMode(QHeaderView.ResizeMode.Stretch);
         _table.HorizontalHeader().SetDefaultAlignment(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter);
-        _table.SetMaximumHeight(205);
+        // The layer list is shown whole: the window's own scroll area is what scrolls, so a list
+        // of layers is never hidden behind a second scrollbar.
+        _table.SetVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);
         root.AddWidget(_table);
         _status = new QLabel();
         _status.SetObjectName("muted");
@@ -139,6 +143,10 @@ internal sealed class StatsWindow : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>The layer table on its own: the window capture stops above it, and one row per
+    /// layer is the whole point of that table.</summary>
+    internal void CaptureTable(string path) { using var image = _table.Grab(); image.Save(path); }
     internal void VerifyResponseSampling()
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
@@ -213,18 +221,51 @@ internal sealed class StatsWindow : QWidget
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
+        // The layer table carries every layer: no second scrollbar and no row outside the widget.
+        if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
+            _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
+            throw new InvalidOperationException($"Layer table shows {_table.RowCount} rows in {_table.Height} px");
 
-        var outcome = StatsExport.Write(directory, Snapshot());
+        var snapshot = Snapshot();
+        if (snapshot.CapturedUtc == default)
+            throw new InvalidOperationException("An export does not record the moment its state was captured");
+        var outcome = StatsExport.Write(directory, snapshot);
         using var summary = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "summary.json")));
         var root = summary.RootElement;
         if (root.GetProperty("charts").GetArrayLength() != _charts.Length)
             throw new InvalidOperationException("Export did not describe every chart");
-        if (root.GetProperty("export").GetProperty("samples").GetInt32() != outcome.Samples)
+        if (root.GetProperty("export").GetProperty("rows").GetInt32() != outcome.Samples)
             throw new InvalidOperationException("Export sample count does not match its own summary");
+        // Rows are a product of the two counts a reader would otherwise have to divide out.
+        var export = root.GetProperty("export");
+        int rows = export.GetProperty("rows").GetInt32();
+        int ticks = export.GetProperty("ticks").GetInt32();
+        int layers = export.GetProperty("layers").GetInt32();
+        if (rows == 0 ? ticks != 0 || layers != 0 : ticks == 0 || layers == 0 || ticks * layers < rows)
+            throw new InvalidOperationException(
+                $"Export describes {rows} rows as {ticks} seconds of {layers} layers");
+        // The files may be written long after the state was read, so the summary has to carry the
+        // earlier moment rather than leaving the reader to assume it is the file's own timestamp.
+        if (root.GetProperty("export").GetProperty("capturedUtc").GetString() !=
+            snapshot.CapturedUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture))
+            throw new InvalidOperationException("Export does not report the moment its state was captured");
         if (File.ReadAllLines(Path.Combine(outcome.Directory, "samples.csv")).Length != outcome.Samples + 1)
             throw new InvalidOperationException("Exported records do not match their summary");
         if (!root.TryGetProperty("logs", out _) || !root.TryGetProperty("response", out _))
             throw new InvalidOperationException("Export summary is missing its logs or response overhead");
+        // The digest has to be readable whether or not the service was there to hand over logs,
+        // and its ranked lists must agree with the totals it states beside them.
+        using var digest = JsonDocument.Parse(
+            File.ReadAllText(Path.Combine(outcome.Directory, "requests-summary.json")));
+        var digestRoot = digest.RootElement;
+        var totals = digestRoot.GetProperty("totals");
+        var operations = digestRoot.GetProperty("operations").EnumerateArray().ToArray();
+        // The operation list is capped, so it only has to add up when nothing was cut.
+        if (totals.GetProperty("operations").GetInt32() <= operations.Length &&
+            totals.GetProperty("ends").GetInt64() != operations.Sum(operation => operation.GetProperty("ends").GetInt64()))
+            throw new InvalidOperationException("Request digest operations do not sum to its own totals");
+        if (digestRoot.GetProperty("coverage").GetArrayLength() != outcome.Logs)
+            throw new InvalidOperationException("Request digest does not account for every exported log");
     }
 
     private void TogglePause()
@@ -296,15 +337,19 @@ internal sealed class StatsWindow : QWidget
     /// <summary>Freezes the window and writes what it shows: the figures, the per-second records
     /// behind them and the service's logs. Sampling is held first, because an export that keeps
     /// advancing is not a snapshot of anything the reader saw.</summary>
+    /// <summary>Writes the window as it stands when the button is pressed. The state is copied
+    /// here, before the folder prompt: that dialog runs its own event loop, so anything read
+    /// after it would be the state the reader finished choosing a folder in rather than the one
+    /// they clicked on. Sampling carries on behind the dialog — the copy is what makes an export
+    /// a snapshot of a moment, so nothing needs to stop for it.</summary>
     private void Export()
     {
+        var snapshot = Snapshot();
         string? parent = QFileDialog.GetExistingDirectory(this, T("stats.export.choose"), _exportDirectory);
         if (string.IsNullOrEmpty(parent)) return;
         _exportDirectory = parent;
         StatsExport.SaveDirectory(parent);
-        if (!_paused) TogglePause();
         _status.SetText(T("stats.export.running"));
-        var snapshot = Snapshot();
         _pendingExport = Task.Run(() => StatsExport.Write(parent, snapshot));
     }
 
@@ -326,6 +371,7 @@ internal sealed class StatsWindow : QWidget
     /// writer never reads a collection that is still being appended to.</summary>
     private StatsSnapshot Snapshot() => new()
     {
+        CapturedUtc = DateTime.UtcNow,
         Scope = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText),
         Language = I18n.Language,
         Frozen = _paused,
@@ -497,12 +543,10 @@ internal sealed class StatsWindow : QWidget
         {
             var (mount, layer) = rows[row];
             string accelerated = "";
-            string acceleratedTip = "";
             if (layer.Accelerating)
             {
                 var (percent, bytes) = Accelerated(samples, mount.Mount + "/" + layer.Name);
-                accelerated = I18n.F("stats.accelerated.cell", percent);
-                acceleratedTip = I18n.F("stats.accelerated.tip", ByteUnits.Format(bytes));
+                accelerated = I18n.F("stats.accelerated.cell", percent, ByteUnits.Format(bytes));
             }
             string[] values = { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName, layer.Hits.ToString("N0", I18n.Culture), layer.SharePercent.ToString("0.#", I18n.Culture),
                 layer.AvgCostMs.ToString("0.##", I18n.Culture), layer.MaxCostMs.ToString("0.##", I18n.Culture), ByteUnits.Format(layer.Bytes), accelerated };
@@ -516,12 +560,21 @@ internal sealed class StatsWindow : QWidget
                     _table.SetItem(row, col, item);
                 }
                 else if (item.Text() != values[col]) item.SetText(values[col]);
-                if (col == values.Length - 1 && item.ToolTip() != acceleratedTip) item.SetToolTip(acceleratedTip);
             }
             if (layer.Color.Length > 0) _table.Item(row, 1).SetForeground(new QBrush(new QColor(layer.Color)));
-            _table.SetRowHeight(row, 36);
+            _table.SetRowHeight(row, TableRowHeight);
         }
         if (structureChanged) _table.SetUpdatesEnabled(true);
+        FitTable();
+    }
+
+    /// <summary>Gives the table exactly the height of its rows and header. Its rows are all the
+    /// layers there are, so a fixed height is what makes the list readable at a glance; the
+    /// scrollbar is off, so a miscalculation would clip rather than hide a row.</summary>
+    private void FitTable()
+    {
+        int header = _table.HorizontalHeader().Height;
+        _table.SetFixedHeight(header + _table.RowCount * TableRowHeight + 2 * _table.FrameWidth);
     }
 
     private void Translate()

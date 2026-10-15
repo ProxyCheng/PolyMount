@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Text.Json;
 using PolyMount.Core;
@@ -20,6 +21,9 @@ internal sealed class ObjectDatabase
     private long _usageCheckedAt;
     private long _diskBytes;
     private readonly object _usageGate = new();
+    // Lookup cost, split by phase. Written under _gate, where the phases happen, so the
+    // counters need no atomics of their own.
+    private long _lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs, _lookupLoadUs, _lookupMaxUs;
     public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null,
         long metadataBudget = CacheBudgets.MetadataBytes)
     {
@@ -81,9 +85,14 @@ internal sealed class ObjectDatabase
         lock (_gate)
         {
             return new(Interlocked.Read(ref _diskBytes), _records.Values.Sum(r => r.StoredBytes),
-                _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir));
+                _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir),
+                Lookups: new LookupProfile(_lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs,
+                    _lookupLoadUs, _lookupMaxUs));
         }
     }
+
+    private static long Microseconds(long from, long to) =>
+        (to - from) * 1_000_000L / Stopwatch.Frequency;
     internal Record? GetPublishedRecord(string key)
     {
         lock (_gate) return _records.GetValueOrDefault(key);
@@ -102,39 +111,71 @@ internal sealed class ObjectDatabase
     }
     public bool TryGet(string key, out VirtualObject value)
     {
+        long started = Stopwatch.GetTimestamp();
         lock (_gate)
         {
-            value = null!;
-            bool resident = _records.TryGetValue(key, out var record);
-            if (resident)
+            long acquired = Stopwatch.GetTimestamp();
+            long existsUs = 0, loadUs = 0;
+            try
             {
-                // The store may have been removed underneath us; this drops the stale index.
-                EnsureAvailable();
-                if (!_records.TryGetValue(key, out record)) return false;
+                value = null!;
+                bool resident = _records.TryGetValue(key, out var record);
+                if (resident)
+                {
+                    // The store may have been removed underneath us; this drops the stale index.
+                    long check = Stopwatch.GetTimestamp();
+                    EnsureAvailable();
+                    existsUs += Microseconds(check, Stopwatch.GetTimestamp());
+                    if (!_records.TryGetValue(key, out record)) return false;
+                }
+                else
+                {
+                    // An unrecoverable store must surface a removed database rather than
+                    // report its objects as absent.
+                    if (!_recoverable)
+                    {
+                        long check = Stopwatch.GetTimestamp();
+                        EnsureAvailable();
+                        existsUs += Microseconds(check, Stopwatch.GetTimestamp());
+                        return false;
+                    }
+                    // A recoverable store keeps a bounded resident index over a complete
+                    // table, so a miss in memory is not a miss on disk.
+                    long load = Stopwatch.GetTimestamp();
+                    record = LoadRecord(key);
+                    loadUs += Microseconds(load, Stopwatch.GetTimestamp());
+                    if (record == null) return false;
+                }
+                if (record!.Blob != null)
+                {
+                    long check = Stopwatch.GetTimestamp();
+                    bool present = File.Exists(Path.Combine(_root, record.Blob));
+                    existsUs += Microseconds(check, Stopwatch.GetTimestamp());
+                    if (!present)
+                    {
+                        if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
+                        Apply(new[] { new ObjectChange(key, null) });
+                        return false;
+                    }
+                }
+                record = record with { Access = DateTime.UtcNow.Ticks };
+                // Admission can evict the row again straight away under a tight budget; the
+                // record just read stays valid, so answer from it either way.
+                if (_records.ContainsKey(key)) _records[key] = record;
+                else Admit(record);
+                value = record.Value;
+                return true;
             }
-            else
+            finally
             {
-                // An unrecoverable store must surface a removed database rather than
-                // report its objects as absent.
-                if (!_recoverable) { EnsureAvailable(); return false; }
-                // A recoverable store keeps a bounded resident index over a complete
-                // table, so a miss in memory is not a miss on disk.
-                record = LoadRecord(key);
-                if (record == null) return false;
+                long total = Microseconds(started, Stopwatch.GetTimestamp());
+                _lookupCalls++;
+                _lookupTotalUs += total;
+                _lookupGateUs += Microseconds(started, acquired);
+                _lookupExistsUs += existsUs;
+                _lookupLoadUs += loadUs;
+                if (total > _lookupMaxUs) _lookupMaxUs = total;
             }
-            if (record!.Blob != null && !File.Exists(Path.Combine(_root, record.Blob)))
-            {
-                if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
-                Apply(new[] { new ObjectChange(key, null) });
-                return false;
-            }
-            record = record with { Access = DateTime.UtcNow.Ticks };
-            // Admission can evict the row again straight away under a tight budget; the
-            // record just read stays valid, so answer from it either way.
-            if (_records.ContainsKey(key)) _records[key] = record;
-            else Admit(record);
-            value = record.Value;
-            return true;
         }
     }
 
