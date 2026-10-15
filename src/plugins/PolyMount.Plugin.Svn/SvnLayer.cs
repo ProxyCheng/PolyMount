@@ -9,6 +9,13 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
     private readonly Dictionary<string, IReadOnlyList<VfsEntry>> _memo = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, VfsEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Lazy<IReadOnlyList<VfsEntry>>> _listingRequests = new(StringComparer.OrdinalIgnoreCase);
+    // Memo keys whose listing came from read-ahead and that no demand call has used yet,
+    // and keys whose children have already been queued for read-ahead.
+    private readonly HashSet<string> _prefetched = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _cascaded = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SvnPrefetchOptions _prefetchOptions;
+    private readonly SvnListingPrefetch? _prefetch;
+    private long _prefetchHits;
 
     private long _rev;
     private DateTime _pinMtime = DateTime.MinValue;
@@ -22,8 +29,9 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
     private void ClearMemo()
     {
         _memo.Clear(); _entries.Clear(); _memoAccess.Clear(); _memoSizes.Clear(); _metadataBytes = 0;
+        _prefetched.Clear(); _cascaded.Clear();
     }
-    private void StoreListing(string key, string generation, string path, IReadOnlyList<VfsEntry> list)
+    private void StoreListing(string key, string generation, string path, IReadOnlyList<VfsEntry> list, bool speculative)
     {
         if (_memo.ContainsKey(key)) return;
         long size = CacheBudgets.Estimate(key, new VirtualObject(new VfsEntry { Name = VfsPath.Name(path), IsDir = true }, list));
@@ -31,21 +39,47 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
         while (_memo.Count >= CacheBudgets.MaxObjects || _metadataBytes + size > CacheBudgets.MetadataBytes)
         {
             string oldest = _memoAccess.MinBy(p => p.Value).Key;
-            var children = _memo[oldest];
+            var evicted = _memo[oldest];
             string prefix = oldest + (oldest.EndsWith('|') ? "" : "/");
-            foreach (var child in children) _entries.Remove(prefix + child.Name);
+            foreach (var child in evicted) _entries.Remove(prefix + child.Name);
             _metadataBytes -= _memoSizes[oldest];
             _memo.Remove(oldest); _memoAccess.Remove(oldest); _memoSizes.Remove(oldest);
+            _prefetched.Remove(oldest);
+            _cascaded.Remove(oldest);
         }
         _memo[key] = list; _memoAccess[key] = Environment.TickCount64; _metadataBytes += size;
         _memoSizes[key] = size;
         foreach (var child in list) _entries[generation + "|" + VfsPath.Child(path, child.Name)] = child;
+        if (!speculative) return;
+        if (_prefetched.Count >= 4096) _prefetched.Clear();
+        _prefetched.Add(key);
     }
 
-    private SvnLayer(ISvnBackend svn, string pinPath)
+    /// <summary>Child directories worth fetching ahead: bounded, and only those whose listing
+    /// is neither known nor already on its way.</summary>
+    private List<string>? PendingChildren(string generation, string path, IReadOnlyList<VfsEntry> list)
+    {
+        if (_prefetch == null) return null;
+        var pending = new List<string>();
+        foreach (var child in list)
+        {
+            if (pending.Count >= _prefetchOptions.Children) break;
+            if (!child.IsDir) continue;
+            string rel = VfsPath.Child(path, child.Name);
+            string key = generation + "|" + rel;
+            if (_memo.ContainsKey(key) || _listingRequests.ContainsKey(key)) continue;
+            pending.Add(rel);
+        }
+        return pending.Count > 0 ? pending : null;
+    }
+
+    internal SvnLayer(ISvnBackend svn, string pinPath, SvnPrefetchOptions? prefetch = null)
     {
         _svn = svn;
         _pinPath = pinPath;
+        _prefetchOptions = prefetch ?? new SvnPrefetchOptions();
+        if (prefetch is { Concurrency: > 0, Children: > 0 })
+            _prefetch = new SvnListingPrefetch(prefetch.Concurrency, prefetch.QueueDepth, () => Revision, FetchListing);
         Directory.CreateDirectory(Path.GetDirectoryName(pinPath)!);
     }
 
@@ -55,20 +89,48 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
     /// server refuses that transport or the mount relies on the svn credential store.
     /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
-        string? username = null, string? password = null)
+        string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null)
     {
         if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
             url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             return new(new FallbackSvnBackend(
                 new SvnHttpClient(url, trustFailures, username, password),
-                () => new SvnClient(url, trustFailures, username, password)), pinPath);
-        return new(new SvnClient(url, trustFailures, username, password), pinPath);
+                () => new SvnClient(url, trustFailures, username, password)), pinPath, prefetch);
+        return new(new SvnClient(url, trustFailures, username, password), pinPath, prefetch);
     }
 
-    public void Dispose() => _svn.Dispose();
+    public void Dispose()
+    {
+        _prefetch?.Dispose();
+        _svn.Dispose();
+    }
 
     /// <summary>The transport serving this layer; exposed so tests can assert the selection.</summary>
     internal ISvnBackend Backend => _svn;
+
+    /// <summary>Listings fetched ahead of demand, and how many of them a demand call then used.</summary>
+    public long PrefetchedListings => _prefetch?.Fetched ?? 0;
+    public long PrefetchHits => Interlocked.Read(ref _prefetchHits);
+    public long PrefetchStale => _prefetch?.Stale ?? 0;
+    public long PrefetchFailures => _prefetch?.Failures ?? 0;
+
+    /// <summary>Waits for read-ahead to settle; zero or one worker with an empty queue returns at once.</summary>
+    internal bool WaitForPrefetch(TimeSpan timeout) => _prefetch?.WaitForIdle(timeout) ?? true;
+
+    /// <summary>Fetches one directory for read-ahead, reporting whether a listing was kept.</summary>
+    private bool FetchListing(string rel)
+    {
+        string key;
+        lock (_gate)
+        {
+            key = Generation + "|" + rel;
+            // A listing that is already known, or already being fetched for a caller,
+            // needs no speculative request.
+            if (_memo.ContainsKey(key) || _listingRequests.ContainsKey(key)) return false;
+        }
+        Listing(rel, speculative: true);
+        lock (_gate) return _memo.ContainsKey(key);
+    }
 
     public string Name => "svn";
     public bool Writable => false;
@@ -134,13 +196,20 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
         {
             if (_entries.TryGetValue(key, out entry!)) return true;
         }
-        var list = ListOwn(VfsPath.Parent(rel));
+        var list = Listing(VfsPath.Parent(rel), speculative: false);
         // Oversized directories are served but not retained in the memo index.
         entry = list.FirstOrDefault(c => string.Equals(c.Name, VfsPath.Name(rel), StringComparison.OrdinalIgnoreCase))!;
         return entry != null;
     }
 
-    public IReadOnlyList<VfsEntry> ListOwn(string rel)
+    public IReadOnlyList<VfsEntry> ListOwn(string rel) => Listing(rel, speculative: false);
+
+    /// <summary>
+    /// Serves one directory listing. A speculative request comes from read-ahead: it counts
+    /// as neither demand nor a reason to queue more work, which is what keeps read-ahead one
+    /// level deep instead of turning a browse into a whole-tree download.
+    /// </summary>
+    private IReadOnlyList<VfsEntry> Listing(string rel, bool speculative)
     {
         // WinFsp and shell probes are case-insensitive; SVN URLs are not. Resolve
         // every component to the spelling advertised by its parent listing.
@@ -155,11 +224,12 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
         long revision = Revision;
         var generation = revision.ToString();
         var key = generation + "|" + rel;
-        Lazy<IReadOnlyList<VfsEntry>> pending;
+        Lazy<IReadOnlyList<VfsEntry>>? pending = null;
+        IReadOnlyList<VfsEntry>? memoized = null;
         lock (_gate)
         {
-            if (_memo.TryGetValue(key, out var cached)) { _memoAccess[key] = Environment.TickCount64; return cached; }
-            if (!_listingRequests.TryGetValue(key, out pending!))
+            if (_memo.TryGetValue(key, out memoized)) _memoAccess[key] = Environment.TickCount64;
+            else if (!_listingRequests.TryGetValue(key, out pending!))
             {
                 string directory = rel;
                 pending = new(() =>
@@ -174,25 +244,41 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
                 _listingRequests[key] = pending;
             }
         }
-        try
+        IReadOnlyList<VfsEntry> list;
+        if (memoized != null) list = memoized;
+        else
         {
-            // Same-directory callers share one request; different directories can
-            // execute svn list concurrently without holding the metadata mutex.
-            var list = pending.Value;
-            lock (_gate)
+            try
             {
-                if (_rev == revision)
+                // Same-directory callers share one request; different directories can
+                // execute svn list concurrently without holding the metadata mutex.
+                list = pending!.Value;
+                lock (_gate)
                 {
-                    StoreListing(key, generation, rel, list);
+                    if (_rev == revision) StoreListing(key, generation, rel, list, speculative);
                 }
             }
-            return list;
+            finally
+            {
+                lock (_gate)
+                    if (_listingRequests.TryGetValue(key, out var current) && current == pending) _listingRequests.Remove(key);
+            }
         }
-        finally
+        if (speculative) return list;
+        // What a caller asks for is what makes the level below it worth fetching: read-ahead
+        // never queues children of its own, and a listing it fetched earlier still has to
+        // cascade once demand arrives — otherwise the chain stalls exactly when read-ahead
+        // is ahead, which is the case it exists for.
+        List<string>? children;
+        lock (_gate)
         {
-            lock (_gate)
-                if (_listingRequests.TryGetValue(key, out var current) && current == pending) _listingRequests.Remove(key);
+            if (_prefetched.Remove(key)) Interlocked.Increment(ref _prefetchHits);
+            children = _cascaded.Add(key) ? PendingChildren(generation, rel, list) : null;
         }
+        // Queued outside the metadata lock: a speculative fetch must not delay a caller.
+        if (children != null) _prefetch!.Enqueue(revision, children);
+        _prefetch?.DemandServed();
+        return list;
     }
 
     public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)

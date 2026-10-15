@@ -1,5 +1,6 @@
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
+using System.Text.Json;
 using System.Xml.Linq;
 using PolyMount.Core;
 using PolyMount.Plugin.Testing;
@@ -57,7 +58,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         </D:propstat>
         </D:response>
         <D:response xmlns:lp1="DAV:">
-        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/%E6%B5%8B%E8%AF%95%20file.bin</D:href>
+        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/%D1%82%D0%B5%D1%81%D1%82%20file.bin</D:href>
         <D:propstat>
         <D:prop>
         <lp1:resourcetype/>
@@ -79,6 +80,41 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public IReadOnlyList<SvnEntry> List(long rev, string rel) { Enter(); return Array.Empty<SvnEntry>(); }
         public void CatToFile(long rev, string rel, string dest) => Enter();
         public void Dispose() => Disposed = true;
+    }
+
+    /// <summary>A small repository tree that records what was asked of it, and can park a
+    /// listing inside the request so a test controls what is still queued.</summary>
+    private sealed class TreeBackend : ISvnBackend
+    {
+        private static readonly Dictionary<string, string[]> Tree = new()
+        {
+            [""] = ["A", "B", "f.txt"],
+            ["A"] = ["inner", "g.txt"],
+            ["B"] = ["h.txt"],
+            ["A/inner"] = []
+        };
+        private readonly Dictionary<string, int> _calls = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>Directory whose listing blocks until <see cref="Gate"/> is set.</summary>
+        public string? Parked;
+        public ManualResetEventSlim? Gate;
+
+        public int Count(string rel) { lock (_calls) return _calls.GetValueOrDefault(rel); }
+        public int Total { get { lock (_calls) return _calls.Values.Sum(); } }
+
+        public long GetHeadRevision() => 1;
+        public IReadOnlyList<SvnEntry> List(long rev, string rel)
+        {
+            lock (_calls) _calls[rel] = _calls.GetValueOrDefault(rel) + 1;
+            if (Parked != null && string.Equals(Parked, rel, StringComparison.OrdinalIgnoreCase)) Gate?.Wait(TimeSpan.FromSeconds(10));
+            if (!Tree.TryGetValue(rel, out var names)) throw new SvnNotFoundException(rel);
+            return names.Select(name => new SvnEntry
+            {
+                Name = name,
+                IsDir = Tree.ContainsKey(rel.Length == 0 ? name : rel + "/" + name)
+            }).ToArray();
+        }
+        public void CatToFile(long rev, string rel, string dest) { }
+        public void Dispose() { }
     }
 
     public string PluginName => "svn";
@@ -126,10 +162,10 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("Unexpected revision-pinned URL: " + url);
             if (SvnHttpClient.ResourceUrl("https://host/svn", "", 7, "") != "https://host/svn/!svn/rvr/7")
                 throw new Exception("Unexpected repository root URL");
-            var escaped = SvnHttpClient.ResourceUrl("https://host/svn", "", 7, "a b/测试.bin");
-            if (escaped != "https://host/svn/!svn/rvr/7/a%20b/%E6%B5%8B%E8%AF%95.bin")
+            var escaped = SvnHttpClient.ResourceUrl("https://host/svn", "", 7, "a b/тест.bin");
+            if (escaped != "https://host/svn/!svn/rvr/7/a%20b/%D1%82%D0%B5%D1%81%D1%82.bin")
                 throw new Exception("Path was not escaped: " + escaped);
-            if (Uri.UnescapeDataString(escaped.Split("/!svn/rvr/7/")[1]) != "a b/测试.bin")
+            if (Uri.UnescapeDataString(escaped.Split("/!svn/rvr/7/")[1]) != "a b/тест.bin")
                 throw new Exception("Escaped path does not round-trip");
         });
         Check("listing-parse", () =>
@@ -137,7 +173,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
             var entries = SvnHttpClient.ParseListing(XDocument.Parse(Listing),
                 "/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local", "Shapes.local");
             var names = entries.Select(e => e.Name).ToArray();
-            if (!names.SequenceEqual(new[] { "Character", "resource.repository", "测试 file.bin" }))
+            if (!names.SequenceEqual(new[] { "Character", "resource.repository", "тест file.bin" }))
                 throw new Exception("Unexpected names: " + string.Join(", ", names));
             if (!entries[0].IsDir || entries[0].Size != 0) throw new Exception("Collection was not reported as a directory");
             if (entries[1].IsDir || entries[1].Size != 18009) throw new Exception("File size was not read from getcontentlength");
@@ -216,6 +252,92 @@ public sealed class SvnPluginTests : IPluginTestProvider
             try { SourceRegistry.Validate("svn", new SourceConfig { Url = "not-a-url" }); }
             catch (ArgumentException) { return; }
             throw new Exception("Invalid URL was accepted");
+        });
+        Check("prefetch-fetches-child-listings", () =>
+        {
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 2, QueueDepth = 8, Children = 8 });
+            if (layer.ListOwn("").Count != 3) throw new Exception("Unexpected root listing");
+            if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
+            if (backend.Count("A") != 1 || backend.Count("B") != 1)
+                throw new Exception($"Child directories were not fetched ahead: A={backend.Count("A")} B={backend.Count("B")}");
+            if (backend.Count("f.txt") != 0) throw new Exception("A file was listed as a directory");
+            if (layer.PrefetchedListings != 2) throw new Exception("Prefetched listings: " + layer.PrefetchedListings);
+            layer.ListOwn("A");
+            if (layer.PrefetchHits != 1) throw new Exception("The demand listing did not use read-ahead: hits=" + layer.PrefetchHits);
+            if (backend.Count("A") != 1) throw new Exception("The demand listing re-fetched a prefetched directory");
+        });
+        Check("prefetch-stays-one-level-deep", () =>
+        {
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-depth-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 2 });
+            layer.ListOwn("");
+            if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
+            if (backend.Count("A/inner") != 0) throw new Exception("Read-ahead cascaded past the level that was asked for");
+        });
+        Check("prefetch-disabled", () =>
+        {
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-off-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0 });
+            layer.ListOwn("");
+            layer.WaitForPrefetch(TimeSpan.FromSeconds(1));
+            if (backend.Count("A") != 0 || backend.Count("B") != 0) throw new Exception("Read-ahead ran while disabled");
+            if (backend.Total != 1) throw new Exception("Disabled read-ahead issued " + backend.Total + " requests");
+        });
+        Check("prefetch-skips-a-revision-the-mount-left", () =>
+        {
+            using var gate = new ManualResetEventSlim(false);
+            var backend = new TreeBackend { Parked = "A", Gate = gate };
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-stale-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 1, QueueDepth = 8 });
+            layer.SetRevision(11);
+            layer.ListOwn("");
+            // The only worker is inside A's listing, so B is still queued when the pin moves.
+            long deadline = Environment.TickCount64 + 5000;
+            while (backend.Count("A") == 0 && Environment.TickCount64 < deadline) Thread.Sleep(5);
+            if (backend.Count("A") == 0) throw new Exception("Read-ahead never started");
+            layer.SetRevision(12);
+            gate.Set();
+            if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
+            if (layer.PrefetchStale != 1) throw new Exception("A queued listing was not skipped after the pin moved: stale=" + layer.PrefetchStale);
+            if (backend.Count("B") != 0) throw new Exception("A listing of the abandoned revision was fetched");
+        });
+        Check("prefetch-continues-when-it-is-ahead", () =>
+        {
+            // Read-ahead fetching a listing must not end the chain: the caller that then
+            // asks for that listing is what makes the level below it worth fetching.
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-ahead-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 2, QueueDepth = 8 });
+            layer.SetRevision(4);
+            layer.ListOwn("");
+            if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
+            if (backend.Count("A") != 1) throw new Exception("Read-ahead did not fetch A");
+            layer.ListOwn("A");
+            if (layer.PrefetchHits != 1) throw new Exception("The demand listing did not use read-ahead: hits=" + layer.PrefetchHits);
+            if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
+            if (backend.Count("A/inner") != 1)
+                throw new Exception("A listing that read-ahead fetched stopped the chain: inner=" + backend.Count("A/inner"));
+        });
+        Check("prefetch-options", () =>
+        {
+            var defaults = SvnPrefetchOptions.From(new Dictionary<string, JsonElement>());
+            if (defaults is not { Concurrency: 2, QueueDepth: 16, Children: 8 })
+                throw new Exception("Unexpected read-ahead defaults");
+            var configured = SvnPrefetchOptions.From(new Dictionary<string, JsonElement>
+            {
+                ["PrefetchConcurrency"] = JsonSerializer.SerializeToElement(4),
+                ["PrefetchQueueDepth"] = JsonSerializer.SerializeToElement(64),
+                ["PrefetchChildren"] = JsonSerializer.SerializeToElement(2)
+            });
+            if (configured is not { Concurrency: 4, QueueDepth: 64, Children: 2 })
+                throw new Exception("Read-ahead parameters were ignored");
+            try { SvnPrefetchOptions.From(new Dictionary<string, JsonElement> { ["PrefetchConcurrency"] = JsonSerializer.SerializeToElement(9) }); }
+            catch (ArgumentException) { return; }
+            throw new Exception("An out-of-range read-ahead worker count was accepted");
         });
         if (context.Parameters.TryGetValue("svn.repository", out var repository))
             Check("repository-integration", () =>

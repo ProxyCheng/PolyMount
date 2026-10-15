@@ -10,7 +10,7 @@ public sealed class SvnLayerPlugin : ILayerPlugin
         LayerPresetRegistry.Register(new()
         {
             Id = "svn-workspace",
-            Titles = new() { ["zh-CN"] = "SVN + 读取缓存 + 预测预载 + 本地修改 + 内存缓存", ["en"] = "SVN + read cache + predictive preload + overlay + memory cache" },
+            Titles = SvnTexts.All("preset.svn-workspace.title"),
             Layers = new()
             {
                 new() { Id = "memory-cache", Type = "memory-cache" },
@@ -22,26 +22,42 @@ public sealed class SvnLayerPlugin : ILayerPlugin
             }
         });
         SourceRegistry.Register("svn", (config, state) =>
-            SvnLayer.Create(config.Url, config.TrustServerCertFailures, Path.Combine(state, "pin.txt"), config.Username, config.Password),
+            SvnLayer.Create(config.Url, config.TrustServerCertFailures, Path.Combine(state, "pin.txt"), config.Username,
+                config.Password, SvnPrefetchOptions.From(config.Parameters)),
             config =>
             {
                 if (!Uri.TryCreate(config.Url, UriKind.Absolute, out _) || config.PinnedRevision < 0)
                     throw new ArgumentException("SVN requires an absolute repository URL and nonnegative revision");
+                SvnPrefetchOptions.From(config.Parameters);
             }, new LayerDescriptor
             {
-                Type = "svn", Title = new("SVN repository", "SVN 仓库"), Icon = "repository",
-                Description = new("Reads repository objects at a pinned revision without checkout.", "无需 checkout，读取指定版本的仓库对象。"),
+                Type = "svn", Title = SvnTexts.Get("svn.title"), Icon = "repository",
+                Description = SvnTexts.Get("svn.description"),
                 Fields = new()
                 {
-                    new() { Path = "Source.Url", Title = new("Repository URL", "仓库地址"), Required = true },
+                    new() { Path = "Source.Url", Title = SvnTexts.Get("svn.field.url"), Required = true },
                     new() { Path = "Source.PinnedRevision", Kind = LayerFieldKind.Integer, Minimum = 0,
-                        Title = new("Pinned revision (0 = HEAD)", "固定版本（0 = HEAD）") },
-                    new() { Path = "Source.TrustServerCertFailures", Title = new("Trusted certificate failures", "信任的证书错误") },
-                    new() { Path = "Source.Username", Title = new("Username", "用户名"), EmptyIsNull = true },
-                    new() { Path = "Source.Password", Kind = LayerFieldKind.Secret, Title = new("Password", "密码"), Trim = false, EmptyIsNull = true }
+                        Title = SvnTexts.Get("svn.field.revision") },
+                    new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
+                    new() { Path = "Source.Username", Title = SvnTexts.Get("svn.field.username"), EmptyIsNull = true },
+                    new() { Path = "Source.Password", Kind = LayerFieldKind.Secret, Title = SvnTexts.Get("svn.field.password"),
+                        Trim = false, EmptyIsNull = true },
+                    // Directory enumerations are one round trip each, so a walk pays them one
+                    // after another unless the next level is fetched while the caller reads
+                    // the current one. Bounded, and one level deep.
+                    new() { Path = "Source.Parameters.PrefetchConcurrency", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 8,
+                        DefaultValue = "2", Title = SvnTexts.Get("svn.field.prefetch.concurrency"),
+                        Description = SvnTexts.Get("svn.field.prefetch.concurrency.description") },
+                    new() { Path = "Source.Parameters.PrefetchQueueDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 1024,
+                        DefaultValue = "16", Title = SvnTexts.Get("svn.field.prefetch.queue"),
+                        Description = SvnTexts.Get("svn.field.prefetch.queue.description") },
+                    new() { Path = "Source.Parameters.PrefetchChildren", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 256,
+                        DefaultValue = "8", Title = SvnTexts.Get("svn.field.prefetch.children"),
+                        Description = SvnTexts.Get("svn.field.prefetch.children.description") }
                 },
                 Actions = new() { new() { Command = PolyMount.Core.Ipc.ControlCommands.RefreshHead,
-                    Title = new("Refresh HEAD", "更新到 HEAD"), Confirmation = new("Refresh this layer to HEAD?", "将此层更新到 HEAD？") } }
+                    Title = SvnTexts.Get("svn.action.refreshHead"),
+                    Confirmation = SvnTexts.Get("svn.action.refreshHead.confirmation") } }
             });
     }
 }

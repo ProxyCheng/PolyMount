@@ -1,0 +1,33 @@
+{
+  "preset.svn-workspace.title": {
+    "en": "SVN + read cache + predictive preload + overlay + memory cache",
+    "zh-CN": "SVN + 读取缓存 + 预测预载 + 本地修改 + 内存缓存"
+  },
+  "svn.title": { "en": "SVN repository", "zh-CN": "SVN 仓库" },
+  "svn.description": {
+    "en": "Reads repository objects at a pinned revision without checkout.",
+    "zh-CN": "无需 checkout，读取指定版本的仓库对象。"
+  },
+  "svn.field.url": { "en": "Repository URL", "zh-CN": "仓库地址" },
+  "svn.field.revision": { "en": "Pinned revision (0 = HEAD)", "zh-CN": "固定版本（0 = HEAD）" },
+  "svn.field.trust": { "en": "Trusted certificate failures", "zh-CN": "信任的证书错误" },
+  "svn.field.username": { "en": "Username", "zh-CN": "用户名" },
+  "svn.field.password": { "en": "Password", "zh-CN": "密码" },
+  "svn.field.prefetch.concurrency": { "en": "Listing read-ahead workers", "zh-CN": "目录预取并发数" },
+  "svn.field.prefetch.concurrency.description": {
+    "en": "Directories fetched ahead of demand; 0 disables read-ahead.",
+    "zh-CN": "提前抓取的目录数；0 表示关闭预取。"
+  },
+  "svn.field.prefetch.queue": { "en": "Read-ahead queue depth", "zh-CN": "预取队列深度" },
+  "svn.field.prefetch.queue.description": {
+    "en": "Directories that may wait for a worker; later ones are dropped.",
+    "zh-CN": "可排队的目录数，超出的会被丢弃。"
+  },
+  "svn.field.prefetch.children": { "en": "Read-ahead fan-out", "zh-CN": "预取扇出" },
+  "svn.field.prefetch.children.description": {
+    "en": "Child directories taken from one listing.",
+    "zh-CN": "每个目录清单预取的子目录数。"
+  },
+  "svn.action.refreshHead": { "en": "Refresh HEAD", "zh-CN": "更新到 HEAD" },
+  "svn.action.refreshHead.confirmation": { "en": "Refresh this layer to HEAD?", "zh-CN": "将此层更新到 HEAD？" }
+}

@@ -12,4 +12,8 @@
   <ItemGroup>
     <InternalsVisibleTo Include="PolyMount.Plugin.Svn.Tests" />
   </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\plugin-texts.json" LogicalName="PolyMount.Plugin.Svn.Texts" />
+  </ItemGroup>
 </Project>

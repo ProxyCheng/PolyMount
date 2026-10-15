@@ -44,5 +44,6 @@
   "prediction.retention": { "en": "Forget after (minutes)", "zh-CN": "遗忘时限（分钟）" },
   "prediction.retention.description": { "en": "A transition not seen for this long is dropped, so a sequence the loader has moved on from stops being predicted. 0 keeps transitions until the capacity bound recycles them.", "zh-CN": "超过该时间未被观察到的转移会被丢弃，避免加载器已经不再使用的旧顺序一直被预测并向后传递。0 表示只按容量上限回收。" },
   "prediction.outcome.wasted": { "en": "wasted", "zh-CN": "失配" },
-  "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" }
+  "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" },
+  "preset.local-directory.title": { "en": "Local directory + overlay + memory cache", "zh-CN": "本地目录 + 本地修改 + 内存缓存" }
 }
