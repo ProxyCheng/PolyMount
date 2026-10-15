@@ -181,7 +181,19 @@ public sealed class MountManager
                     Find(request.Name).ClearLocalChanges(request.Layer ?? "", Config.WinFspBin);
                     break;
                 case ControlCommands.Mount:
-                    Find(request.Name).Mount(Config.WinFspBin);
+                    try
+                    {
+                        Find(request.Name).Mount(Config.WinFspBin);
+                        // A failure left a message here, and it outlived the failure: the status
+                        // then reported a mount point problem for an instance that was up.
+                        _errors.Remove(request.Name!);
+                    }
+                    catch (Exception ex)
+                    {
+                        _errors[request.Name!] = ex.Message;
+                        Log("mount " + request.Name, ex);
+                        throw;
+                    }
                     break;
                 case ControlCommands.Unmount:
                     Find(request.Name).Unmount();

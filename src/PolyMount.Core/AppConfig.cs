@@ -24,7 +24,14 @@ public sealed class AppConfig
     public static AppConfig LoadOrCreate(string path)
     {
         if (File.Exists(path))
-            return JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? Default();
+        {
+            var loaded = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? Default();
+            // An instance's identity has to outlive the process, so one that is missing is made
+            // here and written back: a store folder derived from a fresh Guid would otherwise
+            // point somewhere new on every start.
+            if (loaded.EnsureMountIds()) Save(path, loaded);
+            return loaded;
+        }
 
         var fresh = Default();
         Save(path, fresh);
@@ -34,7 +41,17 @@ public sealed class AppConfig
     public static void Save(string path, AppConfig config)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        config.EnsureMountIds();
         File.WriteAllText(path, JsonSerializer.Serialize(config, Options));
+    }
+
+    /// <summary>Gives every mount the identity its store folder is derived from, and reports
+    /// whether any was missing. Written down before anything is loaded from a store.</summary>
+    public bool EnsureMountIds()
+    {
+        bool changed = false;
+        foreach (var mount in Mounts) changed |= mount.EnsureId();
+        return changed;
     }
 
     public string ToJson() => JsonSerializer.Serialize(this, Options);
@@ -46,11 +63,21 @@ public sealed class AppConfig
     public void Validate()
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var stores = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in Mounts)
         {
             if (string.IsNullOrWhiteSpace(m.Name)) throw new ArgumentException("a mount has an empty Name");
             if (!names.Add(m.Name)) throw new ArgumentException("duplicate mount name: " + m.Name);
             if (string.IsNullOrWhiteSpace(m.MountPoint)) throw new ArgumentException($"mount '{m.Name}' has no MountPoint");
+            // One store holds one instance's pin, cache and overlay. Two instances sharing it
+            // overwrite each other's pin -- which then asks a source for a revision it does not
+            // have -- and each serves what the other cached, so this is refused rather than run.
+            string store;
+            try { store = Path.TrimEndingDirectorySeparator(Path.GetFullPath(m.GetStoreRoot())); }
+            catch (Exception ex) { throw new ArgumentException($"mount '{m.Name}' has an unusable store root '{m.StoreRoot}': {ex.Message}"); }
+            if (stores.TryGetValue(store, out var other))
+                throw new ArgumentException($"mounts '{other}' and '{m.Name}' share the store '{store}'; one of them needs its own Id or StoreRoot");
+            stores[store] = m.Name;
             m.ValidateLayers();
         }
         foreach (var kv in LayerColors)
@@ -69,9 +96,22 @@ public sealed class PluginConfig
 
 public sealed class MountProfile
 {
+    /// <summary>
+    /// This instance's identity: a Guid made when the instance is created, and the only thing
+    /// its store folder is derived from. It never follows <see cref="Name"/>, so renaming a
+    /// mount keeps its cache and its overlay, and two instances cannot end up on one store —
+    /// which is what happened when the folder was derived from the name: a name that had been
+    /// renamed away was free for the next instance to take, and took the first one's store with
+    /// it, pin file, cache and all.
+    /// </summary>
+    public string Id { get; set; } = "";
+
     public string Name { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public string MountPoint { get; set; } = "";
+    /// <summary>Where this instance keeps its state. Empty means the default under the common
+    /// application data folder, named by <see cref="Id"/>; set it to put a store on another
+    /// volume, and two mounts may then only differ in it if the paths differ too.</summary>
     public string StoreRoot { get; set; } = "";
     public long CacheCapacityBytes { get; set; } = 4L * 1024 * 1024 * 1024;
     public SourceConfig Source { get; set; } = new();
@@ -85,10 +125,21 @@ public sealed class MountProfile
     public int WarmListingsLimit { get; set; } = 2000;
     public int WarmListingsSeconds { get; set; } = 60;
 
-    public string GetStoreRoot() => string.IsNullOrWhiteSpace(StoreRoot)
-        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "stores",
-            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Name)))[..16])
-        : StoreRoot;
+    /// <summary>Generates this instance's identity if it has never had one, and reports whether
+    /// it had to. It is written to the config before anything is read out of a store.</summary>
+    public bool EnsureId()
+    {
+        if (!string.IsNullOrWhiteSpace(Id)) return false;
+        Id = Guid.NewGuid().ToString("N");
+        return true;
+    }
+
+    public string GetStoreRoot()
+    {
+        if (!string.IsNullOrWhiteSpace(StoreRoot)) return StoreRoot;
+        EnsureId();
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "stores", Id);
+    }
     public string GetLayerStorage(LayerConfig layer) => string.IsNullOrWhiteSpace(layer.Path)
         ? Path.Combine(GetStoreRoot(), layer.Id) : layer.Path;
 

@@ -398,7 +398,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         if (Current is not { } m || _loading) return;
         CommitLayer();
-        m.StoreRoot = m.GetStoreRoot();
+        // Nothing writes StoreRoot from the name: the store is named by the profile's identity,
+        // which is made once and never follows the name (see MountProfile.Id). Deriving it from
+        // the name here is what let two instances share one store and take each other's pin.
         m.Name = _name.Text.Trim();
         m.MountPoint = _mountPoint.Text.Trim();
         m.Enabled = _enabled.IsChecked();
@@ -622,6 +624,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         string name = "Mount";
         for (int i = 1; _config.Mounts.Any(m => m.Name == name); i++) name = "Mount" + i;
         var profile = new MountProfile { Name = name, Layers = new List<LayerConfig>() };
+        // The instance's identity, made now and kept for good: it is what its store folder is
+        // named after, so it must not be derived from anything a user can change.
+        profile.EnsureId();
         _config.Mounts.Add(profile);
         _current = -1;
         _layer = null;
