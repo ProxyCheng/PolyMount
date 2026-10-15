@@ -1062,6 +1062,10 @@
     </message>
     <message><source>mount.record</source><translation>录制…</translation></message>
     <message><source>record.active.tip</source><translation>此实例正在录制，点击回到录制界面</translation></message>
+    <message><source>record.end</source><translation>结束</translation></message>
+    <message><source>record.discard.keep</source><translation>返回保存</translation></message>
+    <message><source>record.state.stopping</source><translation>正在结束</translation></message>
+    <message><source>record.ending</source><translation>已停止采集，正在写出证据包…</translation></message>
     <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。趋势图仍是最近 60 秒，全程数据在证据包里。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>

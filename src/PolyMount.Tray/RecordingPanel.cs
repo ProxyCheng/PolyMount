@@ -21,7 +21,7 @@ internal sealed class RecordingPanel : QWidget
     private static string T(string key) => I18n.T(key);
 
     private readonly string _name;
-    private readonly QPushButton _start = new(), _save = new(), _discard = new();
+    private readonly QPushButton _start = new(), _end = new();
     private readonly RecordingLamp _lamp = new();
     private readonly QLabel _state = new(), _elapsed = new(), _collected = new();
     private readonly QLabel _evidence = new(), _totals = new(), _capacity = new(), _message = new(), _paths = new();
@@ -30,6 +30,8 @@ internal sealed class RecordingPanel : QWidget
     private RecordingSession? _session;
     private Task<RecordingPulse>? _pending;
     private Task<ExportOutcome>? _pendingSave;
+    /// <summary>The stop and the last copy, running beside the folder dialog that follows it.</summary>
+    private Task<RecordingSubmission>? _pendingEnd;
     /// <summary>A recording the service is running that this panel is not part of: one started by
     /// another front-end, or one a tray left behind when it died. The channel does not care whether
     /// anyone is watching, so the panel has to ask rather than assume.</summary>
@@ -81,12 +83,9 @@ internal sealed class RecordingPanel : QWidget
         head.AddWidget(_elapsed);
         _start.Clicked += _ => Begin();
         head.AddWidget(_start);
-        _discard.SetIcon(TrayIcons.Get("stop"));
-        _discard.Clicked += _ => Discard();
-        head.AddWidget(_discard);
-        _save.SetIcon(TrayIcons.Get("save", "#ffffff"));
-        _save.Clicked += _ => Save();
-        head.AddWidget(_save);
+        _end.SetIcon(TrayIcons.Get("stop", "#ffffff"));
+        _end.Clicked += _ => End();
+        head.AddWidget(_end);
         root.AddLayout(head);
 
         _evidence.SetObjectName("muted");
@@ -172,8 +171,7 @@ internal sealed class RecordingPanel : QWidget
     internal void Translate()
     {
         _start.SetText(T(_session != null ? "record.restart" : _elsewhere != null ? "record.adopt" : "record.start"));
-        _save.SetText(T("record.save"));
-        _discard.SetText(T("record.discard"));
+        _end.SetText(T("record.end"));
         _gaps.SetHorizontalHeaderLabels(new[] { T("record.gap.range"), T("record.gap.reason"), T("record.gap.missing") });
         Render();
     }
@@ -250,24 +248,55 @@ internal sealed class RecordingPanel : QWidget
     private bool Collecting => _session != null &&
         (_latest == null || _latest.State is RecordingState.Recording or RecordingState.Unreachable);
 
-    /// <summary>Writes the whole recording out and ends it. The folder is chosen before the session
-    /// is frozen: the bundle describes the moment it was frozen, and a cancelled dialog has to leave
-    /// a recording running rather than one that stopped because a folder was asked for.</summary>
-    private void Save()
+    /// <summary>Ends the recording: collecting stops at once, and then the reader is asked where the
+    /// evidence goes. The stop is asked for before the folder dialog opens, so nothing is being
+    /// collected behind it — a question about where to put something is not a reason to keep taking
+    /// more of it.</summary>
+    private void End()
     {
         var session = _session;
-        if (session == null || _pendingSave != null) return;
-        string? parent = QFileDialog.GetExistingDirectory(this, T("record.save.choose"), _saveDirectory);
-        if (string.IsNullOrEmpty(parent)) return;
-        _saveDirectory = parent;
-        StatsExport.SaveDirectory(parent);
-        _transient = T("record.save.running");
+        if (session == null || _pendingEnd != null || _pendingSave != null) return;
+        _transient = T("record.ending");
+        _next = DateTime.MaxValue; // no further polls: the session is closing
+        MarkEnd();
+        // Freezing detaches the service's channel first and copies the final second after, so
+        // running it beside the dialog below is what makes the stop immediate.
+        _pendingEnd = Task.Run(() => session.Freeze(DateTime.UtcNow));
         Render();
-        _pendingSave = Task.Run(() =>
+        AskWhereToSave();
+    }
+
+    /// <summary>Where the bundle goes, or nothing at all. Cancelling is not a dead end: the recording
+    /// is already stopped and in hand, so the only question left is whether to throw it away — and
+    /// answering no returns to the question that was being asked.</summary>
+    private void AskWhereToSave()
+    {
+        if (Quiet) { Discard(); return; }
+        while (true)
         {
-            var submission = session.Freeze(DateTime.UtcNow);
-            return StatsExport.Write(parent, submission.ToSnapshot(I18n.Language));
-        });
+            string? parent = QFileDialog.GetExistingDirectory(this, T("record.save.choose"), _saveDirectory);
+            if (!string.IsNullOrEmpty(parent))
+            {
+                _saveDirectory = parent;
+                StatsExport.SaveDirectory(parent);
+                _transient = T("record.save.running");
+                Render();
+                var frozen = _pendingEnd;
+                _pendingEnd = null;
+                _pendingSave = Task.Run(() =>
+                {
+                    var submission = frozen!.GetAwaiter().GetResult();
+                    return StatsExport.Write(parent, submission.ToSnapshot(I18n.Language));
+                });
+                return;
+            }
+            // Cancelled. "Discard" ends it; anything else means the reader wants to keep it, so the
+            // folder question comes back rather than the recording being thrown away by a reflex.
+            if (QMessageBox.Question(this, T("record.discard.title"), T("record.discard.body"),
+                    T("record.discard.confirm"), T("record.discard.keep"), null, 1, 1) != 0) continue;
+            Discard();
+            return;
+        }
     }
 
     private void ReportSave(Task<ExportOutcome> task)
@@ -288,12 +317,16 @@ internal sealed class RecordingPanel : QWidget
         Render();
     }
 
+    /// <summary>Throws the recording away. Waiting for the freeze first keeps the delete from
+    /// racing the copy of the final second.</summary>
     private void Discard()
     {
         var session = _session;
         if (session == null) return;
-        if (!Quiet && QMessageBox.Question(this, T("record.discard.title"), T("record.discard.body"),
-                T("record.discard.confirm"), T("cancel"), null, 1, 1) != 0) return;
+        var frozen = _pendingEnd;
+        _pendingEnd = null;
+        try { frozen?.GetAwaiter().GetResult(); }
+        catch (Exception) { /* the stop is best effort here: the copy is what is being deleted */ }
         session.Discard();
         RecordingSessions.Forget(session);
         MarkEnd();
@@ -334,6 +367,7 @@ internal sealed class RecordingPanel : QWidget
         var pulse = _latest;
         string state = _startError.Length > 0 ? "record.state.failed"
             : _session == null ? _elsewhere != null ? "record.state.elsewhere" : "record.state.idle"
+            : _pendingEnd != null || _pendingSave != null ? "record.state.stopping"
             : pulse == null ? "record.state.starting"
             : pulse.State switch
             {
@@ -347,14 +381,14 @@ internal sealed class RecordingPanel : QWidget
         _lamp.SetMode(pulse?.State == RecordingState.Recording || _elsewhere != null
             ? RecordingLamp.LampMode.Live : RecordingLamp.LampMode.Idle);
         _elapsed.SetText(Elapsed());
-        bool ended = _session == null || pulse?.State is RecordingState.Stopped or RecordingState.Truncated;
-        _save.SetEnabled(!ended && _pendingSave == null);
-        _discard.SetEnabled(!ended);
-        _start.SetEnabled(ended && _pendingSave == null);
+        bool ended = _session == null || pulse?.State is RecordingState.Stopped or RecordingState.Truncated
+            || _pendingEnd != null || _pendingSave != null;
+        _end.SetEnabled(!ended);
+        _start.SetEnabled(ended && _pendingEnd == null && _pendingSave == null);
         _start.SetText(T(_session != null ? "record.restart" : _elsewhere != null ? "record.adopt" : "record.start"));
         // The one thing to do on a panel with nothing running should look like the thing to do.
         Restyle(_start, _session == null, "record");
-        Restyle(_save, _session != null && !ended, "save");
+        Restyle(_end, _session != null && !ended, "stop");
 
         // The card carries what is happening right now; the lines under it carry the evidence.
         _collected.SetText(pulse != null ? I18n.F("record.collected",
@@ -544,7 +578,7 @@ internal sealed class RecordingPanel : QWidget
             if (!_state.Text.StartsWith(starting, StringComparison.Ordinal) &&
                 !_state.Text.StartsWith(running, StringComparison.Ordinal))
                 throw new InvalidOperationException("The recording does not show that it started: " + _state.Text);
-            if (!_save.IsEnabled() || !_discard.IsEnabled() || _start.IsEnabled())
+            if (!_end.IsEnabled() || _start.IsEnabled())
                 throw new InvalidOperationException("The recording's actions do not follow its state");
             // The only moment this state exists is inside this check, so it is the only place a
             // screenshot of it can be taken.

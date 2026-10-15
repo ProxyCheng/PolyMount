@@ -67,7 +67,6 @@ internal sealed class RecordingRecord
     /// count, which is what a reader divides back out; the session's duration is only an
     /// approximation of it, because a poll can be late.</summary>
     public long SampleTicks { get; init; }
-    public long DroppedEvents { get; init; }
     /// <summary>The recording stopped at its own ceiling, so it is not the whole story.</summary>
     public bool Truncated { get; init; }
     /// <summary>Whether this is the whole story: no known gap, and not cut short. The per-request
@@ -78,7 +77,6 @@ internal sealed class RecordingRecord
     /// detail the bundle also carries.</summary>
     public RecordingCounts? Counts { get; init; }
     /// <summary>Where the service wrote the session the front-end read from.</summary>
-    public string ServiceDirectory { get; init; } = "";
     public string ServiceInstanceId { get; init; } = "";
     /// <summary>How many times the service vanished and the channel had to be attached again.</summary>
     public int Restarts { get; init; }

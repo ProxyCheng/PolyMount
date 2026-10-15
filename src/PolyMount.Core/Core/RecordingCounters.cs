@@ -19,9 +19,12 @@ namespace PolyMount.Core;
 /// </summary>
 public sealed class RecordingCounters
 {
-    /// <summary>The size at which a request is worth remembering the path of. Everything below it
-    /// is still counted, by operation, which is where a large number of small calls shows up.</summary>
-    public const double PathFloorMs = 0.5;
+    /// <summary>The size at which a request is worth remembering the path of. What this has to
+    /// skip is the storm of sub-microsecond metadata probes, whose paths would cost more to hash
+    /// than they say; half a millisecond skipped those and every ordinary file open with them, so a
+    /// recording of a light workload reported no paths at all. Everything below it is still counted
+    /// by operation, which is where a large number of small calls shows up.</summary>
+    public const double PathFloorMs = 0.05;
 
     /// <summary>How many distinct (operation, path) pairs one thread tallies before pooling the
     /// rest. Pooled rather than forgotten: the totals stay exact even when the ranking cannot list

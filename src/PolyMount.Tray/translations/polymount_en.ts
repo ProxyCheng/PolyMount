@@ -1062,6 +1062,10 @@ Close applications using mounted files first.</translation>
     </message>
     <message><source>mount.record</source><translation>Record…</translation></message>
     <message><source>record.active.tip</source><translation>This instance is being recorded; click to return to the recording</translation></message>
+    <message><source>record.end</source><translation>End</translation></message>
+    <message><source>record.discard.keep</source><translation>Choose a folder</translation></message>
+    <message><source>record.state.stopping</source><translation>Ending</translation></message>
+    <message><source>record.ending</source><translation>Collecting has stopped; writing the bundle…</translation></message>
     <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The charts stay the last 60 seconds; the whole recording is in the bundle.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
