@@ -64,7 +64,7 @@ internal static class StatsExport
         var copies = CopyLogs(directory, logs);
         // The digest is built from the bundle's own copies, so it describes exactly the files
         // the reader has — including however far the logs had rolled by the time they were read.
-        var digest = RequestLogDigest.Build(copies);
+        var digest = RequestLogDigest.Build(copies, snapshot.CapturedUtc, snapshot.WindowSeconds);
         File.WriteAllText(Path.Combine(directory, "samples.csv"), SamplesCsv(snapshot.Samples), Utf8);
         File.WriteAllText(Path.Combine(directory, "requests-summary.json"), digest.Json, Utf8);
         File.WriteAllText(Path.Combine(directory, "summary.json"), SummaryJson(snapshot, service, mounts, copies, digest), Utf8);

@@ -21,6 +21,14 @@ internal sealed class ObjectDatabase
     private long _usageCheckedAt;
     private long _diskBytes;
     private readonly object _usageGate = new();
+    /// <summary>How often a lookup re-checks that the store is still on disk. The check is a
+    /// filesystem round trip, and a directory listing performs one lookup per child per layer
+    /// above the provider, so paying it on every lookup serialises enumeration behind a syscall:
+    /// on 2026-10-15 one instance held this gate inside File.Exists for 55.7 s of a window while
+    /// the lookups queued behind it accumulated a further 662 s. Once a second is how often a
+    /// durable cache already revalidates its own storage.</summary>
+    private const int StorageCheckMs = 1000;
+    private long _storageCheckedAt;
     // Lookup cost, split by phase. Written under _gate, where the phases happen, so the
     // counters need no atomics of their own.
     private long _lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs, _lookupLoadUs, _lookupMaxUs;
@@ -109,6 +117,20 @@ internal sealed class ObjectDatabase
         command.CommandText = "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS objects(path TEXT PRIMARY KEY COLLATE NOCASE, record TEXT NOT NULL);";
         command.ExecuteNonQuery();
     }
+
+    /// <summary>The read path's version of <see cref="EnsureAvailable"/>: between checks a lookup
+    /// answers from the resident index, so a store removed underneath us is noticed within
+    /// <see cref="StorageCheckMs"/> instead of on the next lookup. Content blobs are still
+    /// checked per hit, where a miss would otherwise be served as data. Writes and clears call
+    /// <see cref="EnsureAvailable"/> directly — they cannot answer from a stale index.</summary>
+    private void VerifyStorage()
+    {
+        long now = Environment.TickCount64;
+        if (now - Interlocked.Read(ref _storageCheckedAt) < StorageCheckMs) return;
+        // Several threads may pass the check at once; each is one round trip, not a stampede.
+        Interlocked.Exchange(ref _storageCheckedAt, now);
+        EnsureAvailable();
+    }
     public bool TryGet(string key, out VirtualObject value)
     {
         long started = Stopwatch.GetTimestamp();
@@ -124,7 +146,7 @@ internal sealed class ObjectDatabase
                 {
                     // The store may have been removed underneath us; this drops the stale index.
                     long check = Stopwatch.GetTimestamp();
-                    EnsureAvailable();
+                    VerifyStorage();
                     existsUs += Microseconds(check, Stopwatch.GetTimestamp());
                     if (!_records.TryGetValue(key, out record)) return false;
                 }
@@ -135,7 +157,7 @@ internal sealed class ObjectDatabase
                     if (!_recoverable)
                     {
                         long check = Stopwatch.GetTimestamp();
-                        EnsureAvailable();
+                        VerifyStorage();
                         existsUs += Microseconds(check, Stopwatch.GetTimestamp());
                         return false;
                     }

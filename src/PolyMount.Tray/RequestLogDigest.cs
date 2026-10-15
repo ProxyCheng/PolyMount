@@ -16,6 +16,10 @@ internal readonly record struct RequestDigest(string Json, IReadOnlyList<LogCove
 /// ran longest, and how hard each WinFsp callback was driven. The raw logs stay in the bundle
 /// for the cases the digest cannot anticipate; this is the part that should not have to be
 /// re-derived with a text tool every time.
+///
+/// The logs are an accumulating family — a service that has been up for hours still has every
+/// one of those hours on disk — so the counts describe the export's own window, not the files.
+/// Without that, a fix and the records of the problem it fixed read as one and the same number.
 /// </summary>
 internal static class RequestLogDigest
 {
@@ -47,19 +51,43 @@ internal static class RequestLogDigest
 
     private readonly record struct Pending(string AtUtc, string Operation, string Path, long ElapsedMs, string Stage);
 
-    /// <summary>Reads each copied log from the bundle, so the digest describes exactly the
-    /// files the reader has. A log that cannot be read is reported with its error and skipped
-    /// rather than failing the export it is part of.</summary>
-    public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs)
+    /// <summary>Everything one pass over the logs produced, before it is ranked and rendered.</summary>
+    private sealed class LogAggregate
     {
-        var operations = new Dictionary<string, OperationStats>(StringComparer.Ordinal);
-        var paths = new Dictionary<(string Operation, string Path), PathStats>();
-        var callbacks = new Dictionary<(string Pid, string Operation), CallbackStats>();
-        var slowest = new List<Slow>();
-        var pending = new List<Pending>();
-        var coverage = new List<LogCoverage>(logs.Count);
-        long begins = 0, ends = 0, pendingCount = 0, counts = 0, dropped = 0;
+        public readonly Dictionary<string, OperationStats> Operations = new(StringComparer.Ordinal);
+        public readonly Dictionary<(string Operation, string Path), PathStats> Paths = new();
+        public readonly Dictionary<(string Pid, string Operation), CallbackStats> Callbacks = new();
+        public readonly List<Slow> Slowest = new();
+        public readonly List<Pending> PendingRequests = new();
+        public readonly List<LogCoverage> Coverage = new();
+        public long Begins, Ends, PendingCount, Counts, Dropped, Lines;
 
+        public bool Empty => Ends == 0 && Begins == 0 && PendingCount == 0 && Callbacks.Count == 0;
+    }
+
+    /// <summary>Reads each copied log from the bundle, so the digest describes exactly the files
+    /// the reader has. A log that cannot be read is reported with its error and skipped rather
+    /// than failing the export it is part of.</summary>
+    public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTime capturedUtc, int windowSeconds)
+    {
+        var to = new DateTimeOffset(DateTime.SpecifyKind(capturedUtc, DateTimeKind.Utc));
+        var from = to - TimeSpan.FromSeconds(windowSeconds);
+        var aggregate = Aggregate(logs, from, to);
+        bool windowed = true;
+        // A window the reader was paused through can predate everything the logs still
+        // hold. Answering with nothing would be true and useless, so fall back to the whole span
+        // and let the reader see that the two do not line up.
+        if (aggregate.Empty)
+        {
+            aggregate = Aggregate(logs, null, null);
+            windowed = false;
+        }
+        return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed), aggregate.Coverage);
+    }
+
+    private static LogAggregate Aggregate(IReadOnlyList<LogFileCopy> logs, DateTimeOffset? from, DateTimeOffset? to)
+    {
+        var aggregate = new LogAggregate();
         foreach (var log in logs)
         {
             long lines = 0, events = 0;
@@ -73,27 +101,30 @@ internal static class RequestLogDigest
                     if (firstSpace <= 0) continue;
                     int secondSpace = line.IndexOf(' ', firstSpace + 1);
                     if (secondSpace < 0) continue;
-                    if (DateTimeOffset.TryParse(line.AsSpan(0, firstSpace), CultureInfo.InvariantCulture,
-                            DateTimeStyles.RoundtripKind, out var at))
+                    bool stamped = DateTimeOffset.TryParse(line.AsSpan(0, firstSpace), CultureInfo.InvariantCulture,
+                        DateTimeStyles.RoundtripKind, out var at);
+                    if (stamped)
                     {
                         first ??= at;
                         last = at;
                     }
+                    // Coverage describes the whole file; the figures describe the window.
+                    if (!stamped || (from != null && at < from) || (to != null && at > to)) continue;
                     var message = line.AsSpan(secondSpace + 1);
                     string atUtc = at.ToString("O", CultureInfo.InvariantCulture);
                     if (message.StartsWith("BEGIN "))
                     {
-                        begins++; events++;
-                        Stats(operations, Quoted(message, " op=")).Begins++;
+                        aggregate.Begins++; events++;
+                        Stats(aggregate.Operations, Quoted(message, " op=")).Begins++;
                         continue;
                     }
                     if (message.StartsWith("END "))
                     {
-                        ends++; events++;
+                        aggregate.Ends++; events++;
                         string operation = Quoted(message, " op=");
                         string path = Quoted(message, " path='");
                         long elapsed = Number(message, " elapsedMs=");
-                        var stats = Stats(operations, operation);
+                        var stats = Stats(aggregate.Operations, operation);
                         stats.Ends++; stats.Sum += elapsed;
                         if (elapsed > stats.Max) stats.Max = elapsed;
                         if (elapsed >= 100) stats.Over100++;
@@ -103,29 +134,29 @@ internal static class RequestLogDigest
                         if (elapsed >= 100)
                         {
                             var key = (operation, path);
-                            if (!paths.TryGetValue(key, out var entry))
-                                paths[key] = entry = new PathStats { Operation = operation };
+                            if (!aggregate.Paths.TryGetValue(key, out var entry))
+                                aggregate.Paths[key] = entry = new PathStats { Operation = operation };
                             entry.Ends++; entry.Sum += elapsed;
                             if (elapsed > entry.Max) entry.Max = elapsed;
-                            slowest.Add(new Slow(atUtc, operation, path, elapsed, Quoted(message, " stage='")));
+                            aggregate.Slowest.Add(new Slow(atUtc, operation, path, elapsed, Quoted(message, " stage='")));
                         }
                         continue;
                     }
                     if (message.StartsWith("PENDING "))
                     {
-                        pendingCount++; events++;
-                        pending.Add(new Pending(atUtc, Quoted(message, " op="), Quoted(message, " path='"),
+                        aggregate.PendingCount++; events++;
+                        aggregate.PendingRequests.Add(new Pending(atUtc, Quoted(message, " op="), Quoted(message, " path='"),
                             Number(message, " elapsedMs="), Quoted(message, " stage='")));
                         continue;
                     }
                     if (message.StartsWith("COUNT "))
                     {
-                        counts++; events++;
+                        aggregate.Counts++; events++;
                         string pid = Quoted(message, " pid=");
                         string operation = Quoted(message, " op=");
                         long requests = Number(message, " requests=");
                         var key = (pid, operation);
-                        if (!callbacks.TryGetValue(key, out var stats)) callbacks[key] = stats = new CallbackStats();
+                        if (!aggregate.Callbacks.TryGetValue(key, out var stats)) aggregate.Callbacks[key] = stats = new CallbackStats();
                         stats.Requests += requests;
                         if (requests > stats.Peak)
                         {
@@ -134,7 +165,7 @@ internal static class RequestLogDigest
                         }
                         continue;
                     }
-                    if (message.StartsWith("DROPPED ")) { dropped += Number(message, " count="); events++; }
+                    if (message.StartsWith("DROPPED ")) { aggregate.Dropped += Number(message, " count="); events++; }
                 }
             }
             catch (Exception ex)
@@ -143,10 +174,15 @@ internal static class RequestLogDigest
                 // export it belongs to is still worth having.
                 System.Diagnostics.Debug.WriteLine($"digest '{log.Name}': {ex.Message}");
             }
-            coverage.Add(new LogCoverage(log.Name, lines, events, first, last));
+            aggregate.Lines += lines;
+            aggregate.Coverage.Add(new LogCoverage(log.Name, lines, events, first, last));
         }
+        return aggregate;
+    }
 
-        var operationRows = operations
+    private static string Render(LogAggregate aggregate, DateTimeOffset? from, DateTimeOffset? to, bool windowed)
+    {
+        var operationRows = aggregate.Operations
             .OrderByDescending(pair => pair.Value.Sum)
             .Take(TopOperations)
             .Select(pair => new
@@ -160,7 +196,7 @@ internal static class RequestLogDigest
                 over100Ms = pair.Value.Over100,
                 over1000Ms = pair.Value.Over1000
             });
-        var pathRows = paths
+        var pathRows = aggregate.Paths
             .OrderByDescending(pair => pair.Value.Sum)
             .Take(TopPaths)
             .Select(pair => new
@@ -171,7 +207,7 @@ internal static class RequestLogDigest
                 totalMs = pair.Value.Sum,
                 maxMs = pair.Value.Max
             });
-        var slowRows = slowest
+        var slowRows = aggregate.Slowest
             .OrderByDescending(entry => entry.ElapsedMs)
             .Take(TopSlowest)
             .Select(entry => new
@@ -182,7 +218,7 @@ internal static class RequestLogDigest
                 elapsedMs = entry.ElapsedMs,
                 stage = entry.Stage
             });
-        var pendingRows = pending
+        var pendingRows = aggregate.PendingRequests
             .OrderByDescending(entry => entry.ElapsedMs)
             .Take(TopPending)
             .Select(entry => new
@@ -193,7 +229,7 @@ internal static class RequestLogDigest
                 elapsedMs = entry.ElapsedMs,
                 stage = entry.Stage
             });
-        var callbackRows = callbacks
+        var callbackRows = aggregate.Callbacks
             .OrderByDescending(pair => pair.Value.Peak)
             .Take(TopCallbacks)
             .Select(pair => new
@@ -207,33 +243,43 @@ internal static class RequestLogDigest
 
         var document = new
         {
+            window = new
+            {
+                fromUtc = from?.ToString("O", CultureInfo.InvariantCulture),
+                toUtc = to?.ToString("O", CultureInfo.InvariantCulture),
+                // False means the window held nothing and the whole log span was used instead;
+                // coverage[].firstUtc/lastUtc then say how far that reaches back.
+                filtered = windowed
+            },
             note = "Logged requests only. SVN.* is recorded in full; a fast root request is sampled "
                 + "at about 1/128 (its nested calls come with it), and any request that takes at "
                 + "least 100 ms keeps its END line. COUNT lines summarise every callback, sampled "
                 + "or not, over the service's 5 second window.",
             totals = new
             {
-                lines = coverage.Sum(entry => entry.Lines),
-                begins,
-                ends,
-                pending = pendingCount,
-                counts,
-                dropped,
-                operations = operations.Count,
-                paths = paths.Count
+                // The figures describe the window; this counts every line the copied
+                // files hold, which is how far back the bundle could have looked.
+                linesRead = aggregate.Lines,
+                begins = aggregate.Begins,
+                ends = aggregate.Ends,
+                pending = aggregate.PendingCount,
+                counts = aggregate.Counts,
+                dropped = aggregate.Dropped,
+                operations = aggregate.Operations.Count,
+                paths = aggregate.Paths.Count
             },
-            coverage,
+            coverage = aggregate.Coverage,
             operations = operationRows,
             paths = pathRows,
             slowest = slowRows,
             pendingRequests = pendingRows,
             callbacks = callbackRows
         };
-        return new RequestDigest(JsonSerializer.Serialize(document, new JsonSerializerOptions
+        return JsonSerializer.Serialize(document, new JsonSerializerOptions
         {
             WriteIndented = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        }), coverage);
+        });
     }
 
     private static OperationStats Stats(Dictionary<string, OperationStats> operations, string operation)
