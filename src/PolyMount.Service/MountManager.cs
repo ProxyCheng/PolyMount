@@ -215,6 +215,7 @@ public sealed class MountManager : IControlHost, IDisposable
                     Name = l.Id, DisplayName = l.Name, Type = l.Type, Color = l.Color,
                     Writable = l.Type == "overlay" || l.Type == "dir" && l.Source.Writable
                 }).ToList(),
+                Pipe = state?.Running == true ? state.Pipe : "",
                 WorkerPid = state?.Pid ?? 0,
                 Restarts = state?.Restarts ?? 0,
                 Error = state?.Error

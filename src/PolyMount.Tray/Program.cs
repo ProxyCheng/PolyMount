@@ -224,6 +224,28 @@ internal static class Program
         Console.WriteLine($"Instance directory: {response.Instances.Count} instance(s) reachable over their own pipes.");
     }
 
+    /// <summary>What the dashboard shows is two answers put together: the supervisor knows which
+    /// instances exist and which process runs each, and each instance's own process knows what its
+    /// layers are doing. What is checked here is that the second half is really in there — a layer
+    /// generation is something only the instance itself can report, since the supervisor reads the
+    /// configuration and the configuration has no generations — so a status that quietly lost the
+    /// worker's half cannot pass for one that has it.</summary>
+    private static void VerifyInstanceStatus()
+    {
+        var merged = InstanceView.Status();
+        if (!merged.Ok) throw new InvalidOperationException("The merged status was refused: " + merged.Error);
+        var supervisor = SupervisorClient.Default.Status().Mounts;
+        foreach (var row in merged.Mounts.Where(row => row.Mounted))
+        {
+            if (row.Providers.Count == 0 || row.Providers.All(provider => provider.Generation.Length == 0))
+                throw new InvalidOperationException($"Instance '{row.Name}' reads as mounted but carries nothing from its own process");
+            if (row.WorkerPid <= 0) throw new InvalidOperationException($"Instance '{row.Name}' reads as mounted with no process behind it");
+            if (supervisor.All(own => own.Name != row.Name))
+                throw new InvalidOperationException($"Instance '{row.Name}' is missing from the supervisor's own view");
+        }
+        Console.WriteLine($"Instance status: {merged.Mounts.Count} instance(s), {merged.Mounts.Count(row => row.Mounted)} mounted and reported by their own processes.");
+    }
+
     private static int RunUiSmoke(string? capture)
     {
         TrayActivation.Smoke();
@@ -302,6 +324,7 @@ internal static class Program
                 try
                 {
                     VerifyInstanceDirectory();
+                    VerifyInstanceStatus();
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyCharts();

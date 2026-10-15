@@ -29,6 +29,10 @@ static std::condition_variable wake;
 static std::map<std::wstring,Cached> entries;
 static std::deque<std::wstring> requests;
 static std::vector<std::wstring> roots;
+// The mount point each instance's worker owns, and the pipe that worker answers on. The supervisor
+// knows the addresses; a worker is the only process that can say what a path resolves to, so a
+// probe goes to the one that owns the path.
+static std::vector<std::pair<std::wstring,std::wstring>> routes;
 
 static std::wstring Normalize(std::wstring s) {
     std::transform(s.begin(),s.end(),s.begin(),[](wchar_t c){return (wchar_t)towlower(c);});
@@ -73,8 +77,16 @@ static std::vector<std::string> Fields(const std::string& json,const std::string
         } out.push_back(value);
     } return out;
 }
-static bool Exchange(const std::string& request,std::string& response) {
-    HANDLE pipe=CreateFileW(L"\\\\.\\pipe\\PolyMount.Control",GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
+// Everything from the first occurrence of a key onwards. The instance list is the last thing in a
+// control response, so slicing it off is enough to read its own fields without picking up the
+// mount points of the status that precedes it.
+static std::string From(const std::string& json,const std::string& key) {
+    size_t pos=json.find("\""+key+"\"");
+    return pos==std::string::npos ? std::string() : json.substr(pos);
+}
+static bool Exchange(const std::string& request,std::string& response,const std::wstring& pipeName=L"PolyMount.Control") {
+    std::wstring path=L"\\\\.\\pipe\\"+pipeName;
+    HANDLE pipe=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
     if(pipe==INVALID_HANDLE_VALUE) return false;
     auto io=[&](bool write,void* data,DWORD length,DWORD& count) {
         OVERLAPPED op{}; op.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
@@ -104,14 +116,32 @@ static bool UnderRoot(const std::wstring& path) {
     for(const auto& root:roots) if(path==root || (path.size()>root.size() && path.compare(0,root.size(),root)==0 && path[root.size()]==L'\\')) return true;
     return false;
 }
+// The pipe of the instance that owns a path: the deepest mount point containing it. Empty when
+// nothing is running that instance, and then there is nothing to ask.
+static std::wstring PipeFor(const std::wstring& path) {
+    std::wstring normalized=Normalize(path),best; size_t length=0;
+    std::lock_guard<std::mutex> lock(gate);
+    for(const auto& route:routes)
+        if(route.first.size()>=length && (normalized==route.first ||
+            (normalized.size()>route.first.size() && normalized.compare(0,route.first.size(),route.first)==0 && normalized[route.first.size()]==L'\\')))
+            { length=route.first.size(); best=route.second; }
+    return best;
+}
 static void Worker() {
     ULONGLONG refresh=0;
     for(;;) {
         if(GetTickCount64()>=refresh) {
             std::string response; std::vector<std::wstring> next;
             if(Exchange("{\"Cmd\":\"status\"}",response)) for(const auto& root:Fields(response,"MountPoint")) next.push_back(Normalize(Wide(root)));
+            std::vector<std::pair<std::wstring,std::wstring>> nextRoutes;
+            std::string listed;
+            if(Exchange("{\"Cmd\":\"instances\"}",listed)) {
+                std::string instances=From(listed,"Instances");
+                auto places=Fields(instances,"MountPoint"),pipes=Fields(instances,"Pipe");
+                for(size_t i=0;i<places.size() && i<pipes.size();++i) nextRoutes.emplace_back(Normalize(Wide(places[i])),Wide(pipes[i]));
+            }
             bool changed;
-            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next;
+            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next; routes=nextRoutes;
               // Recheck recently displayed items even when Explorer does not request a new
               // overlay evaluation. Opening a folder can cache its listing without a shell
               // change notification; its icon in the parent window still needs updating.
@@ -131,7 +161,8 @@ static void Worker() {
           if(requests.empty()) continue; path=requests.front(); requests.pop_front(); }
         std::string response;
         int slot=-1;
-        if(Exchange("{\"Cmd\":\"probe\",\"Path\":\""+Escape(Utf8(path))+"\"}",response)) {
+        std::wstring pipe=PipeFor(path);
+        if(!pipe.empty() && Exchange("{\"Cmd\":\"probe\",\"Path\":\""+Escape(Utf8(path))+"\"}",response,pipe)) {
             auto colors=Fields(response,"EffectiveColor"); if(!colors.empty()) slot=ColorSlot(colors[0]);
         }
         bool changed;

@@ -39,7 +39,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
+    private Task<(List<MountMetrics> Trends, List<MountMetrics> Access, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -322,7 +322,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             WindowSeconds = 3,
             SamplesFile = Path.Combine(work, "samples.csv"),
             LogsDirectory = Path.Combine(work, "logs"),
-            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5) },
+            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5, 0) },
             ResponseRequest = new List<double> { 4 },
             Recording = new RecordingRecord
             {
@@ -393,18 +393,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             try
             {
                 var sample = task.GetAwaiter().GetResult();
-                var response = sample.Trends;
-                if (!response.Ok) throw new InvalidOperationException(response.Error);
-                if (!sample.Access.Ok) throw new InvalidOperationException(sample.Access.Error);
                 if (_requestEpoch == _epoch && !_paused && visible)
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
-                    _accessMetrics = sample.Access.Metrics;
+                    _accessMetrics = sample.Access;
                     // The table and legend show the recent average; the one-second sample
                     // only feeds the per-second chart history, where a gap would otherwise
                     // read as "every layer served nothing".
-                    Accept(response.Metrics, sample.Access.Metrics);
+                    Accept(sample.Trends, sample.Access);
                     ui.Stop();
                     _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds));
                     while (_responseSamples.Count > HistorySeconds) _responseSamples.Dequeue();
@@ -424,9 +421,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _pending = Task.Run(() =>
             {
                 var watch = Stopwatch.StartNew();
-                var client = _client;
-                var trends = client.Metrics(1, _instanceName);
-                var access = client.Metrics(HistorySeconds, _instanceName);
+                var trends = Window(1);
+                var access = Window(HistorySeconds);
                 watch.Stop();
                 return (trends, access, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
             });
@@ -434,6 +430,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _wasVisible = visible;
     }
 
+
+    /// <summary>One window of read analytics: the instance's own process answers for itself, and
+    /// the "all instances" view — which no single process owns — is every one of them asked and put
+    /// together.</summary>
+    private List<MountMetrics> Window(int windowSeconds) => _instanceName == null
+        ? InstanceView.Metrics(windowSeconds)
+        : _client.Metrics(windowSeconds, _instanceName).Metrics;
 
     /// <summary>A layer key is "mount/layer"; the records carry the two apart.</summary>
     private static string Relative(string key, string mount) =>

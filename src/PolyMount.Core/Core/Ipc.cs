@@ -69,9 +69,11 @@ public sealed class MountStatus
     public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
 
-    // What the supervisor knows about the process running this instance: which one it is (0 when
-    // none is), and how many times it has had to be started again. The instance's own numbers are
-    // the worker's to report, and these two are the supervisor's.
+    // What the supervisor knows about the process running this instance: the pipe it answers on
+    // (empty when nothing is running it), which process it is (0 when none is), and how many times
+    // it has had to be started again. The instance's own numbers are the worker's to report; these
+    // are the supervisor's, and they are what a front-end needs to ask the worker directly.
+    public string Pipe { get; set; } = "";
     public int WorkerPid { get; set; }
     public int Restarts { get; set; }
 

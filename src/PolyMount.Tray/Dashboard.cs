@@ -241,7 +241,7 @@ internal sealed class Dashboard : QWidget
     }
 
     private MountStatus? Selected => _mounts.FirstOrDefault(m => m.Name == _selectedName);
-    private void Refresh(bool quiet = false) => Run(SupervisorClient.Default.Status, null, quiet);
+    private void Refresh(bool quiet = false) => Run(InstanceView.Status, null, quiet);
 
     private void Run(Func<ControlResponse> call, string? successKey, bool quiet = false)
     {
