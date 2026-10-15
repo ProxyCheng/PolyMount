@@ -1,3 +1,5 @@
+using PolyMount.Core;
+
 namespace PolyMount.Plugins.Svn;
 
 internal sealed class SvnEntry
@@ -26,17 +28,22 @@ internal sealed class SvnTransportException : Exception
 /// <summary>
 /// Repository access used by <see cref="SvnLayer"/>, implemented over the Subversion
 /// HTTP/WebDAV protocol or by invoking the svn command line client.
+/// <para>
+/// Every operation takes the diagnostics to trace into. A request served on the caller's
+/// thread has an ambient scope and can pass none; read-ahead runs on a worker thread with
+/// no ambient scope, so it passes the one it captured when the work was queued.
+/// </para>
 /// </summary>
 internal interface ISvnBackend : IDisposable
 {
     /// <summary>Youngest revision of the repository, equivalent to <c>svn info --show-item revision</c>.</summary>
-    long GetHeadRevision();
+    long GetHeadRevision(RequestDiagnostics? diagnostics = null);
 
     /// <summary>Immediate children of <paramref name="rel"/> at <paramref name="rev"/>.</summary>
-    IReadOnlyList<SvnEntry> List(long rev, string rel);
+    IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null);
 
     /// <summary>Writes the content of <paramref name="rel"/> at <paramref name="rev"/> to <paramref name="dest"/>.</summary>
-    void CatToFile(long rev, string rel, string dest);
+    void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null);
 }
 
 /// <summary>
@@ -78,9 +85,11 @@ internal sealed class FallbackSvnBackend(ISvnBackend preferred, Func<ISvnBackend
     private void Run(Action<ISvnBackend> operation) =>
         Run<object?>(backend => { operation(backend); return null; });
 
-    public long GetHeadRevision() => Run(backend => backend.GetHeadRevision());
-    public IReadOnlyList<SvnEntry> List(long rev, string rel) => Run(backend => backend.List(rev, rel));
-    public void CatToFile(long rev, string rel, string dest) => Run(backend => backend.CatToFile(rev, rel, dest));
+    public long GetHeadRevision(RequestDiagnostics? diagnostics = null) => Run(backend => backend.GetHeadRevision(diagnostics));
+    public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null) =>
+        Run(backend => backend.List(rev, rel, diagnostics));
+    public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null) =>
+        Run(backend => backend.CatToFile(rev, rel, dest, diagnostics));
 
     // Once a switch happens the replaced backend is disposed immediately, so whatever
     // _current points at is the only live instance left to release.

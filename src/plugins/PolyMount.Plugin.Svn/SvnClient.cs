@@ -39,16 +39,16 @@ internal sealed class SvnClient : ISvnBackend
         return baseUrl + "@" + rev.ToString(CultureInfo.InvariantCulture);
     }
 
-    public long GetHeadRevision()
+    public long GetHeadRevision(RequestDiagnostics? diagnostics = null)
     {
-        var (code, stdout, stderr) = RunText(new[] { "info", _url, "--show-item", "revision" });
+        var (code, stdout, stderr) = RunText(new[] { "info", _url, "--show-item", "revision" }, diagnostics);
         if (code != 0) throw new InvalidOperationException("svn info failed: " + stderr.Trim());
         return long.Parse(stdout.Trim(), CultureInfo.InvariantCulture);
     }
 
-    public IReadOnlyList<SvnEntry> List(long rev, string rel)
+    public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
     {
-        var (code, stdout, stderr) = RunText(new[] { "list", "--xml", UrlFor(rel, rev) });
+        var (code, stdout, stderr) = RunText(new[] { "list", "--xml", UrlFor(rel, rev) }, diagnostics);
         if (code != 0)
         {
             var msg = stderr.Trim();
@@ -80,9 +80,9 @@ internal sealed class SvnClient : ISvnBackend
         return result;
     }
 
-    public void CatToFile(long rev, string rel, string dest)
+    public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
     {
-        using var request = RequestDiagnostics.Begin("SVN.cat", UrlFor(rel, rev));
+        using var request = RequestDiagnostics.Begin("SVN.cat", UrlFor(rel, rev), diagnostics);
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
         var tmp = dest + ".part-" + Guid.NewGuid().ToString("N");
 
@@ -121,10 +121,10 @@ internal sealed class SvnClient : ISvnBackend
         File.Move(tmp, dest);
     }
 
-    private (int Code, string Stdout, string Stderr) RunText(string[] args)
+    private (int Code, string Stdout, string Stderr) RunText(string[] args, RequestDiagnostics? diagnostics = null)
     {
         // Only operation arguments are traced, never AddCommon credentials.
-        using var request = RequestDiagnostics.Begin("SVN." + args[0], args[0] == "list" ? args[2] : args[1]);
+        using var request = RequestDiagnostics.Begin("SVN." + args[0], args[0] == "list" ? args[2] : args[1], diagnostics);
         var psi = new ProcessStartInfo(Exe)
         {
             RedirectStandardOutput = true,

@@ -64,10 +64,10 @@ internal sealed class SvnHttpClient : ISvnBackend
         _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(120) };
     }
 
-    public long GetHeadRevision()
+    public long GetHeadRevision(RequestDiagnostics? diagnostics = null)
     {
         var (root, _) = Repository();
-        using var request = RequestDiagnostics.Begin("SVN.info", root);
+        using var request = RequestDiagnostics.Begin("SVN.info", root, diagnostics);
         var document = PropFind(root, "0", VersionNameBody);
         var value = document.Descendants(Dav + "version-name").FirstOrDefault()?.Value;
         if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision))
@@ -75,11 +75,11 @@ internal sealed class SvnHttpClient : ISvnBackend
         return revision;
     }
 
-    public IReadOnlyList<SvnEntry> List(long rev, string rel)
+    public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
     {
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
-        using var request = RequestDiagnostics.Begin("SVN.list", url);
+        using var request = RequestDiagnostics.Begin("SVN.list", url, diagnostics);
         var document = PropFind(url, "1", ListingBody);
         // A directory never contains a child with its own name, so the collection that
         // WebDAV returns first can be dropped by name whatever form its href takes.
@@ -89,11 +89,11 @@ internal sealed class SvnHttpClient : ISvnBackend
         return entries;
     }
 
-    public void CatToFile(long rev, string rel, string dest)
+    public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
     {
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
-        using var request = RequestDiagnostics.Begin("SVN.cat", url);
+        using var request = RequestDiagnostics.Begin("SVN.cat", url, diagnostics);
         using var message = new HttpRequestMessage(HttpMethod.Get, url);
         using var response = Send(message, url, rel);
         request?.Stage($"status={(int)response.StatusCode}");

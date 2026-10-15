@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -14,7 +15,7 @@ namespace PolyMount.Plugins.Svn;
 /// </summary>
 internal sealed class SvnListingPrefetch : IDisposable
 {
-    private readonly record struct Request(long Revision, string Path);
+    private readonly record struct Request(long Revision, string Path, RequestDiagnostics? Diagnostics);
 
     private const int FailureLimit = 3;
 
@@ -22,14 +23,15 @@ internal sealed class SvnListingPrefetch : IDisposable
     private readonly Task[] _workers;
     private readonly CancellationTokenSource _stop = new();
     private readonly Func<long> _revision;
-    private readonly Func<string, bool> _fetch;
+    private readonly Func<string, RequestDiagnostics?, bool> _fetch;
     private long _started, _fetched, _skipped, _stale, _failures;
     private int _outstanding, _tripped;
     // Set before anything is released so a caller that is still handing work over
     // during unmount never touches a disposed queue or cancellation source.
     private volatile bool _closed;
 
-    public SvnListingPrefetch(int concurrency, int queueDepth, Func<long> revision, Func<string, bool> fetch)
+    public SvnListingPrefetch(int concurrency, int queueDepth, Func<long> revision,
+        Func<string, RequestDiagnostics?, bool> fetch)
     {
         _queue = new BlockingCollection<Request>(queueDepth);
         _revision = revision;
@@ -46,13 +48,14 @@ internal sealed class SvnListingPrefetch : IDisposable
     public long Failures => Interlocked.Read(ref _failures);
 
     /// <summary>Queues directories to fetch. Items beyond the queue depth are dropped rather
-    /// than queued: read-ahead that has fallen behind is worth less than the memory.</summary>
-    public void Enqueue(long revision, IReadOnlyList<string> directories)
+    /// than queued: read-ahead that has fallen behind is worth less than the memory. The
+    /// caller's diagnostics travel with the item, since the worker has no scope of its own.</summary>
+    public void Enqueue(long revision, IReadOnlyList<string> directories, RequestDiagnostics? diagnostics)
     {
         if (_closed || Volatile.Read(ref _tripped) != 0) return;
         foreach (string path in directories)
         {
-            if (_closed || !_queue.TryAdd(new Request(revision, path))) return;
+            if (_closed || !_queue.TryAdd(new Request(revision, path, diagnostics))) return;
             Interlocked.Increment(ref _outstanding);
         }
     }
@@ -86,7 +89,7 @@ internal sealed class SvnListingPrefetch : IDisposable
                     // The mount left this revision while the item waited, so the answer
                     // would be discarded on arrival; drop it instead of spending a request.
                     if (request.Revision != _revision()) Interlocked.Increment(ref _stale);
-                    else if (_fetch(request.Path))
+                    else if (_fetch(request.Path, request.Diagnostics))
                     {
                         Interlocked.Increment(ref _fetched);
                         Interlocked.Exchange(ref _failures, 0);

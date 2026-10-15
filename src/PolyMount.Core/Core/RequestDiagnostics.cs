@@ -28,6 +28,13 @@ public sealed class RequestDiagnostics : IDisposable
         _timer = new Timer(_ => Flush(), null, 1000, 1000);
     }
 
+    /// <summary>
+    /// The diagnostics the calling request is traced into. Work that outlives the request
+    /// that started it — read-ahead on a worker thread, for instance — has no ambient scope
+    /// of its own, so it captures this and passes it back to <see cref="Begin"/> explicitly.
+    /// </summary>
+    public static RequestDiagnostics? Ambient => Current.Value?._owner;
+
     public static Scope? Begin(string operation, string path, RequestDiagnostics? diagnostics = null, int processId = 0)
     {
         var parent = Current.Value;

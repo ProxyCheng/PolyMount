@@ -76,9 +76,9 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public int Calls;
         public bool Disposed;
         private void Enter() { Calls++; if (transport) throw new SvnTransportException("refused"); }
-        public long GetHeadRevision() { Enter(); return 42; }
-        public IReadOnlyList<SvnEntry> List(long rev, string rel) { Enter(); return Array.Empty<SvnEntry>(); }
-        public void CatToFile(long rev, string rel, string dest) => Enter();
+        public long GetHeadRevision(RequestDiagnostics? diagnostics = null) { Enter(); return 42; }
+        public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null) { Enter(); return Array.Empty<SvnEntry>(); }
+        public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null) => Enter();
         public void Dispose() => Disposed = true;
     }
 
@@ -94,15 +94,19 @@ public sealed class SvnPluginTests : IPluginTestProvider
             ["A/inner"] = []
         };
         private readonly Dictionary<string, int> _calls = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _cats = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>Directory whose listing blocks until <see cref="Gate"/> is set.</summary>
         public string? Parked;
+        /// <summary>File whose download blocks until <see cref="Gate"/> is set.</summary>
+        public string? ParkedCat;
         public ManualResetEventSlim? Gate;
 
         public int Count(string rel) { lock (_calls) return _calls.GetValueOrDefault(rel); }
+        public int CatCount(string rel) { lock (_cats) return _cats.GetValueOrDefault(rel); }
         public int Total { get { lock (_calls) return _calls.Values.Sum(); } }
 
-        public long GetHeadRevision() => 1;
-        public IReadOnlyList<SvnEntry> List(long rev, string rel)
+        public long GetHeadRevision(RequestDiagnostics? diagnostics = null) => 1;
+        public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
         {
             lock (_calls) _calls[rel] = _calls.GetValueOrDefault(rel) + 1;
             if (Parked != null && string.Equals(Parked, rel, StringComparison.OrdinalIgnoreCase)) Gate?.Wait(TimeSpan.FromSeconds(10));
@@ -113,7 +117,13 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 IsDir = Tree.ContainsKey(rel.Length == 0 ? name : rel + "/" + name)
             }).ToArray();
         }
-        public void CatToFile(long rev, string rel, string dest) { }
+        public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
+        {
+            lock (_cats) _cats[rel] = _cats.GetValueOrDefault(rel) + 1;
+            if (ParkedCat != null && string.Equals(ParkedCat, rel, StringComparison.OrdinalIgnoreCase)) Gate?.Wait(TimeSpan.FromSeconds(10));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.WriteAllText(dest, "content of " + rel);
+        }
         public void Dispose() { }
     }
 
@@ -321,6 +331,41 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (!layer.WaitForPrefetch(TimeSpan.FromSeconds(5))) throw new Exception("Read-ahead never settled");
             if (backend.Count("A/inner") != 1)
                 throw new Exception("A listing that read-ahead fetched stopped the chain: inner=" + backend.Count("A/inner"));
+        });
+        Check("content-download-is-shared", () =>
+        {
+            // Two callers wanting the same file at the same time — a foreground read and a
+            // predicted one, say — must wait for one download, not start a second.
+            using var gate = new ManualResetEventSlim(false);
+            var backend = new TreeBackend { ParkedCat = "A/g.txt", Gate = gate };
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "content-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0 });
+            layer.SetRevision(9);
+            layer.ListOwn("A");
+            string? first = null, second = null;
+            var reader = new Thread(() =>
+            {
+                if (layer.TryOpenRead("A/g.txt", out _, out var stream))
+                    using (stream) first = new StreamReader(stream).ReadToEnd();
+            });
+            var joiner = new Thread(() =>
+            {
+                if (layer.TryOpenRead("A/g.txt", out _, out var stream))
+                    using (stream) second = new StreamReader(stream).ReadToEnd();
+            });
+            reader.Start();
+            long deadline = Environment.TickCount64 + 5000;
+            while (backend.CatCount("A/g.txt") == 0 && Environment.TickCount64 < deadline) Thread.Sleep(5);
+            if (backend.CatCount("A/g.txt") == 0) throw new Exception("The download never started");
+            joiner.Start();
+            Thread.Sleep(250);
+            gate.Set();
+            reader.Join(TimeSpan.FromSeconds(5));
+            joiner.Join(TimeSpan.FromSeconds(5));
+            if (backend.CatCount("A/g.txt") != 1)
+                throw new Exception("The file was downloaded " + backend.CatCount("A/g.txt") + " times");
+            if (first != "content of A/g.txt" || second != first)
+                throw new Exception($"Shared download produced '{first}' and '{second}'");
         });
         Check("prefetch-options", () =>
         {
