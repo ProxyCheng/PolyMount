@@ -76,8 +76,15 @@ internal sealed class RecordingSession
         Mount = mount;
         WorkingDirectory = workingDirectory;
         StartedUtc = DateTime.UtcNow;
-        Requests = new RecordingTail(Path.Combine(workingDirectory, Sanitize(mount)));
-        ServiceLog = new RecordingTail(Path.Combine(workingDirectory, "service")) { Prefix = "polymount-service" };
+        // The copies live under one subtree of their own, because that subtree becomes the
+        // bundle's logs\ folder — and nothing else in the working directory may be swept into it.
+        Logs = Path.Combine(workingDirectory, "logs");
+        string group = Sanitize(mount);
+        Requests = new RecordingTail(Path.Combine(Logs, group)) { Group = group };
+        ServiceLog = new RecordingTail(Path.Combine(Logs, "service"))
+        {
+            Group = "service", Prefix = "polymount-service", StartAtEnd = true
+        };
         Directory.CreateDirectory(Requests.Directory);
         Directory.CreateDirectory(ServiceLog.Directory);
         File.WriteAllText(Path.Combine(workingDirectory, "samples.csv"), StatsExport.SamplesCsvHeader, new UTF8Encoding(false));
@@ -86,6 +93,8 @@ internal sealed class RecordingSession
     public string Mount { get; }
     public DateTime StartedUtc { get; }
     public string WorkingDirectory { get; }
+    /// <summary>The subtree that becomes the bundle's logs folder.</summary>
+    public string Logs { get; }
     public RecordingTail Requests { get; }
     public RecordingTail ServiceLog { get; }
     public RecordingState State { get; private set; } = RecordingState.Recording;
@@ -329,7 +338,7 @@ internal sealed class RecordingSession
         {
             State = RecordingState.Stopped;
             _note = "saved";
-            return new RecordingSubmission(Mount, WorkingDirectory, Requests, ServiceLog,
+            return new RecordingSubmission(Mount, WorkingDirectory, Logs, Requests, ServiceLog,
                 new ServiceChannelState(_serviceSessionId, _serviceDirectory, _serviceBytes,
                     _serviceCapacityBytes, _droppedEvents, _restarts),
                 StartedUtc, utcNow, State.ToString(), _note,
@@ -346,6 +355,10 @@ internal sealed class RecordingSession
         lock (_gate) State = RecordingState.Stopped;
         TryDelete(WorkingDirectory);
     }
+
+    /// <summary>Drops the working copy once a bundle holds everything it did. What is left is
+    /// files it copied rather than moved — the per-second CSVs — and empty folders.</summary>
+    public void ReleaseWorkingCopy() => TryDelete(WorkingDirectory);
 
     /// <summary>Detaches the service's channel and keeps the copy. Used when the tray is going
     /// away: the service must not be left writing a session no page will ever save.</summary>

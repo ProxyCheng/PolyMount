@@ -23,10 +23,16 @@ internal static class Program
         using var smoke = new QCommandLineOption("ui-smoke", "Run bounded UI checks without saving mount configuration.");
         using var captureOption = new QCommandLineOption("capture", "Save UI smoke screenshots to an existing directory.", "directory");
         using var manage = new QCommandLineOption(new[] { "manage-cache", "probe" }, "Open object cache boundary management (repeatable).", "path");
+        using var record = new QCommandLineOption("record", "Record an instance for --seconds and write the bundle, without a page.", "mount");
+        using var secondsOption = new QCommandLineOption("seconds", "How long --record collects for.", "seconds", "20");
+        using var outputOption = new QCommandLineOption("output", "Where --record writes the bundle.", "directory");
         options.AddOption(install);
         options.AddOption(smoke);
         options.AddOption(captureOption);
         options.AddOption(manage);
+        options.AddOption(record);
+        options.AddOption(secondsOption);
+        options.AddOption(outputOption);
         options.AddPositionalArgument("paths", "Additional objects to manage with --manage-cache.", "[paths...]");
         if (!options.Parse(QCoreApplication.Arguments()))
         {
@@ -35,10 +41,12 @@ internal static class Program
         }
         if (options.IsSet(help)) { Console.WriteLine(options.HelpText()); return 0; }
         if (options.IsSet(captureOption) && !options.IsSet(smoke) ||
+            (options.IsSet(secondsOption) || options.IsSet(outputOption)) && !options.IsSet(record) ||
             options.PositionalArguments().Length > 0 && !options.IsSet(manage) ||
-            new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage) }.Count(set => set) > 1)
+            new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage), options.IsSet(record) }.Count(set => set) > 1)
         {
-            Console.Error.WriteLine("Choose one mode; --capture requires --ui-smoke and object paths require --manage-cache.");
+            Console.Error.WriteLine("Choose one mode; --capture requires --ui-smoke, --seconds/--output require --record, "
+                + "and object paths require --manage-cache.");
             return 2;
         }
 
@@ -52,6 +60,14 @@ internal static class Program
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
         if (options.IsSet(smoke))
             return RunUiSmoke(options.IsSet(captureOption) ? options.Value(captureOption) : null);
+
+        // A recording driven from the command line: the page is how this is meant to be used, but
+        // a bundle has to be producible where nobody can click, both for checking the feature and
+        // for collecting evidence on a machine someone else is using.
+        if (options.IsSet(record))
+            return RunHeadlessRecording(options.Value(record),
+                int.TryParse(options.Value(secondsOption), out int seconds) ? seconds : 20,
+                options.IsSet(outputOption) ? options.Value(outputOption) : null);
 
         // Launched from the Explorer context menu: show just the layer view, no tray.
         if (options.IsSet(manage))
@@ -161,6 +177,31 @@ internal static class Program
         catch { return null; }
     }
 
+    /// <summary>Records one instance for a fixed time and writes the bundle, with no page and no
+    /// event loop. It drives the same session and the same writer the page does, so what it
+    /// produces is the same kind of evidence — this is how the whole path is checked end to end.</summary>
+    private static int RunHeadlessRecording(string mount, int seconds, string? output)
+    {
+        var session = RecordingSession.Start(mount);
+        RecordingSessions.Track(session);
+        var until = DateTime.UtcNow.AddSeconds(Math.Max(1, seconds));
+        while (DateTime.UtcNow < until)
+        {
+            var pulse = session.Poll(DateTime.UtcNow);
+            Console.WriteLine($"{pulse.Time.ToLocalTime():HH:mm:ss} {pulse.State} · requests {pulse.RequestLines} lines/"
+                + $"{pulse.RequestBytes} B · samples {pulse.SampleRows} rows · seconds {pulse.SecondRows}"
+                + (pulse.Gaps.Count == 0 ? "" : $" · gaps {pulse.Gaps.Count}") + (pulse.Error is null ? "" : " · " + pulse.Error));
+            Thread.Sleep(1000);
+        }
+        var submission = session.Freeze(DateTime.UtcNow);
+        RecordingSessions.Forget(session);
+        var outcome = StatsExport.Write(output ?? Path.GetTempPath(), submission.ToSnapshot(I18n.Language));
+        session.ReleaseWorkingCopy();
+        Console.WriteLine($"Bundle: {outcome.Directory} ({outcome.Files} files, {outcome.Samples} rows, {outcome.Logs} logs, "
+            + $"{submission.RequestLines} request lines, {submission.Gaps.Count} gaps)");
+        return 0;
+    }
+
     private static int RunUiSmoke(string? capture)
     {
         TrayActivation.Smoke();
@@ -239,6 +280,7 @@ internal static class Program
                     stats.VerifyChartScale();
                     stats.VerifyExport(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
                     recording.Verify();
+                    recording.VerifyBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
                 }
                 catch (Exception ex) { failure = ex.Message; }
                 Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats, Recording and live localization.");

@@ -29,6 +29,8 @@ internal static class RequestLogDigest
     private const int TopSlowest = 40;
     private const int TopCallbacks = 40;
     private const int TopPending = 20;
+    /// <summary>The floor under which a request is not worth ranking in a sample.</summary>
+    private const int SlowEnoughMs = 100;
     /// <summary>How many entries are collected before the ranked lists are trimmed. A sampled log
     /// never came close to these; a recording, which carries every request, does.</summary>
     private const int KeptSlowest = 4000;
@@ -85,14 +87,19 @@ internal static class RequestLogDigest
     /// covers however long the reader was recording, which is not a constant of the tool.</summary>
     public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTimeOffset from, DateTimeOffset to, string kind)
     {
+        // A windowed export ranks only the requests worth ranking: it is a sample, so a list of
+        // everything fast would bury the few that matter. A recording carries every request, so
+        // the interesting thing is the ranking itself — which paths cost the most relative to
+        // each other — and the floor would leave a fast workload with an empty list.
+        long floor = kind == "recording" ? 0 : SlowEnoughMs;
         // A window the reader was paused through can predate everything the logs still
         // hold. Answering with nothing would be true and useless, so fall back to the whole span
         // and let the reader see that the two do not line up.
-        var aggregate = Aggregate(logs, from, to);
+        var aggregate = Aggregate(logs, from, to, floor);
         bool windowed = true;
         if (aggregate.Empty)
         {
-            aggregate = Aggregate(logs, null, null);
+            aggregate = Aggregate(logs, null, null, floor);
             windowed = false;
         }
         return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed, kind), aggregate.Coverage);
@@ -100,7 +107,7 @@ internal static class RequestLogDigest
 
     private static DateTimeOffset ToOffset(DateTime utc) => new(DateTime.SpecifyKind(utc, DateTimeKind.Utc));
 
-    private static LogAggregate Aggregate(IReadOnlyList<LogFileCopy> logs, DateTimeOffset? from, DateTimeOffset? to)
+    private static LogAggregate Aggregate(IReadOnlyList<LogFileCopy> logs, DateTimeOffset? from, DateTimeOffset? to, long floor)
     {
         var aggregate = new LogAggregate();
         foreach (var log in logs)
@@ -144,9 +151,9 @@ internal static class RequestLogDigest
                         if (elapsed > stats.Max) stats.Max = elapsed;
                         if (elapsed >= 100) stats.Over100++;
                         if (elapsed >= 1000) stats.Over1000++;
-                        // Only the slow ones are worth ranking; a log of fast requests would
-                        // otherwise fill the list with entries nobody needs to see.
-                        if (elapsed >= 100)
+                        // Only the slow ones are worth ranking in a sample; a log of fast
+                        // requests would otherwise fill the list with entries nobody needs to see.
+                        if (elapsed >= floor)
                         {
                             var key = (operation, path);
                             if (!aggregate.Paths.TryGetValue(key, out var entry))

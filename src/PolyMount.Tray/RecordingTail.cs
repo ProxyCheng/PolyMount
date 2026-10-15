@@ -25,6 +25,8 @@ internal sealed class RecordingTail
         public readonly string Target = target;
         public long Offset;
         public long Bytes, Lines;
+        /// <summary>Skip whatever this source already holds, once, when it is first seen.</summary>
+        public bool SkipToEnd;
     }
 
     private readonly Dictionary<string, Part> _parts = new(StringComparer.OrdinalIgnoreCase);
@@ -36,6 +38,9 @@ internal sealed class RecordingTail
     public RecordingTail(string directory) => Directory = directory;
 
     public string Directory { get; }
+    /// <summary>The group this tail's copies belong to, which is one folder inside the bundle's
+    /// logs directory (<c>TX4Package</c>, <c>service</c>).</summary>
+    public string Group { get; init; } = "mount";
     /// <summary>What the local copies are named. A bundle groups its logs by the instance, and a
     /// reader's <c>requests*</c> habit should find a recording the same way.</summary>
     public string Prefix { get; init; } = "requests";
@@ -51,11 +56,23 @@ internal sealed class RecordingTail
     /// <summary>What the local copy may reach before it stops taking more.</summary>
     public long MaxBytes { get; init; } = 2L * 1024 * 1024 * 1024;
 
-    /// <summary>The sources read so far, in the order they appeared — the order a bundle should
-    /// present them in.</summary>
+    /// <summary>Start each source that already exists at its current end, for a log that holds
+    /// history the recording is not about: a service log running for days is context, and only
+    /// what it writes from here on belongs to this recording. Sources that appear later — a
+    /// rolled segment, or a channel's own file — are read from their beginning, because whatever
+    /// is in them was written while the recording was running.</summary>
+    public bool StartAtEnd { get; init; }
+
+    private bool _firstDrain = true;
+
+    /// <summary>The sources that actually contributed, in the order they appeared — the order a
+    /// bundle presents them in. A source nothing was ever written to is not listed: it produced no
+    /// file, and naming it would have a reader look for one.</summary>
     public IReadOnlyList<TailedSource> Sources => _parts.Values
+        .Where(part => part.Bytes > 0)
         .OrderBy(part => part.Target, StringComparer.Ordinal)
-        .Select(part => new TailedSource(Path.GetFileName(part.Source), part.Source, part.Target, part.Bytes, part.Lines))
+        .Select(part => new TailedSource(Path.GetFileName(part.Source), part.Source,
+            Group + "/" + Path.GetFileName(part.Target), part.Bytes, part.Lines))
         .ToList();
 
     /// <summary>Whether this session has already taken a copy of that source.</summary>
@@ -77,18 +94,28 @@ internal sealed class RecordingTail
             if (Truncated) break;
         }
         _lastDrainUtc = utcNow;
+        _firstDrain = false;
         return copied;
     }
 
     private long DrainOne(string source, DateTime utcNow)
     {
         if (!_parts.TryGetValue(source, out var part))
+        {
             _parts[source] = part = new Part(source, Path.Combine(Directory,
                 Prefix + "-" + _next++.ToString("000", System.Globalization.CultureInfo.InvariantCulture) + ".log"));
+            part.SkipToEnd = StartAtEnd && _firstDrain;
+        }
         long length;
         try { length = new FileInfo(source).Length; }
         catch (FileNotFoundException) { return 0; }
         catch (IOException) { return 0; }
+        if (part.SkipToEnd)
+        {
+            part.SkipToEnd = false;
+            part.Offset = length;
+            return 0;
+        }
         if (length < part.Offset)
         {
             // Replaced under us, not rolled: everything past the last committed line is gone.

@@ -22,8 +22,21 @@ public sealed class RecordingChannel : IDisposable
     /// part that cannot be re-run — so disk is bounded by <see cref="SessionBytes"/> instead.</summary>
     public const long SegmentBytes = 32L * 1024 * 1024;
 
-    /// <summary>What one session may write before it stops itself and says why.</summary>
-    public const long SessionBytes = 512L * 1024 * 1024;
+    /// <summary>What one session may write before it stops itself and says why.
+    ///
+    /// Measured on TX4Package, 2026-10-15: a recursive walk of the mounted tree produced
+    /// **7.5–8.7 MB/s** of request events with the sampling filter off (288 MB in 40 seconds
+    /// across nine rolled segments). So this ceiling is about four minutes of the heaviest
+    /// traversal, and far longer of ordinary work. It is deliberately the same number the
+    /// front-end keeps, so there is one limit to explain rather than two.</summary>
+    public const long SessionBytes = 2L * 1024 * 1024 * 1024;
+
+    /// <summary>How many events may be queued before the sink writes them. Sixteen times the
+    /// sampled channel's: what a recording may not do is lose lines, and the first measurement
+    /// above dropped 1180 of 1.67 million at the smaller size. Still a queue rather than a block
+    /// — backpressure would slow the very requests being measured — so drops remain possible,
+    /// which is why they are counted and reported.</summary>
+    public const int BufferSize = 65536;
 
     /// <summary>Identifies this service process, so a front-end can tell a service restart from
     /// an instance reload.</summary>
@@ -83,7 +96,8 @@ public sealed class RecordingChannel : IDisposable
             _error = null;
             // The flag is set only once the logger is in place: a writer that sees Attached is
             // guaranteed to find a sink behind it.
-            _logger = AsyncFileLog.Create(Path.Combine(_directory, "events.log"), _monitor, SegmentBytes, retainedSegments: null);
+            _logger = AsyncFileLog.Create(Path.Combine(_directory, "events.log"), _monitor, SegmentBytes,
+                retainedSegments: null, bufferSize: BufferSize);
             Volatile.Write(ref _startedTicks, _startedUtc.Ticks);
             _attached = true;
             return InfoLocked();

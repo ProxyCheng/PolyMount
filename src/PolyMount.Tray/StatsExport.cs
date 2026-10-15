@@ -63,6 +63,10 @@ internal sealed class RecordingRecord
     public long CapturedBytes { get; init; }
     public long CapturedLines { get; init; }
     public long SampleRows { get; init; }
+    /// <summary>The seconds <c>samples.csv</c> actually covers. Its rows are this times the layer
+    /// count, which is what a reader divides back out; the session's duration is only an
+    /// approximation of it, because a poll can be late.</summary>
+    public long SampleTicks { get; init; }
     public long DroppedEvents { get; init; }
     /// <summary>The recording stopped at its own ceiling, so it is not the whole story.</summary>
     public bool Truncated { get; init; }
@@ -264,8 +268,8 @@ internal static class StatsExport
                 // and layers are the two counts those rows are the product of, so a reader can
                 // tell a short window from a missing layer without opening the CSV.
                 rows,
-                ticks = snapshot.Recording?.Seconds is { } seconds && seconds > 0
-                    ? (long)Math.Round(seconds)
+                ticks = snapshot.Recording?.SampleTicks > 0
+                    ? snapshot.Recording.SampleTicks
                     : snapshot.Samples.Select(sample => sample.Time).Distinct().Count(),
                 layers = snapshot.Recording?.Layers.Count > 0
                     ? snapshot.Recording.Layers.Count

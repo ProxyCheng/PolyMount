@@ -1088,6 +1088,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.range</source><translation>{0} → {1}</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
     <message><source>record.capacity</source><translation>{0} of {1}</translation></message>
+    <message><source>record.capacity.rate</source><translation>{0} of {1} · about {2}/s · roughly {3} left</translation></message>
     <message><source>record.evidence</source><translation>What is being collected</translation></message>
     <message><source>record.evidence.requests</source><translation>Request channel (everything)</translation></message>
     <message><source>record.evidence.service</source><translation>Service log</translation></message>

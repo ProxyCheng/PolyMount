@@ -13,14 +13,15 @@ internal sealed record ServiceChannelState(string SessionId, string Directory, l
 /// </summary>
 internal sealed class RecordingSubmission
 {
-    public RecordingSubmission(string mount, string workingDirectory, RecordingTail requests, RecordingTail serviceLog,
-        ServiceChannelState channel, DateTime startedUtc, DateTime endedUtc, string state, string? note,
-        IReadOnlyList<LayerTotalRecord> totals, IReadOnlyList<SecondRecord> seconds,
+    public RecordingSubmission(string mount, string workingDirectory, string logs, RecordingTail requests,
+        RecordingTail serviceLog, ServiceChannelState channel, DateTime startedUtc, DateTime endedUtc,
+        string state, string? note, IReadOnlyList<LayerTotalRecord> totals, IReadOnlyList<SecondRecord> seconds,
         IReadOnlyList<double> reads, IReadOnlyList<double> bytes, IReadOnlyList<double> cost,
         IReadOnlyList<double> writes, IReadOnlyList<double> overhead, long sampleRows)
     {
         Mount = mount;
         WorkingDirectory = workingDirectory;
+        Logs = logs;
         RequestBytes = requests.Bytes;
         RequestLines = requests.Lines;
         ServiceLogBytes = serviceLog.Bytes;
@@ -44,6 +45,8 @@ internal sealed class RecordingSubmission
 
     public string Mount { get; }
     public string WorkingDirectory { get; }
+    /// <summary>The subtree of the working copy that becomes the bundle's logs folder.</summary>
+    public string Logs { get; }
     /// <summary>What the local copy of the request channel holds: the request evidence.</summary>
     public long RequestBytes { get; }
     public long RequestLines { get; }
@@ -87,7 +90,11 @@ internal sealed class RecordingSubmission
         },
         Seconds = Seconds.ToList(),
         SamplesFile = Path.Combine(WorkingDirectory, "samples.csv"),
-        LogsDirectory = WorkingDirectory,
+        LogsDirectory = Logs,
+        // The recording's own polling cost, one reading per second. It is the whole of what a
+        // recording can say about the front end: the page's dispatch and render costs are the
+        // performance window's subject, and it measures them over its own 60 second window.
+        ResponseRequest = Overhead.ToList(),
         Recording = new RecordingRecord
         {
             SessionId = Channel.SessionId,
@@ -99,6 +106,7 @@ internal sealed class RecordingSubmission
             CapturedBytes = RequestBytes,
             CapturedLines = RequestLines,
             SampleRows = SampleRows,
+            SampleTicks = Seconds.Count,
             DroppedEvents = Channel.DroppedEvents,
             Truncated = State == nameof(RecordingState.Truncated),
             ServiceDirectory = Channel.Directory,

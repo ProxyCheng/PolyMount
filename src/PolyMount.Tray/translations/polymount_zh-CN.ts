@@ -1088,6 +1088,7 @@
     <message><source>record.range</source><translation>{0} → {1}</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
     <message><source>record.capacity</source><translation>已收集 {0} / 上限 {1}</translation></message>
+    <message><source>record.capacity.rate</source><translation>已收集 {0} / 上限 {1} · 约 {2}/s · 还可录约 {3}</translation></message>
     <message><source>record.evidence</source><translation>证据清单</translation></message>
     <message><source>record.evidence.requests</source><translation>请求通道（全量）</translation></message>
     <message><source>record.evidence.service</source><translation>服务日志</translation></message>

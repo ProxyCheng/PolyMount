@@ -20,12 +20,13 @@ public static class AsyncFileLog
     /// <summary>Rolled at <paramref name="segmentBytes"/>; a null <paramref name="retainedSegments"/>
     /// keeps every segment, which is what a recording needs: the oldest part of it is the part
     /// that cannot be re-run.</summary>
-    public static Logger Create(string path, IAsyncLogEventSinkMonitor? monitor, long segmentBytes, int? retainedSegments) =>
+    public static Logger Create(string path, IAsyncLogEventSinkMonitor? monitor, long segmentBytes, int? retainedSegments,
+        int bufferSize = 4096) =>
         new LoggerConfiguration().MinimumLevel.Information()
             .WriteTo.Async(sink => sink.File(path, outputTemplate: OutputTemplate,
                 fileSizeLimitBytes: segmentBytes, rollOnFileSizeLimit: true,
                 retainedFileCountLimit: retainedSegments, shared: false),
-                bufferSize: 4096, blockWhenFull: false, monitor: monitor)
+                bufferSize: bufferSize, blockWhenFull: false, monitor: monitor)
             .CreateLogger();
 }
 

@@ -1,5 +1,6 @@
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
+using System.Text.Json;
 
 namespace PolyMount.Tray;
 
@@ -286,6 +287,7 @@ internal sealed class RecordingWindow : QWidget, ICloseGuard
         {
             var outcome = task.GetAwaiter().GetResult();
             _lastSaved = outcome.Directory;
+            _session?.ReleaseWorkingCopy();
             _transient = I18n.F("record.save.done", outcome.Directory);
             bool opened = Quiet || QMessageBox.Information(this, T("record.save.title"),
                 I18n.F("record.save.body", System.Net.WebUtility.HtmlEncode(outcome.Directory), outcome.Samples, outcome.Logs),
@@ -371,7 +373,9 @@ internal sealed class RecordingWindow : QWidget, ICloseGuard
             : pulse?.Note is { Length: > 0 } recorded ? T("record.note") + recorded
             : T(_session == null ? "record.idle" : "record.recording");
         if (_message.Text != message) _message.SetText(message);
-        _working.SetText(_session == null ? "" : I18n.F("record.working", _session.WorkingDirectory));
+        // The working copy only means something while it is still being written to; once the
+        // bundle holds it, the line below the message points there instead.
+        _working.SetText(_session == null || ended ? "" : I18n.F("record.working", _session.WorkingDirectory));
         _saved.SetText(_lastSaved.Length == 0 ? "" : I18n.F("record.savedTo", _lastSaved));
     }
 
@@ -399,11 +403,30 @@ internal sealed class RecordingWindow : QWidget, ICloseGuard
         Fill(_evidence, rows.Length, index => rows[index]);
         long capacity = pulse?.CapacityBytes ?? 0;
         long used = pulse?.RequestBytes ?? 0;
-        _capacityLine.SetText(capacity == 0 ? "" : I18n.F("record.capacity", ByteUnits.Format(used), ByteUnits.Format(capacity)));
+        // The rate is what turns "512 MiB of 2 GiB" into a decision: with the sampling filter off
+        // a heavy traversal writes megabytes a second, and the reader should see how long the
+        // recording they started can still run rather than discover a ceiling they did not expect.
+        double rate = Rate(pulse);
+        _capacityLine.SetText(capacity == 0 ? ""
+            : rate <= 0 ? I18n.F("record.capacity", ByteUnits.Format(used), ByteUnits.Format(capacity))
+            : I18n.F("record.capacity.rate", ByteUnits.Format(used), ByteUnits.Format(capacity),
+                ByteUnits.Format(rate), Duration(TimeSpan.FromSeconds((capacity - used) / rate))));
         // Near its ceiling the figure turns red where it stands: by the time the channel stops
         // itself the reader should already have seen it coming.
         _capacityLine.SetStyleSheet(capacity > 0 && used * 5 > capacity * 4 ? "color:#dc2626;" : "color:#718096;");
     }
+
+    /// <summary>What the recording has been collecting per second so far.</summary>
+    private double Rate(RecordingPulse? pulse)
+    {
+        if (pulse == null || _session == null) return 0;
+        double seconds = (pulse.Time - _session.StartedUtc).TotalSeconds;
+        return seconds >= 3 ? (pulse.RequestBytes + pulse.ServiceBytes) / seconds : 0;
+    }
+
+    private static string Duration(TimeSpan span) => span.TotalHours >= 1
+        ? $"{(int)span.TotalHours} h {span.Minutes} min"
+        : span.TotalMinutes >= 1 ? $"{(int)span.TotalMinutes} min" : $"{Math.Max(0, (int)span.TotalSeconds)} s";
 
     private string Count(long value) => value.ToString("N0", I18n.Culture);
 
@@ -572,6 +595,93 @@ internal sealed class RecordingWindow : QWidget, ICloseGuard
         if (_message.Text != T("record.idle") && _message.Text != T("record.recording"))
             throw new InvalidOperationException("Recording page does not say what it is doing: " + _message.Text);
     }
+
+    /// <summary>Self-check for a smoke run of the bundle a recording writes. The page's own
+    /// rendering is one thing; this is the part a reader actually receives, and it has one shape
+    /// nothing else produces: a window that is the session's own length, samples carried rather
+    /// than rebuilt, the copy of the log moved in rather than taken at the end, and a second file
+    /// per second. A recording of a fast workload also has to rank its paths, or the bundle
+    /// answers nothing about which ones cost the time.</summary>
+    internal void VerifyBundle(string directory)
+    {
+        var started = DateTime.UtcNow.AddSeconds(-3);
+        var ended = DateTime.UtcNow;
+        string work = Path.Combine(directory, "recording-fixture");
+        string logs = Path.Combine(work, "logs", "TX4Package");
+        Directory.CreateDirectory(logs);
+        // Two seconds of a log in the same format the service writes: one traced root and one
+        // probe the sampling rule would have dropped, marked by its negative id.
+        var lines = new List<string>();
+        foreach (var (at, id) in new[] { (started, 1L), (started.AddSeconds(1), -1L) })
+        {
+            string stamp = at.ToString("O");
+            lines.Add($"{stamp} INF BEGIN id={id} parent=0 thread=1 pid=1 op=VFS.Lookup path='a' elapsedMs=0 stage='running'");
+            lines.Add($"{stamp} INF END id={id} parent=0 thread=1 pid=1 op=VFS.Lookup path='a' elapsedMs=12 stage='resolved'");
+        }
+        File.WriteAllLines(Path.Combine(logs, "requests-000.log"), lines);
+        // Two seconds of one layer, so the rows are the product of the two counts a reader
+        // divides back out.
+        File.WriteAllText(Path.Combine(work, "samples.csv"), StatsExport.SamplesCsvHeader
+            + SampleLine(started, 0) + "\n" + SampleLine(started.AddSeconds(1), 1) + "\n");
+
+        var snapshot = new StatsSnapshot
+        {
+            Scope = "TX4Package",
+            Kind = "recording",
+            CapturedUtc = ended,
+            WindowSeconds = 3,
+            SamplesFile = Path.Combine(work, "samples.csv"),
+            LogsDirectory = Path.Combine(work, "logs"),
+            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5) },
+            ResponseRequest = new List<double> { 4 },
+            Recording = new RecordingRecord
+            {
+                SessionId = "fixture", StartedUtc = started.ToString("O"), EndedUtc = ended.ToString("O"),
+                StoppedReason = "saved", Seconds = 3, SampleTicks = 2, SampleRows = 2,
+                Layers = new List<LayerTotalRecord> { new("TX4Package", "svn", "SVN", "#2563eb", false, 2, 0, 0, 6, 12, 0, 0) }
+            }
+        };
+        var outcome = StatsExport.Write(directory, snapshot);
+        using var summary = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "summary.json")));
+        var root = summary.RootElement;
+        if (root.GetProperty("export").GetProperty("kind").GetString() != "recording")
+            throw new InvalidOperationException("A recording bundle does not say it is one");
+        var export = root.GetProperty("export");
+        if (export.GetProperty("ticks").GetInt32() != 2 || export.GetProperty("layers").GetInt32() != 1 ||
+            export.GetProperty("ticks").GetInt32() * export.GetProperty("layers").GetInt32() != export.GetProperty("rows").GetInt32())
+            throw new InvalidOperationException($"A recording bundle describes {export.GetProperty("rows")} rows as "
+                + $"{export.GetProperty("ticks")} seconds of {export.GetProperty("layers")} layers");
+        if (root.GetProperty("recording").GetProperty("sampleTicks").GetInt32() != 2)
+            throw new InvalidOperationException("A recording bundle does not carry the session's own account of itself");
+        if (root.GetProperty("response").GetProperty("samples").GetInt32() != 1)
+            throw new InvalidOperationException("A recording bundle does not report its own polling cost");
+        // The log was moved in rather than copied, so the fixture no longer has it.
+        string moved = Path.Combine(outcome.Directory, "logs", "TX4Package", "requests-000.log");
+        if (!File.Exists(moved) || File.Exists(Path.Combine(logs, "requests-000.log")))
+            throw new InvalidOperationException("A recording's log copy was not moved into the bundle");
+        if (File.ReadAllLines(moved).Length != lines.Count)
+            throw new InvalidOperationException("A recording's log copy lost lines on the way");
+        if (File.ReadAllLines(Path.Combine(outcome.Directory, "seconds.csv")).Length != 2)
+            throw new InvalidOperationException("A recording bundle's per-second file does not match the seconds it measured");
+        using var digest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "requests-summary.json")));
+        var window = digest.RootElement.GetProperty("window");
+        if (window.GetProperty("kind").GetString() != "recording" || !window.GetProperty("filtered").GetBoolean())
+            throw new InvalidOperationException("A recording's request digest does not describe the session's window");
+        // The window has to start where the recording did, which is how a reader that only knows
+        // `windowSeconds` still computes the session without knowing anything new.
+        if (DateTimeOffset.Parse(window.GetProperty("fromUtc").GetString()!) != new DateTimeOffset(started, TimeSpan.Zero))
+            throw new InvalidOperationException("A recording's request digest starts somewhere other than the recording did");
+        // A fast workload still has to be ranked: the floor that thins a sample would empty this.
+        var paths = digest.RootElement.GetProperty("paths").EnumerateArray().ToArray();
+        if (paths.Length == 0 || paths.All(path => path.GetProperty("ends").GetInt64() == 0))
+            throw new InvalidOperationException("A recording's request digest ranked no paths");
+        if (digest.RootElement.GetProperty("coverage").GetArrayLength() != outcome.Logs)
+            throw new InvalidOperationException("A recording's digest does not account for every log it carries");
+    }
+
+    private static string SampleLine(DateTime at, int index) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{at:O},TX4Package,svn,{index + 1},0,0,0,0,0,0,0,1.5,12");
 
     /// <summary>One second as a recording of two layers would report it, for the check above.</summary>
     private RecordingPulse Synthetic()
