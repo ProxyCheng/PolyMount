@@ -7,12 +7,12 @@ namespace PolyMount.Service;
 
 public sealed class PipeServer
 {
-    private readonly MountManager _manager;
+    private readonly IControlHost _host;
     private readonly string _pipeName;
 
-    public PipeServer(MountManager manager, string pipeName)
+    public PipeServer(IControlHost host, string pipeName)
     {
-        _manager = manager;
+        _host = host;
         _pipeName = pipeName;
     }
 
@@ -53,7 +53,7 @@ public sealed class PipeServer
                 if (line == null) return;
 
                 var request = JsonSerializer.Deserialize<ControlRequest>(line) ?? new ControlRequest();
-                var response = _manager.Handle(request);
+                var response = _host.Handle(request);
                 writer.WriteLine(JsonSerializer.Serialize(response));
             }
         }

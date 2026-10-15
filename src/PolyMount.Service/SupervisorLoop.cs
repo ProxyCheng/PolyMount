@@ -2,11 +2,14 @@ using Microsoft.Extensions.Hosting;
 
 namespace PolyMount.Service;
 
-public sealed class Worker : BackgroundService
+/// <summary>The supervisor's own loop: it mounts what it hosts and serves the one pipe a
+/// front-end knows the name of. Each instance's worker runs the same protocol on a pipe of its
+/// own, from the same executable with <c>--instance</c> (see <see cref="InstanceHost"/>).</summary>
+public sealed class SupervisorLoop : BackgroundService
 {
     private readonly MountManager _manager;
 
-    public Worker(MountManager manager) => _manager = manager;
+    public SupervisorLoop(MountManager manager) => _manager = manager;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {

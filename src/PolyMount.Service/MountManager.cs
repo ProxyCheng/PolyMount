@@ -9,7 +9,7 @@ using PolyMount.Core.Ipc;
 
 namespace PolyMount.Service;
 
-public sealed class MountManager
+public sealed class MountManager : IControlHost
 {
     private readonly List<MountInstance> _instances = new();
     private readonly Dictionary<string, string> _errors = new(StringComparer.OrdinalIgnoreCase);
@@ -52,25 +52,10 @@ public sealed class MountManager
         lock (_gate)
             foreach (var instance in _instances)
                 foreach (string file in instance.GetLogFiles())
-                    logs.Add(Describe(file, instance.Name));
-        foreach (string file in Match(AppContext.BaseDirectory, ServiceLogName)) logs.Add(Describe(file, "service"));
+                    logs.Add(LogInventory.Describe(file, instance.Name));
+        foreach (string file in LogInventory.Family(AppContext.BaseDirectory, ServiceLogName))
+            logs.Add(LogInventory.Describe(file, "service"));
         return logs;
-
-        static LogFile Describe(string path, string group)
-        {
-            long bytes = 0;
-            try { bytes = new FileInfo(path).Length; }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
-            return new LogFile { Name = group + "/" + Path.GetFileName(path), Source = path, Bytes = bytes };
-        }
-    }
-
-    /// <summary>Every segment of a rolled log, current one included.</summary>
-    private static IEnumerable<string> Match(string directory, string fileName)
-    {
-        try { return Directory.GetFiles(directory, Path.GetFileNameWithoutExtension(fileName) + "*.log").Order(StringComparer.Ordinal).ToList(); }
-        catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
     }
 
     private static void LoadPlugins(AppConfig config)
@@ -172,7 +157,7 @@ public sealed class MountManager
 
     public ControlResponse Handle(ControlRequest request)
     {
-        var response = new ControlResponse { SourceTypes = SourceRegistry.Types.ToList(), LayerDescriptors = LayerRegistry.Descriptors.ToList(), Presets = LayerPresetRegistry.All.ToList() };
+        var response = ControlEnvelope.New();
         try
         {
             switch (request.Cmd)
@@ -181,18 +166,6 @@ public sealed class MountManager
                     break;
                 case ControlCommands.Instances:
                     response.Instances = Endpoints();
-                    break;
-                case ControlCommands.SetPin:
-                    Find(request.Name).SetPin(request.Rev, request.Layer);
-                    break;
-                case ControlCommands.RefreshHead:
-                    Find(request.Name).RefreshHead(request.Layer);
-                    break;
-                case ControlCommands.ClearCache:
-                    Find(request.Name).ClearCache(request.Layer);
-                    break;
-                case ControlCommands.ClearLocalChanges:
-                    Find(request.Name).ClearLocalChanges(request.Layer ?? "", Config.WinFspBin);
                     break;
                 case ControlCommands.Mount:
                     try
@@ -213,18 +186,18 @@ public sealed class MountManager
                     Find(request.Name).Unmount();
                     break;
                 case ControlCommands.Probe:
-                    response.Probe = ProbePath(request.Path);
-                    break;
                 case ControlCommands.LayerAction:
-                {
-                    var (inst, rel) = ResolvePath(request.Path);
-                    response.Probe = inst.ApplyLayerAction(request.Layer ?? "", rel, request.Action ?? "");
-                    break;
-                }
                 case ControlCommands.ReleaseAbove:
+                case ControlCommands.SetPin:
+                case ControlCommands.RefreshHead:
+                case ControlCommands.ClearCache:
+                case ControlCommands.ClearLocalChanges:
+                case ControlCommands.RecordingStart:
+                case ControlCommands.RecordingStatus:
+                case ControlCommands.RecordingStop:
                 {
-                    var (instance, rel) = ResolvePath(request.Path);
-                    response.Probe = instance.ReleaseAbove(rel, request.Boundary, request.ExpectedLayers);
+                    var (instance, rel) = Locate(request);
+                    InstanceCommands.Apply(instance, rel, request, Config.WinFspBin, response);
                     break;
                 }
                 case ControlCommands.GetConfig:
@@ -253,15 +226,6 @@ public sealed class MountManager
                     break;
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
-                    break;
-                case ControlCommands.RecordingStart:
-                    response.Recording = Find(request.Name).StartRecording(request.Label);
-                    break;
-                case ControlCommands.RecordingStatus:
-                    response.Recording = Find(request.Name).RecordingInfo();
-                    break;
-                case ControlCommands.RecordingStop:
-                    response.Recording = Find(request.Name).StopRecording(request.Reason ?? "stopped");
                     break;
                 case ControlCommands.Shutdown:
                     // Respond first, then unmount and stop the host shortly after so the reply flushes.
@@ -333,6 +297,15 @@ public sealed class MountManager
     // The instance a command names. A command about one instance that names none is refused
     // rather than answered about whichever instance happened to be first: every front-end names
     // one, and a caller that does not is asking a question this cannot answer correctly.
+    // Which instance a command is about: by its mount point for a command that carries a path,
+    // by name for one that names an instance.
+    private (MountInstance Instance, string Rel) Locate(ControlRequest request)
+    {
+        return InstanceCommands.ByPath(request.Cmd)
+            ? ResolvePath(request.Path)
+            : (Find(request.Name), string.Empty);
+    }
+
     private MountInstance Find(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -341,34 +314,18 @@ public sealed class MountManager
         return instance ?? throw new InvalidOperationException("no such mount: " + name);
     }
 
-    // Maps a full local path (e.g. D:\L10\sub\file.txt) to the owning mount instance and the
-    // path relative to its mount point, then probes the layer stack.
-    private ProbeResult ProbePath(string? fullPath)
-    {
-        var (inst, rel) = ResolvePath(fullPath);
-        return inst.Probe(rel);
-    }
-
+    // Maps a full local path (e.g. D:\L10\sub\file.txt) to the owning mount instance and the path
+    // relative to its mount point.
     private (MountInstance Instance, string Rel) ResolvePath(string? fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath))
             throw new InvalidOperationException("a path is required");
 
         var full = Path.GetFullPath(fullPath).TrimEnd('\\');
-
         lock (_gate)
-        {
-            foreach (var inst in _instances)
-            {
-                var mp = Path.GetFullPath(inst.MountPoint).TrimEnd('\\');
-                if (full.Equals(mp, StringComparison.OrdinalIgnoreCase))
-                    return (inst, string.Empty);
-
-                var prefix = mp + "\\";
-                if (full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                    return (inst, VfsPath.Normalize(full.Substring(prefix.Length)));
-            }
-        }
+            foreach (var instance in _instances)
+                if (InstanceCommands.Under(instance, full) is { } rel)
+                    return (instance, rel);
 
         throw new InvalidOperationException("path is not under any PolyMount mount point: " + full);
     }
