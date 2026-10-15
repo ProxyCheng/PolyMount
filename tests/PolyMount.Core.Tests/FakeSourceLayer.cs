@@ -29,7 +29,9 @@ internal sealed class FakeSourceLayer : ILayer
 
     public void AddDir(string rel) => _nodes[rel] = new Node { IsDir = true };
 
-    public void AddFile(string rel, string content)
+    public void AddFile(string rel, string content) => AddFileBytes(rel, System.Text.Encoding.UTF8.GetBytes(content));
+
+    public void AddFileBytes(string rel, byte[] content)
     {
         // auto-create parent dirs
         var parent = VfsPath.Parent(rel);
@@ -38,7 +40,7 @@ internal sealed class FakeSourceLayer : ILayer
             _nodes[parent] = new Node { IsDir = true };
             parent = VfsPath.Parent(parent);
         }
-        _nodes[rel] = new Node { IsDir = false, Data = System.Text.Encoding.UTF8.GetBytes(content) };
+        _nodes[rel] = new Node { IsDir = false, Data = content };
     }
 
     public bool IsDeleted(string rel) => false;
