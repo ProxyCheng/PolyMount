@@ -15,8 +15,13 @@ public sealed class MetricsCollector
     private readonly int _capacity;
     private readonly ConcurrentQueue<Sample> _samples = new();
     private int _count;
+    private long _lastActivityMs;
 
     public MetricsCollector(int capacity = 5000) => _capacity = capacity;
+
+    /// <summary>How long the mount has gone without a read or a write, so background work can
+    /// stay out of the way of whoever is using it.</summary>
+    public TimeSpan IdleFor => TimeSpan.FromMilliseconds(Math.Max(0, Environment.TickCount64 - Interlocked.Read(ref _lastActivityMs)));
 
     public void RecordRead(string layer, TimeSpan elapsed, long bytes, bool cached = false)
     {
@@ -25,6 +30,7 @@ public sealed class MetricsCollector
     public void RecordWrite(string layer, TimeSpan elapsed, long bytes) => Record(layer, elapsed, bytes, false, true);
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
     {
+        Interlocked.Exchange(ref _lastActivityMs, Environment.TickCount64);
         _samples.Enqueue(new Sample(DateTime.UtcNow.Ticks, layer, elapsed.TotalMilliseconds, bytes, cached, write));
         if (Interlocked.Increment(ref _count) > _capacity)
             if (_samples.TryDequeue(out _)) Interlocked.Decrement(ref _count);

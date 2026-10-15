@@ -78,6 +78,13 @@ public sealed class MountProfile
 
     public List<LayerConfig>? Layers { get; set; } = new();
 
+    // Fetches directory listings in the background after mount, so the first walk through the
+    // tree is answered from the cache instead of the source. It yields while the mount is being
+    // read, and stops at whichever budget runs out first.
+    public bool WarmListings { get; set; }
+    public int WarmListingsLimit { get; set; } = 2000;
+    public int WarmListingsSeconds { get; set; } = 60;
+
     public string GetStoreRoot() => string.IsNullOrWhiteSpace(StoreRoot)
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "stores",
             Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Name)))[..16])

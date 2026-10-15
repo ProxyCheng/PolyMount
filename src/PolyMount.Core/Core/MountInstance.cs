@@ -10,6 +10,7 @@ public sealed class MountInstance : IDisposable
     private readonly object _gate = new();
     private FileSystemHost? _host;
     private bool _unmounting;
+    private ListingWarmup? _warmup;
     private string _lastWinFspBin = "";
     private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
@@ -111,11 +112,23 @@ public sealed class MountInstance : IDisposable
                 throw new IOException($"mount failed for '{Profile.MountPoint}': 0x{rc:X8}");
             }
             _host = host;
+            StartWarmup();
         }
     }
 
+    /// <summary>Walks the listing tree in the background while the mount is not being read.</summary>
+    private void StartWarmup()
+    {
+        StopWarmup();
+        if (Profile.WarmListings && Profile.WarmListingsLimit > 0)
+            _warmup = new ListingWarmup(Vfs, Metrics, Profile.WarmListingsLimit, seconds: Profile.WarmListingsSeconds);
+    }
+
+    private void StopWarmup() => Interlocked.Exchange(ref _warmup, null)?.Dispose();
+
     public void Unmount()
     {
+        StopWarmup();
         FileSystemHost host;
         lock (_gate)
         {
@@ -137,6 +150,8 @@ public sealed class MountInstance : IDisposable
         var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         foreach (var rev in revisions) rev.SetRevision(revision);
+        // The listings already warmed belong to the version just left; warm the new one.
+        if (Mounted) StartWarmup();
     }
 
     public void RefreshHead(string? layer = null)
@@ -144,6 +159,7 @@ public sealed class MountInstance : IDisposable
         var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         foreach (var rev in revisions) rev.SetRevision(rev.HeadRevision());
+        if (Mounted) StartWarmup();
     }
 
     public void ClearCache(string? layer = null)
@@ -302,6 +318,7 @@ public sealed class MountInstance : IDisposable
 
     public void Dispose()
     {
+        StopWarmup();
         Vfs.Prediction?.Dispose();
         try { Unmount(); }
         finally
