@@ -13,7 +13,7 @@ internal sealed class Dashboard : QWidget
     private readonly QComboBox _filter, _language;
     private readonly QLabel _service, _total, _active, _issues, _layerTotal;
     private readonly QLabel _listCount, _empty, _feedback, _updated;
-    private readonly QLabel _detailName, _detailState, _mountPath, _layers, _detailError;
+    private readonly QLabel _detailName, _detailState, _mountPath, _layers, _warmup, _detailError;
     private readonly QWidget _detailBody;
     private readonly QPushButton _refresh, _start, _stop, _create;
     private readonly QPushButton _toggleMount, _open, _edit, _performance, _inspect;
@@ -179,6 +179,10 @@ internal sealed class Dashboard : QWidget
         actions.AddWidget(_open, 1);
         body.AddLayout(actions);
         _mountPath = DetailField(body, "mount.location");
+        // The service publishes this sentence in both languages, the same way provider
+        // details are published, so it needs no catalog entry of its own.
+        _warmup = PlainLabel("", "detailValue");
+        body.AddWidget(_warmup);
         body.AddWidget(Label("layers.heading", "eyebrow"));
         _layers = PlainLabel("", "layerChain");
         body.AddWidget(_layers);
@@ -409,6 +413,10 @@ internal sealed class Dashboard : QWidget
         if (m != null)
         {
             SetText(_mountPath, m.MountPoint);
+            _warmup.SetVisible(m.WarmupDetail != null);
+            if (m.WarmupDetail != null)
+                SetText(_warmup, string.Format(I18n.Culture, m.WarmupDetail.Resolve(I18n.Language),
+                    m.WarmedDirectories, m.WarmupLimit));
             SetText(_layers, string.Join("\n↓\n", m.Providers.Select((p, i) => $"{i + 1:00}  {(string.IsNullOrEmpty(p.DisplayName) ? p.Name : p.DisplayName)}   ·   {T(p.Writable ? "writable" : "readonly")}")));
             _detailError.SetVisible(!string.IsNullOrWhiteSpace(m.Error));
             SetText(_detailError, T("instance.error") + "\n" + m.Error);

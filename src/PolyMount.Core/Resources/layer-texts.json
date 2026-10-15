@@ -53,5 +53,7 @@
   "prediction.depth": { "en": "Look-ahead depth", "zh-CN": "前瞻步数" },
   "prediction.depth.description": { "en": "How many confident steps to follow. Read-ahead issues the same reads either way; depth decides how far ahead of the reader they land.", "zh-CN": "沿预测路径连续走几步。两种情况下回源次数相同，深度只决定它们落在读者前面多远。" },
   "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" },
-  "preset.local-directory.title": { "en": "Local directory + overlay + memory cache", "zh-CN": "本地目录 + 本地修改 + 内存缓存" }
+  "preset.local-directory.title": { "en": "Local directory + overlay + memory cache", "zh-CN": "本地目录 + 本地修改 + 内存缓存" },
+  "warmup.progress": { "en": "{0} of {1} directories warmed", "zh-CN": "已预热 {0}/{1} 个目录" },
+  "warmup.off": { "en": "Listing warm-up is off", "zh-CN": "未启用清单预热" }
 }

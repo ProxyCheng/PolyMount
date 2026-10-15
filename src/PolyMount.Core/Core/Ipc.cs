@@ -43,6 +43,12 @@ public sealed class MountStatus
     public long CacheBytes { get; set; }
     public long CacheCapacity { get; set; }
     public int CacheCount { get; set; }
+    // Directories whose listing the background warm-up has stored, against its budget;
+    // zero budget means the instance does not warm.
+    public long WarmedDirectories { get; set; }
+    public long WarmupLimit { get; set; }
+    /// <summary>Warm-up progress in the reader's language, formatted with the two counts above.</summary>
+    public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
 }
 

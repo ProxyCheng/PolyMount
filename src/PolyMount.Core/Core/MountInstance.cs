@@ -281,7 +281,10 @@ public sealed class MountInstance : IDisposable
             Url = string.Join("\n", _configs.Values.Where(c => SourceRegistry.Contains(c.Type)).Select(c => c.Type == "dir" ? c.Source.Path : c.Source.Url)),
             CacheBytes = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.TotalBytes),
             CacheCapacity = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Capacity),
-            CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count)
+            CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count),
+            WarmedDirectories = _warmup?.WarmedDirectories ?? 0,
+            WarmupLimit = Profile.WarmListings ? Profile.WarmListingsLimit : 0,
+            WarmupDetail = LayerTexts.Get(Profile.WarmListings && Profile.WarmListingsLimit > 0 ? "warmup.progress" : "warmup.off")
         };
 
         foreach (var layer in Vfs.Layers)
