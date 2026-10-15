@@ -29,6 +29,13 @@ internal static class RequestLogDigest
     private const int TopSlowest = 40;
     private const int TopCallbacks = 40;
     private const int TopPending = 20;
+    /// <summary>How many entries are collected before the ranked lists are trimmed. A sampled log
+    /// never came close to these; a recording, which carries every request, does.</summary>
+    private const int KeptSlowest = 4000;
+    private const int KeptPending = 500;
+    /// <summary>How many distinct paths are ranked. Past this, a new path is counted in the
+    /// totals but not ranked — a recording of a whole game load can touch a great many.</summary>
+    private const int KeptPaths = 50000;
 
     private sealed class OperationStats
     {
@@ -61,6 +68,9 @@ internal static class RequestLogDigest
         public readonly List<Pending> PendingRequests = new();
         public readonly List<LogCoverage> Coverage = new();
         public long Begins, Ends, PendingCount, Counts, Dropped, Lines;
+        /// <summary>Set when a ranked list had to drop entries, so a reader is told the list is
+        /// the top of a larger set rather than the whole of it.</summary>
+        public bool SlowestTrimmed, PendingTrimmed, PathsTrimmed;
 
         public bool Empty => Ends == 0 && Begins == 0 && PendingCount == 0 && Callbacks.Count == 0;
     }
@@ -69,21 +79,26 @@ internal static class RequestLogDigest
     /// the reader has. A log that cannot be read is reported with its error and skipped rather
     /// than failing the export it is part of.</summary>
     public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTime capturedUtc, int windowSeconds)
+        => Build(logs, ToOffset(capturedUtc) - TimeSpan.FromSeconds(windowSeconds), ToOffset(capturedUtc), "window");
+
+    /// <summary>The same reduction over a window that is stated rather than derived: a recording
+    /// covers however long the reader was recording, which is not a constant of the tool.</summary>
+    public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTimeOffset from, DateTimeOffset to, string kind)
     {
-        var to = new DateTimeOffset(DateTime.SpecifyKind(capturedUtc, DateTimeKind.Utc));
-        var from = to - TimeSpan.FromSeconds(windowSeconds);
-        var aggregate = Aggregate(logs, from, to);
-        bool windowed = true;
         // A window the reader was paused through can predate everything the logs still
         // hold. Answering with nothing would be true and useless, so fall back to the whole span
         // and let the reader see that the two do not line up.
+        var aggregate = Aggregate(logs, from, to);
+        bool windowed = true;
         if (aggregate.Empty)
         {
             aggregate = Aggregate(logs, null, null);
             windowed = false;
         }
-        return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed), aggregate.Coverage);
+        return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed, kind), aggregate.Coverage);
     }
+
+    private static DateTimeOffset ToOffset(DateTime utc) => new(DateTime.SpecifyKind(utc, DateTimeKind.Utc));
 
     private static LogAggregate Aggregate(IReadOnlyList<LogFileCopy> logs, DateTimeOffset? from, DateTimeOffset? to)
     {
@@ -135,10 +150,14 @@ internal static class RequestLogDigest
                         {
                             var key = (operation, path);
                             if (!aggregate.Paths.TryGetValue(key, out var entry))
+                            {
+                                if (aggregate.Paths.Count >= KeptPaths) { aggregate.PathsTrimmed = true; continue; }
                                 aggregate.Paths[key] = entry = new PathStats { Operation = operation };
+                            }
                             entry.Ends++; entry.Sum += elapsed;
                             if (elapsed > entry.Max) entry.Max = elapsed;
                             aggregate.Slowest.Add(new Slow(atUtc, operation, path, elapsed, Quoted(message, " stage='")));
+                            aggregate.SlowestTrimmed |= Trim(aggregate.Slowest, KeptSlowest, entry => entry.ElapsedMs);
                         }
                         continue;
                     }
@@ -147,6 +166,7 @@ internal static class RequestLogDigest
                         aggregate.PendingCount++; events++;
                         aggregate.PendingRequests.Add(new Pending(atUtc, Quoted(message, " op="), Quoted(message, " path='"),
                             Number(message, " elapsedMs="), Quoted(message, " stage='")));
+                        aggregate.PendingTrimmed |= Trim(aggregate.PendingRequests, KeptPending, entry => entry.ElapsedMs);
                         continue;
                     }
                     if (message.StartsWith("COUNT "))
@@ -180,7 +200,19 @@ internal static class RequestLogDigest
         return aggregate;
     }
 
-    private static string Render(LogAggregate aggregate, DateTimeOffset? from, DateTimeOffset? to, bool windowed)
+    /// <summary>Keeps only the largest few of a stream, so a recording — which carries every
+    /// request rather than a sample of them — cannot grow the digest without bound. Trimming
+    /// happens in batches: sorting a short list beats the bookkeeping a real heap would need
+    /// here, and the lists are read once, at the end. Returns whether anything was dropped.</summary>
+    private static bool Trim<T>(List<T> items, int keep, Func<T, long> rank)
+    {
+        if (items.Count <= keep + keep) return false;
+        items.Sort((left, right) => rank(right).CompareTo(rank(left)));
+        items.RemoveRange(keep, items.Count - keep);
+        return true;
+    }
+
+    private static string Render(LogAggregate aggregate, DateTimeOffset? from, DateTimeOffset? to, bool windowed, string kind)
     {
         var operationRows = aggregate.Operations
             .OrderByDescending(pair => pair.Value.Sum)
@@ -249,12 +281,18 @@ internal static class RequestLogDigest
                 toUtc = to?.ToString("O", CultureInfo.InvariantCulture),
                 // False means the window held nothing and the whole log span was used instead;
                 // coverage[].firstUtc/lastUtc then say how far that reaches back.
-                filtered = windowed
+                filtered = windowed,
+                kind
             },
-            note = "Logged requests only. SVN.* is recorded in full; a fast root request is sampled "
-                + "at about 1/128 (its nested calls come with it), and any request that takes at "
-                + "least 100 ms keeps its END line. COUNT lines summarise every callback, sampled "
-                + "or not, over the service's 5 second window.",
+            note = kind == "recording"
+                ? "A recording: no sampling filter was applied, so every request event is here and "
+                    + "the operation counts are complete rather than estimated. A Layer probe that the "
+                    + "sampled log would have discarded carries a negative id. COUNT lines still "
+                    + "summarise every callback over the service's 5 second window."
+                : "Logged requests only. SVN.* is recorded in full; a fast root request is sampled "
+                    + "at about 1/128 (its nested calls come with it), and any request that takes at "
+                    + "least 100 ms keeps its END line. COUNT lines summarise every callback, sampled "
+                    + "or not, over the service's 5 second window.",
             totals = new
             {
                 // The figures describe the window; this counts every line the copied
@@ -266,7 +304,11 @@ internal static class RequestLogDigest
                 counts = aggregate.Counts,
                 dropped = aggregate.Dropped,
                 operations = aggregate.Operations.Count,
-                paths = aggregate.Paths.Count
+                paths = aggregate.Paths.Count,
+                // The ranked lists are the top of a larger set when this is true.
+                slowestTrimmed = aggregate.SlowestTrimmed,
+                pendingTrimmed = aggregate.PendingTrimmed,
+                pathsTrimmed = aggregate.PathsTrimmed
             },
             coverage = aggregate.Coverage,
             operations = operationRows,

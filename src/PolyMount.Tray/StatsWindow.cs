@@ -23,10 +23,10 @@ internal sealed class StatsWindow : QWidget
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
-    private readonly Dictionary<string, List<Sample>> _history = new();
+    private readonly Dictionary<string, List<LayerSampler.Sample>> _history = new();
     /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
     /// a rate, so a step only means something next to the interval it was measured over.</summary>
-    private readonly Dictionary<string, (long Count, long Bytes, long Served, long Fetched, DateTime Time)> _wasteSteps = new();
+    private readonly Dictionary<string, LayerSampler.Counters> _wasteSteps = new();
     /// <summary>Sampling runs once a second; a step spanning more than this is a pause in
     /// observation rather than a rate.</summary>
     private const double SamplingGapSeconds = 3;
@@ -41,9 +41,6 @@ internal sealed class StatsWindow : QWidget
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
-    private sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes,
-        double Wasted = 0, double WastedBytes = 0, double Accelerated = 0, double Fetched = 0);
-    private sealed record Sample(DateTime Time, Dictionary<string, LayerSample> Layers);
     private static string T(string key) => I18n.T(key);
 
     public StatsWindow(string? instanceName = null)
@@ -166,7 +163,7 @@ internal sealed class StatsWindow : QWidget
         // A block cache reports lifetime byte totals, so its window figure is the step between
         // observations rather than the counters themselves.
         var ram = new MountMetrics { Mount = "m", Layers = new() { new() { Name = "ram", Accelerating = true } } };
-        var history = new List<Sample>();
+        var history = new List<LayerSampler.Sample>();
         foreach (var (served, fetched) in new[] { (0L, 0L), (3000L, 1000L), (6000L, 2000L) })
         {
             ram.Layers[0].AcceleratedBytes = served;
@@ -383,7 +380,7 @@ internal sealed class StatsWindow : QWidget
                 new SampleRecord(sample.Time, mount.Key, Relative(layer.Key, mount.Key),
                     layer.Value.Reads, layer.Value.Bytes, layer.Value.Cost,
                     layer.Value.WriteBytes, layer.Value.Wasted, layer.Value.WastedBytes,
-                    layer.Value.Accelerated, layer.Value.Fetched))))
+                    layer.Value.Accelerated, layer.Value.Fetched, layer.Value.AvgCost, layer.Value.MaxCost))))
             .OrderBy(row => row.Time).ToList(),
         ResponseRequest = _responseSamples.Select(sample => sample.Request).ToList(),
         ResponseDispatch = _responseSamples.Select(sample => sample.Dispatch).ToList(),
@@ -422,63 +419,19 @@ internal sealed class StatsWindow : QWidget
     }
 
     /// <summary>Takes the step for this tick of every counter a layer reports as a lifetime
-    /// total, one entry per layer. A layer can evict a whole budget's worth in a second, so
-    /// this is a rate only when it was measured over a normal interval: the first observation
-    /// of a layer, and the first one after the window was hidden or the instance switched,
-    /// would otherwise bill a lifetime total of hundreds of megabytes to a single second,
-    /// against a chart scaled in kilobytes.</summary>
-    private Dictionary<string, (double Count, double Bytes, double Served, double Fetched)> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts)
-    {
-        var steps = new Dictionary<string, (double, double, double, double)>();
-        foreach (var (key, layer) in mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))))
-        {
-            bool measured = _wasteSteps.TryGetValue(key, out var previous) &&
-                (time - previous.Time).TotalSeconds <= SamplingGapSeconds;
-            _wasteSteps[key] = (layer.HeldWasted, layer.HeldWastedBytes, layer.AcceleratedBytes, layer.FetchedBytes, time);
-            // A counter that went backwards was rebuilt, not credited: clamp rather than dip.
-            steps[key] = measured
-                ? (Math.Max(0, layer.HeldWasted - previous.Count), Math.Max(0, layer.HeldWastedBytes - previous.Bytes),
-                   Math.Max(0, layer.AcceleratedBytes - previous.Served), Math.Max(0, layer.FetchedBytes - previous.Fetched))
-                : (0, 0, 0, 0);
-        }
-        return steps;
-    }
+    /// total, one entry per layer, through the rule the recording page shares.</summary>
+    private Dictionary<string, LayerSampler.WasteStep> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts) =>
+        LayerSampler.Steps(time, mounts, _wasteSteps, SamplingGapSeconds);
 
-    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts, Dictionary<string, (double Count, double Bytes, double Served, double Fetched)> wasteSteps)
-    {
-        var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
-        double reads = rows.Sum(r => r.Layer.Hits);
-        return new(time, rows.ToDictionary(r => r.Key, r =>
-        {
-            var (waste, wasteBytes, served, fetched) = wasteSteps[r.Key];
-            return new LayerSample(r.Layer.Hits,
-                reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
-                waste, wasteBytes, served, fetched);
-        }));
-    }
+    private LayerSampler.Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts,
+        Dictionary<string, LayerSampler.WasteStep> wasteSteps) => LayerSampler.Capture(time, mounts, wasteSteps);
 
-    private void Add(string name, Sample sample)
-    {
-        if (!_history.TryGetValue(name, out var samples)) _history[name] = samples = new();
-        samples.Add(sample);
-        samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-HistorySeconds));
-    }
+    private void Add(string name, LayerSampler.Sample sample) =>
+        LayerSampler.Add(_history, name, sample, HistorySeconds);
 
-    /// <summary>What an accelerating layer kept out of the streams underneath over the window:
-    /// the share of read bytes it served from its own pages, and how many those were. A block
-    /// cache answers no reads of its own, so this is the only account of its work.</summary>
-    private static (double Percent, double Bytes) Accelerated(IEnumerable<Sample> samples, string key)
-    {
-        double served = 0, fetched = 0;
-        foreach (var sample in samples)
-        {
-            if (!sample.Layers.TryGetValue(key, out var layer)) continue;
-            served += layer.Accelerated;
-            fetched += layer.Fetched;
-        }
-        double total = served + fetched;
-        return (total == 0 ? 0 : 100.0 * served / total, served);
-    }
+    /// <summary>What an accelerating layer kept out of the streams underneath over the window.</summary>
+    private static (double Percent, double Bytes) Accelerated(IEnumerable<LayerSampler.Sample> samples, string key) =>
+        LayerSampler.Accelerated(samples, key);
 
     private void Render()
     {
