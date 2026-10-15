@@ -42,6 +42,14 @@ internal interface ISvnBackend : IDisposable
     /// <summary>Immediate children of <paramref name="rel"/> at <paramref name="rev"/>.</summary>
     IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null);
 
+    /// <summary>
+    /// Metadata of <paramref name="rel"/> itself at <paramref name="rev"/>, without listing its
+    /// parent, or null when the path does not exist at that revision. A header is an object's
+    /// own data, so a caller that wants one asks for the path; <see cref="List"/> answers a
+    /// whole directory and is what enumeration uses.
+    /// </summary>
+    SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null);
+
     /// <summary>Writes the content of <paramref name="rel"/> at <paramref name="rev"/> to <paramref name="dest"/>.</summary>
     void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null);
 }
@@ -88,6 +96,8 @@ internal sealed class FallbackSvnBackend(ISvnBackend preferred, Func<ISvnBackend
     public long GetHeadRevision(RequestDiagnostics? diagnostics = null) => Run(backend => backend.GetHeadRevision(diagnostics));
     public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null) =>
         Run(backend => backend.List(rev, rel, diagnostics));
+    public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null) =>
+        Run(backend => backend.Info(rev, rel, diagnostics));
     public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null) =>
         Run(backend => backend.CatToFile(rev, rel, dest, diagnostics));
 

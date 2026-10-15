@@ -89,6 +89,18 @@ internal sealed class SvnHttpClient : ISvnBackend
         return entries;
     }
 
+    public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
+    {
+        var (root, prefix) = Repository();
+        var url = ResourceUrl(root, prefix, rev, rel);
+        using var request = RequestDiagnostics.Begin("SVN.info", url, diagnostics);
+        // Depth 0 describes the resource itself. The same body as a listing: WebDAV returns the
+        // requested properties either way, and only the number of responses differs.
+        var found = ParseEntry(PropFind(url, "0", ListingBody), PathOf(url));
+        request?.Stage(found == null ? "missing" : $"kind={(found.IsDir ? "dir" : "file")}");
+        return found;
+    }
+
     public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
     {
         var (root, prefix) = Repository();
@@ -180,24 +192,54 @@ internal sealed class SvnHttpClient : ISvnBackend
             bool isDir = false;
             long size = 0;
             var time = DateTime.UnixEpoch;
-            foreach (var propstat in element.Elements(Dav + "propstat"))
-            {
-                if (propstat.Element(Dav + "status")?.Value?.Contains(" 200 ", StringComparison.Ordinal) != true) continue;
-                var prop = propstat.Element(Dav + "prop");
-                if (prop == null) continue;
-                isDir = prop.Element(Dav + "resourcetype")?.Element(Dav + "collection") != null;
-                var length = prop.Element(Dav + "getcontentlength")?.Value;
-                if (!string.IsNullOrEmpty(length)) long.TryParse(length, NumberStyles.Integer, CultureInfo.InvariantCulture, out size);
-                var modified = prop.Element(Dav + "getlastmodified")?.Value;
-                if (!string.IsNullOrEmpty(modified) && DateTimeOffset.TryParse(modified, CultureInfo.InvariantCulture,
-                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
-                    time = parsed.UtcDateTime;
-            }
+            ReadProps(element, out isDir, out size, out time);
             entries.Add(new SvnEntry { Name = name, IsDir = isDir, Size = size, TimeUtc = time });
         }
         // svn list reports children in name order; keep that so callers see the same sequence.
         entries.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
         return entries;
+    }
+
+    /// <summary>Turns a Depth:0 multistatus response into the one entry it describes, or null
+    /// when the resource is not there. <see cref="ParseListing"/> cannot answer this: it drops
+    /// the response that names the request path, which is the only one a Depth:0 document has.</summary>
+    internal static SvnEntry? ParseEntry(XDocument document, string requestPath)
+    {
+        foreach (var element in document.Descendants(Dav + "response"))
+        {
+            var href = element.Element(Dav + "href")?.Value;
+            if (string.IsNullOrEmpty(href)) continue;
+            var path = HrefPath(href);
+            if (!string.Equals(path, requestPath, StringComparison.Ordinal)) continue;
+            ReadProps(element, out bool isDir, out long size, out var time);
+            return new SvnEntry
+            {
+                Name = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]),
+                IsDir = isDir, Size = size, TimeUtc = time
+            };
+        }
+        return null;
+    }
+
+    /// <summary>Reads the properties of one response, from the propstat whose status is 200.</summary>
+    private static void ReadProps(XElement response, out bool isDir, out long size, out DateTime time)
+    {
+        isDir = false;
+        size = 0;
+        time = DateTime.UnixEpoch;
+        foreach (var propstat in response.Elements(Dav + "propstat"))
+        {
+            if (propstat.Element(Dav + "status")?.Value?.Contains(" 200 ", StringComparison.Ordinal) != true) continue;
+            var prop = propstat.Element(Dav + "prop");
+            if (prop == null) continue;
+            isDir = prop.Element(Dav + "resourcetype")?.Element(Dav + "collection") != null;
+            var length = prop.Element(Dav + "getcontentlength")?.Value;
+            if (!string.IsNullOrEmpty(length)) long.TryParse(length, NumberStyles.Integer, CultureInfo.InvariantCulture, out size);
+            var modified = prop.Element(Dav + "getlastmodified")?.Value;
+            if (!string.IsNullOrEmpty(modified) && DateTimeOffset.TryParse(modified, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
+                time = parsed.UtcDateTime;
+        }
     }
 
     /// <summary>Resolves the repository root and the mount's path inside it, once per instance.</summary>

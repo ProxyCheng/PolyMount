@@ -193,15 +193,25 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IDisposable
             return true;
         }
 
-        string key = Generation + "|" + rel;
+        long revision = Revision;
+        string key = revision + "|" + rel;
         lock (_gate)
         {
             if (_entries.TryGetValue(key, out entry!)) return true;
         }
-        var list = Listing(VfsPath.Parent(rel), speculative: false, RequestDiagnostics.Ambient);
-        // Oversized directories are served but not retained in the memo index.
-        entry = list.FirstOrDefault(c => string.Equals(c.Name, VfsPath.Name(rel), StringComparison.OrdinalIgnoreCase))!;
-        return entry != null;
+        // A header is the object's own data, so ask for the path itself. Listing the parent
+        // answered this one and every sibling at once, but it charged a whole directory fetch
+        // per header, the memo above is memory-only so every restart paid for all of them
+        // again, and an oversized directory is never memoized at all -- its children could not
+        // be remembered even within one run.
+        var info = _svn.Info(revision, rel, RequestDiagnostics.Ambient);
+        if (info == null) return false;
+        entry = new VfsEntry { Name = info.Name, IsDir = info.IsDir, Size = info.Size, TimeUtc = info.TimeUtc };
+        lock (_gate)
+        {
+            if (_rev == revision) _entries[key] = entry;
+        }
+        return true;
     }
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel) => Listing(rel, speculative: false, RequestDiagnostics.Ambient);

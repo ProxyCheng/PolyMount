@@ -78,6 +78,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         private void Enter() { Calls++; if (transport) throw new SvnTransportException("refused"); }
         public long GetHeadRevision(RequestDiagnostics? diagnostics = null) { Enter(); return 42; }
         public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null) { Enter(); return Array.Empty<SvnEntry>(); }
+        public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null) { Enter(); return null; }
         public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null) => Enter();
         public void Dispose() => Disposed = true;
     }
@@ -95,6 +96,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         };
         private readonly Dictionary<string, int> _calls = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _cats = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, int> _infos = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>Directory whose listing blocks until <see cref="Gate"/> is set.</summary>
         public string? Parked;
         /// <summary>File whose download blocks until <see cref="Gate"/> is set.</summary>
@@ -103,6 +105,9 @@ public sealed class SvnPluginTests : IPluginTestProvider
 
         public int Count(string rel) { lock (_calls) return _calls.GetValueOrDefault(rel); }
         public int CatCount(string rel) { lock (_cats) return _cats.GetValueOrDefault(rel); }
+        /// <summary>Per-path header requests, counted apart from listings so a check that
+        /// asserts listing counts is not perturbed by the headers asked for along the way.</summary>
+        public int InfoCount(string rel) { lock (_infos) return _infos.GetValueOrDefault(rel); }
         public int Total { get { lock (_calls) return _calls.Values.Sum(); } }
 
         public long GetHeadRevision(RequestDiagnostics? diagnostics = null) => 1;
@@ -116,6 +121,21 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 Name = name,
                 IsDir = Tree.ContainsKey(rel.Length == 0 ? name : rel + "/" + name)
             }).ToArray();
+        }
+        public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
+        {
+            lock (_infos) _infos[rel] = _infos.GetValueOrDefault(rel) + 1;
+            if (rel.Length == 0) return new SvnEntry { Name = string.Empty, IsDir = true };
+            // Like a repository, report the spelling it holds rather than the one asked for.
+            string? self = Tree.Keys.FirstOrDefault(key => string.Equals(key, rel, StringComparison.OrdinalIgnoreCase));
+            if (self != null) return new SvnEntry { Name = VfsPath.Name(self), IsDir = true };
+            string parent = VfsPath.Parent(rel);
+            string name = VfsPath.Name(rel);
+            string? owner = Tree.Keys.FirstOrDefault(key => string.Equals(key, parent, StringComparison.OrdinalIgnoreCase));
+            string? child = owner == null
+                ? null
+                : Tree[owner].FirstOrDefault(entry => string.Equals(entry, name, StringComparison.OrdinalIgnoreCase));
+            return child == null ? null : new SvnEntry { Name = child, IsDir = false };
         }
         public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
         {
@@ -250,6 +270,31 @@ public sealed class SvnPluginTests : IPluginTestProvider
             try { backend.GetHeadRevision(); throw new Exception("Transport error was swallowed"); }
             catch (SvnTransportException) { }
             if (alsoRefused.Calls != 2) throw new Exception("A terminal failure was retried elsewhere, calls=" + alsoRefused.Calls);
+        });
+        Check("header-asks-for-the-path-not-the-parent", () =>
+        {
+            // A header is the object's own data, so a per-path query asks for that path. Listing
+            // the parent answered it by fetching a whole directory, which is what one metadata
+            // query under a cached tree used to cost -- and the memo holding the answer was
+            // memory-only, so every restart paid for all of them again.
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "header-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, Children = 0 });
+            if (!layer.TryGetEntry("A/g.txt", out var entry) || entry.IsDir || entry.Name != "g.txt")
+                throw new Exception("A child header was not resolved from its own path");
+            if (backend.InfoCount("A/g.txt") != 1)
+                throw new Exception("The header did not ask for the path, infos=" + backend.InfoCount("A/g.txt"));
+            if (backend.Count("A") != 0)
+                throw new Exception("Resolving one header listed the parent, listings=" + backend.Count("A"));
+            // The advertised spelling comes back for the case-insensitive name that was asked.
+            if (!layer.TryGetEntry("A/G.TXT", out var advertised) || advertised.Name != "g.txt")
+                throw new Exception("A header did not report the repository's spelling: " + advertised?.Name);
+            if (!layer.TryGetEntry("A", out var directory) || !directory.IsDir)
+                throw new Exception("A directory header was not resolved");
+            if (!layer.TryGetEntry("A", out _) || backend.InfoCount("A") != 1)
+                throw new Exception("A repeated header lookup re-asked the source, infos=" + backend.InfoCount("A"));
+            // Absent is an answer, not a failure.
+            if (layer.TryGetEntry("A/missing.txt", out _)) throw new Exception("A missing path resolved");
         });
         Check("readonly-contract", () =>
         {

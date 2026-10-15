@@ -52,9 +52,7 @@ internal sealed class SvnClient : ISvnBackend
         if (code != 0)
         {
             var msg = stderr.Trim();
-            if (msg.Contains("E160013") || msg.Contains("E200009") || msg.Contains("E170000") ||
-                msg.Contains("not found") || msg.Contains("does not exist"))
-                throw new SvnNotFoundException(msg);
+            if (IsNotFound(msg)) throw new SvnNotFoundException(msg);
             throw new InvalidOperationException("svn list failed: " + msg);
         }
 
@@ -79,6 +77,49 @@ internal sealed class SvnClient : ISvnBackend
         }
         return result;
     }
+
+    public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
+    {
+        // The URL stays at args[1], where RunText reads the traced path from.
+        var (code, stdout, stderr) = RunText(new[] { "info", UrlFor(rel, rev), "--xml" }, diagnostics);
+        if (code != 0)
+        {
+            var msg = stderr.Trim();
+            if (IsNotFound(msg)) return null;
+            throw new InvalidOperationException("svn info failed: " + msg);
+        }
+
+        // svn info names the target in its attributes, not in a child element, so the name to
+        // report is the one that was asked for. Only files carry a size.
+        var entry = XDocument.Parse(stdout).Descendants("entry").FirstOrDefault();
+        if (entry == null) return null;
+        long size = 0;
+        var sizeEl = entry.Element("size");
+        if (sizeEl != null) long.TryParse(sizeEl.Value, out size);
+
+        var timeUtc = DateTime.UnixEpoch;
+        var dateEl = entry.Element("commit")?.Element("date");
+        if (dateEl != null && DateTime.TryParse(dateEl.Value, null,
+                DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
+            timeUtc = parsed;
+
+        // The name to report is the repository's own spelling, not the one that was asked for:
+        // svn reports the canonical URL, and callers rely on seeing the advertised case.
+        var url = (string?)entry.Element("url");
+        var name = url == null ? VfsPath.Name(rel) : Uri.UnescapeDataString(url[(url.LastIndexOf('/') + 1)..]);
+        return new SvnEntry
+        {
+            Name = name.Length == 0 ? VfsPath.Name(rel) : name,
+            IsDir = (string?)entry.Attribute("kind") == "dir", Size = size, TimeUtc = timeUtc
+        };
+    }
+
+    /// <summary>A path absent at this revision is an answer, not a transport failure: it is
+    /// reported as null rather than as an exception, so callers that probe many paths stay cheap.</summary>
+    private static bool IsNotFound(string stderr) =>
+        stderr.Contains("E160013") || stderr.Contains("E200009") || stderr.Contains("E170000") ||
+        stderr.Contains("not found") || stderr.Contains("does not exist");
+
 
     public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
     {
