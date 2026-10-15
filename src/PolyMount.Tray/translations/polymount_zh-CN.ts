@@ -1065,7 +1065,7 @@
     <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。趋势图仍是最近 60 秒，全程数据在证据包里。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>
-    <message><source>record.save</source><translation>保存证据</translation></message>
+    <message><source>record.save</source><translation>结束并保存</translation></message>
     <message><source>record.discard</source><translation>结束并丢弃</translation></message>
     <message><source>record.state.recording</source><translation>录制中</translation></message>
     <message><source>record.state.unreachable</source><translation>服务不可达</translation></message>
@@ -1102,7 +1102,7 @@
     <message><source>record.working</source><translation>工作目录：{0}</translation></message>
     <message><source>record.savedTo</source><translation>已保存到：{0}</translation></message>
     <message><source>record.save.choose</source><translation>选择证据包保存位置</translation></message>
-    <message><source>record.save.running</source><translation>正在写出证据包…（服务端录制通道已取下）</translation></message>
+    <message><source>record.save.running</source><translation>录制已结束，正在写出证据包…</translation></message>
     <message><source>record.save.done</source><translation>已保存：{0}</translation></message>
     <message><source>record.save.title</source><translation>录制已保存</translation></message>
     <message><source>record.save.body</source><translation>完整证据包已写入：&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;逐层每秒 {1} 行，日志 {2} 份。录制已结束。</translation></message>

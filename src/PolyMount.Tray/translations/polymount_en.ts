@@ -1065,7 +1065,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The charts stay the last 60 seconds; the whole recording is in the bundle.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
-    <message><source>record.save</source><translation>Save evidence</translation></message>
+    <message><source>record.save</source><translation>End and save</translation></message>
     <message><source>record.discard</source><translation>End and discard</translation></message>
     <message><source>record.state.recording</source><translation>Recording</translation></message>
     <message><source>record.state.unreachable</source><translation>Service unreachable</translation></message>
@@ -1102,7 +1102,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.working</source><translation>Working copy: {0}</translation></message>
     <message><source>record.savedTo</source><translation>Saved to: {0}</translation></message>
     <message><source>record.save.choose</source><translation>Where should the bundle go?</translation></message>
-    <message><source>record.save.running</source><translation>Writing the bundle… (the service's channel is already detached)</translation></message>
+    <message><source>record.save.running</source><translation>The recording has ended; writing the bundle…</translation></message>
     <message><source>record.save.done</source><translation>Saved: {0}</translation></message>
     <message><source>record.save.title</source><translation>Recording saved</translation></message>
     <message><source>record.save.body</source><translation>The whole recording was written to:&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;{1} per-second rows and {2} log files. The recording has ended.</translation></message>
