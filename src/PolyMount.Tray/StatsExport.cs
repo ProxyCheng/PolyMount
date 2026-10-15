@@ -30,7 +30,6 @@ internal sealed class StatsSnapshot
     public List<ChartRecord> Charts { get; init; } = new();
     /// <summary>The per-layer analytics the window displayed, as reported by the service.</summary>
     public List<MountMetrics> Metrics { get; init; } = new();
-    public List<SampleRecord> Samples { get; init; } = new();
     public List<double> ResponseRequest { get; init; } = new();
     public List<double> ResponseDispatch { get; init; } = new();
     public List<double> ResponseUi { get; init; } = new();
@@ -40,9 +39,10 @@ internal sealed class StatsSnapshot
     /// there are any. Only a recording collects them: the performance window samples the service
     /// process once, at the moment it is captured.</summary>
     public List<SecondRecord> Seconds { get; init; } = new();
-    /// <summary>The session's own <c>samples.csv</c>, written as the recording ran. Carried
-    /// rather than rebuilt, so a long recording never has to hold every row in memory.</summary>
-    public string? SamplesFile { get; init; }
+    /// <summary>The session's own <c>samples.csv</c>, written as the recording ran. Carried rather
+    /// than rebuilt, so a long recording never has to hold every row in memory: the rows are the
+    /// measurement, they are appended as they are taken, and a bundle is written from the file.</summary>
+    public string SamplesFile { get; init; } = "";
     /// <summary>Logs the front-end collected itself, already laid out as the bundle wants them
     /// (a recording copies its log as it goes, because the service's own files roll away).
     /// Empty means: ask the service and copy what it points at.</summary>
@@ -134,9 +134,7 @@ internal static class StatsExport
         var copies = snapshot.LogsDirectory is { Length: > 0 } collected
             ? CollectDirectory(directory, collected)
             : CopyLogs(directory, logs);
-        long rows = snapshot.SamplesFile is { Length: > 0 } written
-            ? CarrySamples(directory, written)
-            : WriteSamples(directory, snapshot.Samples);
+        long rows = CarrySamples(directory, snapshot.SamplesFile);
         bool seconds = snapshot.Seconds.Count > 0;
         if (seconds) File.WriteAllText(Path.Combine(directory, "seconds.csv"), SecondsCsv(snapshot.Seconds), Utf8);
         // The digest is built from the bundle's own copies, so it describes exactly the files
@@ -273,12 +271,8 @@ internal static class StatsExport
                 // and layers are the two counts those rows are the product of, so a reader can
                 // tell a short window from a missing layer without opening the CSV.
                 rows,
-                ticks = snapshot.Recording?.SampleTicks > 0
-                    ? snapshot.Recording.SampleTicks
-                    : snapshot.Samples.Select(sample => sample.Time).Distinct().Count(),
-                layers = snapshot.Recording?.Layers.Count > 0
-                    ? snapshot.Recording.Layers.Count
-                    : snapshot.Samples.Select(sample => (sample.Mount, sample.Layer)).Distinct().Count(),
+                ticks = snapshot.Recording?.SampleTicks ?? 0,
+                layers = snapshot.Recording?.Layers.Count ?? 0,
                 logs = logs.Count
             },
             environment = new
@@ -381,19 +375,16 @@ internal static class StatsExport
 
     private static double Average(List<double> values) => values.Count == 0 ? 0 : values.Average();
 
-    /// <summary>One row per layer per second. The combined "all mounts" view is the sum of these
-    /// rows, so it is not written twice.</summary>
-    private static long WriteSamples(string directory, List<SampleRecord> samples)
-    {
-        var csv = new StringBuilder(SamplesCsvHeader);
-        foreach (var sample in samples) AppendSampleRow(csv, sample);
-        File.WriteAllText(Path.Combine(directory, "samples.csv"), csv.ToString(), Utf8);
-        return samples.Count;
-    }
-
-    /// <summary>Carries a CSV a recording wrote as it ran, and counts what it holds.</summary>
+    /// <summary>Carries the CSV a recording wrote as it ran, and counts what it holds. A recording
+    /// that produced no file — one whose session never polled — still gets the header, so the
+    /// bundle always says which columns its rows would have had.</summary>
     private static long CarrySamples(string directory, string written)
     {
+        if (written.Length == 0 || !File.Exists(written))
+        {
+            File.WriteAllText(Path.Combine(directory, "samples.csv"), SamplesCsvHeader, Utf8);
+            return 0;
+        }
         File.Copy(written, Path.Combine(directory, "samples.csv"), true);
         long rows = 0;
         foreach (string line in File.ReadLines(written)) rows++;
