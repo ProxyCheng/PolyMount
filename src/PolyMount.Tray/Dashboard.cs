@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 
@@ -72,8 +73,11 @@ internal sealed class Dashboard : QWidget
         nav.AddSpacing(12);
         nav.AddWidget(Label("language", "sidebarMuted"));
         _language = ContinuousScrolling.Combo();
-        _language.AddItem("简体中文");
-        _language.AddItem("English");
+        // A language picker names each language in its own language, so both entries read
+        // the same whichever catalog is active; the platform supplies the endonym instead
+        // of writing it into the code, where only the catalogs belong.
+        _language.AddItem(CultureInfo.GetCultureInfo("zh-CN").NativeName);
+        _language.AddItem(CultureInfo.GetCultureInfo("en").NativeName);
         _language.SetCurrentIndex(I18n.Language == "zh-CN" ? 0 : 1);
         _language.CurrentIndexChanged += i => I18n.SetLanguage(i == 0 ? "zh-CN" : "en");
         nav.AddWidget(_language);

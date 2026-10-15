@@ -12,14 +12,15 @@ public sealed class LayerDescriptorTests
     {
         var descriptor = new LayerDescriptor
         {
-            Type = "remote-test", Title = new("Remote", "远程"),
+            Type = "remote-test", Title = new LocalizedText { Values = { ["en"] = "Remote", ["fr"] = "À distance" } },
             Fields = new() { new() { Path = "Parameters.Mode", Kind = LayerFieldKind.Choice,
-                Choices = new() { new() { Value = "fast", Title = new("Fast", "快速") } } } }
+                Choices = new() { new() { Value = "fast",
+                    Title = new LocalizedText { Values = { ["en"] = "Fast", ["fr"] = "Rapide" } } } } } }
         };
         var response = JsonSerializer.Deserialize<ControlResponse>(JsonSerializer.Serialize(new ControlResponse { LayerDescriptors = new() { descriptor } }))!;
         var restored = response.LayerDescriptors.Single();
-        Assert.AreEqual("远程", restored.Title.Resolve("zh-CN"));
-        Assert.AreEqual("Remote", restored.Title.Resolve("fr"));
+        Assert.AreEqual("À distance", restored.Title.Resolve("fr"));
+        Assert.AreEqual("Remote", restored.Title.Resolve("de"));
         Assert.AreEqual(LayerFieldKind.Choice, restored.Fields[0].Kind);
         Assert.AreEqual("fast", restored.Fields[0].Choices[0].Value);
     }
