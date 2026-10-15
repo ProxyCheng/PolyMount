@@ -1060,5 +1060,69 @@
       <source>stats.accelerated.tip</source>
       <translation>窗口内由内存供出 {0}</translation>
     </message>
+    <message><source>mount.record</source><translation>录制…</translation></message>
+    <message><source>record.active</source><translation>录制中…</translation></message>
+    <message><source>record.active.tip</source><translation>此实例正在录制，点击回到录制界面</translation></message>
+    <message><source>record.open.tip</source><translation>开始录制这个实例：从进入界面起持续采集，保存后写出完整证据包</translation></message>
+    <message><source>record.title</source><translation>录制 · PolyMount</translation></message>
+    <message><source>record.instance</source><translation>{0} · 录制</translation></message>
+    <message><source>record.subtitle</source><translation>打开即开始采集，保存时把从开始到现在的一切写成完整证据包</translation></message>
+    <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log，占用到达上限时会自动停止并说明原因。</translation></message>
+    <message><source>record.start</source><translation>开始录制</translation></message>
+    <message><source>record.restart</source><translation>重新开始</translation></message>
+    <message><source>record.save</source><translation>保存证据</translation></message>
+    <message><source>record.discard</source><translation>结束并丢弃</translation></message>
+    <message><source>record.state.recording</source><translation>录制中</translation></message>
+    <message><source>record.state.unreachable</source><translation>服务不可达</translation></message>
+    <message><source>record.state.truncated</source><translation>已达上限</translation></message>
+    <message><source>record.state.stopped</source><translation>已停止</translation></message>
+    <message><source>record.state.starting</source><translation>正在连接</translation></message>
+    <message><source>record.state.idle</source><translation>未在录制</translation></message>
+    <message><source>record.state.failed</source><translation>无法开始</translation></message>
+    <message><source>record.starting</source><translation>正在挂上录制通道…</translation></message>
+    <message><source>record.start.failed</source><translation>无法开始录制：</translation></message>
+    <message><source>record.idle</source><translation>没有正在进行的录制。按「开始录制」从此刻起重新采集。</translation></message>
+    <message><source>record.recording</source><translation>正在采集；此页签不是当前页时仍在继续。保存会把从开始到现在的数据一次写出。</translation></message>
+    <message><source>record.note</source><translation>说明：</translation></message>
+    <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
+    <message><source>record.range</source><translation>{0} → {1}</translation></message>
+    <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
+    <message><source>record.capacity</source><translation>已收集 {0} / 上限 {1}</translation></message>
+    <message><source>record.evidence</source><translation>证据清单</translation></message>
+    <message><source>record.evidence.requests</source><translation>请求通道（全量）</translation></message>
+    <message><source>record.evidence.service</source><translation>服务日志</translation></message>
+    <message><source>record.evidence.samples</source><translation>逐层每秒采样</translation></message>
+    <message><source>record.evidence.seconds</source><translation>每秒机器状态</translation></message>
+    <message><source>record.evidence.kind</source><translation>证据</translation></message>
+    <message><source>record.evidence.file</source><translation>包内位置</translation></message>
+    <message><source>record.evidence.bytes</source><translation>大小</translation></message>
+    <message><source>record.evidence.lines</source><translation>行数</translation></message>
+    <message><source>record.evidence.state</source><translation>状态</translation></message>
+    <message><source>record.evidence.live</source><translation>正常</translation></message>
+    <message><source>record.evidence.waiting</source><translation>等待服务</translation></message>
+    <message><source>record.evidence.truncated</source><translation>已达上限</translation></message>
+    <message><source>record.evidence.closed</source><translation>已停止</translation></message>
+    <message><source>record.evidence.idle</source><translation>未开始</translation></message>
+    <message><source>record.gap.range</source><translation>区间</translation></message>
+    <message><source>record.gap.reason</source><translation>原因</translation></message>
+    <message><source>record.gap.missing</source><translation>缺失</translation></message>
+    <message><source>record.charts</source><translation>趋势图显示最近 60 秒；整个录制区间的合计见下表与保存后的包。</translation></message>
+    <message><source>record.totals</source><translation>整个录制区间 · 逐层</translation></message>
+    <message><source>record.writes</source><translation>写入字节</translation></message>
+    <message><source>record.working</source><translation>工作目录：{0}</translation></message>
+    <message><source>record.savedTo</source><translation>已保存到：{0}</translation></message>
+    <message><source>record.save.choose</source><translation>选择证据包保存位置</translation></message>
+    <message><source>record.save.running</source><translation>正在写出证据包…（服务端录制通道已取下）</translation></message>
+    <message><source>record.save.done</source><translation>已保存：{0}</translation></message>
+    <message><source>record.save.title</source><translation>录制已保存</translation></message>
+    <message><source>record.save.body</source><translation>完整证据包已写入：&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;逐层每秒 {1} 行，日志 {2} 份。录制已结束。</translation></message>
+    <message><source>record.save.failed</source><translation>保存失败：</translation></message>
+    <message><source>record.discard.title</source><translation>结束这次录制？</translation></message>
+    <message><source>record.discard.body</source><translation>已采集的数据会被删除，无法恢复。</translation></message>
+    <message><source>record.discard.confirm</source><translation>结束并丢弃</translation></message>
+    <message><source>record.close.title</source><translation>录制仍在进行</translation></message>
+    <message><source>record.close.body</source><translation>这个实例已录制 {0}。关闭页签不会停止采集。</translation></message>
+    <message><source>record.close.keep</source><translation>继续录制（取消关闭）</translation></message>
+    <message><source>record.close.discard</source><translation>结束并丢弃</translation></message>
   </context>
 </TS>

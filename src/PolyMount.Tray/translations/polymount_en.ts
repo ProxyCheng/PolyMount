@@ -1060,5 +1060,69 @@ Close applications using mounted files first.</translation>
       <source>stats.accelerated.tip</source>
       <translation>{0} served from RAM in this window</translation>
     </message>
+    <message><source>mount.record</source><translation>Record…</translation></message>
+    <message><source>record.active</source><translation>Recording…</translation></message>
+    <message><source>record.active.tip</source><translation>This instance is being recorded; click to return to the recording</translation></message>
+    <message><source>record.open.tip</source><translation>Record this instance: collecting starts when the page opens, and Save writes the whole of it as one bundle</translation></message>
+    <message><source>record.title</source><translation>Recording · PolyMount</translation></message>
+    <message><source>record.instance</source><translation>{0} · Recording</translation></message>
+    <message><source>record.subtitle</source><translation>Collecting starts the moment this opens; saving writes everything from then until now as one bundle</translation></message>
+    <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log. It stops itself, and says why, at its ceiling.</translation></message>
+    <message><source>record.start</source><translation>Start recording</translation></message>
+    <message><source>record.restart</source><translation>Start again</translation></message>
+    <message><source>record.save</source><translation>Save evidence</translation></message>
+    <message><source>record.discard</source><translation>End and discard</translation></message>
+    <message><source>record.state.recording</source><translation>Recording</translation></message>
+    <message><source>record.state.unreachable</source><translation>Service unreachable</translation></message>
+    <message><source>record.state.truncated</source><translation>At its ceiling</translation></message>
+    <message><source>record.state.stopped</source><translation>Ended</translation></message>
+    <message><source>record.state.starting</source><translation>Connecting</translation></message>
+    <message><source>record.state.idle</source><translation>Not recording</translation></message>
+    <message><source>record.state.failed</source><translation>Could not start</translation></message>
+    <message><source>record.starting</source><translation>Attaching the recording channel…</translation></message>
+    <message><source>record.start.failed</source><translation>Could not start the recording: </translation></message>
+    <message><source>record.idle</source><translation>Nothing is being recorded. Start recording begins collecting again from that moment.</translation></message>
+    <message><source>record.recording</source><translation>Collecting; this continues while the tab is not the one being looked at. Save writes everything from the start up to that moment.</translation></message>
+    <message><source>record.note</source><translation>Note: </translation></message>
+    <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
+    <message><source>record.range</source><translation>{0} → {1}</translation></message>
+    <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
+    <message><source>record.capacity</source><translation>{0} of {1}</translation></message>
+    <message><source>record.evidence</source><translation>What is being collected</translation></message>
+    <message><source>record.evidence.requests</source><translation>Request channel (everything)</translation></message>
+    <message><source>record.evidence.service</source><translation>Service log</translation></message>
+    <message><source>record.evidence.samples</source><translation>Per-layer samples</translation></message>
+    <message><source>record.evidence.seconds</source><translation>Per-second machine state</translation></message>
+    <message><source>record.evidence.kind</source><translation>Evidence</translation></message>
+    <message><source>record.evidence.file</source><translation>In the bundle</translation></message>
+    <message><source>record.evidence.bytes</source><translation>Size</translation></message>
+    <message><source>record.evidence.lines</source><translation>Rows</translation></message>
+    <message><source>record.evidence.state</source><translation>State</translation></message>
+    <message><source>record.evidence.live</source><translation>ok</translation></message>
+    <message><source>record.evidence.waiting</source><translation>waiting for the service</translation></message>
+    <message><source>record.evidence.truncated</source><translation>at its ceiling</translation></message>
+    <message><source>record.evidence.closed</source><translation>ended</translation></message>
+    <message><source>record.evidence.idle</source><translation>not started</translation></message>
+    <message><source>record.gap.range</source><translation>Range</translation></message>
+    <message><source>record.gap.reason</source><translation>Reason</translation></message>
+    <message><source>record.gap.missing</source><translation>Missing</translation></message>
+    <message><source>record.charts</source><translation>The charts cover the last 60 seconds; the whole recording is in the table below and in the saved bundle.</translation></message>
+    <message><source>record.totals</source><translation>The whole recording · by layer</translation></message>
+    <message><source>record.writes</source><translation>Written</translation></message>
+    <message><source>record.working</source><translation>Working copy: {0}</translation></message>
+    <message><source>record.savedTo</source><translation>Saved to: {0}</translation></message>
+    <message><source>record.save.choose</source><translation>Where should the bundle go?</translation></message>
+    <message><source>record.save.running</source><translation>Writing the bundle… (the service's channel is already detached)</translation></message>
+    <message><source>record.save.done</source><translation>Saved: {0}</translation></message>
+    <message><source>record.save.title</source><translation>Recording saved</translation></message>
+    <message><source>record.save.body</source><translation>The whole recording was written to:&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;{1} per-second rows and {2} log files. The recording has ended.</translation></message>
+    <message><source>record.save.failed</source><translation>Saving failed: </translation></message>
+    <message><source>record.discard.title</source><translation>End this recording?</translation></message>
+    <message><source>record.discard.body</source><translation>What has been collected will be deleted, and cannot be recovered.</translation></message>
+    <message><source>record.discard.confirm</source><translation>End and discard</translation></message>
+    <message><source>record.close.title</source><translation>A recording is still running</translation></message>
+    <message><source>record.close.body</source><translation>This instance has been recorded for {0}. Closing the tab does not stop the collecting.</translation></message>
+    <message><source>record.close.keep</source><translation>Keep recording (cancel)</translation></message>
+    <message><source>record.close.discard</source><translation>End and discard</translation></message>
   </context>
 </TS>

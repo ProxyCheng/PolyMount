@@ -6,7 +6,7 @@ using QtSharp.Api;
 namespace PolyMount.Tray;
 
 /// <summary>A draft mount editor with a draggable provider chain and descriptor-driven forms.</summary>
-internal sealed class ConfigEditor : QWidget
+internal sealed class ConfigEditor : QWidget, ICloseGuard
 {
     private readonly QWidget _fields;
     private readonly QVBoxLayout _propertyLayout;
@@ -753,6 +753,10 @@ internal sealed class ConfigEditor : QWidget
         SetWindowTitle(title);
         _heading?.SetText(title);
     }
+    /// <summary>The workspace asks a page that has something to lose; the editor answers with its
+    /// own question, which also offers to save.</summary>
+    void ICloseGuard.RequestClose(Action proceed) => RequestClose(proceed);
+
     internal void RequestClose(Action close, Func<int>? choose = null)
     {
         if (_pending != null) { _status.SetText(T("working")); return; }

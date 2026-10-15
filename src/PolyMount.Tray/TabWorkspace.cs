@@ -2,6 +2,13 @@ using QtSharp.Api;
 
 namespace PolyMount.Tray;
 
+/// <summary>A page that has something to lose when its tab is closed: it is asked, and it decides
+/// whether the close happens. The workspace only supplies the way to finish it.</summary>
+internal interface ICloseGuard
+{
+    void RequestClose(Action proceed);
+}
+
 /// <summary>Native tab groups and splitter trees; moving a page always reparents the same widget.</summary>
 internal sealed class TabWorkspace : QWidget
 {
@@ -142,7 +149,9 @@ internal sealed class TabWorkspace : QWidget
     private void ClosePage(Page page)
     {
         if (page.Pinned || page.Group == null) return;
-        if (page.Widget is ConfigEditor editor) { editor.RequestClose(() => FinishClosePage(page)); return; }
+        // A page that cannot simply be put away — one holding a draft, or a recording — is asked
+        // first, and it is the page that knows what to ask.
+        if (page.Widget is ICloseGuard guard) { guard.RequestClose(() => FinishClosePage(page)); return; }
         FinishClosePage(page);
     }
     private void FinishClosePage(Page page)
@@ -406,17 +415,21 @@ internal sealed class TabWorkspace : QWidget
         }
     }
 
-    internal void SmokeInteractions(string editorKey, string statsKey)
+    internal void SmokeInteractions(string editorKey, string statsKey, string recordKey)
     {
         var editor = _pages[editorKey];
         var stats = _pages[statsKey];
+        var record = _pages[recordKey];
         var home = _pages["overview"];
         var originalEditor = editor.Widget.Handle;
         var originalStats = stats.Widget.Handle;
+        var originalRecord = record.Widget.Handle;
         foreach (var zone in new[] { Zone.Right, Zone.Bottom, Zone.Left, Zone.Top })
         {
             MovePage(editor, home.Group!, zone);
             MovePage(stats, editor.Group!, Zone.Bottom);
+            MovePage(record, stats.Group!, Zone.Right);
+            MovePage(record, home.Group!, Zone.Center);
             MovePage(stats, home.Group!, Zone.Center);
             MovePage(editor, home.Group!, Zone.Center);
             if (_splitters.Count != 0 || _groups.Count != 1)
@@ -435,6 +448,12 @@ internal sealed class TabWorkspace : QWidget
         if (stats.Group != null) throw new InvalidOperationException("Tab close button did not close its page");
         Open(statsKey, () => throw new InvalidOperationException("Closed performance page was lost"), stats.Title);
         if (stats.Widget.Handle != originalStats) throw new InvalidOperationException("Closing a performance tab lost its widget");
+        // The recording page is held to the same standard, and it has one more thing to survive:
+        // being closed and opened again has to come back to the recording it was running.
+        ClosePage(record);
+        if (record.Group != null) throw new InvalidOperationException("Closing the recording tab did not close its page");
+        Open(recordKey, () => throw new InvalidOperationException("Closed recording page was lost"), record.Title);
+        if (record.Widget.Handle != originalRecord) throw new InvalidOperationException("Closing a recording tab lost its widget");
         MovePage(editor, home.Group!, Zone.Right);
         MovePage(stats, editor.Group!, Zone.Bottom);
         Translate();

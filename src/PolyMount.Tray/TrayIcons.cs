@@ -99,6 +99,14 @@ internal static class TrayIcons
             case "trash": Line(4, 6, 20, 6); Path((6, 6), (7, 21), (17, 21), (18, 6)); Path((9, 6), (9, 3), (15, 3), (15, 6)); Line(10, 10, 10, 17); Line(14, 10, 14, 17); break;
             case "refresh": p.DrawArc(4, 4, 16, 16, 40 * 16, 280 * 16); Path((20, 3), (20, 9), (14, 9)); break;
             case "export": Path((4, 15), (4, 20), (20, 20), (20, 15)); Line(12, 16, 12, 5); Path((7.5, 9.5), (12, 5), (16.5, 9.5)); break;
+            // A filled disc, meant to be asked for in the recording red: a live recording is a
+            // state, not a button, and a dot is what says so at a glance.
+            case "record":
+                p.SetBrush(new QBrush(new QColor(color)));
+                p.SetPen(new QPen(new QColor(color)));
+                p.DrawEllipse(7, 7, 10, 10);
+                break;
+            case "save": Path((4, 6), (4, 20), (20, 20), (20, 6), (17, 3), (7, 3), (4, 6)); Path((8, 3), (8, 9), (16, 9), (16, 3)); p.DrawRect(8, 13, 8, 7); break;
             case "settings": p.DrawEllipse(8, 8, 8, 8); for (int i = 0; i < 8; i++) { p.Save(); p.Translate(12, 12); p.Rotate(i * 45); Line(0, 7, 0, 10); p.Restore(); } break;
             default: Path((3, 8), (12, 3), (21, 8), (12, 13), (3, 8)); Path((3, 12), (12, 17), (21, 12)); break;
         }
