@@ -173,7 +173,7 @@ internal static class Program
     /// rather than an empty window.</summary>
     private static string? LiveInstance()
     {
-        try { return ControlClient.Status().Mounts.FirstOrDefault(mount => mount.Enabled && mount.Mounted)?.Name; }
+        try { return SupervisorClient.Default.Status().Mounts.FirstOrDefault(mount => mount.Enabled && mount.Mounted)?.Name; }
         catch { return null; }
     }
 
@@ -200,6 +200,28 @@ internal static class Program
         Console.WriteLine($"Bundle: {outcome.Directory} ({outcome.Files} files, {outcome.Samples} rows, {outcome.Logs} logs, "
             + $"{submission.RequestLines} request lines, {submission.Gaps.Count} gaps)");
         return 0;
+    }
+
+    /// <summary>The path every window now takes: ask the supervisor once where the instances are,
+    /// then talk to each instance over its own pipe. Nothing here needs a mount to be mounted —
+    /// what is checked is that the list resolves, that a name resolves to the address the list
+    /// gave, and that the process at that address answers for the instance it was named for.</summary>
+    private static void VerifyInstanceDirectory()
+    {
+        var response = SupervisorClient.Default.Instances();
+        if (!response.Ok) throw new InvalidOperationException("The service refused the instance list: " + response.Error);
+        foreach (var endpoint in response.Instances)
+        {
+            if (endpoint.Id.Length == 0 || endpoint.Pipe.Length == 0)
+                throw new InvalidOperationException($"Instance '{endpoint.Name}' is listed without an address (id='{endpoint.Id}', pipe='{endpoint.Pipe}')");
+            var client = InstanceDirectory.ClientFor(endpoint.Name);
+            if (client.PipeName != endpoint.Pipe)
+                throw new InvalidOperationException($"Instance '{endpoint.Name}' resolves to '{client.PipeName}' rather than the '{endpoint.Pipe}' it is served on");
+            var status = client.Status();
+            if (!status.Ok || status.Mounts.All(mount => !string.Equals(mount.Name, endpoint.Name, StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidOperationException($"The process at '{endpoint.Pipe}' did not answer for '{endpoint.Name}': {status.Error ?? "no such mount"}");
+        }
+        Console.WriteLine($"Instance directory: {response.Instances.Count} instance(s) reachable over their own pipes.");
     }
 
     private static int RunUiSmoke(string? capture)
@@ -279,6 +301,7 @@ internal static class Program
                 timer.Stop();
                 try
                 {
+                    VerifyInstanceDirectory();
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyCharts();

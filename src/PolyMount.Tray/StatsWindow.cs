@@ -11,6 +11,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 {
     private readonly QComboBox _mount;
     private readonly string? _instanceName;
+    /// <summary>The instance this window charts. A window opened on one instance holds the process
+    /// that serves it; the "all instances" view names none and asks the supervisor, which is the
+    /// only process that can answer for all of them.</summary>
+    private readonly ControlClient _client;
     private readonly RecordingPanel? _recording;
     private readonly QPushButton _pause;
     private readonly QTableWidget _table;
@@ -44,6 +48,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     public StatsWindow(string? instanceName = null)
     {
         _instanceName = instanceName;
+        _client = instanceName == null ? SupervisorClient.Default : InstanceDirectory.ClientFor(instanceName);
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
@@ -419,8 +424,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _pending = Task.Run(() =>
             {
                 var watch = Stopwatch.StartNew();
-                var trends = ControlClient.Metrics(1, _instanceName);
-                var access = ControlClient.Metrics(HistorySeconds, _instanceName);
+                var client = _client;
+                var trends = client.Metrics(1, _instanceName);
+                var access = client.Metrics(HistorySeconds, _instanceName);
                 watch.Stop();
                 return (trends, access, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
             });

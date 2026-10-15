@@ -8,6 +8,10 @@ internal sealed class LayerVisualizer : QWidget
 {
     private static readonly List<LayerVisualizer> Windows = new();
     private readonly string _path;
+    /// <summary>The process that owns the path this window was opened on: one instance, one pipe,
+    /// and this window holds it. Re-pointed on every refresh, which is also where a service that
+    /// was away comes back.</summary>
+    private InstanceClient _client;
     private readonly QVBoxLayout _cardLayout;
     private readonly QLabel _header, _status;
     private readonly QTimer _timer;
@@ -24,6 +28,7 @@ internal sealed class LayerVisualizer : QWidget
     private LayerVisualizer(string path)
     {
         _path = path;
+        _client = InstanceDirectory.ClientForPath(path);
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
@@ -102,7 +107,9 @@ internal sealed class LayerVisualizer : QWidget
     {
         if (_pending != null) return;
         _status.SetText(I18n.T("working"));
-        _pending = Task.Run(() => ControlClient.Probe(_path));
+        _client = InstanceDirectory.ClientForPath(_path);
+        var client = _client;
+        _pending = Task.Run(() => client.Probe(_path));
     }
 
     private void Complete()
@@ -199,12 +206,13 @@ internal sealed class LayerVisualizer : QWidget
         if (_pending != null || _probe == null || _diagram.Boundary == 0) return;
         if (QMessageBox.Question(this, I18n.T("confirm"), _path + "\n\n" + _boundarySummary.Text + "\n\n" + I18n.T("object.releaseConfirm"),
             I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
-        var request = new ControlRequest { Cmd = ControlCommands.ReleaseAbove, Path = _path,
-            Boundary = _diagram.Boundary, ExpectedLayers = _probe.Layers.Select(l => l.Name).ToList() };
+        int boundary = _diagram.Boundary;
+        var layers = _probe.Layers.Select(l => l.Name).ToList();
         _release.SetEnabled(false);
         _boundary.SetEnabled(false);
         _status.SetText(I18n.T("working"));
-        _pending = Task.Run(() => ControlClient.Send(request));
+        var client = _client;
+        _pending = Task.Run(() => client.ReleaseAbove(_path, boundary, layers));
     }
 
     private void AddAction(QHBoxLayout layout, LayerProbe layer, string key, string action, bool enabled)
@@ -217,7 +225,8 @@ internal sealed class LayerVisualizer : QWidget
             if (action == LayerActions.DropLocal && QMessageBox.Question(this, I18n.T("confirm"),
                 I18n.T(key) + "\n" + _path, I18n.T("confirm"), I18n.T("cancel"), null, 1, 1) != 0) return;
             _status.SetText(I18n.T("working"));
-            _pending = Task.Run(() => ControlClient.LayerAction(_path, layer.Name, action));
+            var client = _client;
+            _pending = Task.Run(() => client.LayerAction(_path, layer.Name, action));
         };
         layout.AddWidget(button);
     }

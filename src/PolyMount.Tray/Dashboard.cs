@@ -241,7 +241,7 @@ internal sealed class Dashboard : QWidget
     }
 
     private MountStatus? Selected => _mounts.FirstOrDefault(m => m.Name == _selectedName);
-    private void Refresh(bool quiet = false) => Run(ControlClient.Status, null, quiet);
+    private void Refresh(bool quiet = false) => Run(SupervisorClient.Default.Status, null, quiet);
 
     private void Run(Func<ControlResponse> call, string? successKey, bool quiet = false)
     {
@@ -459,12 +459,23 @@ internal sealed class Dashboard : QWidget
     private void ToggleSelected()
     {
         if (Selected is not { } m) return;
+        // Mounting and unmounting are the supervisor's: it is the one that runs an instance's
+        // process. They are also what changes which instances have one, so the addresses the front
+        // end holds are asked for again afterwards rather than waited out.
         if (m.Mounted)
         {
             if (!Confirm("unmount", I18n.F("confirm.unmount", m.Name, m.MountPoint))) return;
-            Run(() => ControlClient.Unmount(m.Name), "unmount.done");
+            Run(() => Lifecycle(SupervisorClient.Default.Unmount(m.Name)), "unmount.done");
         }
-        else Run(() => ControlClient.Mount(m.Name), "mount.done");
+        else Run(() => Lifecycle(SupervisorClient.Default.Mount(m.Name)), "mount.done");
+    }
+
+    /// <summary>An instance's process is the supervisor's to start and to stop, and doing either
+    /// changes which instances have one.</summary>
+    private static ControlResponse Lifecycle(ControlResponse response)
+    {
+        if (response.Ok) InstanceDirectory.Invalidate();
+        return response;
     }
 
     private void OpenSelected()

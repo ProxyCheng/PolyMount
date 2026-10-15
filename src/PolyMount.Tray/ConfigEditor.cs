@@ -41,6 +41,19 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private string? _openName;
     private bool _addAfterLoad;
     private string? _originalName;
+
+    /// <summary>The instance the service is running under the name this editor opened, or last
+    /// saved under. Its client follows it: an instance is answered by a process of its own, so the
+    /// window holds the one it is about instead of asking where to send each call. A name nothing
+    /// is running under — a draft being written, or a deleted instance — leaves the supervisor,
+    /// which is what refuses those calls anyway.</summary>
+    private string? OriginalName
+    {
+        get => _originalName;
+        set { _originalName = value; _client = InstanceDirectory.ClientFor(value); }
+    }
+
+    private InstanceClient _client = InstanceDirectory.ClientFor(null);
     private long _editVersion, _saveVersion;
     private Action? _closeAfterSave;
     private bool _allowClose;
@@ -52,7 +65,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     public ConfigEditor(string? mountName = null, bool create = false)
     {
         _openName = mountName;
-        _originalName = mountName;
+        OriginalName = mountName;
         _addAfterLoad = create;
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
@@ -311,7 +324,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         if (_pending != null) return;
         _saving = false;
-        _pending = Task.Run(ControlClient.GetConfig);
+        _pending = Task.Run(SupervisorClient.Default.GetConfig);
         _save.SetEnabled(false);
         _status.SetText(T("connecting"));
     }
@@ -344,7 +357,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             {
                 _saving = false;
                 _dirty = _editVersion != _saveVersion;
-                _originalName = _saveName;
+                OriginalName = _saveName;
                 UpdateDocumentTitle();
                 var failures = response.Mounts.Where(m => !string.IsNullOrWhiteSpace(m.Error)).Select(m => m.Name + ": " + m.Error).ToArray();
                 _status.SetText(failures.Length > 0 ? T("saved.errors") + " " + string.Join("; ", failures) : T(_dirty ? "unsaved" : "saved"));
@@ -371,7 +384,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             _loading = false;
             if (_addAfterLoad) OnAdd();
             else if (_openName != null) SelectByName(_openName);
-            else if (_originalName != null) SelectByName(_originalName);
+            else if (OriginalName != null) SelectByName(OriginalName);
             else if (_config.Mounts.Count > 0) _mountList.SetCurrentRow(0);
             _openName = null;
             _addAfterLoad = false;
@@ -707,10 +720,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             CommitMount();
             var draft = Current == null ? null : AppConfig.FromJson(new AppConfig { Mounts = new() { Current } }.ToJson()).Mounts[0];
             _saving = true;
-            string? originalName = _originalName;
+            string? originalName = OriginalName;
             _pending = Task.Run(() =>
             {
-                var latest = ControlClient.GetConfig();
+                var latest = SupervisorClient.Default.GetConfig();
                 if (!latest.Ok || latest.Config == null) return latest;
                 var config = AppConfig.FromJson(latest.Config);
                 int index = originalName == null ? -1 : config.Mounts.FindIndex(m => m.Name == originalName);
@@ -718,7 +731,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 if (draft == null) { if (index >= 0) config.Mounts.RemoveAt(index); }
                 else if (index >= 0) config.Mounts[index] = draft;
                 else config.Mounts.Add(draft);
-                return ControlClient.SaveConfig(config.ToJson());
+                var saved = SupervisorClient.Default.SaveConfig(config.ToJson());
+                // An instance may just have been added to or removed from the configuration, and
+                // the addresses this front end holds are what the save changed.
+                if (saved.Ok) InstanceDirectory.Invalidate();
+                return saved;
             });
             _saveName = draft?.Name;
             _saveVersion = _editVersion;
@@ -753,7 +770,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
 
     // An instance is clearable while the draft still names the profile the service runs, and no
     // new draft is one: nothing in the service answers to a name that was never saved.
-    private bool ManagesRunningInstance => _originalName != null && Current is { } current && current.Name == _originalName;
+    private bool ManagesRunningInstance => OriginalName != null && Current is { } current && current.Name == OriginalName;
     private void UpdateInstanceActions() => _clearCache.SetEnabled(ManagesRunningInstance && _pending == null);
 
     /// <summary>
@@ -769,11 +786,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         long bytes = _runtimeProviders
             .Where(p => p.StorageUsage is { CacheCapacity: > 0 })
             .Sum(p => p.StorageUsage!.CacheBytes);
-        if (QMessageBox.Question(this, T("confirm"), I18n.F("confirm.cache", _originalName!, UsageBytes(bytes)),
+        if (QMessageBox.Question(this, T("confirm"), I18n.F("confirm.cache", OriginalName!, UsageBytes(bytes)),
             T("confirm"), T("cancel"), null, 1, 1) != 0) return;
         _saving = false;
         _clearingCache = true;
-        _pending = Task.Run(() => ControlClient.Send(new ControlRequest { Cmd = ControlCommands.ClearCache, Name = _originalName }));
+        _pending = Task.Run(() => _client.ClearCache());
         _save.SetEnabled(false);
         _clearCache.SetEnabled(false);
         _status.SetText(T("working"));
@@ -781,15 +798,15 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
 
     private void LayerOperation(LayerActionDescriptor action)
     {
-        if (_pending != null || _layer == null || _originalName == null || !_layer.Enabled) return;
+        if (_pending != null || _layer == null || OriginalName == null || !_layer.Enabled) return;
         string id = _layer.Id;
         if (_dirty) { _status.SetText(T("layer.operation.saveFirst")); return; }
         if (action.Confirmation.Resolve(I18n.Language) is { Length: > 0 } confirmation &&
             QMessageBox.Question(this, T("confirm"), confirmation, T("confirm"), T("cancel"), null, 1, 1) != 0) return;
-        var request = new ControlRequest { Cmd = action.Command, Name = _originalName, Layer = id };
+        var request = new ControlRequest { Cmd = action.Command, Layer = id };
         _saving = false;
         _layerOperation = true;
-        _pending = Task.Run(() => ControlClient.Send(request));
+        _pending = Task.Run(() => _client.Send(request));
         _save.SetEnabled(false);
         _status.SetText(T("working"));
     }
@@ -819,7 +836,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     }
     private void UpdateDocumentTitle()
     {
-        string name = Current?.Name ?? _originalName ?? _openName ?? "";
+        string name = Current?.Name ?? OriginalName ?? _openName ?? "";
         string title = (name.Length == 0 ? T("mount.new") : I18n.F("editor.instance", name)) + (_dirty ? " *" : "");
         SetWindowTitle(title);
         _heading?.SetText(title);
@@ -878,12 +895,12 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             catch (Exception) { _usageOnline = false; RenderUsage(); }
             _nextUsage = DateTime.UtcNow.AddSeconds(2);
         }
-        if (IsVisible() && _originalName != null && _pending == null && _usagePending == null && DateTime.UtcNow >= _nextUsage)
-            _usagePending = Task.Run(ControlClient.Status);
+        if (IsVisible() && OriginalName != null && _pending == null && _usagePending == null && DateTime.UtcNow >= _nextUsage)
+            _usagePending = Task.Run(() => _client.Status());
     }
     private void AcceptUsage(ControlResponse response)
     {
-        var mount = response.Mounts.FirstOrDefault(m => m.Name == _originalName);
+        var mount = response.Mounts.FirstOrDefault(m => m.Name == OriginalName);
         _usageOnline = response.Ok && mount != null;
         _runtimeProviders = mount?.Providers ?? new();
         RenderUsage();

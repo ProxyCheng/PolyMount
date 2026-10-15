@@ -103,6 +103,31 @@ public sealed class ControlRequest
     public string? Reason { get; set; }
 }
 
+/// <summary>Where one instance is served: the process that owns it, and the pipe it answers on.
+///
+/// It exists so a front-end can ask once and then talk to the instance itself — nothing is
+/// forwarded through the supervisor that answered the question. The pipe is named for
+/// <see cref="Id"/>, which is the same identity the instance's store folder is named by, so it
+/// survives a restart: a front-end that kept the address is still right afterwards.
+///
+/// An instance with no process of its own — one that is disabled — has no endpoint; it is in the
+/// configuration and in the supervisor's status, and nowhere else.</summary>
+public sealed class InstanceEndpoint
+{
+    /// <summary>The instance's identity: <c>MountProfile.Id</c>, the Guid its store is named by.</summary>
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    /// <summary>What the worker mounts, so a front-end holding a local path can tell which
+    /// instance it belongs to without asking anyone.</summary>
+    public string MountPoint { get; set; } = "";
+    /// <summary>The pipe the instance answers on. A front-end connects here rather than to the
+    /// supervisor for anything that concerns this instance.</summary>
+    public string Pipe { get; set; } = "";
+    public int WorkerPid { get; set; }
+    /// <summary>When that process started, so a front-end can tell a restart from the same one.</summary>
+    public string StartedUtc { get; set; } = "";
+}
+
 public sealed class ControlResponse
 {
     public bool Ok { get; set; } = true;
@@ -111,6 +136,9 @@ public sealed class ControlResponse
     public List<string> SourceTypes { get; set; } = new();
     public List<LayerDescriptor> LayerDescriptors { get; set; } = new();
     public List<LayerPreset> Presets { get; set; } = new();
+
+    // Populated by the "instances" command: where each instance is served.
+    public List<InstanceEndpoint> Instances { get; set; } = new();
 
     // Populated by the "probe" command.
     public ProbeResult? Probe { get; set; }
@@ -165,6 +193,9 @@ public sealed class ProbeResult
 public static class ControlCommands
 {
     public const string Status = "status";
+    /// <summary>Where every instance is served: the one command a front-end asks the supervisor
+    /// for the addresses with, after which it talks to each instance directly.</summary>
+    public const string Instances = "instances";
     public const string SetPin = "setPin";
     public const string RefreshHead = "refreshHead";
     public const string ClearCache = "clearCache";

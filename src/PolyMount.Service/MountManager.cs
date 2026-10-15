@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -16,6 +18,9 @@ public sealed class MountManager
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
 
+    /// <summary>When this process started, which is also when every instance it hosts started.</summary>
+    private static readonly string StartedUtc = ProcessStartedAt();
+
     private readonly ILogger<MountManager> _logger;
     public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
     {
@@ -29,6 +34,12 @@ public sealed class MountManager
 
     public AppConfig Config { get; private set; }
     public string ConfigPath { get; }
+
+    /// <summary>The pipe this process serves on, set by the host before it starts listening. Every
+    /// instance hosted here is answered there, so it is also each one's own address — one process
+    /// and one pipe for all of them, for now. When each instance gets a process of its own, this
+    /// becomes the supervisor's own pipe and every endpoint reports its worker's instead.</summary>
+    public string LocalPipe { get; set; } = "";
 
     /// <summary>The service's own log, written next to the executable by the host.</summary>
     public const string ServiceLogName = "polymount-service.log";
@@ -168,6 +179,9 @@ public sealed class MountManager
             {
                 case ControlCommands.Status:
                     break;
+                case ControlCommands.Instances:
+                    response.Instances = Endpoints();
+                    break;
                 case ControlCommands.SetPin:
                     Find(request.Name).SetPin(request.Rev, request.Layer);
                     break;
@@ -290,11 +304,40 @@ public sealed class MountManager
         return response;
     }
 
+    /// <summary>Where each instance is served, so a front-end can connect to it instead of asking
+    /// this process about it. An instance that is switched off is not here: it has no process of
+    /// its own, and it is in the configuration and in the status instead.</summary>
+    private List<InstanceEndpoint> Endpoints()
+    {
+        // Whatever the host is actually listening on; the configured name is the fallback for the
+        // window between loading the configuration and starting to serve.
+        string pipe = LocalPipe.Length > 0 ? LocalPipe : Config.ControlPipe;
+        lock (_gate)
+            return _instances.Select(instance => new InstanceEndpoint
+            {
+                Id = instance.Profile.Id,
+                Name = instance.Name,
+                MountPoint = instance.MountPoint,
+                Pipe = pipe,
+                WorkerPid = Environment.ProcessId,
+                StartedUtc = StartedUtc
+            }).ToList();
+    }
+
+    private static string ProcessStartedAt()
+    {
+        try { return Process.GetCurrentProcess().StartTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture); }
+        catch (Exception) { return DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture); }
+    }
+
+    // The instance a command names. A command about one instance that names none is refused
+    // rather than answered about whichever instance happened to be first: every front-end names
+    // one, and a caller that does not is asking a question this cannot answer correctly.
     private MountInstance Find(string? name)
     {
-        var instance = name == null
-            ? _instances.FirstOrDefault()
-            : _instances.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(name))
+            throw new InvalidOperationException("this command needs the instance it is about");
+        var instance = _instances.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
         return instance ?? throw new InvalidOperationException("no such mount: " + name);
     }
 

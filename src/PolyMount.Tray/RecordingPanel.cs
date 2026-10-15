@@ -21,6 +21,9 @@ internal sealed class RecordingPanel : QWidget
     private static string T(string key) => I18n.T(key);
 
     private readonly string _name;
+    /// <summary>The instance this panel records. It is bound to one for its whole life, so it holds
+    /// the process that serves it rather than asking where to send each question.</summary>
+    private readonly InstanceClient _client;
     private readonly QPushButton _start = new(), _end = new();
     private readonly RecordingLamp _lamp = new();
     private readonly QLabel _state = new(), _elapsed = new(), _collected = new();
@@ -52,6 +55,7 @@ internal sealed class RecordingPanel : QWidget
     public RecordingPanel(string name)
     {
         _name = name;
+        _client = InstanceDirectory.ClientFor(name);
         // A tray that was killed leaves its working copy behind, and one can be hundreds of
         // megabytes: clearing out old ones belongs here, off the thread that is drawing.
         Task.Run(() => RecordingSession.PruneWorkingCopies(TimeSpan.FromDays(7)));
@@ -231,7 +235,7 @@ internal sealed class RecordingPanel : QWidget
         if (_session == null && _pendingProbe == null && _pendingSave == null && DateTime.UtcNow >= _nextProbe)
         {
             _nextProbe = DateTime.UtcNow.AddSeconds(5);
-            _pendingProbe = Task.Run(() => ControlClient.RecordingStatus(_name));
+            _pendingProbe = Task.Run(() => _client.RecordingStatus());
         }
         // Not gated on IsVisible(): a recording collects while its tab is not the one being looked
         // at, which is most of the time it runs.

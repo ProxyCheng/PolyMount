@@ -188,7 +188,7 @@ internal static class StatsExport
     {
         try
         {
-            return ((true, null), ControlClient.Status().Mounts, ControlClient.Logs().Logs);
+            return ((true, null), SupervisorClient.Default.Status().Mounts, SupervisorClient.Default.Logs().Logs);
         }
         catch (Exception ex)
         {

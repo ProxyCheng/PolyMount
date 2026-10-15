@@ -56,6 +56,7 @@ internal sealed class RecordingSession
     }
 
     private readonly object _gate = new();
+    private readonly InstanceClient _client;
     private readonly Dictionary<string, LayerSampler.Counters> _wasteSteps = new();
     private readonly Dictionary<string, LayerAccumulator> _totals = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>One number per second for the whole recording. Four doubles a second is nothing,
@@ -77,6 +78,9 @@ internal sealed class RecordingSession
     private RecordingSession(string mount, string workingDirectory)
     {
         Mount = mount;
+        // A session is a conversation with one instance, and it is that instance's own process
+        // that counts what it serves: the session holds it for as long as it runs.
+        _client = InstanceDirectory.ClientFor(mount);
         WorkingDirectory = workingDirectory;
         StartedUtc = DateTime.UtcNow;
         // The copies live under one subtree of their own, because that subtree becomes the
@@ -111,7 +115,9 @@ internal sealed class RecordingSession
     /// them from the start recovers the whole span rather than only the part after the restart.</summary>
     public static RecordingSession Start(string mount)
     {
-        var response = ControlClient.RecordingStart(mount, "tray");
+        // A recording is a session with one instance, so it is started on that instance's own
+        // process — the one that will be counting.
+        var response = InstanceDirectory.ClientFor(mount).RecordingStart("tray");
         if (!response.Ok) throw new InvalidOperationException(response.Error ?? "the recording could not be started");
         if (response.Recording is not { Active: true } info) throw new InvalidOperationException("the service started no recording");
         var session = new RecordingSession(mount, NewDirectory(mount));
@@ -121,7 +127,7 @@ internal sealed class RecordingSession
         // is remembered and the segments are matched as they appear.
         try
         {
-            foreach (var log in ControlClient.Logs().Logs)
+            foreach (var log in SupervisorClient.Default.Logs().Logs)
             {
                 if (log.Name.StartsWith(mount + "/", StringComparison.Ordinal))
                     session._detailDirectory = Path.GetDirectoryName(log.Source) ?? "";
@@ -145,7 +151,7 @@ internal sealed class RecordingSession
                 RefreshStatus(utcNow);
             Drain(utcNow);
             var watch = Stopwatch.StartNew();
-            var response = ControlClient.Metrics(1, Mount);
+            var response = _client.Metrics(1);
             watch.Stop();
             requestMs = watch.Elapsed.TotalMilliseconds;
             if (!response.Ok) throw new InvalidOperationException(response.Error);
@@ -175,7 +181,7 @@ internal sealed class RecordingSession
     {
         _lastStatusUtc = utcNow;
         ControlResponse response;
-        try { response = ControlClient.RecordingStatus(Mount); }
+        try { response = _client.RecordingStatus(); }
         catch (Exception ex) { lock (_gate) _error = ex.Message; return; }
         if (!response.Ok || response.Recording is not { } info)
         {
@@ -201,7 +207,7 @@ internal sealed class RecordingSession
         lock (_gate) _restarts++;
         try
         {
-            var restarted = ControlClient.RecordingStart(Mount, "tray");
+            var restarted = _client.RecordingStart("tray");
             if (restarted.Recording is { Active: true } again) { Adopt(again); return; }
             lock (_gate)
             {
@@ -339,7 +345,7 @@ internal sealed class RecordingSession
     {
         Drain(utcNow);
         RecordingSessionInfo? info = null;
-        try { info = ControlClient.RecordingStop(Mount, "saved").Recording; }
+        try { info = _client.RecordingStop("saved").Recording; }
         catch (Exception ex) { lock (_gate) _error = ex.Message; }
         // One last copy after the channel is detached: whatever it wrote between the last poll and
         // the stop belongs to the recording too.
@@ -360,7 +366,7 @@ internal sealed class RecordingSession
     /// <summary>Ends the recording without keeping it.</summary>
     public void Discard()
     {
-        try { ControlClient.RecordingStop(Mount, "discarded"); }
+        try { _client.RecordingStop("discarded"); }
         catch (Exception) { /* the service may already be gone; the copy is ours to delete */ }
         lock (_gate) State = RecordingState.Stopped;
         TryDelete(WorkingDirectory);
@@ -375,7 +381,7 @@ internal sealed class RecordingSession
     public void Suspend(string reason = "tray-exit")
     {
         if (State is RecordingState.Stopped or RecordingState.Truncated) return;
-        try { ControlClient.RecordingStop(Mount, reason); }
+        try { _client.RecordingStop(reason); }
         catch (Exception) { }
         lock (_gate) State = RecordingState.Stopped;
     }

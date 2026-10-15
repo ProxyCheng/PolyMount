@@ -10,7 +10,7 @@ internal static class ServiceControl
     /// <summary>Is the service reachable over the control pipe?</summary>
     public static bool IsRunning()
     {
-        try { return ControlClient.Status().Ok; }
+        try { return SupervisorClient.Default.Status().Ok; }
         catch { return false; }
     }
 
@@ -62,7 +62,7 @@ internal static class ServiceControl
         if (!IsRunning()) return I18n.T("service.notRunning");
         try
         {
-            ControlClient.Send(new ControlRequest { Cmd = ControlCommands.Shutdown });
+            SupervisorClient.Default.Shutdown();
             return I18n.T("service.stopping");
         }
         catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
