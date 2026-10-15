@@ -16,11 +16,15 @@ namespace PolyMount.Layers;
 /// </summary>
 public sealed class PredictionCacheLayer : CacheLayer, IDisposable
 {
-    private sealed class Entry(VirtualObject value, byte[]? content, long bytes)
+    private sealed class Entry(VirtualObject value, byte[]? content, long bytes, bool sibling)
     {
         public VirtualObject Value = value;
         public byte[]? Content = content;
         public long Bytes = bytes;
+        /// <summary>Fetched because the reader was walking a directory in order, rather than
+        /// because the successor table predicted it. The two are counted apart so a stride's
+        /// hits and waste are visible without giving it a confidence of its own.</summary>
+        public bool Sibling = sibling;
         public int Reads;
         public LinkedListNode<string>? Node;
         public long StoredAt;
@@ -37,7 +41,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     private readonly LinkedList<string> _lru = new();
     private ReadPrediction? _predictor;
     private string? _generationSnapshot;
-    private long _bytes, _hits, _used, _wasted, _wastedBytes, _fetchBytes;
+    private long _bytes, _hits, _used, _wasted, _wastedBytes, _fetchBytes, _siblingUsed, _siblingWasted;
     // Recent guess quality, judged per entry as soon as it is resolved rather than waiting
     // for an eviction that a generous budget may never reach.
     private int _paidOff, _wastedGuesses;
@@ -67,11 +71,21 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
     public long PreloadsStarted => _predictor?.Predictions ?? 0;
     public long PreloadsCompleted => _predictor?.Completed ?? 0;
+    /// <summary>Preloads the stride issued for a directory walk, and their share of the held
+    /// entries read back and evicted unread. Subsets of the totals above and below, so what the
+    /// stride contributes can be separated from what the successor table contributes.</summary>
+    public long SiblingPreloads => _predictor?.SiblingPredictions ?? 0;
+    public long SiblingCompleted => _predictor?.SiblingCompleted ?? 0;
+    public long SiblingHits { get { lock (_gate) return _siblingUsed; } }
+    public long SiblingWasted { get { lock (_gate) return _siblingWasted; } }
+    /// <summary>Directories the stride is currently walking.</summary>
+    public int TrackedDirectories => _predictor?.TrackedDirectories ?? 0;
     /// <summary>Size of the speculative fetch in flight, for the usage panel.</summary>
     public long FetchBytes => Interlocked.Read(ref _fetchBytes);
 
     public void Attach(VirtualFileSystem lower) =>
-        _predictor = new ReadPrediction(lower, _options, _model, path => Preload(lower, path));
+        _predictor = new ReadPrediction(lower, _options, _model, path => Preload(lower, path, sibling: false),
+            path => Preload(lower, path, sibling: true));
 
     internal IDisposable? Observe(string path) => _predictor?.Demand(path);
 
@@ -88,7 +102,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     }
 
     /// <summary>Fetches a predicted path through the layers below and keeps it here.</summary>
-    private void Preload(VirtualFileSystem lower, string path)
+    private void Preload(VirtualFileSystem lower, string path, bool sibling)
     {
         VirtualObject value;
         try { value = lower.LoadObject(path, speculative: true); }
@@ -96,7 +110,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         // An entry larger than this layer's whole budget is never worth keeping.
         if (!value.Header.IsDir && value.Header.Size > Math.Min(_capacity, _options.MaxFileBytes)) return;
 
-        if (value.Header.IsDir) { StoreObject(path, value); return; }
+        if (value.Header.IsDir) { Store(path, value, null, sibling); return; }
         Interlocked.Exchange(ref _fetchBytes, value.Header.Size);
         try
         {
@@ -104,7 +118,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
             using var payload = new MemoryStream(value.Header.Size > int.MaxValue ? 0 : (int)value.Header.Size);
             source.CopyTo(payload);
             payload.Position = 0;
-            StoreObject(path, value, payload);
+            Store(path, value, payload, sibling);
         }
         catch (IOException) { }
         finally { Interlocked.Exchange(ref _fetchBytes, 0); }
@@ -126,7 +140,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             CheckGeneration();
             if (!_entries.TryGetValue(path, out var entry)) { value = null!; return false; }
-            if (entry.Reads++ == 0) { _used++; _paidOff++; PublishQuality(); }
+            if (entry.Reads++ == 0) { _used++; _paidOff++; if (entry.Sibling) _siblingUsed++; PublishQuality(); }
             _hits++;
             _lru.Remove(entry.Node!);
             _lru.AddFirst(entry.Node!);
@@ -142,7 +156,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
             CheckGeneration();
             entry = null!; stream = null!;
             if (!_entries.TryGetValue(path, out var kept) || kept.Content == null) return false;
-            if (kept.Reads++ == 0) { _used++; _paidOff++; PublishQuality(); }
+            if (kept.Reads++ == 0) { _used++; _paidOff++; if (kept.Sibling) _siblingUsed++; PublishQuality(); }
             _hits++;
             _lru.Remove(kept.Node!);
             _lru.AddFirst(kept.Node!);
@@ -163,7 +177,11 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         }
     }
 
-    public void StoreObject(string path, VirtualObject value, Stream? content = null)
+    public void StoreObject(string path, VirtualObject value, Stream? content = null) => Store(path, value, content, sibling: false);
+
+    /// <summary>Keeps a value, recording whether read-ahead chose it by walking a directory or
+    /// by predicting a successor; only the origin differs, so everything else is shared.</summary>
+    private void Store(string path, VirtualObject value, Stream? content, bool sibling)
     {
         // A record with neither children nor content is header-only: the resolver telling
         // this layer that a path exists, not a guess it chose to read ahead. Keeping it would
@@ -189,7 +207,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
                 _lru.Remove(previous.Node!);
                 _entries.Remove(path);
             }
-            var entry = new Entry(value.Snapshot(), payload, bytes) { StoredAt = Environment.TickCount64 };
+            var entry = new Entry(value.Snapshot(), payload, bytes, sibling) { StoredAt = Environment.TickCount64 };
             entry.Node = _lru.AddFirst(path);
             _entries[path] = entry;
             _bytes += bytes;
@@ -237,7 +255,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             var key = tail.Value;
             var entry = _entries[key];
-            if (entry.Reads == 0) { _wasted++; _wastedBytes += entry.Bytes; if (!entry.Scored) { entry.Scored = true; _wastedGuesses++; PublishQuality(); } }
+            if (entry.Reads == 0) { _wasted++; _wastedBytes += entry.Bytes; if (entry.Sibling) _siblingWasted++; if (!entry.Scored) { entry.Scored = true; _wastedGuesses++; PublishQuality(); } }
             _bytes -= entry.Bytes;
             _entries.Remove(key);
             _lru.RemoveLast();

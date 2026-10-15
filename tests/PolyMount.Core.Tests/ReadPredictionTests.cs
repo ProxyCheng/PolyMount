@@ -309,4 +309,184 @@ public sealed class ReadPredictionTests
         while (DateTime.UtcNow < deadline) { lock (predicted) if (predicted.Count > 0) break; await Task.Delay(25); }
         lock (predicted) Assert.AreEqual("b", predicted.FirstOrDefault(), "and resumes when released");
     }
+
+    [TestMethod]
+    public async Task Reading_the_files_of_a_listed_directory_in_order_preloads_the_next_sibling()
+    {
+        using var temp = new TempDir();
+        var source = SourceWith("dir", 6);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("dir");                                    // the reader enumerates: the listing is held
+        int listings = source.ListedDirectories.Count;
+        // The origin is told apart here, so what the table predicts cannot be read as what the
+        // stride predicted: both may name the same file, and only one of them is the stride.
+        var strided = new List<string>();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 3 },
+            temp.Sub("siblings.json"), path => { }, path => { lock (strided) strided.Add(path); });
+
+        // Two files of one directory, in the order a listing hands them over.
+        using (prediction.Demand("dir/f0")) { }
+        using (prediction.Demand("dir/f1")) { }
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 3 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(1L, prediction.SiblingPredictions, "the walk nominates the next sibling and nothing else");
+        Assert.AreEqual(3L, prediction.SiblingCompleted, "and the chain that already exists carries it on");
+        lock (strided) CollectionAssert.AreEqual(new[] { "dir/f2", "dir/f3", "dir/f4" }, strided,
+            "one position at a time, stopping at the configured depth");
+        Assert.AreEqual(listings, source.ListedDirectories.Count, "naming a sibling costs no listing");
+    }
+
+    [TestMethod]
+    public async Task A_sibling_already_read_is_not_nominated_again()
+    {
+        using var temp = new TempDir();
+        var source = SourceWith("dir", 5);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("dir");
+        var strided = new List<string>();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1 },
+            temp.Sub("covered.json"), path => { }, path => { lock (strided) strided.Add(path); });
+
+        using (prediction.Demand("dir/f0")) { }
+        using (prediction.Demand("dir/f1")) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 1 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(1L, prediction.SiblingPredictions);
+        lock (strided) Assert.AreEqual(1, strided.Count(p => p == "dir/f2"), "the next sibling is fetched once");
+
+        // The reader catches up with the file that was fetched for it, which moves the walk on,
+        // and then reads the same ascending pair again: the position behind it is one that has
+        // been taken already, by the read-ahead or by the read itself.
+        using (prediction.Demand("dir/f2")) { }
+        await Task.Delay(300);
+        long issued = prediction.SiblingPredictions;
+        lock (strided) strided.Clear();
+        using (prediction.Demand("dir/f0")) { }
+        using (prediction.Demand("dir/f1")) { }
+        await Task.Delay(400);
+        Assert.AreEqual(issued, prediction.SiblingPredictions, "a covered sibling is not nominated a second time");
+        lock (strided) Assert.AreEqual(0, strided.Count(p => p == "dir/f2"));
+    }
+
+    [TestMethod]
+    public async Task A_sibling_nomination_is_governed_by_the_same_throttle()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var dir in new[] { "one", "two" })
+            for (int i = 0; i < 4; i++) source.AddFile($"{dir}/f{i}", $"{dir}/f{i}");
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        foreach (var dir in new[] { "one", "two" }) vfs.List(dir);
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1 },
+            temp.Sub("stride-throttle.json"), path => { });
+
+        using (prediction.Demand("one/f0")) { }
+        using (prediction.Demand("one/f1")) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 1 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(1L, prediction.SiblingCompleted, "a stride runs while the feedback says guesses pay off");
+
+        // The same dial the owning cache lowers for a bad successor guess, lowered for both.
+        prediction.Throttle = 0;
+        using (prediction.Demand("two/f0")) { }
+        using (prediction.Demand("two/f1")) { }
+        await Task.Delay(500);
+        Assert.AreEqual(1L, prediction.SiblingPredictions, "a throttled predictor issues no stride either");
+
+        prediction.Throttle = 1;
+        deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 2 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(2L, prediction.SiblingCompleted, "and releasing it resumes the walk that was waiting");
+    }
+
+    [TestMethod]
+    public async Task Nothing_is_issued_while_the_in_flight_bound_is_reached()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var dir in new[] { "one", "two" })
+            for (int i = 0; i < 4; i++) source.AddFile($"{dir}/f{i}", $"{dir}/f{i}");
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        foreach (var dir in new[] { "one", "two" }) vfs.List(dir);
+        using var gate = new ManualResetEventSlim();
+        var started = new List<string>();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1, MaxInFlight = 1 },
+            temp.Sub("stride-budget.json"), path => { lock (started) started.Add(path); gate.Wait(TimeSpan.FromSeconds(10)); });
+
+        using (prediction.Demand("one/f0")) { }
+        using (prediction.Demand("one/f1")) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (true) { lock (started) if (started.Count >= 1) break; if (DateTime.UtcNow > deadline) Assert.Fail("the stride never started"); await Task.Delay(25); }
+
+        // A second walk nominates its own sibling while the first fetch is still out. One slot
+        // is the whole budget, so the nomination waits instead of being issued.
+        using (prediction.Demand("two/f0")) { }
+        using (prediction.Demand("two/f1")) { }
+        await Task.Delay(500);
+        lock (started) Assert.AreEqual(1, started.Count, "the in-flight bound is the whole of the budget");
+
+        gate.Set();
+        deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 2 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(2L, prediction.SiblingCompleted, "the nomination waits for a slot rather than being dropped");
+    }
+
+    [TestMethod]
+    public async Task The_stride_counts_its_hits_and_waste_apart_from_the_tables()
+    {
+        using var temp = new TempDir();
+        var source = SourceWith("dir", 5);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        using var prediction = new PredictionCacheLayer(1048576, () => source.Generation,
+            new ReadPredictionOptions { PrefetchDepth = 1 }, temp.Sub("stride-model.json"));
+        prediction.Attach(new VirtualFileSystem(new ILayer[] { cache, source }));
+        var vfs = new VirtualFileSystem(new ILayer[] { prediction, cache, source });
+        vfs.List("dir");
+
+        foreach (var path in new[] { "dir/f0", "dir/f1" }) using (vfs.OpenRead(path, out _)) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (prediction.SiblingCompleted < 1 && DateTime.UtcNow < deadline) await Task.Delay(25);
+        Assert.AreEqual(1L, prediction.SiblingPreloads, "the stride guessed, and the counters say so");
+        Assert.AreEqual(0L, prediction.SiblingHits, "an entry nobody has read back is not a hit yet");
+        Assert.IsTrue(prediction.TrackedDirectories >= 1, "the directory is still being walked");
+
+        int opened = source.OpenReadCount;
+        using (vfs.OpenRead("dir/f2", out _)) { }
+        Assert.AreEqual(opened, source.OpenReadCount, "the reader is served by the stride, not by the source");
+        Assert.AreEqual(1L, prediction.SiblingHits, "reading a stride's entry is a hit of its own");
+        Assert.AreEqual(0L, prediction.SiblingWasted);
+        Assert.IsTrue(prediction.SiblingHits <= prediction.Used, "the stride's counts are subsets of the layer's");
+        Assert.IsTrue(prediction.SiblingPreloads <= prediction.PreloadsStarted);
+    }
+
+    [TestMethod]
+    public async Task A_walk_with_no_held_listing_is_never_listed_for()
+    {
+        using var temp = new TempDir();
+        var source = SourceWith("dir", 5);
+        var vfs = new VirtualFileSystem(new ILayer[] { source });
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 3 },
+            temp.Sub("no-listing.json"), path => { });
+
+        foreach (var path in new[] { "dir/f0", "dir/f1", "dir/f2" }) using (prediction.Demand(path)) { }
+        await Task.Delay(400);
+        Assert.AreEqual(0L, prediction.SiblingPredictions, "with no held listing there is no position to continue from");
+        Assert.AreEqual(0, prediction.TrackedDirectories);
+        Assert.AreEqual(0, source.ListedDirectories.Count, "and none is enumerated to find one");
+    }
+
+    /// <summary>An in-memory source holding <paramref name="count"/> single-letter files under
+    /// one directory, named so that ordinal order is f0, f1, ... — the order a listing is
+    /// enumerated in.</summary>
+    private static FakeSourceLayer SourceWith(string dir, int count)
+    {
+        var source = new FakeSourceLayer();
+        for (int i = 0; i < count; i++) source.AddFile($"{dir}/f{i}", $"{dir}/f{i}");
+        return source;
+    }
 }

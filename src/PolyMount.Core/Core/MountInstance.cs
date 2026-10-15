@@ -345,6 +345,11 @@ public sealed class MountInstance : IDisposable
                 info.HeldWasted = prediction.Wasted;
                 info.HeldBytes = prediction.MemoryBytes;
                 info.HeldCapacity = prediction.Capacity;
+                info.SiblingPreloads = prediction.SiblingPreloads;
+                info.SiblingCompleted = prediction.SiblingCompleted;
+                info.SiblingHits = prediction.SiblingHits;
+                info.SiblingWasted = prediction.SiblingWasted;
+                info.SiblingDirectories = prediction.TrackedDirectories;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");
             }
             if (_providers[layer.Name] is ILayerStorageUsage storage)

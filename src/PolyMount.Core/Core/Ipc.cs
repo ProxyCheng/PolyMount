@@ -26,6 +26,18 @@ public sealed class ProviderInfo
     public long HeldWasted { get; set; }
     public long HeldBytes { get; set; }
     public long HeldCapacity { get; set; }
+    /// <summary>Preloads that came from the stride walking a directory the reader had been
+    /// listing in order, rather than from the learned successor table. Subsets of the two
+    /// preload counts above and of <see cref="HeldHits"/>/<see cref="HeldWasted"/>, so the two
+    /// ways of guessing can be read apart without the stride owning a confidence of its own.
+    /// Zero also means the walk never had a held listing to take its position from — the layer
+    /// chain, not the reader, decides whether a stride can run at all.</summary>
+    public long SiblingPreloads { get; set; }
+    public long SiblingCompleted { get; set; }
+    public long SiblingHits { get; set; }
+    public long SiblingWasted { get; set; }
+    /// <summary>Directories whose walk the stride is following right now.</summary>
+    public int SiblingDirectories { get; set; }
     /// <summary>Format string for the read-ahead summary, localised by the core.</summary>
     public LocalizedText? PredictionDetail { get; set; }
 }
