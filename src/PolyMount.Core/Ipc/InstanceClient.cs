@@ -75,4 +75,10 @@ public sealed class InstanceClient : ControlClient
     /// <summary>Takes the recording down, keeping what it counted.</summary>
     public ControlResponse RecordingStop(string reason = "stopped")
         => Send(new ControlRequest { Cmd = ControlCommands.RecordingStop, Reason = reason });
+
+    /// <summary>Asks this instance's process to stop. It answers first and then unmounts in order
+    /// and exits, which is how the supervisor stops a worker rather than killing it — the
+    /// difference between a mount that came down and one that was taken away.</summary>
+    public ControlResponse Shutdown()
+        => Send(new ControlRequest { Cmd = ControlCommands.Shutdown });
 }

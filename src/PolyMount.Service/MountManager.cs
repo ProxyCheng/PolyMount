@@ -1,5 +1,3 @@
-using System.Diagnostics;
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -9,17 +7,19 @@ using PolyMount.Core.Ipc;
 
 namespace PolyMount.Service;
 
-public sealed class MountManager : IControlHost
+/// <summary>The supervisor: what exists, and which process is running it.
+///
+/// It owns the configuration — the one copy, and the file — decides which instances are running,
+/// and answers for the service as a whole. It does not host a mount itself: each instance is a
+/// worker process of its own (<see cref="InstanceHost"/>), and everything about one instance's own
+/// state is asked of that process directly rather than routed through here.
+/// </summary>
+public sealed class MountManager : IControlHost, IDisposable
 {
-    private readonly List<MountInstance> _instances = new();
-    private readonly Dictionary<string, string> _errors = new(StringComparer.OrdinalIgnoreCase);
-    private readonly object _gate = new();
     private readonly IHostApplicationLifetime? _lifetime;
+    private readonly WorkerPool _workers;
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
-
-    /// <summary>When this process started, which is also when every instance it hosts started.</summary>
-    private static readonly string StartedUtc = ProcessStartedAt();
 
     private readonly ILogger<MountManager> _logger;
     public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
@@ -29,16 +29,14 @@ public sealed class MountManager : IControlHost
         ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
         LoadPlugins(Config);
-        BuildInstances();
+        _workers = new WorkerPool(ConfigPath, _logger);
     }
 
     public AppConfig Config { get; private set; }
     public string ConfigPath { get; }
 
-    /// <summary>The pipe this process serves on, set by the host before it starts listening. Every
-    /// instance hosted here is answered there, so it is also each one's own address — one process
-    /// and one pipe for all of them, for now. When each instance gets a process of its own, this
-    /// becomes the supervisor's own pipe and every endpoint reports its worker's instead.</summary>
+    /// <summary>The pipe this process serves on, set by the host before it starts listening: the
+    /// one well-known name, where a front-end asks what exists and which process runs it.</summary>
     public string LocalPipe { get; set; } = "";
 
     /// <summary>The service's own log, written next to the executable by the host.</summary>
@@ -49,14 +47,17 @@ public sealed class MountManager : IControlHost
     private List<LogFile> CollectLogs()
     {
         var logs = new List<LogFile>();
-        lock (_gate)
-            foreach (var instance in _instances)
-                foreach (string file in instance.GetLogFiles())
-                    logs.Add(LogInventory.Describe(file, instance.Name));
+        // Read off the configuration rather than collected from the workers: an instance whose
+        // worker is down still has the log of what it did, and that is exactly when it is wanted.
+        foreach (var profile in Config.Mounts)
+            foreach (string file in LogInventory.Family(StateDirectory(profile), "requests.log"))
+                logs.Add(LogInventory.Describe(file, profile.Name));
         foreach (string file in LogInventory.Family(AppContext.BaseDirectory, ServiceLogName))
             logs.Add(LogInventory.Describe(file, "service"));
         return logs;
     }
+
+    private static string StateDirectory(MountProfile profile) => Path.Combine(profile.GetStoreRoot(), "state");
 
     private static void LoadPlugins(AppConfig config)
     {
@@ -64,68 +65,28 @@ public sealed class MountManager : IControlHost
         if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
     }
 
-    private void BuildInstances()
+    /// <summary>Starts a worker for every enabled instance, and watches the configuration from
+    /// here on: this process is the only one that reads it, so it is the only one that reloads.</summary>
+    public void StartAll()
     {
-        lock (_gate)
-        {
-            foreach (var instance in _instances)
-                try { instance.Dispose(); } catch { }
-            _instances.Clear();
-            _errors.Clear();
-
-            foreach (var profile in Config.Mounts)
-            {
-                if (!profile.Enabled) continue;
-                try
-                {
-                    var instance = new MountInstance(profile) { ColorOverrides = Config.LayerColors };
-                    _instances.Add(instance);
-                }
-                catch (Exception ex)
-                {
-                    _errors[profile.Name] = ex.Message;
-                }
-            }
-        }
-    }
-
-    public void MountAll()
-    {
-        foreach (var instance in _instances)
-        {
-            try
-            {
-                instance.Mount(Config.WinFspBin);
-                _errors.Remove(instance.Name);
-            }
-            catch (Exception ex)
-            {
-                _errors[instance.Name] = ex.Message;
-                Log("mount " + instance.Name, ex);
-            }
-        }
-
+        _workers.Apply(Config);
         StartConfigWatcher();
     }
 
-    public void UnmountAll()
-    {
-        foreach (var instance in _instances)
-        {
-            try { instance.Unmount(); } catch { }
-        }
-    }
+    /// <summary>Stops every worker, in order, so their mounts come down and their stores are
+    /// closed rather than being taken away with the process.</summary>
+    public void StopAll() => _workers.StopAll();
 
-    // Rebuild every mount instance from the current on-disk config and remount.
+    /// <summary>Re-reads the configuration and brings the workers in line with it. Only the
+    /// instances whose settings actually changed are restarted, which is the point of a process per
+    /// instance: editing one mount no longer interrupts another's cache or its warm-up.</summary>
     public void Reload()
     {
         var next = AppConfig.LoadOrCreate(ConfigPath);
         LoadPlugins(next);
         next.Validate();
-        UnmountAll();
         Config = next;
-        BuildInstances();
-        MountAll();
+        _workers.Apply(next);
     }
 
     private void StartConfigWatcher()
@@ -165,41 +126,14 @@ public sealed class MountManager : IControlHost
                 case ControlCommands.Status:
                     break;
                 case ControlCommands.Instances:
-                    response.Instances = Endpoints();
+                    response.Instances = _workers.Endpoints();
                     break;
                 case ControlCommands.Mount:
-                    try
-                    {
-                        Find(request.Name).Mount(Config.WinFspBin);
-                        // A failure left a message here, and it outlived the failure: the status
-                        // then reported a mount point problem for an instance that was up.
-                        _errors.Remove(request.Name!);
-                    }
-                    catch (Exception ex)
-                    {
-                        _errors[request.Name!] = ex.Message;
-                        Log("mount " + request.Name, ex);
-                        throw;
-                    }
+                    _workers.Start(request.Name);
                     break;
                 case ControlCommands.Unmount:
-                    Find(request.Name).Unmount();
+                    _workers.Stop(request.Name);
                     break;
-                case ControlCommands.Probe:
-                case ControlCommands.LayerAction:
-                case ControlCommands.ReleaseAbove:
-                case ControlCommands.SetPin:
-                case ControlCommands.RefreshHead:
-                case ControlCommands.ClearCache:
-                case ControlCommands.ClearLocalChanges:
-                case ControlCommands.RecordingStart:
-                case ControlCommands.RecordingStatus:
-                case ControlCommands.RecordingStop:
-                {
-                    var (instance, rel) = Locate(request);
-                    InstanceCommands.Apply(instance, rel, request, Config.WinFspBin, response);
-                    break;
-                }
                 case ControlCommands.GetConfig:
                     response.Config = Config.ToJson();
                     break;
@@ -219,25 +153,28 @@ public sealed class MountManager : IControlHost
                 case ControlCommands.Reload:
                     Reload();
                     break;
-                case ControlCommands.Metrics:
-                    lock (_gate)
-                        response.Metrics = _instances.Where(i => request.Name == null || string.Equals(i.Name, request.Name, StringComparison.OrdinalIgnoreCase))
-                            .Select(i => i.GetMetrics(request.WindowSeconds)).ToList();
-                    break;
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
                     break;
                 case ControlCommands.Shutdown:
-                    // Respond first, then unmount and stop the host shortly after so the reply flushes.
+                    // Respond first, then stop the workers and the host shortly after so the reply
+                    // flushes: a worker that is told to stop unmounts in order.
                     System.Threading.Tasks.Task.Run(async () =>
                     {
                         await System.Threading.Tasks.Task.Delay(300);
-                        try { UnmountAll(); } catch { }
+                        try { _workers.StopAll(); } catch { }
                         _lifetime?.StopApplication();
                         if (_lifetime == null) Environment.Exit(0);
                     });
                     break;
                 default:
+                    // Everything about one instance's own state is answered by that instance's
+                    // process. This one knows where that is, so it says so rather than forwarding:
+                    // a front-end that asks here needs the address, not a second-hand copy of the
+                    // state it was after.
+                    if (InstanceCommands.Handles(request.Cmd))
+                        throw new InvalidOperationException(request.Cmd + " is answered by the instance's own " +
+                            "process, at " + WorkerPipe(request.Name));
                     throw new InvalidOperationException("unknown command: " + request.Cmd);
             }
         }
@@ -247,89 +184,51 @@ public sealed class MountManager : IControlHost
             response.Error = ex.Message;
         }
 
-        lock (_gate)
-        {
-            response.Mounts = _instances.Select(i => i.GetStatus()).ToList();
-            foreach (var profile in Config.Mounts.Where(p => response.Mounts.All(s => s.Name != p.Name)))
-            {
-                var layers = profile.GetLayers();
-                response.Mounts.Add(new MountStatus
-                {
-                    Name = profile.Name, Enabled = profile.Enabled, MountPoint = profile.MountPoint,
-                    SourceType = string.Join(" + ", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type).Distinct()),
-                    Url = string.Join("\n", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type == "dir" ? l.Source.Path : l.Source.Url)),
-                    Providers = layers.Where(l => l.Enabled).Select(l => new ProviderInfo { Name = l.Id, DisplayName = l.Name, Type = l.Type, Color = l.Color,
-                        Writable = l.Type == "overlay" || l.Type == "dir" && l.Source.Writable }).ToList()
-                });
-            }
-            foreach (var status in response.Mounts)
-                if (_errors.TryGetValue(status.Name, out var err)) status.Error = err;
-        }
+        response.Mounts = Statuses();
         return response;
     }
 
-    /// <summary>Where each instance is served, so a front-end can connect to it instead of asking
-    /// this process about it. An instance that is switched off is not here: it has no process of
-    /// its own, and it is in the configuration and in the status instead.</summary>
-    private List<InstanceEndpoint> Endpoints()
+    /// <summary>What the supervisor knows of each instance: what it is configured to be, and which
+    /// process is running it. Everything the instance itself knows — whether the mount came up,
+    /// what its layers are serving, how much its cache holds — belongs to that process, and a
+    /// front-end that shows both asks the worker for itself and puts the two together. What this
+    /// adds is the part only the supervisor has: that an instance exists at all when nothing is
+    /// running it, and why nothing is.</summary>
+    private List<MountStatus> Statuses()
     {
-        // Whatever the host is actually listening on; the configured name is the fallback for the
-        // window between loading the configuration and starting to serve.
-        string pipe = LocalPipe.Length > 0 ? LocalPipe : Config.ControlPipe;
-        lock (_gate)
-            return _instances.Select(instance => new InstanceEndpoint
+        var states = _workers.States();
+        var rows = new List<MountStatus>();
+        foreach (var profile in Config.Mounts)
+        {
+            var layers = profile.GetLayers();
+            var state = states.FirstOrDefault(s => string.Equals(s.Id, profile.Id, StringComparison.OrdinalIgnoreCase));
+            rows.Add(new MountStatus
             {
-                Id = instance.Profile.Id,
-                Name = instance.Name,
-                MountPoint = instance.MountPoint,
-                Pipe = pipe,
-                WorkerPid = Environment.ProcessId,
-                StartedUtc = StartedUtc
-            }).ToList();
+                Name = profile.Name,
+                Enabled = profile.Enabled,
+                Mounted = state?.Running == true,
+                MountPoint = profile.MountPoint,
+                SourceType = string.Join(" + ", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type).Distinct()),
+                Url = string.Join("\n", layers.Where(l => SourceRegistry.Contains(l.Type)).Select(l => l.Type == "dir" ? l.Source.Path : l.Source.Url)),
+                Providers = layers.Where(l => l.Enabled).Select(l => new ProviderInfo
+                {
+                    Name = l.Id, DisplayName = l.Name, Type = l.Type, Color = l.Color,
+                    Writable = l.Type == "overlay" || l.Type == "dir" && l.Source.Writable
+                }).ToList(),
+                WorkerPid = state?.Pid ?? 0,
+                Restarts = state?.Restarts ?? 0,
+                Error = state?.Error
+            });
+        }
+        return rows;
     }
 
-    private static string ProcessStartedAt()
-    {
-        try { return Process.GetCurrentProcess().StartTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture); }
-        catch (Exception) { return DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture); }
-    }
+    private string WorkerPipe(string? name) => _workers.States()
+        .FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.OrdinalIgnoreCase))?.Pipe ?? "its own pipe";
 
     // The instance a command names. A command about one instance that names none is refused
     // rather than answered about whichever instance happened to be first: every front-end names
     // one, and a caller that does not is asking a question this cannot answer correctly.
-    // Which instance a command is about: by its mount point for a command that carries a path,
-    // by name for one that names an instance.
-    private (MountInstance Instance, string Rel) Locate(ControlRequest request)
-    {
-        return InstanceCommands.ByPath(request.Cmd)
-            ? ResolvePath(request.Path)
-            : (Find(request.Name), string.Empty);
-    }
-
-    private MountInstance Find(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new InvalidOperationException("this command needs the instance it is about");
-        var instance = _instances.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase));
-        return instance ?? throw new InvalidOperationException("no such mount: " + name);
-    }
-
-    // Maps a full local path (e.g. D:\L10\sub\file.txt) to the owning mount instance and the path
-    // relative to its mount point.
-    private (MountInstance Instance, string Rel) ResolvePath(string? fullPath)
-    {
-        if (string.IsNullOrWhiteSpace(fullPath))
-            throw new InvalidOperationException("a path is required");
-
-        var full = Path.GetFullPath(fullPath).TrimEnd('\\');
-        lock (_gate)
-            foreach (var instance in _instances)
-                if (InstanceCommands.Under(instance, full) is { } rel)
-                    return (instance, rel);
-
-        throw new InvalidOperationException("path is not under any PolyMount mount point: " + full);
-    }
-
     private void Log(string message, Exception ex)
     {
         try
@@ -338,4 +237,8 @@ public sealed class MountManager : IControlHost
         }
         catch { }
     }
+
+    /// <summary>Stops the workers on the way out of the process. The jobs would take them down
+    /// anyway, but an ordered stop is what unmounts and closes the stores.</summary>
+    public void Dispose() => _workers.Dispose();
 }

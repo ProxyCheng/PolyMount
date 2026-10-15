@@ -69,6 +69,12 @@ public sealed class MountStatus
     public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
 
+    // What the supervisor knows about the process running this instance: which one it is (0 when
+    // none is), and how many times it has had to be started again. The instance's own numbers are
+    // the worker's to report, and these two are the supervisor's.
+    public int WorkerPid { get; set; }
+    public int Restarts { get; set; }
+
     // Whether a recording channel is attached to this instance right now, so a front-end can
     // show it without asking a second question.
     public bool Recording { get; set; }

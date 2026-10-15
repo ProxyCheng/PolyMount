@@ -22,8 +22,8 @@ $serviceExe = Join-Path $serviceDir 'PolyMount.Service.exe'
 $trayExe = Join-Path $trayDir 'PolyMount.Tray.exe'
 $installed = Get-Service -Name 'PolyMount' -ErrorAction SilentlyContinue
 
-function Send-Control([string]$Command) {
-    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+function Send-Control([string]$Command, [string]$TargetPipe = $PipeName) {
+    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $TargetPipe, [System.IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(1000)
         $writer = New-Object System.IO.StreamWriter($pipe, (New-Object System.Text.UTF8Encoding($false)))
@@ -47,23 +47,35 @@ function Start-PolyMount {
         Start-Process -FilePath $serviceExe -WorkingDirectory $serviceDir -WindowStyle Hidden | Out-Null
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
-    $response = $null
+    $pending = @()
     $ready = $false
+    $lastError = 'no answer from the control pipe'
     do {
         try {
+            # Two questions, because they are two processes: the supervisor knows which instance is
+            # running and where it is served, and the instance's own worker is the one that knows
+            # whether its mount came up. Nothing is forwarded between them.
             $response = Send-Control 'status'
-            $waiting = @($response.Mounts | Where-Object { $_.Enabled -and -not $_.Mounted -and -not $_.Error })
-            $ready = $waiting.Count -eq 0
+            $instances = @(Send-Control 'instances').Instances
+            $pending = @($response.Mounts | Where-Object { $_.Enabled -and -not $_.Mounted })
+            foreach ($instance in $instances) {
+                $worker = Send-Control 'status' $instance.Pipe
+                $mount = @($worker.Mounts | Where-Object { $_.Name -eq $instance.Name })
+                if ($mount.Count -ne 1) { $pending += $instance; $lastError = "instance '$($instance.Name)' answered with no status for itself" }
+                elseif (-not $mount[0].Mounted -or $mount[0].Error) { $pending += $mount[0]; $lastError = "instance '$($instance.Name)': $($mount[0].Error)" }
+                else { $lastError = 'all instances answered' }
+            }
+            $ready = $pending.Count -eq 0
         }
-        catch { $ready = $false }
+        catch { $ready = $false; $pending = @(); $lastError = $_.Exception.Message }
         if (-not $ready) { Start-Sleep -Milliseconds 500 }
     } while (-not $ready -and [DateTime]::UtcNow -lt $deadline)
-    if (-not $response) { throw 'Service did not become ready within 60 seconds. Check its log.' }
-    if (-not $ready) { throw 'Service is responding, but mounts did not become ready within 60 seconds. Check its log.' }
+    if (-not $response) { throw "Service did not become ready within 60 seconds: $lastError. Check its log." }
+    if (-not $ready) { throw "Service is responding, but mounts did not become ready within 60 seconds: $lastError. Check its log." }
     Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
     foreach ($mount in $response.Mounts) {
         if ($mount.Error) { Write-Warning "Mount '$($mount.Name)': $($mount.Error)" }
-        else { Write-Host "  $($mount.Name): mounted=$($mount.Mounted), $($mount.MountPoint)" }
+        else { Write-Host "  $($mount.Name): mounted=$($mount.Mounted), $($mount.MountPoint), worker pid $($mount.WorkerPid)" }
     }
 }
 
@@ -92,7 +104,7 @@ try {
         try { Send-Control 'shutdown' | Out-Null }
         catch {
             if ($installed) { Stop-Service -Name 'PolyMount' }
-            else { throw 'Service did not accept graceful shutdown; update cancelled. Check the control pipe.' }
+            else { throw "Service did not accept graceful shutdown ($($_.Exception.Message)); update cancelled." }
         }
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while ((Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
