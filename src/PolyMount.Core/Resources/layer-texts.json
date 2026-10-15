@@ -44,6 +44,10 @@
   "prediction.retention": { "en": "Forget after (minutes)", "zh-CN": "遗忘时限（分钟）" },
   "prediction.retention.description": { "en": "A transition not seen for this long is dropped, so a sequence the loader has moved on from stops being predicted. 0 keeps transitions until the capacity bound recycles them.", "zh-CN": "超过该时间未被观察到的转移会被丢弃，避免加载器已经不再使用的旧顺序一直被预测并向后传递。0 表示只按容量上限回收。" },
   "prediction.outcome.wasted": { "en": "wasted", "zh-CN": "失配" },
+  "prediction.successors": { "en": "Successors per path", "zh-CN": "每个路径的后继数" },
+  "prediction.successors.description": { "en": "How many distinct successors one path may accumulate, ranked by how often each was seen. A single slot would let one divergence replace the evidence for everything before it.", "zh-CN": "一个路径最多记多少个不同后继，按各自被观察到的次数排序。只留一个槽位的话，一次分歧就会把它之前积累的证据全部覆盖掉。" },
+  "prediction.confidence": { "en": "Minimum confidence (%)", "zh-CN": "最低置信度（%）" },
+  "prediction.confidence.description": { "en": "Share of a path's observations its leading successor must hold before it is read ahead. Reading ahead spends real source bandwidth, so a coin flip is not worth it.", "zh-CN": "领头后继需要占该路径全部观察的多少比例才会被预载。预载要花真实的源带宽，抛硬币级别的把握不值得。" },
   "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" },
   "preset.local-directory.title": { "en": "Local directory + overlay + memory cache", "zh-CN": "本地目录 + 本地修改 + 内存缓存" }
 }

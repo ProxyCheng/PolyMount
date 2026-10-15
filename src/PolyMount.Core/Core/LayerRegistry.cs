@@ -42,7 +42,11 @@ public static class LayerRegistry
                     new() { Path = "Parameters.MaxFileBytes", Kind = LayerFieldKind.Integer, Scale = 1048576, Minimum = 1, Maximum = 256,
                         DefaultValue = "8", Title = LayerTexts.Get("prediction.filebytes"), Description = LayerTexts.Get("prediction.filebytes.description") },
                     new() { Path = "Parameters.RetentionMinutes", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 10080,
-                        DefaultValue = "60", Title = LayerTexts.Get("prediction.retention"), Description = LayerTexts.Get("prediction.retention.description") }
+                        DefaultValue = "60", Title = LayerTexts.Get("prediction.retention"), Description = LayerTexts.Get("prediction.retention.description") },
+                    new() { Path = "Parameters.MaxSuccessors", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 16,
+                        DefaultValue = "4", Title = LayerTexts.Get("prediction.successors"), Description = LayerTexts.Get("prediction.successors.description") },
+                    new() { Path = "Parameters.MinConfidencePercent", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 100,
+                        DefaultValue = "60", Title = LayerTexts.Get("prediction.confidence"), Description = LayerTexts.Get("prediction.confidence.description") }
                 } });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
@@ -76,6 +80,8 @@ public static class LayerRegistry
         baseline.MaxInFlight = Number(config, "MaxInFlight", baseline.MaxInFlight);
         baseline.MaxTransitions = Number(config, "MaxTransitions", baseline.MaxTransitions);
         baseline.RetentionMs = Number(config, "RetentionMinutes", baseline.RetentionMs / 60000) * 60000;
+        baseline.MaxSuccessorsPerKey = Number(config, "MaxSuccessors", baseline.MaxSuccessorsPerKey);
+        baseline.MinConfidence = Number(config, "MinConfidencePercent", (int)Math.Round(baseline.MinConfidence * 100)) / 100.0;
         if (config.Parameters.TryGetValue("MaxFileBytes", out var bytes) && bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
             baseline.MaxFileBytes = bytes.GetInt64() * 1048576;
         return baseline;

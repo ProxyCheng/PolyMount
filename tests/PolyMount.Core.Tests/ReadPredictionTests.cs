@@ -8,15 +8,48 @@ namespace PolyMount.Core.Tests;
 public sealed class ReadPredictionTests
 {
     [TestMethod]
-    public void Replacing_an_edge_at_capacity_preserves_unrelated_transitions()
+    public async Task A_divergent_successor_does_not_erase_the_established_one()
     {
         using var temp = new TempDir();
-        using var prediction = new ReadPrediction(new VirtualFileSystem(Array.Empty<ILayer>()),
-            new ReadPredictionOptions { MaxTransitions = 3 }, temp.Sub("capacity.json"));
-        foreach (var path in new[] { "a", "b", "c", "a" }) using (prediction.Demand(path)) { }
-        Assert.AreEqual(3, prediction.LearnedTransitions);
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "a", "b", "c" }) source.AddFile(name, name);
+        var predicted = new List<string>();
+        using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+            new ReadPredictionOptions(), temp.Sub("divergence.json"),
+            path => { lock (predicted) predicted.Add(path); });
+
+        // a -> b five times, then one divergence to c. Keeping a single slot per path would
+        // let that one divergence discard the five observations behind b.
+        for (int i = 0; i < 5; i++) { using (prediction.Demand("a")) { } using (prediction.Demand("b")) { } }
+        using (prediction.Demand("a")) { }
         using (prediction.Demand("c")) { }
-        Assert.AreEqual(3, prediction.LearnedTransitions, "Replacing a recorded edge does not need eviction");
+        Assert.AreEqual(3, prediction.LearnedTransitions, "both successors of a are kept");
+
+        lock (predicted) predicted.Clear();
+        using (prediction.Demand("a")) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline) { lock (predicted) if (predicted.Count > 0) break; await Task.Delay(25); }
+        lock (predicted) Assert.AreEqual("b", predicted.FirstOrDefault(), "the well-evidenced successor still leads");
+    }
+
+    [TestMethod]
+    public async Task A_coin_flip_successor_is_not_read_ahead()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "a", "b", "c" }) source.AddFile(name, name);
+        var predicted = new List<string>();
+        using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+            new ReadPredictionOptions(), temp.Sub("coinflip.json"),
+            path => { lock (predicted) predicted.Add(path); });
+
+        // Two successors seen once each: no leader worth spending source bandwidth on.
+        using (prediction.Demand("a")) { } using (prediction.Demand("b")) { }
+        using (prediction.Demand("a")) { } using (prediction.Demand("c")) { }
+        lock (predicted) predicted.Clear();
+        using (prediction.Demand("a")) { }
+        await Task.Delay(600);
+        lock (predicted) Assert.AreEqual(0, predicted.Count, "a tied successor is a coin flip, not a prediction");
     }
 
     [TestMethod]
