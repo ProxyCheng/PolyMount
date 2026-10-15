@@ -97,17 +97,29 @@ public sealed class VirtualFileSystem
         if (path.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
         return false;
     }
-    public bool TryLookup(string path, out VfsEntry entry)
+    /// <summary>Resolves a file or a folder for whoever asked. <paramref name="recordAccess"/> is
+    /// set by the mount adapter, where this is the request being served: listing and opening were
+    /// counted, so an attribute query that reaches the source was the one resolution whose wait
+    /// nothing reported. The VFS's own consistency checks during a mutation call the default and
+    /// are not reads.</summary>
+    public bool TryLookup(string path, out VfsEntry entry, bool recordAccess = false)
     {
         using var request = RequestDiagnostics.Begin("VFS.Lookup", path, Diagnostics);
         path = VfsPath.Normalize(path);
         if (_openFiles.TryGetValue(path, out var open) && open.TryGetHeader(VfsPath.Name(path), out entry))
         {
+            if (recordAccess) Metrics?.RecordRead(open.LayerName, TimeSpan.Zero, entry.Size);
             return true;
         }
         request?.Stage("resolving metadata");
         entry = null!;
-        return Visible(path) && ResolveHeader(path, out entry, out _);
+        // A lookup no layer answered has no layer to charge, and is left out.
+        int index = _layers.Count;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        bool found = Visible(path) && ResolveHeader(path, out entry, out index);
+        if (recordAccess && index < _layers.Count)
+            Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
+        return found;
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
     /// <summary>Read either payload kind through the same object-loading boundary.</summary>

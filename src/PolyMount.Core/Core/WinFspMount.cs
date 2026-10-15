@@ -67,7 +67,7 @@ public sealed class WinFspMount : FileSystemBase
         using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
         fileAttributes = 0;
         securityDescriptor = null;
-        if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry)) return NtStatus.ObjectNameNotFound;
+        if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
         fileAttributes = entry.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL;
         return NtStatus.Success;
     }
@@ -196,7 +196,7 @@ public sealed class WinFspMount : FileSystemBase
             fileInfo = BuildDirInfo(node.Rel);
             return NtStatus.Success;
         }
-        if (!_vfs.TryLookup(node.Rel, out var entry)) return NtStatus.ObjectNameNotFound;
+        if (!_vfs.TryLookup(node.Rel, out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
         fileInfo = BuildEntryInfo(entry, node.Rel);
         return NtStatus.Success;
     }
@@ -337,7 +337,7 @@ public sealed class WinFspMount : FileSystemBase
                 request?.Stage($"pattern='{pattern}' marker='{marker}' resolving query");
                 if (exactName)
                 {
-                    items = _vfs.TryLookup(VfsPath.Child(node.Rel, pattern), out var match)
+                    items = _vfs.TryLookup(VfsPath.Child(node.Rel, pattern), out var match, recordAccess: true)
                         ? new List<VfsEntry> { match } : new List<VfsEntry>();
                 }
                 else
@@ -396,7 +396,7 @@ public sealed class WinFspMount : FileSystemBase
         try
         {
             using var request = BeginRequest("WinFsp.GetDirInfoByName", VfsPath.Child(node.Rel, fileName), node.ProcessId);
-            if (!_vfs.TryLookup(VfsPath.Child(node.Rel, fileName), out var entry)) return NtStatus.ObjectNameNotFound;
+            if (!_vfs.TryLookup(VfsPath.Child(node.Rel, fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
             normalizedName = entry.Name;
             fileInfo = BuildEntryInfo(entry, VfsPath.Child(node.Rel, entry.Name));
             return NtStatus.Success;

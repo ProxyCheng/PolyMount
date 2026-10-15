@@ -94,4 +94,21 @@ public sealed class ConcurrentObjectTests
         Assert.AreEqual(2, usage.DurableObjects);
         Assert.IsTrue(usage.DiskBytes >= usage.ObjectBytes);
     }
+
+    [TestMethod]
+    public void A_metadata_lookup_is_a_read_but_a_mutation_check_is_not()
+    {
+        using var temp = new TempDir();
+        var profile = new MountProfile { Name = "test", StoreRoot = temp.Sub("store"), Layers = new() { new() { Id = "overlay", Type = "overlay" } } };
+        using var mount = new MountInstance(profile);
+        using (var writer = mount.Vfs.OpenWrite("file", true, out _)) writer.Write("content"u8);
+        // Creating a file looks up its parent for its own reasons; that is not a request.
+        Assert.AreEqual(0L, mount.GetMetrics(60).TotalReads);
+        // A metadata query names a file or a folder, and is the read a listing and an open were
+        // already counted as: it reaches the source and pays for it.
+        Assert.IsTrue(mount.Vfs.TryLookup("file", out _, recordAccess: true));
+        Assert.AreEqual(1L, mount.GetMetrics(60).TotalReads);
+        Assert.IsTrue(mount.Vfs.TryLookup("file", out _));
+        Assert.AreEqual(1L, mount.GetMetrics(60).TotalReads);
+    }
 }
