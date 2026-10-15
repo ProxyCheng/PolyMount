@@ -66,4 +66,25 @@ public sealed class CacheStorageCheckTests
         Assert.IsFalse(cache.TryOpenRead("file", out _, out _));
         Assert.IsFalse(cache.TryGetEntry("file", out _));
     }
+
+    [TestMethod]
+    public void Metadata_lookups_do_not_revalidate_storage_each_time()
+    {
+        using var temp = new TempDir();
+        var store = new ObjectDatabase(temp.Sub("objects"), false);
+        store.Apply(new[] { new ObjectChange("", VirtualObject.Directory("", Array.Empty<VfsEntry>())) });
+        // The shape that made this matter: listing a directory spends one lookup per child per
+        // layer above the provider, so a storage check on every lookup serialises enumeration
+        // behind a filesystem round trip.
+        const int lookups = 2000;
+        for (int i = 0; i < lookups; i++) store.TryGet("missing-" + i, out _);
+        var profile = store.GetStorageUsage().Lookups;
+        Assert.IsNotNull(profile);
+        Assert.AreEqual((long)lookups, profile!.Calls);
+        Assert.IsTrue(profile.ExistsChecks >= 1, "A lookup never checked whether the store was still there");
+        // The bound leaves room for a check per second should this machine take that long over
+        // the loop; what it rules out is the check being tied to the lookup count.
+        Assert.IsTrue(profile.ExistsChecks <= lookups / 100,
+            $"{profile.ExistsChecks} storage checks for {lookups} lookups");
+    }
 }

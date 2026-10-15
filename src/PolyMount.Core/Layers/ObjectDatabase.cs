@@ -31,7 +31,8 @@ internal sealed class ObjectDatabase
     private long _storageCheckedAt;
     // Lookup cost, split by phase. Written under _gate, where the phases happen, so the
     // counters need no atomics of their own.
-    private long _lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs, _lookupLoadUs, _lookupMaxUs;
+    private long _lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs, _lookupExistsChecks,
+        _lookupLoadUs, _lookupMaxUs;
     public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null,
         long metadataBudget = CacheBudgets.MetadataBytes)
     {
@@ -95,7 +96,7 @@ internal sealed class ObjectDatabase
             return new(Interlocked.Read(ref _diskBytes), _records.Values.Sum(r => r.StoredBytes),
                 _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir),
                 Lookups: new LookupProfile(_lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs,
-                    _lookupLoadUs, _lookupMaxUs));
+                    _lookupExistsChecks, _lookupLoadUs, _lookupMaxUs));
         }
     }
 
@@ -129,6 +130,7 @@ internal sealed class ObjectDatabase
         if (now - Interlocked.Read(ref _storageCheckedAt) < StorageCheckMs) return;
         // Several threads may pass the check at once; each is one round trip, not a stampede.
         Interlocked.Exchange(ref _storageCheckedAt, now);
+        _lookupExistsChecks++;
         EnsureAvailable();
     }
     public bool TryGet(string key, out VirtualObject value)
