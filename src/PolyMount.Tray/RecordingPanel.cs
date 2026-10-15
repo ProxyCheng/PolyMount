@@ -334,6 +334,7 @@ internal sealed class RecordingPanel : QWidget
             : _startError.Length > 0 ? T("record.start.failed") + _startError
             : pulse?.Error is { Length: > 0 } error ? T("record.state.unreachable") + " · " + error
             : pulse?.Note is { Length: > 0 } recorded ? T("record.note") + recorded
+            : pulse != null && pulse.DroppedEvents > 0 ? I18n.F("record.dropped.warning", Count(pulse.DroppedEvents))
             : _session != null ? T("record.hint")
             : _elsewhere != null ? I18n.F("record.elsewhere", ElapsedSince(_elsewhere), ByteUnits.Format(_elsewhere.Bytes))
             : "";
@@ -359,8 +360,14 @@ internal sealed class RecordingPanel : QWidget
         // A recording this panel is not part of has no figures here at all, and saying so is the
         // whole of what this line can honestly report about it.
         if (pulse == null) return T("record.evidence.elsewhere");
+        // A recording that lost events is not the complete record it looks like, and the count of
+        // what it lost belongs next to the claim rather than in a field of the bundle: the reader
+        // should not have to go looking for the reason its numbers are low.
+        string lost = pulse.DroppedEvents == 0 ? ""
+            : " · " + I18n.F("record.evidence.dropped", Count(pulse.DroppedEvents));
+        _evidence.SetStyleSheet(pulse.DroppedEvents > 0 ? "color:#dc2626;" : "color:#718096;");
         return I18n.F("record.evidence.line", status, ByteUnits.Format(pulse.RequestBytes), Count(pulse.RequestLines),
-            ByteUnits.Format(pulse.ServiceBytes), Count(pulse.SampleRows), Count(pulse.SecondRows));
+            ByteUnits.Format(pulse.ServiceBytes), Count(pulse.SampleRows), Count(pulse.SecondRows)) + lost;
     }
 
     /// <summary>The recording so far, layer by layer — the whole-session view the 60 second table

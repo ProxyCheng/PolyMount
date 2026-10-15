@@ -1062,6 +1062,7 @@
     </message>
     <message><source>mount.record</source><translation>录制…</translation></message>
     <message><source>record.active.tip</source><translation>此实例正在录制，点击回到录制界面</translation></message>
+    <message><source>record.dropped.warning</source><translation>这次录制丢了 {0} 条事件：计数与耗时都按比例偏低，不能当作全量。缩短录制区间、或降低并发负载后重录一次可以得到完整的包。</translation></message>
     <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。趋势图仍是最近 60 秒，全程数据在证据包里。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>
@@ -1075,6 +1076,7 @@
     <message><source>record.state.idle</source><translation>未在录制</translation></message>
     <message><source>record.state.elsewhere</source><translation>服务端已有录制</translation></message>
     <message><source>record.evidence.line</source><translation>状态 {0} · 请求通道 {1} / {2} 行 · 服务日志 {3} · 逐层每秒采样 {4} 行 · 每秒机器状态 {5} 行</translation></message>
+    <message><source>record.evidence.dropped</source><translation> · 通道丢弃 {0} 条</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>服务端这一段录制由别处发起，本面板只显示它的规模。</translation></message>
     <message><source>mount.performance.tip</source><translation>这个实例的实时性能（最近 60 秒的趋势、逐层命中与访问开销）</translation></message>
     <message><source>mount.performance.recording</source><translation>性能 · 录制中</translation></message>

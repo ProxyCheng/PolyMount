@@ -70,6 +70,10 @@ internal sealed class RecordingRecord
     public long DroppedEvents { get; init; }
     /// <summary>The recording stopped at its own ceiling, so it is not the whole story.</summary>
     public bool Truncated { get; init; }
+    /// <summary>Whether this is the whole story: no known gap, not cut short, and nothing the
+    /// channel itself had to drop. Three fields that all had to be checked before this existed,
+    /// and the one conclusion a reader has to reach first.</summary>
+    public bool Complete { get; init; }
     /// <summary>Where the service wrote the session the front-end read from.</summary>
     public string ServiceDirectory { get; init; } = "";
     public string ServiceInstanceId { get; init; } = "";

@@ -109,6 +109,7 @@ internal sealed class RecordingSubmission
             SampleTicks = Seconds.Count,
             DroppedEvents = Channel.DroppedEvents,
             Truncated = State == nameof(RecordingState.Truncated),
+            Complete = Gaps.Count == 0 && State != nameof(RecordingState.Truncated) && Channel.DroppedEvents == 0,
             ServiceDirectory = Channel.Directory,
             Restarts = Channel.Restarts,
             Sources = Sources.ToList(),

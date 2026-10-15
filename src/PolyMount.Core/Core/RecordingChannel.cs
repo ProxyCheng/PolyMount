@@ -31,25 +31,26 @@ public sealed class RecordingChannel : IDisposable
     /// front-end keeps, so there is one limit to explain rather than two.</summary>
     public const long SessionBytes = 2L * 1024 * 1024 * 1024;
 
-    /// <summary>How many events may be queued before the sink writes them. Sixteen times the
-    /// sampled channel's: what a recording may not do is lose lines, and the first measurement
-    /// above dropped 1180 of 1.67 million at the smaller size. Still a queue rather than a block
-    /// — backpressure would slow the very requests being measured — so drops remain possible,
-    /// which is why they are counted and reported.</summary>
-    public const int BufferSize = 65536;
+    /// <summary>How many events may be queued before the sink writes them. Thirty-two times the
+    /// sampled channel's. What a recording may not do is lose lines, and the first measurement
+    /// dropped 1180 of 1.67 million at 4096 — then a third of a much larger one, until the lock on
+    /// the write path came off. Still a queue rather than a block: backpressure would slow the very
+    /// requests being measured, so drops remain possible and are counted and reported.</summary>
+    public const int BufferSize = 131072;
 
     /// <summary>Identifies this service process, so a front-end can tell a service restart from
     /// an instance reload.</summary>
     public static readonly string ServiceInstanceId = Guid.NewGuid().ToString("N");
 
-    /// <summary>Serializes every recorded write against the detach that disposes the sink. A
-    /// writer that saw <see cref="Attached"/> and then waits here finds no logger and does
-    /// nothing, so no request thread can ever write into a disposed sink. Lock order is the
-    /// tracer's flush gate and then this one, never the other way round.</summary>
+    /// <summary>Serializes the control plane — attach, detach, the capacity check — and nothing on
+    /// the request path: see <see cref="Write"/> for why that distinction matters.</summary>
     private readonly object _gate = new();
     private readonly string _root;
     private readonly AsyncLogMonitor _monitor = new();
     private Logger? _logger;
+    /// <summary>How many writers are inside the sink at this moment, so a detach can wait for them
+    /// instead of racing them.</summary>
+    private int _writers;
     private volatile bool _attached;
     private bool _disposed;
     private string _sessionId = "", _directory = "", _label = "", _mount = "";
@@ -105,38 +106,57 @@ public sealed class RecordingChannel : IDisposable
     }
 
     /// <summary>Detaches and closes the session. Idempotent, and safe to call while requests are
-    /// still running.</summary>
+    /// still running. When it returns, everything written before it was called is on disk: the
+    /// front-end copies the file the moment it gets this answer, so that has to be a fact rather
+    /// than a hope.</summary>
     public RecordingSessionInfo Stop(string reason)
     {
-        Logger? logger = null;
+        Logger? logger;
         lock (_gate)
         {
-            if (_attached)
-            {
-                _attached = false;
-                Volatile.Write(ref _startedTicks, 0);
-                _stopReason = reason;
-                _stoppedUtc = DateTime.UtcNow;
-                logger = _logger;
-                _logger = null;
-            }
+            if (!_attached) return Info();
+            _attached = false;
+            Volatile.Write(ref _startedTicks, 0);
+            _stopReason = reason;
+            _stoppedUtc = DateTime.UtcNow;
+            logger = _logger;
+            _logger = null;
         }
-        if (logger != null)
-        {
-            // Outside the gate: draining the queue can take a moment, and no writer can reach the
-            // sink any more, so request threads have no reason to wait behind it.
-            try { logger.Dispose(); }
-            catch (Exception ex) { _error = ex.Message; }
-        }
+        // No new writer can find the sink now. The ones already inside it are counted, and waiting
+        // them out is what makes the drain below complete rather than nearly complete.
+        WaitForWriters();
+        try { logger?.Dispose(); } // Serilog drains the async queue here.
+        catch (Exception ex) { _error = ex.Message; }
         return Info();
     }
 
-    /// <summary>Writes one event to the recording when one is attached. Called from the request
-    /// path: it must not throw, and it blocks no longer than one queue enqueue.</summary>
+    /// <summary>Waits out the writers that were already in the sink when it was detached. One write
+    /// is a format and an enqueue, so this is normally no wait at all; the bound is there so taking
+    /// a recording down can never be held hostage by a thread that is somehow stuck.</summary>
+    private void WaitForWriters()
+    {
+        var deadline = Environment.TickCount64 + 2000;
+        while (Volatile.Read(ref _writers) > 0 && Environment.TickCount64 < deadline) Thread.Sleep(1);
+    }
+
+    /// <summary>Writes one event to the recording when one is attached. Called once per event per
+    /// scope, so it must not be a place where request threads meet each other: taking the control
+    /// gate here serialized every writer behind one another, which cost twice over. The sink could
+    /// not take events in as fast as they arrived, so its queue overflowed and dropped a third of
+    /// them; and a scope emits its own BEGIN inside the window it is measuring, so every request
+    /// was billing the time it spent waiting for that lock to itself — the 150x inflation a real
+    /// recording showed against a snapshot for the same path.
+    ///
+    /// The sink is read once and swapped out only by the control plane, and a detach waits for the
+    /// writers it can still count rather than disposing under them.</summary>
     internal void Write(LogEventLevel level, string template, object?[] args)
     {
-        if (!_attached) return;
-        lock (_gate) _logger?.Write(level, template, args);
+        var logger = Volatile.Read(ref _logger);
+        if (logger == null) return;
+        Interlocked.Increment(ref _writers);
+        try { logger.Write(level, template, args); }
+        catch (Exception) { /* a channel being taken down must never break the request carrying it */ }
+        finally { Interlocked.Decrement(ref _writers); }
     }
 
     /// <summary>Called once a second by the tracer's flush. A recording that reached its ceiling

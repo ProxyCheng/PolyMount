@@ -1062,6 +1062,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message><source>mount.record</source><translation>Record…</translation></message>
     <message><source>record.active.tip</source><translation>This instance is being recorded; click to return to the recording</translation></message>
+    <message><source>record.dropped.warning</source><translation>This recording lost {0} events: its counts and timings are both low by that proportion, so it is not the complete record. A shorter window, or less parallel load, will produce a complete one.</translation></message>
     <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The charts stay the last 60 seconds; the whole recording is in the bundle.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
@@ -1075,6 +1076,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.state.idle</source><translation>Not recording</translation></message>
     <message><source>record.state.elsewhere</source><translation>The service is recording</translation></message>
     <message><source>record.evidence.line</source><translation>state {0} · request channel {1} / {2} lines · service log {3} · {4} per-second sample rows · {5} machine-state rows</translation></message>
+    <message><source>record.evidence.dropped</source><translation> · {0} events dropped by the channel</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>Another front-end started this recording, so this panel reports only its size.</translation></message>
     <message><source>mount.performance.tip</source><translation>This instance's live performance: the last 60 seconds by layer, their share and their access cost</translation></message>
     <message><source>mount.performance.recording</source><translation>Performance · recording</translation></message>

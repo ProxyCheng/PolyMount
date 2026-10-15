@@ -133,6 +133,75 @@ public sealed class RecordingChannelTests
         channel.Stop("stopped");
     }
 
+
+    /// <summary>Everything written before the stop is on disk when it returns, under concurrent
+    /// writers: the front end copies the file the moment it gets that answer, so it has to be a
+    /// fact rather than a hope.</summary>
+    [TestMethod]
+    public void A_recording_drains_every_line_before_stop_returns()
+    {
+        using var temp = new TempDir();
+        string sampled = Path.Combine(temp.Path, "requests.log");
+        var channel = new RecordingChannel(temp.Sub("recording"));
+        using var diagnostics = new RequestDiagnostics(sampled) { Channel = channel };
+        channel.Start("test", "recording");
+        var failures = Run(8, () => WriteEvents(diagnostics, 400), stopAfter: false);
+        var stopped = channel.Stop("stopped");
+        if (failures.Count > 0) Assert.Fail("a write threw: " + failures[0]);
+        Assert.AreEqual(0, stopped.DroppedEvents, "the queue dropped events it had room for");
+        // Each write of the helper is one root scope plus `each` probes under it, and a scope is
+        // two lines: BEGIN and END.
+        Assert.AreEqual(8L * (400 + 1) * 2, LineCount(stopped),
+            "the lines written before the stop are not all in the file when it returns");
+    }
+
+    /// <summary>Taking a recording down while requests are still writing: no write may throw, and
+    /// nothing may reach the file afterwards. How far the writers got is a race, so it is not
+    /// asserted — that a stopped channel stays stopped is.</summary>
+    [TestMethod]
+    public void A_recording_taken_down_under_load_keeps_writing_threads_safe()
+    {
+        using var temp = new TempDir();
+        string sampled = Path.Combine(temp.Path, "requests.log");
+        var channel = new RecordingChannel(temp.Sub("recording"));
+        using var diagnostics = new RequestDiagnostics(sampled) { Channel = channel };
+        channel.Start("test", "recording");
+        var failures = Run(8, () => WriteEvents(diagnostics, 400), stopAfter: true, channel);
+        var stopped = channel.Info();
+        if (failures.Count > 0) Assert.Fail("a write threw while the recording was stopped: " + failures[0]);
+        Assert.IsFalse(stopped.Active);
+        Assert.AreEqual("stopped", stopped.StoppedReason);
+        Assert.AreEqual(LineCount(stopped), LineCount(channel.Info()), "a detached channel wrote more lines");
+        WriteEvents(diagnostics, 50);
+        Assert.AreEqual(LineCount(stopped), LineCount(channel.Info()), "a detached channel took writes again");
+    }
+
+    /// <summary>Writes from several threads at once, optionally taking the recording down while they
+    /// are still going, and returns whatever threw.</summary>
+    private static List<Exception> Run(int threads, Action write, bool stopAfter, RecordingChannel? channel = null)
+    {
+        var failures = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        var writers = new List<Thread>();
+        using var barrier = new Barrier(threads);
+        for (int i = 0; i < threads; i++)
+        {
+            var writer = new Thread(() =>
+            {
+                try
+                {
+                    barrier.SignalAndWait();
+                    write();
+                }
+                catch (Exception ex) { failures.Enqueue(ex); }
+            });
+            writer.Start();
+            writers.Add(writer);
+        }
+        if (stopAfter) channel!.Stop("stopped");
+        foreach (var writer in writers) writer.Join();
+        return failures.ToList();
+    }
+
     private static void WriteEvents(RequestDiagnostics diagnostics, int count)
     {
         using var root = RequestDiagnostics.Begin("VFS.List", "path", diagnostics);
