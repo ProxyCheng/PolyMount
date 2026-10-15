@@ -38,6 +38,11 @@ internal sealed class RecordingPanel : QWidget
     private DateTime _nextProbe, _next;
     private RecordingPulse? _latest;
     private string _lastSaved = "", _startError = "", _transient = "";
+    /// <summary>The edges of the recordings this panel has run, for the charts to draw. They carry
+    /// a timestamp like a sample does, so they travel with the curve and leave the window on their
+    /// own; a mark that has scrolled out is of no use to anyone, so only the last few are kept.</summary>
+    private readonly List<PerformanceChart.ChartMarker> _marks = new();
+    private bool _markPending;
     private string _saveDirectory = StatsExport.LoadDirectory();
     /// <summary>Set by a smoke run: the panel then never opens a dialog.</summary>
     internal bool Quiet;
@@ -132,6 +137,35 @@ internal sealed class RecordingPanel : QWidget
     /// before it decides how to read a second of its own.</summary>
     internal bool Recording => _session != null;
 
+    /// <summary>Where the recordings began and ended, as moments on the timeline.</summary>
+    internal IReadOnlyList<PerformanceChart.ChartMarker> Marks => _marks;
+
+    /// <summary>Raised when a mark is added, so the charts take it up at once rather than at the
+    /// next second's sample.</summary>
+    internal Action? MarksChanged;
+
+    /// <summary>Marks a recording's edge. One mark per edge: a start without an end is a recording
+    /// still running, and the end is written by whichever of the ways to end it happens first.</summary>
+    private void Mark(string labelKey, string color)
+    {
+        _marks.Add(new PerformanceChart.ChartMarker(DateTime.UtcNow, labelKey, color));
+        if (_marks.Count > 4) _marks.RemoveAt(0);
+        MarksChanged?.Invoke();
+    }
+
+    private void MarkStart()
+    {
+        _markPending = true;
+        Mark("record.marker.start", "#dc2626");
+    }
+
+    private void MarkEnd()
+    {
+        if (!_markPending) return;
+        _markPending = false;
+        Mark("record.marker.stop", "#64748b");
+    }
+
     /// <summary>Grabs the panel on its own, for the smoke run's screenshots.</summary>
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
@@ -161,6 +195,7 @@ internal sealed class RecordingPanel : QWidget
             _session = RecordingSession.Start(_name);
             RecordingSessions.Track(_session);
             _elsewhere = null;
+            MarkStart();
             // The panel's own view is a 60 second window; a recording is the whole of it, so the
             // reader should never have to wonder which window the charts are showing.
             _next = DateTime.MinValue;
@@ -240,6 +275,7 @@ internal sealed class RecordingPanel : QWidget
         try
         {
             var outcome = task.GetAwaiter().GetResult();
+            MarkEnd();
             _lastSaved = outcome.Directory;
             _session?.ReleaseWorkingCopy();
             _transient = I18n.F("record.save.done", outcome.Directory);
@@ -260,6 +296,7 @@ internal sealed class RecordingPanel : QWidget
                 T("record.discard.confirm"), T("cancel"), null, 1, 1) != 0) return;
         session.Discard();
         RecordingSessions.Forget(session);
+        MarkEnd();
         _session = null;
         _latest = null;
         _transient = T("record.discarded");
@@ -305,6 +342,7 @@ internal sealed class RecordingPanel : QWidget
                 RecordingState.Truncated => "record.state.truncated",
                 _ => "record.state.stopped"
             };
+        if (pulse?.State is RecordingState.Stopped or RecordingState.Truncated) MarkEnd();
         _state.SetText(T(state) + " · " + _name);
         _lamp.SetMode(pulse?.State == RecordingState.Recording || _elsewhere != null
             ? RecordingLamp.LampMode.Live : RecordingLamp.LampMode.Idle);
@@ -527,6 +565,11 @@ internal sealed class RecordingPanel : QWidget
         }
         if (_session != null || !_start.IsEnabled())
             throw new InvalidOperationException("The recording did not go back to idle");
+        // Both edges of the recording belong on the timeline, in the order they happened.
+        if (_marks.Count < 2 || _marks[^2].LabelKey != "record.marker.start" || _marks[^1].LabelKey != "record.marker.stop")
+            throw new InvalidOperationException($"A recording's start and end left {_marks.Count} marks on the timeline");
+        if (_marks[^1].Time < _marks[^2].Time)
+            throw new InvalidOperationException("A recording ended before it began");
     }
 
     /// <summary>Self-check for a smoke run. A recording with no service cannot produce a second of

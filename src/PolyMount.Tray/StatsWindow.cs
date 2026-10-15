@@ -99,6 +99,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
+        // A recording's edges are worth seeing the moment they happen, not at the next sample.
+        if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
         _layerLegend = new QLabel();
         _layerLegend.SetWordWrap(true);
@@ -153,7 +155,43 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     /// <summary>The recording's own checks, driven from here because the panel belongs to this
     /// window and a smoke run has no other handle on it.</summary>
-    internal void VerifyRecording() => _recording?.Verify();
+    internal void VerifyRecording(string? capture = null)
+    {
+        _recording?.Verify();
+        // The marks are drawn by hand, in a paint path nothing else exercises while no recording is
+        // running: this forces one with both edges on the axis.
+        if (_recording == null) return;
+        var end = DateTime.UtcNow;
+        foreach (var chart in _charts)
+        {
+            chart.SetMarkers(new[]
+            {
+                new PerformanceChart.ChartMarker(end.AddSeconds(-20), "record.marker.start", "#dc2626"),
+                new PerformanceChart.ChartMarker(end.AddSeconds(-3), "record.marker.stop", "#64748b"),
+                // One on its way out, which must fade rather than be cut off, and one that has
+                // already left the window, which must simply not be drawn.
+                new PerformanceChart.ChartMarker(end.AddSeconds(-57), "record.marker.start", "#dc2626"),
+                new PerformanceChart.ChartMarker(end.AddSeconds(-90), "record.marker.start", "#dc2626")
+            });
+            // A second apart, the way real samples arrive: a chart draws breaks for gaps, so
+            // sparse data would leave the marks over an empty plot and prove nothing.
+            var cache = new List<(DateTime Time, double Value)>();
+            var svn = new List<(DateTime Time, double Value)>();
+            for (int second = 59; second >= 0; second--)
+            {
+                double wave = Math.Sin(second / 7.0);
+                cache.Add((end.AddSeconds(-second), 6.0 + wave * 3.0));
+                svn.Add((end.AddSeconds(-second), 2.0 + Math.Cos(second / 5.0) * 1.5));
+            }
+            chart.SetSeries(new List<ChartSeries>
+            {
+                new("cache", "#059669", cache),
+                new("svn", "#2563eb", svn)
+            }, end);
+            using var painted = chart.Grab();
+            if (capture != null) painted.Save(capture);
+        }
+    }
     internal void SmokeRecordingStartAndDiscard(string? capture = null) => _recording?.SmokeStartAndDiscard(capture);
     internal void CaptureRecording(string path) => _recording?.Capture(path);
 
@@ -585,6 +623,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 }).ToList()) { Hatched = true });
             }
             _charts[chart].SetSeries(drawn, end);
+            _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
@@ -792,6 +831,32 @@ internal sealed class PerformanceChart : QWidget
     }
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
+    /// <summary>A moment on the axis rather than a measurement of one — the edge of a recording.
+    /// It travels with the data and leaves the window the way a sample does.</summary>
+    internal readonly record struct ChartMarker(DateTime Time, string LabelKey, string Color);
+
+    private IReadOnlyList<ChartMarker> _markers = Array.Empty<ChartMarker>();
+
+    /// <summary>Marks the axis at those moments. They are annotation rather than data: drawn over
+    /// the fills, in the recording's own colour, and never part of the stack or its statistics.</summary>
+    public void SetMarkers(IReadOnlyList<ChartMarker> markers)
+    {
+        _markers = markers;
+        RefreshToolTip();
+        Update();
+    }
+
+    /// <summary>What the card says on hover: the layers, the window's figures, and when a recording
+    /// this window covers began or ended.</summary>
+    private void RefreshToolTip()
+    {
+        var lines = _series.Select(s => s.Name + ": " + FormatValue(s.Samples.LastOrDefault().Value)).ToList();
+        if (_stats.Samples > 0) lines.Add(string.Join(" · ", _figures.Select(f => I18n.T(FigureKey(f)) + " " + FormatFigure(f))));
+        foreach (var marker in _markers)
+            lines.Add(I18n.T(marker.LabelKey) + " " + marker.Time.ToLocalTime().ToString("HH:mm:ss", I18n.Culture));
+        SetToolTip(string.Join("\n", lines));
+    }
+
     public void SetSeries(List<ChartSeries> series, DateTime end)
     {
         _series = series;
@@ -801,9 +866,7 @@ internal sealed class PerformanceChart : QWidget
         var times = series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
-        var lines = series.Select(s => s.Name + ": " + FormatValue(s.Samples.LastOrDefault().Value)).ToList();
-        if (_stats.Samples > 0) lines.Add(string.Join(" · ", _figures.Select(f => I18n.T(FigureKey(f)) + " " + FormatFigure(f))));
-        SetToolTip(string.Join("\n", lines));
+        RefreshToolTip();
         Update();
     }
     private string FormatValue(double value) => _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
@@ -1037,7 +1100,68 @@ internal sealed class PerformanceChart : QWidget
                 p.SetPen(new QPen(new QColor("#94a3b8")));
                 p.DrawText(left + 12, top + 30, I18n.T("stats.noData"));
             }
+            DrawMarkers(p, left, right, top, bottom);
         }
         finally { p.End(); }
+    }
+
+    /// <summary>A recording's edges, drawn as annotation rather than as data: a hairline dashed in
+    /// the recording's own colour, dashed so it never reads as the boundary of a fill, and faint
+    /// enough that the series it crosses stay the subject. Each carries a small pill at the top of
+    /// the plot — white enough to be read over any fill, outlined and lettered in the same colour.
+    /// Both fade over the last stretch of the window, so a mark leaves the way it arrived instead
+    /// of being cut off at the edge. Two marks that would overlap keep their lines and drop the
+    /// label: the axis position is the information, the words are the convenience.</summary>
+    private void DrawMarkers(QPainter p, int left, int right, int top, int bottom)
+    {
+        if (_markers.Count == 0) return;
+        double fadeFrom = left + (right - left) * 0.12;
+        using var labelFont = new QFont("Segoe UI", 8);
+        using var metrics = new QFontMetrics(labelFont);
+        var placed = new List<(int Left, int Right, int Row)>();
+        foreach (var marker in _markers.OrderBy(mark => mark.Time))
+        {
+            if (marker.Time < _end.AddSeconds(-60) || marker.Time > _end) continue;
+            int x = (int)Math.Round(left + Math.Clamp(1 - (_end - marker.Time).TotalSeconds / 60, 0, 1) * (right - left));
+            int alpha = x >= fadeFrom ? 255 : (int)Math.Clamp(255.0 * (x - left) / (fadeFrom - left), 0, 255);
+            using var color = new QColor(marker.Color);
+            using var hairline = new QColor(marker.Color);
+            hairline.SetAlpha(Math.Min(alpha, 110));
+            using var pen = new QPen(hairline);
+            pen.SetStyle(Qt.PenStyle.DashLine);
+            pen.SetWidthF(1.2);
+            p.SetPen(pen);
+            p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
+            p.DrawLine(x, top, x, bottom);
+
+            string text = I18n.T(marker.LabelKey);
+            int width = metrics.HorizontalAdvance(text) + 14, height = 16;
+            // The label sits beside its line, on the side with room, and drops to a second row when
+            // a mark nearby already claimed the first: two edges of one recording are close together
+            // by nature, and their words are the part a reader came for — the line alone would say
+            // where, not what.
+            int pill = x + 5;
+            if (pill + width > right) pill = x - 5 - width;
+            pill = Math.Clamp(pill, left, Math.Max(left, right - width));
+            int row = 0;
+            while (row < 2 && placed.Any(other => other.Row == row && pill < other.Right + 6 && pill + width > other.Left - 6)) row++;
+            if (row == 2) continue;
+            placed.Add((pill, pill + width, row));
+            int bodyTop = top + 3 + row * (height + 3);
+            using var body = new QColor("#ffffff");
+            body.SetAlpha(alpha * 5 / 6);
+            p.SetPen(new QPen(Qt.PenStyle.NoPen));
+            p.SetBrush(new QBrush(body));
+            p.DrawRoundedRect(pill, bodyTop, width, height, 8, 8);
+            color.SetAlpha(alpha);
+            using var edge = new QPen(color);
+            edge.SetWidthF(1.0);
+            p.SetPen(edge);
+            p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
+            p.DrawRoundedRect(pill, bodyTop, width, height, 8, 8);
+            p.SetPen(new QPen(color));
+            p.SetFont(labelFont);
+            p.DrawText(pill + 7, bodyTop + height - 5, text);
+        }
     }
 }

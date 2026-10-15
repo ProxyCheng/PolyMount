@@ -276,7 +276,7 @@ internal static class Program
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyExport(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
-                    stats.VerifyRecording();
+                    stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));
                     stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
                     stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
                 }

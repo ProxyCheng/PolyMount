@@ -1087,6 +1087,8 @@
     <message><source>record.starting</source><translation>正在挂上录制通道…</translation></message>
     <message><source>record.start.failed</source><translation>无法开始录制：</translation></message>
     <message><source>record.idle</source><translation>没有正在进行的录制。按「开始录制」从此刻起重新采集。</translation></message>
+    <message><source>record.marker.start</source><translation>录制开始</translation></message>
+    <message><source>record.marker.stop</source><translation>录制结束</translation></message>
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>

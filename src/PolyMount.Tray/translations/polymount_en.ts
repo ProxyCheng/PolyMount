@@ -1087,6 +1087,8 @@ Close applications using mounted files first.</translation>
     <message><source>record.starting</source><translation>Attaching the recording channel…</translation></message>
     <message><source>record.start.failed</source><translation>Could not start the recording: </translation></message>
     <message><source>record.idle</source><translation>Nothing is being recorded. Start recording begins collecting again from that moment.</translation></message>
+    <message><source>record.marker.start</source><translation>recording started</translation></message>
+    <message><source>record.marker.stop</source><translation>recording ended</translation></message>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
