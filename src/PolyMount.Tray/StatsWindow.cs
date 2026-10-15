@@ -22,7 +22,12 @@ internal sealed class StatsWindow : QWidget
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
     private readonly Dictionary<string, List<Sample>> _history = new();
-    private readonly Dictionary<string, (long Count, long Bytes)> _wasteSteps = new();
+    /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
+    /// a rate, so a step only means something next to the interval it was measured over.</summary>
+    private readonly Dictionary<string, (long Count, long Bytes, DateTime Time)> _wasteSteps = new();
+    /// <summary>Sampling runs once a second; a step spanning more than this is a pause in
+    /// observation rather than a rate.</summary>
+    private const double SamplingGapSeconds = 3;
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
@@ -128,12 +133,14 @@ internal sealed class StatsWindow : QWidget
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
             throw new InvalidOperationException("Performance window did not collect response overhead samples");
-        var sample = CaptureLayers(DateTime.UtcNow, new[] { new MountMetrics { Mount = "test", Layers = new()
+        var mounts = new[] { new MountMetrics { Mount = "test", Layers = new()
         {
             new() { Name = "a", Hits = 2, AvgCostMs = 10, Bytes = 1024 },
             new() { Name = "b", Hits = 3, AvgCostMs = 20, Bytes = 2048, WriteBytes = 4096 },
             new() { Name = "idle" }
-        } } });
+        } } };
+        var now = DateTime.UtcNow;
+        var sample = CaptureLayers(now, mounts, WasteSteps(now, mounts));
         if (sample.Layers.Count != 3 || sample.Layers.Values.Sum(l => l.Reads) != 5 ||
             sample.Layers.Values.Sum(l => l.Cost) != 16 || sample.Layers.Values.Sum(l => l.Bytes) != 3072 ||
             sample.Layers.Values.Sum(l => l.WriteBytes) != 4096)
@@ -141,6 +148,27 @@ internal sealed class StatsWindow : QWidget
         if (ByteUnits.Select(1023).Unit != "B" || ByteUnits.Select(1024).Unit != "KiB" ||
             ByteUnits.Select(1048576).Unit != "MiB" || ByteUnits.Select(1073741824).Unit != "GiB")
             throw new InvalidOperationException("Byte unit thresholds are incorrect");
+    }
+
+    /// <summary>A paint costs a line and a label per interval, so the vertical domain has to
+    /// stay bounded whatever the data does. Waste is the sample that can break that: a
+    /// read-ahead layer reports its whole budget evicted at once, against a read axis scaled
+    /// to a few kilobytes, and the chart used to answer with six hundred million intervals.</summary>
+    internal void VerifyChartScale()
+    {
+        var time = DateTime.UtcNow;
+        foreach (string unit in new[] { "B", "/s", "ms" })
+            foreach (double read in new[] { 0.0, 40960.0 })
+            {
+                var domain = ChartDomain.Of(new List<ChartSeries>
+                {
+                    new("svn", "#64748B", new() { (time.AddSeconds(-60), read), (time, read) }),
+                    new("predict", "#94A3B8", new() { (time.AddSeconds(-60), -316368879), (time, 0) })
+                }, unit, 2.1);
+                if (domain.GridLines > 64 || domain.Floor > 0 || domain.Max <= 0 || !double.IsFinite(domain.Floor))
+                    throw new InvalidOperationException(
+                        $"Chart axis is not bounded for {unit} at {read}: {domain.GridLines} intervals, floor {domain.Floor}");
+            }
     }
 
     private void TogglePause()
@@ -209,8 +237,11 @@ internal sealed class StatsWindow : QWidget
         DateTime now = DateTime.UtcNow;
         var alive = metrics.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
-        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }));
-        Add("", CaptureLayers(now, trends));
+        // One step per layer for the whole tick, shared with the combined sample: taking it
+        // again for the combined view would find the counters already advanced and report zero.
+        var wasteSteps = WasteSteps(now, trends);
+        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }, wasteSteps));
+        Add("", CaptureLayers(now, trends, wasteSteps));
         string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
         var names = metrics.Select(m => m.Mount).ToArray();
         if (_mount.Count != names.Length + 1 || names.Where((name, i) => _mount.ItemText(i + 1) != name).Any())
@@ -227,20 +258,37 @@ internal sealed class StatsWindow : QWidget
         _status.SetText(T("stats.live") + " · " + DateTime.Now.ToString("HH:mm:ss"));
     }
 
-    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts)
+    /// <summary>Takes the waste counters' step for this tick, one entry per layer. A layer can
+    /// evict a whole budget's worth in a second, so this is a rate only when it was measured
+    /// over a normal interval: the first observation of a layer, and the first one after the
+    /// window was hidden or the instance switched, would otherwise bill a lifetime total of
+    /// hundreds of megabytes to a single second, against a chart scaled in kilobytes.</summary>
+    private Dictionary<string, (double Count, double Bytes)> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts)
+    {
+        var steps = new Dictionary<string, (double, double)>();
+        foreach (var (key, layer) in mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))))
+        {
+            bool measured = _wasteSteps.TryGetValue(key, out var previous) &&
+                (time - previous.Time).TotalSeconds <= SamplingGapSeconds;
+            _wasteSteps[key] = (layer.HeldWasted, layer.HeldWastedBytes, time);
+            // A counter that went backwards was rebuilt, not credited: clamp rather than dip.
+            steps[key] = measured
+                ? (Math.Max(0, layer.HeldWasted - previous.Count), Math.Max(0, layer.HeldWastedBytes - previous.Bytes))
+                : (0, 0);
+        }
+        return steps;
+    }
+
+    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts, Dictionary<string, (double Count, double Bytes)> wasteSteps)
     {
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
         double reads = rows.Sum(r => r.Layer.Hits);
-        // Waste arrives as a running total; the charts plot rates, so take the step.
         return new(time, rows.ToDictionary(r => r.Key, r =>
         {
-            var (waste, wasteBytes) = _wasteSteps.TryGetValue(r.Key, out var previous)
-                ? (r.Layer.HeldWasted - previous.Count, r.Layer.HeldWastedBytes - previous.Bytes)
-                : (r.Layer.HeldWasted, r.Layer.HeldWastedBytes);
-            _wasteSteps[r.Key] = (r.Layer.HeldWasted, r.Layer.HeldWastedBytes);
+            var (waste, wasteBytes) = wasteSteps[r.Key];
             return new LayerSample(r.Layer.Hits,
                 reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
-                Math.Max(0, waste), Math.Max(0, wasteBytes));
+                waste, wasteBytes);
         }));
     }
 
@@ -373,6 +421,54 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
     public bool Hatched { get; init; }
 }
 
+/// <summary>The vertical domain of one chart, in that chart's own display unit.</summary>
+internal readonly record struct ChartDomain(double Scale, string Unit, double Floor, double Max, double Step, int GridLines)
+{
+    /// <summary>Domain for a series set: the tallest stack above the line, and as far below it
+    /// as anything actually reached.</summary>
+    public static ChartDomain Of(IEnumerable<ChartSeries> series, string unit, double targetIntervals)
+    {
+        var samples = series.ToList();
+        var times = samples.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
+        var values = samples.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+        double peak = times.Select(time => values.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
+        double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
+        var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
+        double max = Math.Max(unit == "ms" || unit == "B" ? 1 : 5, peak / axis.Scale * 1.15);
+        double step = 0;
+        int intervals = 0;
+        // D3 nice: round the domain outward, then recompute until the step stabilizes.
+        for (int pass = 0; pass < 10; pass++)
+        {
+            double next = NiceStep(max / targetIntervals);
+            if (unit != "ms" && unit != "B") next = Math.Max(1, next);
+            if (next == step) break;
+            step = next;
+            intervals = (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
+            max = TickValue(intervals, step);
+        }
+        // The below-zero side is capped at the height of the positive side: every interval
+        // costs a line and a label, so an uncapped floor lets one sample decide how long a
+        // frame takes. Waste is the sample that can do it — a layer evicting its whole budget
+        // in a second, on a chart scaled to a few kilobytes, asked for six hundred million
+        // grid lines. What overflows the floor is drawn clipped to it.
+        double depth = step <= 0 ? 0 : Math.Ceiling(-trough / axis.Scale / step);
+        int below = (int)Math.Clamp(depth, 0, Math.Max(1, intervals));
+        return new(axis.Scale, axis.Unit, -below * step, max, step, intervals + below);
+    }
+
+    /// <summary>D3 tickStep: nearest 1/2/5 decade, using geometric-mean thresholds.
+    /// https://d3js.org/d3-array/ticks</summary>
+    internal static double NiceStep(double target)
+    {
+        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(target)));
+        double fraction = target / magnitude;
+        return magnitude * (fraction < Math.Sqrt(2) ? 1 : fraction < Math.Sqrt(10) ? 2 : fraction < Math.Sqrt(50) ? 5 : 10);
+    }
+
+    internal static double TickValue(int index, double step) => step < 1 ? index / Math.Round(1 / step) : index * step;
+}
+
 internal sealed class PerformanceChart : QWidget
 {
     private readonly string _titleKey, _color, _unit;
@@ -395,17 +491,6 @@ internal sealed class PerformanceChart : QWidget
         Update();
     }
     private string FormatValue(double value) => _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
-    private static double NiceStep(double target)
-    {
-        // D3 tickStep: nearest 1/2/5 decade, using geometric-mean thresholds.
-        // https://d3js.org/d3-array/ticks
-        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(target)));
-        double fraction = target / magnitude;
-        return magnitude * (fraction < Math.Sqrt(2) ? 1 : fraction < Math.Sqrt(10) ? 2 : fraction < Math.Sqrt(50) ? 5 : 10);
-    }
-
-    private static double TickValue(int index, double step) => step < 1 ? index / Math.Round(1 / step) : index * step;
-
     private static string TickText(double value, double step)
     {
         int decimals = Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15);
@@ -430,9 +515,6 @@ internal sealed class PerformanceChart : QWidget
             var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
             var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
             var totals = times.Select(time => valuesBySeries.Sum(s => s.GetValueOrDefault(time))).ToArray();
-            // A read-ahead layer draws its wasted entries below the line, so the domain has
-            // to reach under zero and the headline is the net.
-            double trough = times.Select(time => valuesBySeries.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
             double value = totals.LastOrDefault();
             using var numberFont = new QFont("Segoe UI", 20);
             numberFont.SetBold(true);
@@ -457,36 +539,19 @@ internal sealed class PerformanceChart : QWidget
             }
 
             int top = summariesWidth <= width - 36 && summaries.Length > 0 ? 108 : 88, right = width - 18, bottom = height - 46;
-            double peak = times.Select(time => valuesBySeries.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
-            var axis = _unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: _unit);
-            double max = Math.Max(_unit == "ms" || _unit == "B" ? 1 : 5, peak / axis.Scale * 1.15);
-            double targetIntervals = Math.Max(2, (bottom - top) / 36.0);
-            double valueStep = 0;
-            int valueIntervals = 0;
-            // D3 nice: round the domain outward, then recompute until the step stabilizes.
-            for (int pass = 0; pass < 10; pass++)
-            {
-                double step = NiceStep(max / targetIntervals);
-                if (_unit != "ms" && _unit != "B") step = Math.Max(1, step);
-                if (step == valueStep) break;
-                valueStep = step;
-                valueIntervals = (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
-                max = TickValue(valueIntervals, step);
-            }
-            // Reach below zero only as far as something actually went, rounded to the grid.
-            int belowZero = valueStep <= 0 ? 0 : (int)Math.Ceiling(-trough / axis.Scale / valueStep);
-            double floor = -belowZero * valueStep;
-            int gridLines = valueIntervals + belowZero;
+            var domain = ChartDomain.Of(_series, _unit, Math.Max(2, (bottom - top) / 36.0));
+            double max = domain.Max, valueStep = domain.Step, floor = domain.Floor;
+            int gridLines = domain.GridLines;
             using var smallFont = new QFont("Segoe UI", 8);
             p.SetFont(smallFont);
             using var fontMetrics = new QFontMetrics(smallFont);
             int labelWidth = Enumerable.Range(0, gridLines + 1)
-                .Max(i => fontMetrics.HorizontalAdvance(TickText(floor + TickValue(i, valueStep), valueStep)));
+                .Max(i => fontMetrics.HorizontalAdvance(TickText(floor + ChartDomain.TickValue(i, valueStep), valueStep)));
             int left = 18 + labelWidth + 10;
             int timeLabelWidth = fontMetrics.HorizontalAdvance("−60s") + 24;
-            double timeStep = Math.Max(1, NiceStep(60 / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth))));
+            double timeStep = Math.Max(1, ChartDomain.NiceStep(60 / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth))));
             p.SetPen(new QPen(new QColor("#718096")));
-            string maxLabel = TickText(max, valueStep) + " " + axis.Unit;
+            string maxLabel = TickText(max, valueStep) + " " + domain.Unit;
             p.DrawText(right - fontMetrics.HorizontalAdvance(maxLabel), top - 8, maxLabel);
             p.DrawText(left, height - 10, I18n.T("stats.history"));
             p.DrawText(right - fontMetrics.HorizontalAdvance(I18n.T("stats.now")), height - 10, I18n.T("stats.now"));
@@ -497,13 +562,13 @@ internal sealed class PerformanceChart : QWidget
                 int y = bottom - (int)Math.Round((bottom - top) * i / (double)gridLines);
                 p.SetPen(gridPen);
                 p.DrawLine(left, y, right, y);
-                string label = TickText(floor + TickValue(i, valueStep), valueStep);
+                string label = TickText(floor + ChartDomain.TickValue(i, valueStep), valueStep);
                 p.SetPen(labelPen);
                 p.DrawText(left - 10 - fontMetrics.HorizontalAdvance(label), y + 4, label);
             }
             for (int i = 0; i <= (int)Math.Floor(60 / timeStep); i++)
             {
-                double seconds = TickValue(i, timeStep);
+                double seconds = ChartDomain.TickValue(i, timeStep);
                 int x = right - (int)Math.Round((right - left) * seconds / 60);
                 p.SetPen(gridPen);
                 p.DrawLine(x, top, x, bottom);
@@ -514,7 +579,9 @@ internal sealed class PerformanceChart : QWidget
             }
 
             double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / 60, 0, 1) * (right - left);
-            double Y(double number) => bottom - (number / axis.Scale - floor) / (max - floor) * (bottom - top);
+            // Clamped to the domain, so a sample reaching past the floor rests on it rather
+            // than somewhere off the canvas.
+            double Y(double number) => bottom - (Math.Clamp(number / domain.Scale, floor, max) - floor) / (max - floor) * (bottom - top);
             var baseline = new double[times.Length];
             // The last provider is the bottom of the chain and of the area stack.
             for (int layer = _series.Count - 1; layer >= 0; layer--)

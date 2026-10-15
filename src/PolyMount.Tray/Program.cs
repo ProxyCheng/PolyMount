@@ -214,7 +214,7 @@ internal static class Program
             if (ticks >= 60)
             {
                 timer.Stop();
-                try { stats.VerifyResponseSampling(); } catch (Exception ex) { failure = ex.Message; }
+                try { stats.VerifyResponseSampling(); stats.VerifyChartScale(); } catch (Exception ex) { failure = ex.Message; }
                 Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }
