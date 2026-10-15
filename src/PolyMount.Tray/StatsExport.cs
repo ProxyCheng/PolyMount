@@ -30,7 +30,8 @@ internal readonly record struct ChartRecord(string Chart, string Unit, ChartStat
 
 /// <summary>One layer's contribution to one second of the window.</summary>
 internal readonly record struct SampleRecord(DateTime Time, string Mount, string Layer,
-    double Reads, double Bytes, double Cost, double WriteBytes, double Wasted, double WastedBytes);
+    double Reads, double Bytes, double Cost, double WriteBytes, double Wasted, double WastedBytes,
+    double Accelerated, double Fetched);
 
 /// <summary>What an export produced, for the confirmation the window shows.</summary>
 internal readonly record struct ExportOutcome(string Directory, int Files, int Samples, int Logs);
@@ -171,13 +172,14 @@ internal static class StatsExport
     /// rows, so it is not written twice.</summary>
     private static string SamplesCsv(List<SampleRecord> samples)
     {
-        var csv = new StringBuilder("time_utc,mount,layer,reads,bytes,avg_cost_ms,write_bytes,wasted,wasted_bytes\n");
+        var csv = new StringBuilder("time_utc,mount,layer,reads,bytes,avg_cost_ms,write_bytes,wasted,wasted_bytes,accelerated_bytes,fetched_bytes\n");
         foreach (var sample in samples)
             csv.Append(sample.Time.ToString("O", CultureInfo.InvariantCulture)).Append(',')
                 .Append(Escape(sample.Mount)).Append(',').Append(Escape(sample.Layer)).Append(',')
                 .Append(Number(sample.Reads)).Append(',').Append(Number(sample.Bytes)).Append(',')
                 .Append(Number(sample.Cost)).Append(',').Append(Number(sample.WriteBytes)).Append(',')
-                .Append(Number(sample.Wasted)).Append(',').Append(Number(sample.WastedBytes)).Append('\n');
+                .Append(Number(sample.Wasted)).Append(',').Append(Number(sample.WastedBytes)).Append(',')
+                .Append(Number(sample.Accelerated)).Append(',').Append(Number(sample.Fetched)).Append('\n');
         return csv.ToString();
     }
 

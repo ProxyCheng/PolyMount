@@ -1048,5 +1048,17 @@ Close applications using mounted files first.</translation>
       <source>stats.response.cost</source>
       <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (two IPC requests per sample; excludes painting)</translation>
     </message>
+    <message>
+      <source>stats.accelerated</source>
+      <translation>RAM hits</translation>
+    </message>
+    <message>
+      <source>stats.accelerated.cell</source>
+      <translation>{0:0.#}%</translation>
+    </message>
+    <message>
+      <source>stats.accelerated.tip</source>
+      <translation>{0} served from RAM in this window</translation>
+    </message>
   </context>
 </TS>

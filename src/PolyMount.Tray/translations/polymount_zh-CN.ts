@@ -1048,5 +1048,17 @@
       <source>stats.response.cost</source>
       <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次含两个 IPC 请求，不含绘制）</translation>
     </message>
+    <message>
+      <source>stats.accelerated</source>
+      <translation>内存命中</translation>
+    </message>
+    <message>
+      <source>stats.accelerated.cell</source>
+      <translation>{0:0.#}%</translation>
+    </message>
+    <message>
+      <source>stats.accelerated.tip</source>
+      <translation>窗口内由内存供出 {0}</translation>
+    </message>
   </context>
 </TS>

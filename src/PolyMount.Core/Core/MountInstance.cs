@@ -209,6 +209,14 @@ public sealed class MountInstance : IDisposable
                 lm.HeldWastedBytes = readAhead.WastedBytes;
                 m.PredictiveWasted ??= LayerTexts.Get("prediction.outcome.wasted");
             }
+            // The block cache answers no reads of its own, so the only account of its work is
+            // the bytes it kept out of the stream underneath.
+            if (_providers[lm.Name] is MemoryCacheLayer memory)
+            {
+                lm.Accelerating = true;
+                lm.AcceleratedBytes = memory.AcceleratedBytes;
+                lm.FetchedBytes = memory.FetchedBytes;
+            }
         }
         return m;
     }

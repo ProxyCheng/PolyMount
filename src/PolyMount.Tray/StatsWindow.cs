@@ -26,7 +26,7 @@ internal sealed class StatsWindow : QWidget
     private readonly Dictionary<string, List<Sample>> _history = new();
     /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
     /// a rate, so a step only means something next to the interval it was measured over.</summary>
-    private readonly Dictionary<string, (long Count, long Bytes, DateTime Time)> _wasteSteps = new();
+    private readonly Dictionary<string, (long Count, long Bytes, long Served, long Fetched, DateTime Time)> _wasteSteps = new();
     /// <summary>Sampling runs once a second; a step spanning more than this is a pause in
     /// observation rather than a rate.</summary>
     private const double SamplingGapSeconds = 3;
@@ -40,7 +40,7 @@ internal sealed class StatsWindow : QWidget
     private int _epoch, _requestEpoch;
     private DateTime _next;
     private sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes,
-        double Wasted = 0, double WastedBytes = 0);
+        double Wasted = 0, double WastedBytes = 0, double Accelerated = 0, double Fetched = 0);
     private sealed record Sample(DateTime Time, Dictionary<string, LayerSample> Layers);
     private static string T(string key) => I18n.T(key);
 
@@ -107,7 +107,7 @@ internal sealed class StatsWindow : QWidget
         root.AddLayout(access);
         root.AddWidget(Label("stats.layer", "sectionTitle"));
         _table = ContinuousScrolling.Table();
-        _table.SetColumnCount(7);
+        _table.SetColumnCount(8);
         _table.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
         _table.SetShowGrid(false);
         _table.SetSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);
@@ -155,6 +155,18 @@ internal sealed class StatsWindow : QWidget
             sample.Layers.Values.Sum(l => l.Cost) != 16 || sample.Layers.Values.Sum(l => l.Bytes) != 3072 ||
             sample.Layers.Values.Sum(l => l.WriteBytes) != 4096)
             throw new InvalidOperationException("Layer chart contributions do not sum to the overall metrics");
+        // A block cache reports lifetime byte totals, so its window figure is the step between
+        // observations rather than the counters themselves.
+        var ram = new MountMetrics { Mount = "m", Layers = new() { new() { Name = "ram", Accelerating = true } } };
+        var history = new List<Sample>();
+        foreach (var (served, fetched) in new[] { (0L, 0L), (3000L, 1000L), (6000L, 2000L) })
+        {
+            ram.Layers[0].AcceleratedBytes = served;
+            ram.Layers[0].FetchedBytes = fetched;
+            history.Add(CaptureLayers(now, new[] { ram }, WasteSteps(now, new[] { ram })));
+        }
+        if (Accelerated(history, "m/ram") != (75.0, 6000.0))
+            throw new InvalidOperationException("Accelerator bytes are not measured over the window");
         if (ByteUnits.Select(1023).Unit != "B" || ByteUnits.Select(1024).Unit != "KiB" ||
             ByteUnits.Select(1048576).Unit != "MiB" || ByteUnits.Select(1073741824).Unit != "GiB")
             throw new InvalidOperationException("Byte unit thresholds are incorrect");
@@ -324,7 +336,8 @@ internal sealed class StatsWindow : QWidget
             .SelectMany(mount => mount.Value.SelectMany(sample => sample.Layers.Select(layer =>
                 new SampleRecord(sample.Time, mount.Key, Relative(layer.Key, mount.Key),
                     layer.Value.Reads, layer.Value.Bytes, layer.Value.Cost,
-                    layer.Value.WriteBytes, layer.Value.Wasted, layer.Value.WastedBytes))))
+                    layer.Value.WriteBytes, layer.Value.Wasted, layer.Value.WastedBytes,
+                    layer.Value.Accelerated, layer.Value.Fetched))))
             .OrderBy(row => row.Time).ToList(),
         ResponseRequest = _responseSamples.Select(sample => sample.Request).ToList(),
         ResponseDispatch = _responseSamples.Select(sample => sample.Dispatch).ToList(),
@@ -362,37 +375,39 @@ internal sealed class StatsWindow : QWidget
         _status.SetText(T("stats.live") + " · " + DateTime.Now.ToString("HH:mm:ss"));
     }
 
-    /// <summary>Takes the waste counters' step for this tick, one entry per layer. A layer can
-    /// evict a whole budget's worth in a second, so this is a rate only when it was measured
-    /// over a normal interval: the first observation of a layer, and the first one after the
-    /// window was hidden or the instance switched, would otherwise bill a lifetime total of
-    /// hundreds of megabytes to a single second, against a chart scaled in kilobytes.</summary>
-    private Dictionary<string, (double Count, double Bytes)> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts)
+    /// <summary>Takes the step for this tick of every counter a layer reports as a lifetime
+    /// total, one entry per layer. A layer can evict a whole budget's worth in a second, so
+    /// this is a rate only when it was measured over a normal interval: the first observation
+    /// of a layer, and the first one after the window was hidden or the instance switched,
+    /// would otherwise bill a lifetime total of hundreds of megabytes to a single second,
+    /// against a chart scaled in kilobytes.</summary>
+    private Dictionary<string, (double Count, double Bytes, double Served, double Fetched)> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts)
     {
-        var steps = new Dictionary<string, (double, double)>();
+        var steps = new Dictionary<string, (double, double, double, double)>();
         foreach (var (key, layer) in mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))))
         {
             bool measured = _wasteSteps.TryGetValue(key, out var previous) &&
                 (time - previous.Time).TotalSeconds <= SamplingGapSeconds;
-            _wasteSteps[key] = (layer.HeldWasted, layer.HeldWastedBytes, time);
+            _wasteSteps[key] = (layer.HeldWasted, layer.HeldWastedBytes, layer.AcceleratedBytes, layer.FetchedBytes, time);
             // A counter that went backwards was rebuilt, not credited: clamp rather than dip.
             steps[key] = measured
-                ? (Math.Max(0, layer.HeldWasted - previous.Count), Math.Max(0, layer.HeldWastedBytes - previous.Bytes))
-                : (0, 0);
+                ? (Math.Max(0, layer.HeldWasted - previous.Count), Math.Max(0, layer.HeldWastedBytes - previous.Bytes),
+                   Math.Max(0, layer.AcceleratedBytes - previous.Served), Math.Max(0, layer.FetchedBytes - previous.Fetched))
+                : (0, 0, 0, 0);
         }
         return steps;
     }
 
-    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts, Dictionary<string, (double Count, double Bytes)> wasteSteps)
+    private Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts, Dictionary<string, (double Count, double Bytes, double Served, double Fetched)> wasteSteps)
     {
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: m.Mount + "/" + l.Name, Layer: l))).ToArray();
         double reads = rows.Sum(r => r.Layer.Hits);
         return new(time, rows.ToDictionary(r => r.Key, r =>
         {
-            var (waste, wasteBytes) = wasteSteps[r.Key];
+            var (waste, wasteBytes, served, fetched) = wasteSteps[r.Key];
             return new LayerSample(r.Layer.Hits,
                 reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
-                waste, wasteBytes);
+                waste, wasteBytes, served, fetched);
         }));
     }
 
@@ -401,6 +416,22 @@ internal sealed class StatsWindow : QWidget
         if (!_history.TryGetValue(name, out var samples)) _history[name] = samples = new();
         samples.Add(sample);
         samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-HistorySeconds));
+    }
+
+    /// <summary>What an accelerating layer kept out of the streams underneath over the window:
+    /// the share of read bytes it served from its own pages, and how many those were. A block
+    /// cache answers no reads of its own, so this is the only account of its work.</summary>
+    private static (double Percent, double Bytes) Accelerated(IEnumerable<Sample> samples, string key)
+    {
+        double served = 0, fetched = 0;
+        foreach (var sample in samples)
+        {
+            if (!sample.Layers.TryGetValue(key, out var layer)) continue;
+            served += layer.Accelerated;
+            fetched += layer.Fetched;
+        }
+        double total = served + fetched;
+        return (total == 0 ? 0 : 100.0 * served / total, served);
     }
 
     private void Render()
@@ -465,8 +496,16 @@ internal sealed class StatsWindow : QWidget
         for (int row = 0; row < rows.Count; row++)
         {
             var (mount, layer) = rows[row];
+            string accelerated = "";
+            string acceleratedTip = "";
+            if (layer.Accelerating)
+            {
+                var (percent, bytes) = Accelerated(samples, mount.Mount + "/" + layer.Name);
+                accelerated = I18n.F("stats.accelerated.cell", percent);
+                acceleratedTip = I18n.F("stats.accelerated.tip", ByteUnits.Format(bytes));
+            }
             string[] values = { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName, layer.Hits.ToString("N0", I18n.Culture), layer.SharePercent.ToString("0.#", I18n.Culture),
-                layer.AvgCostMs.ToString("0.##", I18n.Culture), layer.MaxCostMs.ToString("0.##", I18n.Culture), ByteUnits.Format(layer.Bytes) };
+                layer.AvgCostMs.ToString("0.##", I18n.Culture), layer.MaxCostMs.ToString("0.##", I18n.Culture), ByteUnits.Format(layer.Bytes), accelerated };
             for (int col = 0; col < values.Length; col++)
             {
                 var item = _table.Item(row, col);
@@ -477,6 +516,7 @@ internal sealed class StatsWindow : QWidget
                     _table.SetItem(row, col, item);
                 }
                 else if (item.Text() != values[col]) item.SetText(values[col]);
+                if (col == values.Length - 1 && item.ToolTip() != acceleratedTip) item.SetToolTip(acceleratedTip);
             }
             if (layer.Color.Length > 0) _table.Item(row, 1).SetForeground(new QBrush(new QColor(layer.Color)));
             _table.SetRowHeight(row, 36);
@@ -491,7 +531,7 @@ internal sealed class StatsWindow : QWidget
         _export.SetText(T("stats.export"));
         _export.SetIcon(TrayIcons.Get("export"));
         _mount.SetItemText(0, T("stats.all"));
-        _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes") });
+        _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
         RenderResponseCost();

@@ -5,7 +5,9 @@ namespace PolyMount.Core.Tests;
 
 /// <summary>
 /// Where a repeated file read is really served from, in the production chain shape:
-/// memory-cache above overlay above the durable read cache above the source.
+/// memory-cache above overlay above the durable read cache above the source. The block
+/// cache answers no open of its own — it wraps whatever provider served one — so these
+/// tests read the block counters rather than the per-layer read metrics.
 /// </summary>
 [TestClass]
 public sealed class MemoryCacheFlowTests
@@ -20,11 +22,13 @@ public sealed class MemoryCacheFlowTests
         var source = new FakeSourceLayer();
         var memory = new MemoryCacheLayer(memoryCapacity, Block);
         var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
-        var disk = new LruCacheLayer(temp.Sub("store"), () => "v1", 4L * 1024 * 1024 * 1024);
+        // Production passes the layer the hash of its whole lower chain, so a source change
+        // reaches every cache above it.
+        var disk = new LruCacheLayer(temp.Sub("store"), () => "v1-" + source.Generation, 4L * 1024 * 1024 * 1024);
         return new(new VirtualFileSystem(new ILayer[] { memory, overlay, disk, source }), memory, source);
     }
 
-    private static byte[] Bytes(int length) => Enumerable.Repeat((byte)7, length).ToArray();
+    private static byte[] Bytes(int length, byte seed = 7) => Enumerable.Repeat(seed, length).ToArray();
 
     /// <summary>Opens the file and reads it end to end through the chain.</summary>
     private static long Read(VirtualFileSystem vfs, string path)
@@ -47,7 +51,7 @@ public sealed class MemoryCacheFlowTests
         string.Join(" ", opens.Select(o => $"{o.Hits}/{o.Misses}"));
 
     [TestMethod]
-    public void Repeated_reads_hit_blocks_only_from_the_third_open()
+    public void Repeated_reads_hit_the_blocks_the_first_open_captured()
     {
         using var temp = new TempDir();
         var chain = Build(temp);
@@ -55,30 +59,69 @@ public sealed class MemoryCacheFlowTests
 
         var opens = Enumerable.Range(0, 4).Select(_ => Open(chain, "dir/file.bin")).ToList();
 
-        // Open 1 is served by the source, open 2 by the disk cache, and the two see different
-        // provider identities, so each captures its own set of pages. Only the third open
-        // reuses the pages the second one kept.
-        Assert.AreEqual("0/4 0/8 4/8 8/8", Sequence(opens));
+        // The first open is served by the source and the rest by the disk cache above it.
+        // Blocks are keyed by which bytes are visible, not by which provider served them, so
+        // the pages the source read captured are the pages every later open reuses.
+        Assert.AreEqual("0/4 4/4 8/4 12/4", Sequence(opens));
         Assert.AreEqual(1, chain.Source.OpenReadCount, "the disk cache answers every later open");
     }
 
     [TestMethod]
-    public void A_write_blanks_every_resident_page()
+    public void The_blocks_of_a_file_survive_a_write_to_another_file()
     {
         using var temp = new TempDir();
         var chain = Build(temp);
         chain.Source.AddFileBytes("dir/file.bin", Bytes(4 * Block));
-        var opens = Enumerable.Range(0, 3).Select(_ => Open(chain, "dir/file.bin")).ToList();
-        Assert.AreEqual("0/4 0/8 4/8", Sequence(opens), "blocks are resident while nothing changes");
+        var steady = Open(chain, "dir/file.bin");
+        var warmed = Open(chain, "dir/file.bin");
+        Assert.AreEqual(4L, warmed.Hits - steady.Hits, "blocks are resident while nothing changes");
 
         using (var writer = chain.Vfs.OpenWrite("other.bin", true, out _)) writer.WriteByte(1);
         var afterWrite = (chain.Memory.Hits, chain.Memory.Misses);
 
-        var next = Open(chain, "dir/file.bin");
-        Assert.AreEqual(afterWrite.Hits, next.Hits, "the write blanked every page above it");
-        Assert.AreEqual(afterWrite.Misses + 4, next.Misses);
-        var then = Open(chain, "dir/file.bin");
-        Assert.AreEqual(next.Hits + 4, then.Hits, "the pass after that is resident again");
+        var after = Open(chain, "dir/file.bin");
+        Assert.AreEqual(afterWrite.Hits + 4, after.Hits, "the sibling write left this file's blocks alone");
+        Assert.AreEqual(afterWrite.Misses, after.Misses);
+    }
+
+    [TestMethod]
+    public void A_write_to_the_file_itself_costs_its_own_blocks()
+    {
+        using var temp = new TempDir();
+        var chain = Build(temp);
+        chain.Source.AddFileBytes("dir/file.bin", Bytes(4 * Block));
+        Open(chain, "dir/file.bin");
+        var before = Open(chain, "dir/file.bin");
+        Assert.AreEqual(4L, before.Hits, "the file is resident");
+
+        using (var writer = chain.Vfs.OpenWrite("dir/file.bin", true, out _)) writer.WriteByte(9);
+        var afterWrite = (chain.Memory.Hits, chain.Memory.Misses);
+
+        var after = Open(chain, "dir/file.bin", 1);
+        Assert.AreEqual(afterWrite.Hits, after.Hits, "the file's own blocks went with it");
+        Assert.AreEqual(afterWrite.Misses + 1, after.Misses);
+        var then = Open(chain, "dir/file.bin", 1);
+        Assert.AreEqual(after.Hits + 1, then.Hits, "and the new content is resident in turn");
+    }
+
+    [TestMethod]
+    public void A_source_change_moves_the_identity_the_blocks_are_kept_under()
+    {
+        using var temp = new TempDir();
+        var chain = Build(temp);
+        chain.Source.AddFileBytes("dir/file.bin", Bytes(4 * Block));
+        Open(chain, "dir/file.bin");
+        var before = Open(chain, "dir/file.bin");
+        Assert.AreEqual(4L, before.Hits, "the file is resident");
+
+        // Same path, same size, same timestamp: only the source's own version moved, which is
+        // the one component of the identity the object itself cannot show.
+        chain.Source.AddFileBytes("dir/file.bin", Bytes(4 * Block, seed: 42), keepTime: true);
+        chain.Source.BumpGeneration("g1");
+
+        using var stream = chain.Vfs.OpenRead("dir/file.bin", out _);
+        Assert.AreEqual(42, stream.ReadByte(), "the changed source is what the reader sees");
+        Assert.AreEqual(before.Hits, chain.Memory.Hits, "and the blocks kept for the old version were not reused");
     }
 
     [TestMethod]
@@ -107,5 +150,7 @@ public sealed class MemoryCacheFlowTests
         Assert.AreEqual(Block, Read(chain.Vfs, "dir/file.bin"));
         Assert.AreEqual(0L, chain.Memory.Hits);
         Assert.AreEqual(1L, chain.Memory.Misses, "one block, fetched once, straight from the disk cache's copy");
+        Assert.AreEqual(Block, chain.Memory.FetchedBytes, "the fetch is what the accelerator reports");
+        Assert.AreEqual(0L, chain.Memory.AcceleratedBytes);
     }
 }

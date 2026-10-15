@@ -162,12 +162,20 @@ public sealed class VirtualFileSystem
                 try
                 {
                     Fill(path, new(entry), stream, i);
-                    return WrapContent(path, stream, i, false, layer.Name + ":" + layer.Generation + ":" + entry.Size + ":" + entry.TimeUtc.Ticks + ":" + Interlocked.Read(ref _resolutionEpoch));
+                    return WrapContent(path, stream, i, false, ContentIdentity(entry));
                 }
                 catch { stream.Dispose(); throw; }
             }
             throw new VfsNotFoundException(path);
     }
+    /// <summary>
+    /// What a block cache keys its pages by: which bytes are visible, not which provider
+    /// served them. An open moves between providers as the caches above the source fill up,
+    /// and a key naming the provider would strand the pages one of them captured for the
+    /// other. The origin layer's generation covers the data underneath moving; the object's
+    /// own size and timestamp cover the object itself changing.
+    /// </summary>
+    private string ContentIdentity(VfsEntry entry) => entry.Size + ":" + entry.TimeUtc.Ticks + ":" + _layers[^1].Generation;
     private Stream WrapContent(string path, Stream stream, int providerIndex, bool writable, string version)
     {
         for (int i = providerIndex - 1; i >= 0; i--)

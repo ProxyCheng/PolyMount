@@ -31,7 +31,9 @@ internal sealed class FakeSourceLayer : ILayer
 
     public void AddFile(string rel, string content) => AddFileBytes(rel, System.Text.Encoding.UTF8.GetBytes(content));
 
-    public void AddFileBytes(string rel, byte[] content)
+    /// <summary>Replaces a file's content. <paramref name="keepTime"/> leaves its timestamp
+    /// alone, so a test can change content behind an identity that would otherwise move.</summary>
+    public void AddFileBytes(string rel, byte[] content, bool keepTime = false)
     {
         // auto-create parent dirs
         var parent = VfsPath.Parent(rel);
@@ -40,7 +42,12 @@ internal sealed class FakeSourceLayer : ILayer
             _nodes[parent] = new Node { IsDir = true };
             parent = VfsPath.Parent(parent);
         }
-        _nodes[rel] = new Node { IsDir = false, Data = content };
+        _nodes[rel] = new Node
+        {
+            IsDir = false,
+            Data = content,
+            TimeUtc = keepTime && _nodes.TryGetValue(rel, out var previous) ? previous.TimeUtc : DateTime.UtcNow
+        };
     }
 
     public bool IsDeleted(string rel) => false;

@@ -182,6 +182,12 @@ public sealed class LayerMetric
     public long HeldWasted { get; set; }
     public long HeldCount { get; set; }
     public long HeldWastedBytes { get; set; }
+    /// <summary>A layer that keeps blocks of the reads other layers served. Its own read count
+    /// says nothing about that work: the bytes below are the whole of it, and they are
+    /// lifetime totals for the reader to difference over its own window.</summary>
+    public bool Accelerating { get; set; }
+    public long AcceleratedBytes { get; set; }
+    public long FetchedBytes { get; set; }
 }
 
 public sealed class MountMetrics

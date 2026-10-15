@@ -37,7 +37,7 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     private string? _directoryGeneration;
     private readonly Func<string> _generation;
     private bool _disposed;
-    private long _hits, _misses, _writeBacks;
+    private long _hits, _misses, _writeBacks, _acceleratedBytes, _fetchedBytes;
     public MemoryCacheLayer(long capacityBytes = 16 * 1048576, int blockSize = 65536, Func<string>? generation = null)
     {
         if (blockSize < 4096 || blockSize > 1048576 || (blockSize & (blockSize - 1)) != 0 || capacityBytes < blockSize)
@@ -53,6 +53,10 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     public long Hits { get { lock (_gate) return _hits; } }
     public long Misses { get { lock (_gate) return _misses; } }
     public long WriteBacks { get { lock (_gate) return _writeBacks; } }
+    /// <summary>Bytes read out of resident pages, so they never reached the stream underneath.</summary>
+    public long AcceleratedBytes { get { lock (_gate) return _acceleratedBytes; } }
+    /// <summary>Bytes pulled from the stream underneath to fill pages.</summary>
+    public long FetchedBytes { get { lock (_gate) return _fetchedBytes; } }
     public long MemoryBytes { get { lock (_gate) return (long)_pages.Count * BlockSize + _directoryBytes; } }
     private static string Normalize(string path) => VfsPath.Normalize(path).ToUpperInvariant();
     private void CheckDirectoryGeneration()
@@ -115,10 +119,19 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         lock (_gate)
         {
             CheckDirectoryGeneration();
-            foreach (var page in _pages.Values.Where(p => p.Owner == null).ToArray()) Remove(page);
             foreach (var change in changes)
             {
                 string key = Normalize(change.Path);
+                // Blocks belong to the path they were read from, so a write only costs the
+                // blocks of what it touched: the changed file, and everything below a path
+                // that was replaced by something other than a directory. The parent listing
+                // that every write also carries names a sibling, not this file, and must not
+                // take its blocks with it. A page whose content survived the write is
+                // unreachable anyway once its size or timestamp moves under it.
+                bool subtree = change.Object == null || !change.Object.Header.IsDir;
+                foreach (var page in _pages.Values.Where(p => p.Owner == null && (p.Path == key ||
+                    (subtree && key.Length > 0 && p.Path.StartsWith(key + "/", StringComparison.Ordinal)))).ToArray())
+                    Remove(page);
                 // Deleting/replacing a directory must also forget its cached descendants.
                 if (change.Object == null || !change.Object.Header.IsDir)
                     foreach (var item in _directories.Values.Where(d => d.Path == key ||
@@ -164,7 +177,8 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         string key = session.Key + "|" + offset;
         if (_pages.TryGetValue(key, out var page))
         {
-            _hits++; _lru.Remove(page.Node); _lru.AddFirst(page.Node); return page;
+            _hits++; _acceleratedBytes += BlockSize;
+            _lru.Remove(page.Node); _lru.AddFirst(page.Node); return page;
         }
         _misses++;
         while (MemoryBytes + BlockSize > Capacity) RemoveOldest();
@@ -179,6 +193,7 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
                 if (n == 0) throw new EndOfStreamException("Backing stream changed during block read");
                 read += n;
             }
+            _fetchedBytes += read;
         }
         page = new Page(key, session.Path, offset, bytes, session);
         page.Node = _lru.AddFirst(page); _pages.Add(key, page); return page;
