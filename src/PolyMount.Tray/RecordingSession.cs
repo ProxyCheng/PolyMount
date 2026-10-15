@@ -23,7 +23,7 @@ internal enum RecordingState
 internal sealed record RecordingPulse(RecordingState State, string? Note, DateTime Time, double RequestMs,
     LayerSampler.Sample? Sample, IReadOnlyList<MountMetrics> Metrics, ServiceProcessReading? Process,
     long RequestBytes, long RequestLines, long ServiceBytes, long ServiceLines, long SampleRows,
-    long SecondRows, long DroppedEvents, long CapacityBytes, int Restarts, IReadOnlyList<TailGap> Gaps,
+    long SecondRows, RecordingCounts? Counts, int Restarts, IReadOnlyList<TailGap> Gaps,
     IReadOnlyList<LayerTotalRecord> Totals, string? Error);
 
 /// <summary>
@@ -66,8 +66,11 @@ internal sealed class RecordingSession
     private List<MountMetrics> _lastMetrics = new();
     private LayerSampler.Sample? _lastSample;
     private DateTime _lastStatusUtc;
-    private string _serviceDirectory = "", _serviceLogPattern = "", _serviceSessionId = "";
-    private long _serviceBytes, _serviceCapacityBytes, _droppedEvents;
+    /// <summary>The directory this instance's sampled log lives in, which is what the recording's
+    /// per-request detail is copied from. The directory rather than the file: Serilog rolls them
+    /// every few megabytes under load, so the segments are matched again on each pass.</summary>
+    private string _detailDirectory = "", _serviceLogPattern = "", _serviceSessionId = "";
+    private RecordingCounts? _counts;
     private int _restarts;
     private string? _note, _error;
 
@@ -113,11 +116,18 @@ internal sealed class RecordingSession
         if (response.Recording is not { Active: true } info) throw new InvalidOperationException("the service started no recording");
         var session = new RecordingSession(mount, NewDirectory(mount));
         session.Adopt(info);
-        // The service's own log is the context around the request channel, which is the evidence.
+        // What the window's per-request detail will come from: this instance's own requests log,
+        // and the service's log around it. Both are accumulated families, so the directory is what
+        // is remembered and the segments are matched as they appear.
         try
         {
-            var service = ControlClient.Logs().Logs.FirstOrDefault(log => log.Name.StartsWith("service/", StringComparison.Ordinal));
-            if (service != null) session._serviceLogPattern = service.Source;
+            foreach (var log in ControlClient.Logs().Logs)
+            {
+                if (log.Name.StartsWith(mount + "/", StringComparison.Ordinal))
+                    session._detailDirectory = Path.GetDirectoryName(log.Source) ?? "";
+                else if (log.Name.StartsWith("service/", StringComparison.Ordinal))
+                    session._serviceLogPattern = log.Source;
+            }
         }
         catch (Exception ex) { session._error = ex.Message; }
         return session;
@@ -214,7 +224,6 @@ internal sealed class RecordingSession
         lock (_gate)
         {
             _serviceSessionId = info.SessionId;
-            _serviceDirectory = info.Directory;
             if (State is RecordingState.Unreachable or RecordingState.Stopped) State = RecordingState.Recording;
         }
         Remember(info);
@@ -222,21 +231,23 @@ internal sealed class RecordingSession
 
     private void Remember(RecordingSessionInfo info)
     {
-        lock (_gate)
-        {
-            _serviceBytes = info.Bytes;
-            _serviceCapacityBytes = info.CapacityBytes;
-            _droppedEvents = info.DroppedEvents;
-        }
+        lock (_gate) _counts = info.Counts ?? _counts;
     }
 
     /// <summary>Copies whatever the service has written since the last poll. The sources are the
     /// paths the service itself named, matched as a family because Serilog rolls them.</summary>
     private void Drain(DateTime utcNow)
     {
-        string directory, pattern;
-        lock (_gate) { directory = _serviceDirectory; pattern = _serviceLogPattern; }
-        if (directory.Length > 0) Requests.Drain(Family(directory, "events"), utcNow);
+        string detail, pattern;
+        lock (_gate)
+        {
+            detail = _detailDirectory;
+            pattern = _serviceLogPattern;
+        }
+        // Read from the beginning of what is there rather than the end: a tray that adopts a
+        // recording someone else started recovers the part it missed, and the digest filters the
+        // bundle's copies by the recording's own window either way.
+        if (detail.Length > 0) Requests.Drain(Family(detail, "requests"), utcNow);
         if (pattern.Length > 0)
             ServiceLog.Drain(Family(Path.GetDirectoryName(pattern) ?? "", Path.GetFileNameWithoutExtension(pattern)), utcNow);
         if (Requests.Truncated)
@@ -308,8 +319,8 @@ internal sealed class RecordingSession
     {
         lock (_gate)
             return new RecordingPulse(State, _note, utcNow, requestMs, sample, metrics, process,
-                Requests.Bytes, Requests.Lines, _serviceBytes, ServiceLog.Lines, SampleRows, _seconds.Count,
-                _droppedEvents, _serviceCapacityBytes, _restarts, Requests.Gaps.ToArray(), Totals(), error);
+                Requests.Bytes, Requests.Lines, ServiceLog.Bytes, ServiceLog.Lines, SampleRows, _seconds.Count,
+                _counts, _restarts, Requests.Gaps.ToArray(), Totals(), error);
     }
 
     private List<LayerTotalRecord> Totals() => _totals
@@ -339,8 +350,7 @@ internal sealed class RecordingSession
             State = RecordingState.Stopped;
             _note = "saved";
             return new RecordingSubmission(Mount, WorkingDirectory, Logs, Requests, ServiceLog,
-                new ServiceChannelState(_serviceSessionId, _serviceDirectory, _serviceBytes,
-                    _serviceCapacityBytes, _droppedEvents, _restarts),
+                new ServiceChannelState(_serviceSessionId, _counts, _restarts),
                 StartedUtc, utcNow, State.ToString(), _note,
                 Totals(), _seconds.ToList(), _readsSeries.ToList(), _bytesSeries.ToList(),
                 _costSeries.ToList(), _writeSeries.ToList(), _overhead.ToList(), SampleRows);

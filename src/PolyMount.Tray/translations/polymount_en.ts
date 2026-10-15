@@ -1062,11 +1062,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message><source>mount.record</source><translation>Record…</translation></message>
     <message><source>record.active.tip</source><translation>This instance is being recorded; click to return to the recording</translation></message>
-    <message><source>record.dropped.warning</source><translation>This recording lost {0} events: its counts and timings are both low by that proportion, so it is not the complete record. A shorter window, or less parallel load, will produce a complete one.</translation></message>
     <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The charts stay the last 60 seconds; the whole recording is in the bundle.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
     <message><source>record.save</source><translation>End and save</translation></message>
+    <message><source>record.counts</source><translation>counted: </translation></message>
     <message><source>record.discard</source><translation>End and discard</translation></message>
     <message><source>record.state.recording</source><translation>Recording</translation></message>
     <message><source>record.state.unreachable</source><translation>Service unreachable</translation></message>
@@ -1075,13 +1075,12 @@ Close applications using mounted files first.</translation>
     <message><source>record.state.starting</source><translation>Connecting</translation></message>
     <message><source>record.state.idle</source><translation>Not recording</translation></message>
     <message><source>record.state.elsewhere</source><translation>The service is recording</translation></message>
-    <message><source>record.evidence.line</source><translation>state {0} · request channel {1} / {2} lines · service log {3} · {4} per-second sample rows · {5} machine-state rows</translation></message>
-    <message><source>record.evidence.dropped</source><translation> · {0} events dropped by the channel</translation></message>
+    <message><source>record.evidence.line</source><translation>state {0} · sampled detail {1} / {2} lines · {3} per-second rows · counted {4} requests / {5} operations</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>Another front-end started this recording, so this panel reports only its size.</translation></message>
     <message><source>mount.performance.tip</source><translation>This instance's live performance: the last 60 seconds by layer, their share and their access cost</translation></message>
     <message><source>mount.performance.recording</source><translation>Performance · recording</translation></message>
     <message><source>record.adopt</source><translation>Take it over</translation></message>
-    <message><source>record.elsewhere.figures</source><translation>{0} written by the service · {1} so far</translation></message>
+    <message><source>record.elsewhere.figures</source><translation>recording for {0} (this panel has no counts for it)</translation></message>
     <message><source>record.elsewhere</source><translation>The service is recording this instance ({0} so far, {1}) and this page is not the one collecting it — most likely a tray that restarted. Taking it over counts what it has already written, and saving writes that too.</translation></message>
     <message><source>record.state.failed</source><translation>Could not start</translation></message>
     <message><source>record.starting</source><translation>Attaching the recording channel…</translation></message>
@@ -1092,8 +1091,6 @@ Close applications using mounted files first.</translation>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
-    <message><source>record.capacity</source><translation>{0} of {1}</translation></message>
-    <message><source>record.capacity.rate</source><translation>{0} of {1} · about {2}/s · roughly {3} left</translation></message>
     <message><source>record.evidence.live</source><translation>ok</translation></message>
     <message><source>record.evidence.waiting</source><translation>waiting for the service</translation></message>
     <message><source>record.evidence.truncated</source><translation>at its ceiling</translation></message>

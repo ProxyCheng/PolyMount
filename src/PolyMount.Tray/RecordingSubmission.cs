@@ -2,9 +2,8 @@ using PolyMount.Core.Ipc;
 
 namespace PolyMount.Tray;
 
-/// <summary>What the service's recording channel reported about itself.</summary>
-internal sealed record ServiceChannelState(string SessionId, string Directory, long Bytes, long CapacityBytes,
-    long DroppedEvents, int Restarts);
+/// <summary>What the service's recording counted, and how the session went.</summary>
+internal sealed record ServiceChannelState(string SessionId, RecordingCounts? Counts, int Restarts);
 
 /// <summary>
 /// A recording, frozen: everything the bundle needs, copied off the session so the writing happens
@@ -55,6 +54,10 @@ internal sealed class RecordingSubmission
     public IReadOnlyList<TailedSource> Sources { get; }
     public IReadOnlyList<TailGap> Gaps { get; }
     public ServiceChannelState Channel { get; }
+
+    /// <summary>The exact counts: every request the instance served in the window, whatever the
+    /// sampled detail chose to write a line about.</summary>
+    public RecordingCounts? Counts => Channel.Counts;
     public DateTime StartedUtc { get; }
     public DateTime EndedUtc { get; }
     public string State { get; }
@@ -107,10 +110,12 @@ internal sealed class RecordingSubmission
             CapturedLines = RequestLines,
             SampleRows = SampleRows,
             SampleTicks = Seconds.Count,
-            DroppedEvents = Channel.DroppedEvents,
             Truncated = State == nameof(RecordingState.Truncated),
-            Complete = Gaps.Count == 0 && State != nameof(RecordingState.Truncated) && Channel.DroppedEvents == 0,
-            ServiceDirectory = Channel.Directory,
+            // What completeness means here: the per-request detail is a sample by rule — which is
+            // not a defect — and the counts are exact by construction, so the only thing that can
+            // be missing is a stretch of the copy itself.
+            Complete = Gaps.Count == 0 && State != nameof(RecordingState.Truncated),
+            Counts = Channel.Counts,
             Restarts = Channel.Restarts,
             Sources = Sources.ToList(),
             Gaps = Gaps.ToList(),

@@ -167,28 +167,25 @@ public static class ControlCommands
     public const string Shutdown = "shutdown";
 }
 
-/// <summary>One recording session on the service: what the channel is doing, what it has written
-/// and where, so a front-end can tail it and account for it rather than assume completeness.</summary>
+/// <summary>One recording on the service: whether it is running, and what it has counted.
+///
+/// There is nothing to tail. A recording counts rather than logs, so what comes back here is the
+/// whole of it — exact counts of every request the instance served, whatever the sampled log chose
+/// to write down about them.</summary>
 public sealed class RecordingSessionInfo
 {
     public bool Active { get; set; }
     public string Mount { get; set; } = "";
     public string Label { get; set; } = "";
-    /// <summary>The session directory's name; identifies a session across a reload.</summary>
+    /// <summary>Identifies a session across a reload, so a front end can tell the one it started
+    /// from one it found running.</summary>
     public string SessionId { get; set; } = "";
-    /// <summary>The session directory, for a front-end that reads the segments itself.</summary>
-    public string Directory { get; set; } = "";
     public string StartedUtc { get; set; } = "";
     public string? StoppedUtc { get; set; }
-    /// <summary>Why it is not running: stopped / capacity / disposed / tray-exit …</summary>
+    /// <summary>Why it is not running: saved / stopped / disposed / tray-exit …</summary>
     public string? StoppedReason { get; set; }
-    /// <summary>Every segment, oldest first. Kept rather than rolled away, so a reader that
-    /// catches up late still finds the beginning of the recording.</summary>
-    public List<LogFile> Segments { get; set; } = new();
-    public long Bytes { get; set; }
-    public long CapacityBytes { get; set; }
-    /// <summary>Events the recording channel's own queue dropped. Reported rather than hidden.</summary>
-    public long DroppedEvents { get; set; }
+    /// <summary>What was counted. Null only before the first session of a process.</summary>
+    public RecordingCounts? Counts { get; set; }
     /// <summary>Identifies the service process, so a restart can be told from a reload.</summary>
     public string ServiceInstanceId { get; set; } = "";
     public string? Error { get; set; }

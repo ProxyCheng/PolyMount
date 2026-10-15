@@ -105,18 +105,13 @@ public sealed class RequestDiagnostics : IDisposable
             long dropped = DroppedMessages;
             if (dropped > _lastDropped) Write(LogEventLevel.Warning, "DROPPED count={Count} total={Total}", new object?[] { dropped - _lastDropped, dropped });
             _lastDropped = dropped;
-            // Lock order: this gate, then the recording channel's. Never the reverse.
-            Channel?.CheckCapacity();
         }
     }
 
-    /// <summary>The lines that are not scopes — the callback counts and the drop reports — go to
-    /// both channels the same way a scope's own line does.</summary>
-    private void Write(LogEventLevel level, string template, object?[] args)
-    {
-        _logger.Write(level, template, args);
-        Channel?.Write(level, template, args);
-    }
+    /// <summary>The lines that are not scopes — the callback counts and the drop reports. A
+    /// recording does not write these either: it holds them as counts, which is what these lines
+    /// are a summary of.</summary>
+    private void Write(LogEventLevel level, string template, object?[] args) => _logger.Write(level, template, args);
 
     public void Dispose()
     {
@@ -164,29 +159,29 @@ public sealed class RequestDiagnostics : IDisposable
 
         public void Stage(string stage) => Volatile.Write(ref _stage, stage);
 
-        /// <summary>Writes this scope's line to whichever channels want it: the sampled channel
-        /// when the sampling rule kept it, and the recording channel whenever one is attached.
-        /// The sampled decision here is exactly the one the callers used to make themselves.</summary>
+        /// <summary>Writes this scope's line, if the sampling rule kept it. The decision here is
+        /// exactly the one the callers used to make themselves; a recording is not a second place
+        /// lines go, it is a count of what this declines to write.</summary>
         internal void Emit(string kind)
         {
-            bool sampled = !_suppressed && (kind == "PENDING" || Trace || (kind == "END" && ElapsedMs >= 100));
-            var channel = _owner.Channel;
-            bool recorded = channel is { Attached: true };
-            if (!sampled && !recorded) return;
+            if (_suppressed || !(kind == "PENDING" || Trace || (kind == "END" && ElapsedMs >= 100))) return;
             object?[] args =
             {
                 kind, Id, _parent?._owner == _owner ? _parent.Id : 0, _thread,
                 ProcessId, _operation, _path, ElapsedMs, Volatile.Read(ref _stage)
             };
-            if (sampled) _owner._logger.Information(LineTemplate, args);
-            if (recorded) channel!.Write(LogEventLevel.Information, LineTemplate, args);
+            _owner._logger.Information(LineTemplate, args);
         }
 
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _finished, 1) != 0) return;
             _owner._active.TryRemove(Id, out _);
+            long elapsed = ElapsedMs;
             Emit("END");
+            // A recording counts this request whether or not a line was written about it, which is
+            // what lets a window be described exactly without describing every request in it.
+            if (_owner.Recording) _owner.Channel!.Count(_operation, _path, elapsed);
             Current.Value = _parent;
         }
     }

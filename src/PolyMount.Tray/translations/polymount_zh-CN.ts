@@ -1062,11 +1062,11 @@
     </message>
     <message><source>mount.record</source><translation>录制…</translation></message>
     <message><source>record.active.tip</source><translation>此实例正在录制，点击回到录制界面</translation></message>
-    <message><source>record.dropped.warning</source><translation>这次录制丢了 {0} 条事件：计数与耗时都按比例偏低，不能当作全量。缩短录制区间、或降低并发负载后重录一次可以得到完整的包。</translation></message>
     <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。趋势图仍是最近 60 秒，全程数据在证据包里。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>
     <message><source>record.save</source><translation>结束并保存</translation></message>
+    <message><source>record.counts</source><translation>精确计数：</translation></message>
     <message><source>record.discard</source><translation>结束并丢弃</translation></message>
     <message><source>record.state.recording</source><translation>录制中</translation></message>
     <message><source>record.state.unreachable</source><translation>服务不可达</translation></message>
@@ -1075,13 +1075,12 @@
     <message><source>record.state.starting</source><translation>正在连接</translation></message>
     <message><source>record.state.idle</source><translation>未在录制</translation></message>
     <message><source>record.state.elsewhere</source><translation>服务端已有录制</translation></message>
-    <message><source>record.evidence.line</source><translation>状态 {0} · 请求通道 {1} / {2} 行 · 服务日志 {3} · 逐层每秒采样 {4} 行 · 每秒机器状态 {5} 行</translation></message>
-    <message><source>record.evidence.dropped</source><translation> · 通道丢弃 {0} 条</translation></message>
+    <message><source>record.evidence.line</source><translation>状态 {0} · 请求明细（抽样日志）{1} / {2} 行 · 每秒 {3} 行 · 精确计数 {4} 次请求 / {5} 种操作</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>服务端这一段录制由别处发起，本面板只显示它的规模。</translation></message>
     <message><source>mount.performance.tip</source><translation>这个实例的实时性能（最近 60 秒的趋势、逐层命中与访问开销）</translation></message>
     <message><source>mount.performance.recording</source><translation>性能 · 录制中</translation></message>
     <message><source>record.adopt</source><translation>接管录制</translation></message>
-    <message><source>record.elsewhere.figures</source><translation>服务端已写入 {0} · 已 {1}</translation></message>
+    <message><source>record.elsewhere.figures</source><translation>已录 {0}（本面板没有它的计数）</translation></message>
     <message><source>record.elsewhere</source><translation>服务端正在录制这个实例（已 {0}，{1}），但不是这个页面在录——可能是托盘重启前留下的。「接管录制」会从它已经写下的内容接着算，保存时一并写出。</translation></message>
     <message><source>record.state.failed</source><translation>无法开始</translation></message>
     <message><source>record.starting</source><translation>正在挂上录制通道…</translation></message>
@@ -1092,8 +1091,6 @@
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
-    <message><source>record.capacity</source><translation>已收集 {0} / 上限 {1}</translation></message>
-    <message><source>record.capacity.rate</source><translation>已收集 {0} / 上限 {1} · 约 {2}/s · 还可录约 {3}</translation></message>
     <message><source>record.evidence.live</source><translation>正常</translation></message>
     <message><source>record.evidence.waiting</source><translation>等待服务</translation></message>
     <message><source>record.evidence.truncated</source><translation>已达上限</translation></message>

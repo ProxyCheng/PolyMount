@@ -360,7 +360,7 @@ internal sealed class RecordingPanel : QWidget
         _collected.SetText(pulse != null ? I18n.F("record.collected",
                 ByteUnits.Format(pulse.RequestBytes), pulse.RequestLines, pulse.SecondRows)
             : _session != null ? T("record.starting")
-            : _elsewhere != null ? I18n.F("record.elsewhere.figures", ByteUnits.Format(_elsewhere.Bytes), ElapsedSince(_elsewhere))
+            : _elsewhere != null ? I18n.F("record.elsewhere.figures", ElapsedSince(_elsewhere))
             : T("record.idle"));
         // An empty line still takes a line: an idle panel should be as tall as what it has to say.
         Show(_evidence, EvidenceLine(pulse));
@@ -372,9 +372,8 @@ internal sealed class RecordingPanel : QWidget
             : _startError.Length > 0 ? T("record.start.failed") + _startError
             : pulse?.Error is { Length: > 0 } error ? T("record.state.unreachable") + " · " + error
             : pulse?.Note is { Length: > 0 } recorded ? T("record.note") + recorded
-            : pulse != null && pulse.DroppedEvents > 0 ? I18n.F("record.dropped.warning", Count(pulse.DroppedEvents))
             : _session != null ? T("record.hint")
-            : _elsewhere != null ? I18n.F("record.elsewhere", ElapsedSince(_elsewhere), ByteUnits.Format(_elsewhere.Bytes))
+            : _elsewhere != null ? I18n.F("record.elsewhere", ElapsedSince(_elsewhere))
             : "";
         Show(_message, message);
         Show(_paths, _session == null || ended
@@ -398,14 +397,13 @@ internal sealed class RecordingPanel : QWidget
         // A recording this panel is not part of has no figures here at all, and saying so is the
         // whole of what this line can honestly report about it.
         if (pulse == null) return T("record.evidence.elsewhere");
-        // A recording that lost events is not the complete record it looks like, and the count of
-        // what it lost belongs next to the claim rather than in a field of the bundle: the reader
-        // should not have to go looking for the reason its numbers are low.
-        string lost = pulse.DroppedEvents == 0 ? ""
-            : " · " + I18n.F("record.evidence.dropped", Count(pulse.DroppedEvents));
-        _evidence.SetStyleSheet(pulse.DroppedEvents > 0 ? "color:#dc2626;" : "color:#718096;");
-        return I18n.F("record.evidence.line", status, ByteUnits.Format(pulse.RequestBytes), Count(pulse.RequestLines),
-            ByteUnits.Format(pulse.ServiceBytes), Count(pulse.SampleRows), Count(pulse.SecondRows)) + lost;
+        // Two kinds of thing, said apart: the per-request detail is the sampled log copied as the
+        // recording runs, and the counts beside it are every request the instance served, whether
+        // or not a line was ever going to be written about it. Neither can be lost to a queue that
+        // does not exist, so this line has no losses to report.
+        return I18n.F("record.evidence.line", status, ByteUnits.Format(pulse.RequestBytes),
+            Count(pulse.RequestLines), Count(pulse.SecondRows),
+            Count(pulse.Counts?.Events ?? 0), Count(pulse.Counts?.Operations.Count ?? 0));
     }
 
     /// <summary>The recording so far, layer by layer — the whole-session view the 60 second table
@@ -430,21 +428,17 @@ internal sealed class RecordingPanel : QWidget
         label.SetVisible(text.Length > 0);
     }
 
+    /// <summary>What the recording counted, operation by operation — the answer the old ceiling and
+    /// rate line used to stand in for. It is exact, and it covers the requests no line was written
+    /// about: four hundred thousand lookups that each took a microsecond are invisible in a log of
+    /// slow requests and plain here.</summary>
     private string CapacityLine(RecordingPulse? pulse)
     {
-        long capacity = pulse?.CapacityBytes ?? 0;
-        long used = pulse?.RequestBytes ?? 0;
-        // The rate is what turns a ceiling into a decision: with the sampling filter off a heavy
-        // traversal writes megabytes a second, and the reader should see how long the recording
-        // they started can still run rather than discover a limit they did not expect.
-        double rate = Rate(pulse);
-        // Near its ceiling the figure turns red where it stands: by the time the channel stops
-        // itself the reader should already have seen it coming.
-        _capacity.SetStyleSheet(capacity > 0 && used * 5 > capacity * 4 ? "color:#dc2626;" : "color:#718096;");
-        return capacity == 0 ? ""
-            : rate <= 0 ? I18n.F("record.capacity", ByteUnits.Format(used), ByteUnits.Format(capacity))
-            : I18n.F("record.capacity.rate", ByteUnits.Format(used), ByteUnits.Format(capacity),
-                ByteUnits.Format(rate), Duration(TimeSpan.FromSeconds((capacity - used) / rate)));
+        var counts = pulse?.Counts;
+        if (counts is not { Operations.Count: > 0 }) return "";
+        return T("record.counts") + " " + string.Join(" · ", counts.Operations.Take(4).Select(operation =>
+            string.Format(I18n.Culture, "{0} {1:N0} / {2:N0}ms",
+                operation.Operation, operation.Count, operation.TotalMs)));
     }
 
     /// <summary>Every stretch the copy knows is missing. Empty is the normal case, and then the
@@ -596,9 +590,10 @@ internal sealed class RecordingPanel : QWidget
         string figures = I18n.F("record.collected", ByteUnits.Format(4096), 40, 7);
         if (_collected.Text != figures)
             throw new InvalidOperationException($"The panel reports '{_collected.Text}' instead of '{figures}'");
-        // The evidence line has to account for every source the recording copies.
+        // The evidence line has to account for both halves: the sampled detail it copied, and the
+        // exact counts it holds.
         string evidence = _evidence.Text;
-        foreach (var part in new[] { ByteUnits.Format(4096), Count(40), Count(20) })
+        foreach (var part in new[] { ByteUnits.Format(4096), Count(40), Count(660), Count(2) })
             if (!evidence.Contains(part, StringComparison.Ordinal))
                 throw new InvalidOperationException($"The evidence line does not account for {part}: {evidence}");
         // The whole-recording view is the thing the 60 second table cannot give, in one line: the
@@ -607,11 +602,13 @@ internal sealed class RecordingPanel : QWidget
             !_totals.Text.Contains("100%", StringComparison.Ordinal) ||
             _totals.Text.Contains("Memory", StringComparison.Ordinal))
             throw new InvalidOperationException("The whole-recording line does not describe the layers it was given: " + _totals.Text);
-        if (_capacity.Text.Length == 0 || _capacity.StyleSheet.Length == 0)
-            throw new InvalidOperationException("The panel does not show how full the recording is");
+        // And the counting line names the operations it counted, which is what replaced the ceiling
+        // a recording used to approach.
+        if (!_capacity.Text.Contains("VFS.Lookup", StringComparison.Ordinal) || !_capacity.Text.Contains(Count(600), StringComparison.Ordinal))
+            throw new InvalidOperationException("The panel does not report what the recording counted: " + _capacity.Text);
     }
 
-    /// <summary>One second as a recording of two layers would report it, for the checks above.</summary>
+    /// <summary>One second as a recording would report it, for the checks above.</summary>
     private RecordingPulse Synthetic()
     {
         var now = DateTime.UtcNow;
@@ -620,8 +617,18 @@ internal sealed class RecordingPanel : QWidget
             new(_name, "svn", "SVN", "#2563eb", false, 40, 4096, 0, 12.5, 40, 0, 0),
             new(_name, "ram", "Memory", "#0891b2", true, 0, 0, 0, 0, 0, 75, 6144)
         };
+        var counts = new RecordingCounts
+        {
+            Events = 660, Over100 = 3, TotalMs = 412, MaxMs = 240,
+            Operations = new List<OperationCount>
+            {
+                new() { Operation = "VFS.Lookup", Count = 600, Over100 = 2, TotalMs = 300, MaxMs = 240 },
+                new() { Operation = "Layer.GetEntry:cache", Count = 60, Over100 = 1, TotalMs = 112, MaxMs = 130 }
+            },
+            Paths = new List<PathCount> { new() { Operation = "VFS.Lookup", Path = "Char/char3", Count = 12, TotalMs = 90, MaxMs = 40 } }
+        };
         return new RecordingPulse(RecordingState.Recording, null, now, 3.5, null, new List<MountMetrics>(),
             new ServiceProcessReading(1, now.ToString("O"), 10, 12, 4096, 8192, 8, 100),
-            4096, 40, 1024, 20, 20, 7, 0, 512L * 1024 * 1024, 0, Array.Empty<TailGap>(), totals, null);
+            4096, 40, 1024, 20, 20, 7, counts, 0, Array.Empty<TailGap>(), totals, null);
     }
 }

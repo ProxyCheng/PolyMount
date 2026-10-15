@@ -98,9 +98,6 @@ public sealed class MountInstance : IDisposable
 
     public RecordingSessionInfo RecordingInfo() => Channel.Info();
 
-    /// <summary>Where the recording channel lives, and the size it stops itself at.</summary>
-    public long RecordingCapacityBytes => RecordingChannel.SessionBytes;
-
     private RecordingChannel Channel => Vfs.Diagnostics?.Channel
         ?? throw new NotSupportedException("this instance has no recording channel");
 

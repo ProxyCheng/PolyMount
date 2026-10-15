@@ -70,10 +70,13 @@ internal sealed class RecordingRecord
     public long DroppedEvents { get; init; }
     /// <summary>The recording stopped at its own ceiling, so it is not the whole story.</summary>
     public bool Truncated { get; init; }
-    /// <summary>Whether this is the whole story: no known gap, not cut short, and nothing the
-    /// channel itself had to drop. Three fields that all had to be checked before this existed,
-    /// and the one conclusion a reader has to reach first.</summary>
+    /// <summary>Whether this is the whole story: no known gap, and not cut short. The per-request
+    /// detail is a sample by rule, which is not a defect; the counts are exact by construction.</summary>
     public bool Complete { get; init; }
+    /// <summary>Every request the instance served in the window, counted exactly. This is the block
+    /// to answer "how much of anything happened" from; the digest's figures describe the sampled
+    /// detail the bundle also carries.</summary>
+    public RecordingCounts? Counts { get; init; }
     /// <summary>Where the service wrote the session the front-end read from.</summary>
     public string ServiceDirectory { get; init; } = "";
     public string ServiceInstanceId { get; init; } = "";
