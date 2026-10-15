@@ -96,7 +96,7 @@ internal sealed record LayerTotalRecord(string Mount, string Layer, string Displ
 /// <summary>One second of a recording as the machine running it saw it.</summary>
 internal readonly record struct SecondRecord(DateTime Time, double Reads, double Bytes, double Cost,
     double WriteBytes, double RequestMs, double DispatchMs, double UiMs, double CpuSeconds,
-    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles);
+    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles, int WorkerPid);
 
 /// <summary>One chart's headline and summary figures.</summary>
 internal readonly record struct ChartRecord(string Chart, string Unit, ChartStatistics Statistics);
@@ -129,6 +129,12 @@ internal static class StatsExport
         string directory = Path.Combine(parent, "PolyMount-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
         Directory.CreateDirectory(directory);
         var (service, mounts, logs) = ServiceData();
+        // The process the recording's own numbers are about: the worker the supervisor reports for
+        // the recorded instance. Zero when that instance is not running — then there is no reading
+        // to carry, and saying so is better than reporting some other instance's process.
+        int workerPid = snapshot.Scope.Length == 0
+            ? 0
+            : mounts.FirstOrDefault(m => string.Equals(m.Name, snapshot.Scope, StringComparison.OrdinalIgnoreCase))?.WorkerPid ?? 0;
         // A recording brings its own log copies: it read them while the service was writing, so
         // they hold the beginning of the window even if the service's files have rolled since.
         var copies = snapshot.LogsDirectory is { Length: > 0 } collected
@@ -142,7 +148,7 @@ internal static class StatsExport
         var digest = RequestLogDigest.Build(copies, WindowStart(snapshot), ToOffset(snapshot.CapturedUtc), snapshot.Kind);
         File.WriteAllText(Path.Combine(directory, "requests-summary.json"), digest.Json, Utf8);
         File.WriteAllText(Path.Combine(directory, "summary.json"),
-            SummaryJson(snapshot, service, mounts, copies, digest, rows), Utf8);
+            SummaryJson(snapshot, service, mounts, copies, digest, rows, workerPid), Utf8);
         return new(directory, 3 + (seconds ? 1 : 0) + copies.Count(copy => copy.Error == null),
             (int)rows, copies.Count);
     }
@@ -186,7 +192,8 @@ internal static class StatsExport
     {
         try
         {
-            return ((true, null), SupervisorClient.Default.Status().Mounts, SupervisorClient.Default.Logs().Logs);
+            var status = InstanceView.Status();
+            return ((status.Ok, status.Error), status.Mounts, SupervisorClient.Default.Logs().Logs);
         }
         catch (Exception ex)
         {
@@ -245,7 +252,7 @@ internal static class StatsExport
     }
 
     private static string SummaryJson(StatsSnapshot snapshot, (bool Reachable, string? Error) service,
-        List<MountStatus> mounts, List<LogFileCopy> logs, RequestDigest digest, long rows)
+        List<MountStatus> mounts, List<LogFileCopy> logs, RequestDigest digest, long rows, int workerPid)
     {
         var coverage = digest.Coverage
             .GroupBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase)
@@ -285,7 +292,7 @@ internal static class StatsExport
                 tray = EntryVersion(),
                 winFsp = WinFspVersion()
             },
-            serviceProcess = ServiceProcess(),
+            serviceProcess = ServiceProcess(workerPid),
             service = new { reachable = service.Reachable, error = service.Error, mounts },
             layers = snapshot.Metrics,
             recording = snapshot.Recording,
@@ -361,7 +368,7 @@ internal static class StatsExport
     /// the window cannot show, since its charts describe PolyMount's own bookkeeping rather than
     /// whether the machine was busy. A stopped service is recorded as absent; the records the
     /// window holds are the point, and they outlive it.</summary>
-    private static object? ServiceProcess() => ServiceProcessReading.Now() is { } sample ? new
+    private static object? ServiceProcess(int pid) => ServiceProcessReading.For(pid) is { } sample ? new
     {
         id = sample.Id,
         startTimeUtc = sample.StartTimeUtc,
@@ -412,7 +419,7 @@ internal static class StatsExport
     private static string SecondsCsv(List<SecondRecord> seconds)
     {
         var csv = new StringBuilder(
-            "time_utc,reads,bytes,avg_cost_ms,write_bytes,request_ms,dispatch_ms,ui_ms,cpu_seconds,working_set_bytes,private_bytes,threads,handles\n");
+            "time_utc,reads,bytes,avg_cost_ms,write_bytes,request_ms,dispatch_ms,ui_ms,cpu_seconds,working_set_bytes,private_bytes,threads,handles,worker_pid\n");
         foreach (var second in seconds)
             csv.Append(second.Time.ToString("O", CultureInfo.InvariantCulture)).Append(',')
                 .Append(Number(second.Reads)).Append(',').Append(Number(second.Bytes)).Append(',')
@@ -422,7 +429,8 @@ internal static class StatsExport
                 .Append(second.WorkingSetBytes.ToString(CultureInfo.InvariantCulture)).Append(',')
                 .Append(second.PrivateBytes.ToString(CultureInfo.InvariantCulture)).Append(',')
                 .Append(second.Threads.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(second.Handles.ToString(CultureInfo.InvariantCulture)).Append('\n');
+                .Append(second.Handles.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(second.WorkerPid.ToString(CultureInfo.InvariantCulture)).Append('\n');
         return csv.ToString();
     }
 
@@ -432,25 +440,28 @@ internal static class StatsExport
         ? field : '"' + field.Replace("\"", "\"\"") + '"';
 }
 
-/// <summary>One reading of the service process, for the snapshot the bundle carries and for the
-/// per-second series a recording collects. Absent when the service is not running.</summary>
+/// <summary>One reading of one instance's own process, for the snapshot the bundle carries and for
+/// the per-second series a recording collects. Every instance is served by a process of its own, so
+/// the reading is asked for by pid: the supervisor says which process runs the instance, and this is
+/// where that pid becomes numbers. Absent when that process is not there — a worker that was
+/// restarted between two polls leaves a gap rather than a reading taken from another instance.
+///
+/// These are the operating system's own figures for that process, which is why they are the whole
+/// of what this instance cost: no thread has to be attributed to a mount, and no other instance's
+/// work can land in them.</summary>
 internal sealed record ServiceProcessReading(int Id, string StartTimeUtc, double UptimeSeconds, double CpuSeconds,
     long WorkingSetBytes, long PrivateBytes, int Threads, int Handles)
 {
-    public static ServiceProcessReading? Now()
+    public static ServiceProcessReading? For(int pid)
     {
-        System.Diagnostics.Process[] candidates;
-        try { candidates = System.Diagnostics.Process.GetProcessesByName("PolyMount.Service"); }
-        catch { return null; }
+        if (pid <= 0) return null;
         try
         {
-            var process = candidates.OrderByDescending(candidate => candidate.StartTime).FirstOrDefault();
-            if (process == null) return null;
+            using var process = System.Diagnostics.Process.GetProcessById(pid);
             return new(process.Id, process.StartTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
                 (DateTime.Now - process.StartTime).TotalSeconds, process.TotalProcessorTime.TotalSeconds,
                 process.WorkingSet64, process.PrivateMemorySize64, process.Threads.Count, process.HandleCount);
         }
         catch { return null; }
-        finally { foreach (var candidate in candidates) candidate.Dispose(); }
     }
 }

@@ -72,6 +72,10 @@ internal sealed class RecordingSession
     /// every few megabytes under load, so the segments are matched again on each pass.</summary>
     private string _detailDirectory = "", _serviceLogPattern = "", _serviceSessionId = "";
     private RecordingCounts? _counts;
+    /// <summary>The process serving this instance. Every instance has one of its own, so the cost
+    /// the recording collects is that process's cost and no thread has to be attributed to a mount.
+    /// It changes only if the worker is restarted, so it is re-read with the recording status.</summary>
+    private int _workerPid;
     private int _restarts;
     private string? _note, _error;
 
@@ -143,7 +147,9 @@ internal sealed class RecordingSession
     /// note what the machine running it was spending.</summary>
     public RecordingPulse Poll(DateTime utcNow)
     {
-        var process = ServiceProcessReading.Now();
+        // The instance's own process: a reading of "the service" would now be whichever worker
+        // happened to have started last, which is another instance's number dressed as this one's.
+        var process = ServiceProcessReading.For(_workerPid);
         double requestMs = 0;
         try
         {
@@ -191,6 +197,7 @@ internal sealed class RecordingSession
         if (info.Active && info.SessionId == ServiceSessionId)
         {
             Remember(info);
+            RememberWorker();
             return;
         }
         if (info.Active)
@@ -233,6 +240,21 @@ internal sealed class RecordingSession
             if (State is RecordingState.Unreachable or RecordingState.Stopped) State = RecordingState.Recording;
         }
         Remember(info);
+        RememberWorker();
+    }
+
+    /// <summary>Learns which process serves this instance. The supervisor is the one that knows:
+    /// a worker reports what its mount is doing, not which process it is. A failure leaves the last
+    /// one — an unreadable pid is not a reason to attribute this instance's cost to another.</summary>
+    private void RememberWorker()
+    {
+        try
+        {
+            var status = SupervisorClient.Default.Status();
+            if (status.Mounts.FirstOrDefault(m => string.Equals(m.Name, Mount, StringComparison.OrdinalIgnoreCase)) is { WorkerPid: > 0 } row)
+                lock (_gate) _workerPid = row.WorkerPid;
+        }
+        catch (Exception) { }
     }
 
     private void Remember(RecordingSessionInfo info)
@@ -311,7 +333,7 @@ internal sealed class RecordingSession
             _overhead.Add(requestMs);
             _seconds.Add(new SecondRecord(utcNow, reads, bytes, cost, writes, requestMs, 0, 0,
                 process?.CpuSeconds ?? 0, process?.WorkingSetBytes ?? 0, process?.PrivateBytes ?? 0,
-                process?.Threads ?? 0, process?.Handles ?? 0));
+                process?.Threads ?? 0, process?.Handles ?? 0, process?.Id ?? _workerPid));
             _lastSample = sample;
             _lastMetrics = metrics;
         }
