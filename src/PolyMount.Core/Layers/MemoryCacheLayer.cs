@@ -32,8 +32,24 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         public LinkedListNode<object> Node = null!;
     }
     private readonly Dictionary<string, DirectorySnapshot> _directories = new();
+    /// <summary>
+    /// Records carrying only a header, for paths the resolver asked about by name. Without
+    /// them a repeated resolution of one path walks the whole chain again and reaches the
+    /// disk cache for an answer that has not changed, which is what a reopened file shows
+    /// as source-like latency. This layer holds no bytes, so a header — not a copy of the
+    /// file — is the only thing it can answer with.
+    /// </summary>
+    private sealed class HeaderRecord(string path, VirtualObject value, long bytes)
+    {
+        public readonly string Path = path;
+        public readonly VirtualObject Value = value;
+        public readonly long Bytes = bytes;
+        public LinkedListNode<object> Node = null!;
+    }
+    private readonly Dictionary<string, HeaderRecord> _headers = new();
     private readonly LinkedList<object> _lru = new();
     private long _directoryBytes;
+    private long _headerBytes;
     private string? _directoryGeneration;
     private readonly Func<string> _generation;
     private bool _disposed;
@@ -57,17 +73,25 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     public long AcceleratedBytes { get { lock (_gate) return _acceleratedBytes; } }
     /// <summary>Bytes pulled from the stream underneath to fill pages.</summary>
     public long FetchedBytes { get { lock (_gate) return _fetchedBytes; } }
-    public long MemoryBytes { get { lock (_gate) return (long)_pages.Count * BlockSize + _directoryBytes; } }
+    /// <summary>Everything this layer holds, blocks and snapshots and headers alike: they share
+    /// one budget, so a header storm cannot grow the layer past <see cref="Capacity"/>.</summary>
+    public long MemoryBytes { get { lock (_gate) return (long)_pages.Count * BlockSize + _directoryBytes + _headerBytes; } }
     private static string Normalize(string path) => VfsPath.Normalize(path).ToUpperInvariant();
     private void CheckDirectoryGeneration()
     {
         string generation = Generation;
         if (_directoryGeneration == generation) return;
+        // Headers name the same frozen tree the listings do, so a generation change retires
+        // them together with the snapshots they came from.
         foreach (var item in _directories.Values.ToArray()) Remove(item);
+        foreach (var item in _headers.Values.ToArray()) Remove(item);
         _directoryGeneration = generation;
     }
     public override bool TryReadObject(string path, out VirtualObject value)
     {
+        // Complete listings only. The resolver reads a hit here as the authoritative
+        // namespace value and enumerates <see cref="VirtualObject.Children"/>, so answering
+        // with a header-only record would hand it a listing with nothing in it.
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -79,7 +103,11 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     public void TouchObject(string path)
     {
         // Same recency update a hit performs, for reads a higher cache answered.
-        lock (_gate) { ObjectDisposedException.ThrowIf(_disposed, this); TryGetDirectory(path, out _); }
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!TryGetDirectory(path, out _)) TryGetHeaderRecord(path, out _);
+        }
     }
     private bool TryGetDirectory(string path, out DirectorySnapshot item)
     {
@@ -88,10 +116,24 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         _lru.Remove(found.Node); _lru.AddFirst(found.Node);
         item = found; return true;
     }
+    private bool TryGetHeaderRecord(string path, out HeaderRecord item)
+    {
+        CheckDirectoryGeneration();
+        if (!_headers.TryGetValue(Normalize(path), out var found)) { item = null!; return false; }
+        _lru.Remove(found.Node); _lru.AddFirst(found.Node);
+        item = found; return true;
+    }
     public override bool TryApply(IReadOnlyList<ObjectChange> changes) => false;
+    /// <summary>A path this layer holds a record of, complete or header-only.</summary>
     public override bool TryGetEntry(string path, out VfsEntry entry)
     {
-        bool found = TryReadObject(path, out var value); entry = found ? value.Header : null!; return found;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (TryGetDirectory(path, out var directory)) { entry = directory.Value.Header; return true; }
+            if (TryGetHeaderRecord(path, out var header)) { entry = header.Value.Header; return true; }
+            entry = null!; return false;
+        }
     }
     public override IReadOnlyList<VfsEntry> ListOwn(string path) => TryReadObject(path, out var value)
         ? value.Children! : Array.Empty<VfsEntry>();
@@ -99,6 +141,15 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     public void Store(string path, string version, VfsEntry entry, Stream content) { }
     public void StoreObject(string path, VirtualObject value, Stream? content = null)
     {
+        // A value with neither children nor bytes is header-only: what the resolver learned
+        // by asking for one path by name. A file value that carries content belongs to the
+        // block cache — this layer holds no bytes — and is refused, which is what tells the
+        // two kinds apart.
+        if (value.Children == null)
+        {
+            if (content == null) StoreHeader(path, value);
+            return;
+        }
         if (!value.Header.IsDir) return;
         lock (_gate)
         {
@@ -106,12 +157,30 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
             CheckDirectoryGeneration();
             string key = Normalize(path);
             if (_directories.TryGetValue(key, out var previous)) Remove(previous);
+            // A complete listing answers every question the header could, so it supersedes one.
+            RemoveHeader(key);
             long bytes = CacheBudgets.Estimate(key, value);
             if (bytes > Capacity) return;
-            while (MemoryBytes + bytes > Capacity || _directories.Count >= CacheBudgets.MaxObjects) RemoveOldest();
+            while (MemoryBytes + bytes > Capacity || _directories.Count + _headers.Count >= CacheBudgets.MaxObjects) RemoveOldest();
             var snapshot = value.Snapshot();
             var item = new DirectorySnapshot(key, snapshot, bytes);
             item.Node = _lru.AddFirst(item); _directories.Add(key, item); _directoryBytes += bytes;
+        }
+    }
+    private void StoreHeader(string path, VirtualObject value)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            CheckDirectoryGeneration();
+            string key = Normalize(path);
+            if (_directories.ContainsKey(key)) return;
+            if (_headers.TryGetValue(key, out var previous)) Remove(previous);
+            long bytes = CacheBudgets.Estimate(key, value);
+            if (bytes > Capacity) return;
+            while (MemoryBytes + bytes > Capacity || _directories.Count + _headers.Count >= CacheBudgets.MaxObjects) RemoveOldest();
+            var item = new HeaderRecord(key, value.Snapshot(), bytes);
+            item.Node = _lru.AddFirst(item); _headers.Add(key, item); _headerBytes += bytes;
         }
     }
     public void UpdateAfterWrite(IReadOnlyList<ObjectChange> changes)
@@ -133,10 +202,17 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
                     (subtree && key.Length > 0 && p.Path.StartsWith(key + "/", StringComparison.Ordinal)))).ToArray())
                     Remove(page);
                 // Deleting/replacing a directory must also forget its cached descendants.
-                if (change.Object == null || !change.Object.Header.IsDir)
+                if (subtree)
                     foreach (var item in _directories.Values.Where(d => d.Path == key ||
                         key.Length == 0 || d.Path.StartsWith(key + "/", StringComparison.Ordinal)).ToArray()) Remove(item);
-                else StoreObject(key, change.Object);
+                else StoreObject(key, change.Object!);
+                // A header is a statement about what is at this path, so the write that just
+                // changed this path is newer than it. The stored directory above supersedes
+                // the header for a path whose new value arrived with the change.
+                RemoveHeader(key);
+                if (subtree)
+                    foreach (var item in _headers.Values.Where(h => h.Path == key ||
+                        key.Length == 0 || h.Path.StartsWith(key + "/", StringComparison.Ordinal)).ToArray()) Remove(item);
             }
         }
     }
@@ -167,10 +243,22 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
     {
         _directories.Remove(item.Path); _lru.Remove(item.Node); _directoryBytes -= item.Bytes;
     }
+    private void Remove(HeaderRecord item)
+    {
+        _headers.Remove(item.Path); _lru.Remove(item.Node); _headerBytes -= item.Bytes;
+    }
+    private void RemoveHeader(string key)
+    {
+        if (_headers.TryGetValue(key, out var item)) Remove(item);
+    }
     private void RemoveOldest()
     {
-        if (_lru.Last!.Value is Page page) Remove(page);
-        else Remove((DirectorySnapshot)_lru.Last.Value);
+        switch (_lru.Last?.Value)
+        {
+            case Page page: Remove(page); break;
+            case DirectorySnapshot item: Remove(item); break;
+            case HeaderRecord header: Remove(header); break;
+        }
     }
     private Page GetPage(Session session, long offset, bool overwrite = false)
     {
@@ -213,6 +301,7 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         {
             foreach (var page in _pages.Values.Where(p => p.Owner == null).ToArray()) Remove(page);
             foreach (var item in _directories.Values.ToArray()) Remove(item);
+            foreach (var item in _headers.Values.ToArray()) Remove(item);
         }
     }
     public override void Clear()
@@ -221,6 +310,7 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         {
             foreach (var page in _pages.Values.ToArray()) Remove(page);
             foreach (var item in _directories.Values.ToArray()) Remove(item);
+            foreach (var item in _headers.Values.ToArray()) Remove(item);
         }
     }
     public void ReleaseObject(string path)
@@ -230,10 +320,13 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
         {
             foreach (var page in _pages.Values.Where(p => p.Path == normalized).ToArray()) Remove(page);
             if (_directories.TryGetValue(normalized, out var item)) Remove(item);
+            if (_headers.TryGetValue(normalized, out var header)) Remove(header);
         }
     }
     public LayerStorageUsage GetStorageUsage()
     {
+        // Headers are neither files nor directories: they name a path without holding a
+        // copy of it, so they stay out of both counts and show only in the memory total.
         lock (_gate) return new(0, 0, _pages.Values.Select(p => p.Path).Distinct().Count(), _directories.Count,
             CacheBytes: MemoryBytes, CacheCapacity: Capacity, MemoryBytes: MemoryBytes);
     }

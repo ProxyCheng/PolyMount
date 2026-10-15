@@ -18,8 +18,11 @@ public sealed record VirtualObject(VfsEntry Header, IReadOnlyList<VfsEntry>? Chi
         {
             var current = Volatile.Read(ref _payload);
             if (current != null) return current;
+            // A directory without children is a header-only record, not a broken listing:
+            // it is what a path resolved by name yields, and it must survive being asked
+            // for its content by the budget or snapshot paths.
             ObjectContent created = Header.IsDir
-                ? new DirectoryObjectContent(Children ?? throw new InvalidDataException("Directory requires a complete listing"))
+                ? Children == null ? new HeaderObjectContent() : new DirectoryObjectContent(Children)
                 : new FileObjectContent(Header.Size);
             return Interlocked.CompareExchange(ref _payload, created, null) ?? created;
         }
@@ -35,6 +38,14 @@ public sealed record VirtualObject(VfsEntry Header, IReadOnlyList<VfsEntry>? Chi
         if (header.IsDir != (content is DirectoryObjectContent)) throw new ArgumentException("Header and content kind differ");
         return new VirtualObject(header, content.Entries) { _payload = content };
     }
+    /// <summary>
+    /// The one way to build a header-only record: what a path resolved by name yields, with
+    /// neither a listing nor content behind it. Use this rather than the constructor, which
+    /// would leave <see cref="Content"/> to be decided by whether children happen to be null.
+    /// Named for what it makes because the record's own <see cref="Header"/> member owns the
+    /// shorter name.
+    /// </summary>
+    public static VirtualObject HeaderOnly(VfsEntry header) => new(header, null) { _payload = new HeaderObjectContent() };
     public static VirtualObject Directory(string path, IEnumerable<VfsEntry> children)
     {
         var content = new DirectoryObjectContent(children);

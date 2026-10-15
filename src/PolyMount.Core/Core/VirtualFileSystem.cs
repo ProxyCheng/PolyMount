@@ -115,10 +115,16 @@ public sealed class VirtualFileSystem
         entry = null!;
         // A lookup no layer answered has no layer to charge, and is left out.
         int index = _layers.Count;
+        long epoch = Interlocked.Read(ref _resolutionEpoch);
         var watch = System.Diagnostics.Stopwatch.StartNew();
         bool found = Visible(path) && ResolveHeader(path, out entry, out index);
         if (recordAccess && index < _layers.Count)
             Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
+        if (found && index < _layers.Count)
+            lock (_cacheUpdateGate)
+                // A write that landed while this was resolving already told the caches what
+                // changed; publishing the older answer over it would undo that.
+                if (epoch == Interlocked.Read(ref _resolutionEpoch)) FillHeader(path, entry, index);
         return found;
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
@@ -201,15 +207,42 @@ public sealed class VirtualFileSystem
     {
         for (int i = hit - 1; i >= 0; i--)
         {
-            if (_layers[i] is not IObjectCache cache) continue;
-            var inner = _layers[i] is NamedLayer wrapper ? wrapper.Inner : _layers[i];
-            // Durable writes and read-through caches expose separate capabilities.
-            if (inner is not IWriteAwareCache && _layers.Skip(i + 1).Take(hit - i).Any(l =>
-                (l is NamedLayer named ? named.Inner : l) is PolyMount.Layers.LruCacheLayer lru ? lru.HasDurableWrites : l.Writable)) continue;
+            if (_layers[i] is not IObjectCache cache || !AcceptsFill(i, hit)) continue;
             long position = content?.Position ?? 0;
             try { cache.StoreObject(path, value, content); }
             finally { if (content != null) content.Position = position; }
         }
+    }
+    /// <summary>
+    /// Remembers, above the layer that answered, that this path exists and what it looks
+    /// like. Resolving a path by name is the one read that has no other way to be answered
+    /// from memory: the parent's listing holds the same header, but only for whoever
+    /// enumerates it, so a repeated open of one file used to walk the whole chain down to
+    /// the provider every time. Enumeration deliberately does not do this: writing a record
+    /// per listed child is the growth this avoids.
+    /// </summary>
+    private void FillHeader(string path, VfsEntry entry, int hit)
+    {
+        VirtualObject? record = null;
+        for (int i = hit - 1; i >= 0; i--)
+        {
+            if (_layers[i] is not IObjectCache cache || !AcceptsFill(i, hit)) continue;
+            cache.StoreObject(path, record ??= VirtualObject.HeaderOnly(entry));
+        }
+    }
+    /// <summary>
+    /// Whether the layer at <paramref name="index"/> may keep a copy of something the layer
+    /// at <paramref name="hit"/> answered. A writable layer between them owns the path from
+    /// now on, so a copy underneath it would only be shadowed — and a layer below the answer
+    /// must never receive a record the layer above would shadow forever.
+    /// </summary>
+    private bool AcceptsFill(int index, int hit)
+    {
+        var inner = _layers[index] is NamedLayer wrapper ? wrapper.Inner : _layers[index];
+        // Durable writes and read-through caches expose separate capabilities.
+        if (inner is IWriteAwareCache) return true;
+        return !_layers.Skip(index + 1).Take(hit - index).Any(l =>
+            (l is NamedLayer named ? named.Inner : l) is PolyMount.Layers.LruCacheLayer lru ? lru.HasDurableWrites : l.Writable);
     }
     private IDisposable ObservePredictions(string path)
     {

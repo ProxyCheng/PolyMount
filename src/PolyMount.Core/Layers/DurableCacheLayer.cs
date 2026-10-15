@@ -233,6 +233,12 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
 
     public virtual void StoreObject(string path, VirtualObject value, Stream? content = null)
     {
+        // A value with neither children nor content is header-only: a namespace fact the
+        // resolver learned by asking for one path by name. The store has no shape for one —
+        // the row would carry no children and no blob, and TryReadObject hands a row back as
+        // a complete directory listing — and writing a row per resolved path is exactly the
+        // on-disk growth that header records exist to avoid. They live in the memory layer.
+        if (value.Children == null && content == null) return;
         if (!KeepIndexed(value)) return;
         string key = Key(path);
         long estimate = value.Content.PersistenceEstimate;

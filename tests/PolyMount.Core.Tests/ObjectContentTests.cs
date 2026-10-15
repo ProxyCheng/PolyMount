@@ -37,4 +37,23 @@ public sealed class ObjectContentTests
         Assert.AreEqual(3L, payload.LogicalBytes);
         Assert.IsNull(payload.Entries);
     }
+
+    [TestMethod]
+    public void A_header_only_payload_is_neither_a_listing_nor_bytes()
+    {
+        var value = VirtualObject.HeaderOnly(new VfsEntry { Name = "file.bin", IsDir = false, Size = 4096 });
+        var payload = value.Content;
+        Assert.IsInstanceOfType<HeaderObjectContent>(payload);
+        Assert.AreEqual(0L, payload.LogicalBytes);
+        Assert.AreEqual(128L, payload.EstimatedMemoryBytes);
+        Assert.AreEqual(0L, payload.PersistenceEstimate, "a header must never consume content capacity");
+        Assert.IsNull(payload.Entries, "it is not a directory listing");
+        Assert.ThrowsException<NotSupportedException>(() => payload.OpenRead());
+        Assert.AreSame(payload, payload.Snapshot());
+        // Both shapes must survive being asked, including a directory with no children.
+        Assert.IsNotNull(VirtualObject.HeaderOnly(new VfsEntry { Name = "dir", IsDir = true }).Content);
+        var copy = value.Snapshot();
+        Assert.IsInstanceOfType<HeaderObjectContent>(copy.Content);
+        Assert.AreEqual(4096L, copy.Header.Size);
+    }
 }

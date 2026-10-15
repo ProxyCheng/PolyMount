@@ -165,6 +165,11 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
 
     public void StoreObject(string path, VirtualObject value, Stream? content = null)
     {
+        // A record with neither children nor content is header-only: the resolver telling
+        // this layer that a path exists, not a guess it chose to read ahead. Keeping it would
+        // count against a guess nobody made (HeldObjects, and the eviction that calls it
+        // wasted), and TryReadObject is read as a complete listing, which a header is not.
+        if (value.Children == null && content == null) return;
         byte[]? payload = null;
         if (content != null)
         {

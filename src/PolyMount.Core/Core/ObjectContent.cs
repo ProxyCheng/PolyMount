@@ -32,6 +32,22 @@ public sealed class FileObjectContent : ObjectContent
         stream == null ? null : PolyMount.Layers.CacheContent.Capture(stream);
 }
 
+/// <summary>
+/// A record that carries a header and nothing else: no children, no bytes. It answers
+/// "this path exists and looks like this", which is what resolving a path by name means.
+/// It must never be mistaken for either complete payload: <see cref="Entries"/> stays null
+/// so a reader cannot take it for a directory listing, and <see cref="OpenRead"/> throws so
+/// it cannot be taken for a file's bytes — whoever needs either has to reach the provider.
+/// <see cref="PersistenceEstimate"/> is zero, so a header never consumes content capacity.
+/// </summary>
+public sealed class HeaderObjectContent : ObjectContent
+{
+    public override long LogicalBytes => 0;
+    public override long EstimatedMemoryBytes => 128;
+    internal override long PersistenceEstimate => 0;
+    public override ObjectContent Snapshot() => this;
+}
+
 public sealed class DirectoryObjectContent : ObjectContent
 {
     private readonly IReadOnlyList<VfsEntry> _entries;

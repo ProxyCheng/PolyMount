@@ -24,6 +24,9 @@ internal sealed class FakeSourceLayer : ILayer
 
     public int OpenReadCount { get; private set; }
     public List<string> ListedDirectories { get; } = new();
+    /// <summary>Paths this source was asked about by name, which is the other way a
+    /// resolution reaches it: a listing answers its children, this answers one path.</summary>
+    public List<string> EntryLookups { get; } = new();
 
     public void BumpGeneration(string gen) => Generation = gen;
 
@@ -55,6 +58,7 @@ internal sealed class FakeSourceLayer : ILayer
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
         entry = null!;
+        EntryLookups.Add(rel);
         if (rel.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
         if (!_nodes.TryGetValue(rel, out var n)) return false;
         entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = n.IsDir, Size = n.Data.Length, TimeUtc = n.TimeUtc };
