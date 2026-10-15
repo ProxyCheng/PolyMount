@@ -228,6 +228,15 @@ public sealed class MountManager
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
                     break;
+                case ControlCommands.RecordingStart:
+                    response.Recording = Find(request.Name).StartRecording(request.Label);
+                    break;
+                case ControlCommands.RecordingStatus:
+                    response.Recording = Find(request.Name).RecordingInfo();
+                    break;
+                case ControlCommands.RecordingStop:
+                    response.Recording = Find(request.Name).StopRecording(request.Reason ?? "stopped");
+                    break;
                 case ControlCommands.Shutdown:
                     // Respond first, then unmount and stop the host shortly after so the reply flushes.
                     System.Threading.Tasks.Task.Run(async () =>

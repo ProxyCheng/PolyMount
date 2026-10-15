@@ -55,7 +55,12 @@ public sealed class MountInstance : IDisposable
         var layers = built.ToList();
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
-        Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, DiagnosticsLogName));
+        Vfs.Diagnostics = new RequestDiagnostics(Path.Combine(state, DiagnosticsLogName))
+        {
+            // Sessions live beside the sampled log but in a family of their own, so the export's
+            // request family and its rolled segments stay exactly what they were.
+            Channel = new RecordingChannel(Path.Combine(state, "recording"))
+        };
         foreach (var cache in _providers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
         for (int i = 0; i < configs.Count; i++)
             if (_providers[configs[i].Id] is PredictionCacheLayer prediction)
@@ -83,6 +88,21 @@ public sealed class MountInstance : IDisposable
         try { return Directory.GetFiles(_statePath, Path.GetFileNameWithoutExtension(DiagnosticsLogName) + "*.log").Order(StringComparer.Ordinal).ToList(); }
         catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
     }
+
+    /// <summary>Attaches the recording channel: from here on every event the tracer emits is
+    /// written to the session as well, unsampled.</summary>
+    public RecordingSessionInfo StartRecording(string? label)
+        => Channel.Start(Profile.Name, label is { Length: > 0 } ? label : Profile.Name);
+
+    public RecordingSessionInfo StopRecording(string reason) => Channel.Stop(reason);
+
+    public RecordingSessionInfo RecordingInfo() => Channel.Info();
+
+    /// <summary>Where the recording channel lives, and the size it stops itself at.</summary>
+    public long RecordingCapacityBytes => RecordingChannel.SessionBytes;
+
+    private RecordingChannel Channel => Vfs.Diagnostics?.Channel
+        ?? throw new NotSupportedException("this instance has no recording channel");
 
     public bool Mounted
     {
@@ -304,7 +324,11 @@ public sealed class MountInstance : IDisposable
             CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count),
             WarmedDirectories = _warmup?.WarmedDirectories ?? 0,
             WarmupLimit = Profile.WarmListings ? Profile.WarmListingsLimit : 0,
-            WarmupDetail = LayerTexts.Get(Profile.WarmListings && Profile.WarmListingsLimit > 0 ? "warmup.progress" : "warmup.off")
+            WarmupDetail = LayerTexts.Get(Profile.WarmListings && Profile.WarmListingsLimit > 0 ? "warmup.progress" : "warmup.off"),
+            // Two volatile reads: a front-end polls this once per request and must not make it
+            // list a directory to answer whether a recording is running.
+            Recording = Vfs.Diagnostics?.Recording ?? false,
+            RecordingStartedUtc = Vfs.Diagnostics?.RecordingStartedUtc
         };
 
         foreach (var layer in Vfs.Layers)

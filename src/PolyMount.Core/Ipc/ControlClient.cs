@@ -28,6 +28,7 @@ public static class ControlClient
         using (var reader = new StreamReader(pipe, Encoding.UTF8, false, 4096, leaveOpen: true))
         {
             using var timeout = new CancellationTokenSource(request.Cmd is ControlCommands.Status or ControlCommands.Metrics or ControlCommands.GetConfig or ControlCommands.Probe
+                or ControlCommands.RecordingStart or ControlCommands.RecordingStatus or ControlCommands.RecordingStop
                 ? ResponseTimeoutMs : 120000);
             string? line;
             try
@@ -85,4 +86,15 @@ public static class ControlClient
 
     public static ControlResponse Logs()
         => Send(new ControlRequest { Cmd = ControlCommands.Logs });
+
+    /// <summary>Attaches the recording channel of one instance. Idempotent: an instance already
+    /// recording returns the session it is running rather than starting a second one.</summary>
+    public static ControlResponse RecordingStart(string? name, string? label = null)
+        => Send(new ControlRequest { Cmd = ControlCommands.RecordingStart, Name = name, Label = label });
+
+    public static ControlResponse RecordingStatus(string? name)
+        => Send(new ControlRequest { Cmd = ControlCommands.RecordingStatus, Name = name });
+
+    public static ControlResponse RecordingStop(string? name, string reason = "stopped")
+        => Send(new ControlRequest { Cmd = ControlCommands.RecordingStop, Name = name, Reason = reason });
 }

@@ -50,6 +50,11 @@ public sealed class MountStatus
     /// <summary>Warm-up progress in the reader's language, formatted with the two counts above.</summary>
     public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
+
+    // Whether a recording channel is attached to this instance right now, so a front-end can
+    // show it without asking a second question.
+    public bool Recording { get; set; }
+    public string? RecordingStartedUtc { get; set; }
 }
 
 public sealed class ControlRequest
@@ -72,6 +77,12 @@ public sealed class ControlRequest
 
     // Rolling-window size (seconds) for the "metrics" command; 0 => default.
     public int WindowSeconds { get; set; }
+
+    // Free-form label for a "recordingStart", kept in the session's name.
+    public string? Label { get; set; }
+
+    // Why a "recordingStop" is stopping: stopped / capacity / tray-exit …
+    public string? Reason { get; set; }
 }
 
 public sealed class ControlResponse
@@ -94,6 +105,9 @@ public sealed class ControlResponse
 
     // Populated by "logs": the diagnostics files an export can bundle.
     public List<LogFile> Logs { get; set; } = new();
+
+    // Populated by the "recording*" commands.
+    public RecordingSessionInfo? Recording { get; set; }
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -147,7 +161,37 @@ public static class ControlCommands
     public const string Reload = "reload";
     public const string Metrics = "metrics";
     public const string Logs = "logs";
+    public const string RecordingStart = "recordingStart";
+    public const string RecordingStatus = "recordingStatus";
+    public const string RecordingStop = "recordingStop";
     public const string Shutdown = "shutdown";
+}
+
+/// <summary>One recording session on the service: what the channel is doing, what it has written
+/// and where, so a front-end can tail it and account for it rather than assume completeness.</summary>
+public sealed class RecordingSessionInfo
+{
+    public bool Active { get; set; }
+    public string Mount { get; set; } = "";
+    public string Label { get; set; } = "";
+    /// <summary>The session directory's name; identifies a session across a reload.</summary>
+    public string SessionId { get; set; } = "";
+    /// <summary>The session directory, for a front-end that reads the segments itself.</summary>
+    public string Directory { get; set; } = "";
+    public string StartedUtc { get; set; } = "";
+    public string? StoppedUtc { get; set; }
+    /// <summary>Why it is not running: stopped / capacity / disposed / tray-exit …</summary>
+    public string? StoppedReason { get; set; }
+    /// <summary>Every segment, oldest first. Kept rather than rolled away, so a reader that
+    /// catches up late still finds the beginning of the recording.</summary>
+    public List<LogFile> Segments { get; set; } = new();
+    public long Bytes { get; set; }
+    public long CapacityBytes { get; set; }
+    /// <summary>Events the recording channel's own queue dropped. Reported rather than hidden.</summary>
+    public long DroppedEvents { get; set; }
+    /// <summary>Identifies the service process, so a restart can be told from a reload.</summary>
+    public string ServiceInstanceId { get; set; } = "";
+    public string? Error { get; set; }
 }
 
 /// <summary>One diagnostics file an export can bundle. The service reports where the file
