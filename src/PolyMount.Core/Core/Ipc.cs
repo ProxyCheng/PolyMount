@@ -38,6 +38,12 @@ public sealed class ProviderInfo
     public long SiblingWasted { get; set; }
     /// <summary>Directories whose walk the stride is following right now.</summary>
     public int SiblingDirectories { get; set; }
+    /// <summary>How a source layer that serves several priorities shared itself out. What the
+    /// reader's class keeps is what read-ahead may not take, so read-ahead being busy is never
+    /// what its wait is made of; read-ahead waits in its own class's queue instead, and that
+    /// rising while the reader's stays flat is what "the reader is never behind read-ahead" reads
+    /// as. Request counts are the denominators, so each wait is a mean as well as a total.</summary>
+    public List<ReadLaneStat> ReadLanes { get; set; } = new();
     /// <summary>Format string for the read-ahead summary, localised by the core.</summary>
     public LocalizedText? PredictionDetail { get; set; }
 }
@@ -241,6 +247,31 @@ public sealed class LayerMetric
     public bool Accelerating { get; set; }
     public long AcceleratedBytes { get; set; }
     public long FetchedBytes { get; set; }
+}
+
+/// <summary>One priority class's share of a source that serves several. Low is urgent: the
+/// reader is class 0 and holds nearly the whole source, read-ahead is a class with a floor of
+/// one and a small ceiling.</summary>
+public sealed class ReadLaneStat
+{
+    public int Priority { get; set; }
+    /// <summary>Requests kept for this class whatever else is happening.</summary>
+    public int Floor { get; set; }
+    /// <summary>The most this class may ever hold, spare capacity included.</summary>
+    public int Ceiling { get; set; }
+    public long Requests { get; set; }
+    public int InFlight { get; set; }
+    /// <summary>Waiting for room right now. Read-ahead that has fallen behind the reader shows
+    /// up here rather than as a bigger share.</summary>
+    public int Queued { get; set; }
+    /// <summary>Total time this class's requests spent being admitted. Read-ahead's is its
+    /// queue; the reader's is room the source did not have, and it can only be that — what is
+    /// kept for the reader is subtracted from what read-ahead may take, so read-ahead being busy
+    /// is never the reason this number moves.</summary>
+    public double WaitMs { get; set; }
+    /// <summary>Read-ahead at this class that a reader arrived during and joined instead of
+    /// fetching a second time — the guesses the reader then confirmed by asking.</summary>
+    public long Promotions { get; set; }
 }
 
 public sealed class MountMetrics

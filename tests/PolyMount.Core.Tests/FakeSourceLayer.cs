@@ -27,6 +27,11 @@ internal sealed class FakeSourceLayer : ILayer
     /// <summary>Paths this source was asked about by name, which is the other way a
     /// resolution reaches it: a listing answers its children, this answers one path.</summary>
     public List<string> EntryLookups { get; } = new();
+    /// <summary>The class each request arrived in, in order, so a test can see what the resolver
+    /// told the source about the work it was asking for.</summary>
+    public List<(string Operation, int Priority)> Lanes { get; } = new();
+
+    private void Record(string operation) { lock (Lanes) Lanes.Add((operation, ReadPriority.Ambient)); }
 
     public void BumpGeneration(string gen) => Generation = gen;
 
@@ -58,6 +63,7 @@ internal sealed class FakeSourceLayer : ILayer
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
         entry = null!;
+        Record("entry");
         EntryLookups.Add(rel);
         if (rel.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
         if (!_nodes.TryGetValue(rel, out var n)) return false;
@@ -67,6 +73,7 @@ internal sealed class FakeSourceLayer : ILayer
 
     public IReadOnlyList<VfsEntry> ListOwn(string rel)
     {
+        Record("list");
         ListedDirectories.Add(rel);
         var list = new List<VfsEntry>();
         foreach (var kv in _nodes)
@@ -88,6 +95,7 @@ internal sealed class FakeSourceLayer : ILayer
     {
         stream = null!;
         if (!TryGetEntry(rel, out entry) || entry.IsDir) return false;
+        Record("read");
         OpenReadCount++;
         stream = new MemoryStream(_nodes[rel].Data, writable: false);
         return true;

@@ -375,6 +375,10 @@ public sealed class ReadPrediction : IDisposable
             long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
             {
+                // This task is read-ahead from the first lookup to the last, and it runs with the
+                // execution context suppressed, so the lanes it was queued from do not flow here:
+                // the lane is named at the boundary that creates the work.
+                using var lane = ReadPriority.Enter(ReadPriority.Speculative);
                 try
                 {
                     var context = nominated.Context;

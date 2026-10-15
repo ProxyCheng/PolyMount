@@ -352,6 +352,9 @@ public sealed class MountInstance : IDisposable
                 info.SiblingDirectories = prediction.TrackedDirectories;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");
             }
+            // A source that serves read-ahead at a priority of its own reports what admitting
+            // every level cost; one that serves a single priority has nothing to add here.
+            if (_providers[layer.Name] is IReadLaneSource lanes) info.ReadLanes = lanes.Lanes.Snapshot();
             if (_providers[layer.Name] is ILayerStorageUsage storage)
             {
                 try { info.StorageUsage = storage.GetStorageUsage(); }

@@ -27,7 +27,10 @@ namespace PolyMount.Plugins.Svn;
 /// </summary>
 internal sealed class SvnHttpClient : ISvnBackend
 {
-    private const int MaxConnections = 16;
+    /// <summary>Requests this transport keeps open at once. It is also what the layer counts as
+    /// the source's capacity when it shares that capacity out between classes, so the two cannot
+    /// drift apart.</summary>
+    internal const int MaxConnections = 16;
     private const string ListingBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop>" +
         "<resourcetype/><getcontentlength/><getlastmodified/></prop></propfind>";

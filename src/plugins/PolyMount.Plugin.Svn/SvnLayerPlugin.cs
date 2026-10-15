@@ -1,4 +1,4 @@
-using PolyMount.Core;
+﻿using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -53,7 +53,14 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                         Description = SvnTexts.Get("svn.field.prefetch.queue.description") },
                     new() { Path = "Source.Parameters.PrefetchChildren", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 256,
                         DefaultValue = "8", Title = SvnTexts.Get("svn.field.prefetch.children"),
-                        Description = SvnTexts.Get("svn.field.prefetch.children.description") }
+                        Description = SvnTexts.Get("svn.field.prefetch.children.description") },
+                    // Read-ahead is a burst of requests against a source the reader is using too.
+                    // Serving both from one budget is what put a speculative download in front of
+                    // a demanded one, so the source is shared out by class instead: the reader
+                    // keeps nearly all of it, and read-ahead has a floor of one and this ceiling.
+                    new() { Path = "Source.Parameters.SpeculativeConcurrency", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 8,
+                        DefaultValue = "2", Title = SvnTexts.Get("svn.field.lane"),
+                        Description = SvnTexts.Get("svn.field.lane.description") }
                 },
                 Actions = new() { new() { Command = PolyMount.Core.Ipc.ControlCommands.RefreshHead,
                     Title = SvnTexts.Get("svn.action.refreshHead"),

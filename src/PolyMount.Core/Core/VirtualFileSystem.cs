@@ -128,17 +128,21 @@ public sealed class VirtualFileSystem
         return found;
     }
     public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
-    /// <summary>Read either payload kind through the same object-loading boundary.</summary>
+    /// <summary>Read either payload kind through the same object-loading boundary.
+    /// <paramref name="speculative"/> marks every layer the load reaches as read-ahead, so a
+    /// source that serves both lanes can schedule them apart.</summary>
     public VirtualObject LoadObject(string path, bool speculative = false)
     {
+        using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
         if (!TryLookup(path, out var header)) throw new VfsNotFoundException(path);
-        if (header.IsDir) return new VirtualObject(header, List(path, recordAccess: !speculative));
+        if (header.IsDir) return new VirtualObject(header, List(path, recordAccess: !speculative, speculative: speculative));
         using var stream = OpenRead(path, out header, speculative);
         return VirtualObject.WithContent(header, new FileObjectContent(header.Size,
             () => OpenRead(path, out _, speculative: true)));
     }
-    public List<VfsEntry> List(string path, bool recordAccess = true)
+    public List<VfsEntry> List(string path, bool recordAccess = true, bool speculative = false)
     {
+        using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
         using var predictionDemand = recordAccess ? ObservePredictions(VfsPath.Normalize(path)) : null;
         using var request = RequestDiagnostics.Begin("VFS.List", path, Diagnostics);
         request?.Stage("resolving directory");
@@ -157,6 +161,7 @@ public sealed class VirtualFileSystem
     }
     public Stream OpenRead(string path, out VfsEntry entry, bool speculative = false)
     {
+            using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
             using var demand = speculative ? null : Prediction?.Demand(VfsPath.Normalize(path));
             using var layerDemand = speculative ? null : ObservePredictions(VfsPath.Normalize(path));
             using var request = RequestDiagnostics.Begin("VFS.OpenRead", path, Diagnostics);

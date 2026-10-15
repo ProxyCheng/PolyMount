@@ -15,8 +15,8 @@
   "svn.field.password": { "en": "Password", "zh-CN": "密码" },
   "svn.field.prefetch.concurrency": { "en": "Listing read-ahead workers", "zh-CN": "目录预取并发数" },
   "svn.field.prefetch.concurrency.description": {
-    "en": "Directories fetched ahead of demand; 0 disables read-ahead.",
-    "zh-CN": "提前抓取的目录数；0 表示关闭预取。"
+    "en": "Directories fetched ahead of demand; 0 disables read-ahead. How many of them reach the source at once is the read-ahead share below.",
+    "zh-CN": "提前抓取的目录数；0 表示关闭预取。其中同时到达源的数量由下面的预取份额决定。"
   },
   "svn.field.prefetch.queue": { "en": "Read-ahead queue depth", "zh-CN": "预取队列深度" },
   "svn.field.prefetch.queue.description": {
@@ -27,6 +27,11 @@
   "svn.field.prefetch.children.description": {
     "en": "Child directories taken from one listing.",
     "zh-CN": "每个目录清单预取的子目录数。"
+  },
+  "svn.field.lane": { "en": "Read-ahead share", "zh-CN": "预取并发份额" },
+  "svn.field.lane.description": {
+    "en": "Source requests read-ahead may reach at once; one is always kept for it, and the rest of the source is the reader's. This also bounds the read-ahead workers above.",
+    "zh-CN": "预取最多同时占用的源请求数；始终为它保留一条，其余留给读取方。它同时也限制了上面的预取并发数。"
   },
   "svn.action.refreshHead": { "en": "Refresh HEAD", "zh-CN": "更新到 HEAD" },
   "svn.action.refreshHead.confirmation": { "en": "Refresh this layer to HEAD?", "zh-CN": "将此层更新到 HEAD？" }

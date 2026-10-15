@@ -97,11 +97,16 @@ public sealed class SvnPluginTests : IPluginTestProvider
         private readonly Dictionary<string, int> _calls = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _cats = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, int> _infos = new(StringComparer.OrdinalIgnoreCase);
-        /// <summary>Directory whose listing blocks until <see cref="Gate"/> is set.</summary>
-        public string? Parked;
+        /// <summary>Directories whose listing blocks until <see cref="Gate"/> is set.</summary>
+        public HashSet<string> Parked { get; } = new(StringComparer.OrdinalIgnoreCase);
         /// <summary>File whose download blocks until <see cref="Gate"/> is set.</summary>
         public string? ParkedCat;
         public ManualResetEventSlim? Gate;
+        /// <summary>The class each request arrived in, so a check can see which class the layer
+        /// put its work in without asking the layer what it believes.</summary>
+        public List<int> Priorities { get; } = new();
+
+        private void Record() { lock (Priorities) Priorities.Add(ReadPriority.Ambient); }
 
         public int Count(string rel) { lock (_calls) return _calls.GetValueOrDefault(rel); }
         public int CatCount(string rel) { lock (_cats) return _cats.GetValueOrDefault(rel); }
@@ -114,7 +119,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
         {
             lock (_calls) _calls[rel] = _calls.GetValueOrDefault(rel) + 1;
-            if (Parked != null && string.Equals(Parked, rel, StringComparison.OrdinalIgnoreCase)) Gate?.Wait(TimeSpan.FromSeconds(10));
+            Record();
+            if (Parked.Contains(rel)) Gate?.Wait(TimeSpan.FromSeconds(10));
             if (!Tree.TryGetValue(rel, out var names)) throw new SvnNotFoundException(rel);
             return names.Select(name => new SvnEntry
             {
@@ -125,6 +131,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
         {
             lock (_infos) _infos[rel] = _infos.GetValueOrDefault(rel) + 1;
+            Record();
             if (rel.Length == 0) return new SvnEntry { Name = string.Empty, IsDir = true };
             // Like a repository, report the spelling it holds rather than the one asked for.
             string? self = Tree.Keys.FirstOrDefault(key => string.Equals(key, rel, StringComparison.OrdinalIgnoreCase));
@@ -140,6 +147,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
         {
             lock (_cats) _cats[rel] = _cats.GetValueOrDefault(rel) + 1;
+            Record();
             if (ParkedCat != null && string.Equals(ParkedCat, rel, StringComparison.OrdinalIgnoreCase)) Gate?.Wait(TimeSpan.FromSeconds(10));
             Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
             File.WriteAllText(dest, "content of " + rel);
@@ -148,6 +156,15 @@ public sealed class SvnPluginTests : IPluginTestProvider
     }
 
     public string PluginName => "svn";
+
+    /// <summary>Waits for another thread to bring a condition about.</summary>
+    private static bool Until(Func<bool> condition, int milliseconds = 5000)
+    {
+        long deadline = Environment.TickCount64 + milliseconds;
+        while (!condition() && Environment.TickCount64 < deadline) Thread.Sleep(2);
+        return condition();
+    }
+
     public Task<IReadOnlyList<PluginTestResult>> RunAsync(PluginTestContext context)
     {
         var results = new List<PluginTestResult>();
@@ -345,7 +362,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("prefetch-skips-a-revision-the-mount-left", () =>
         {
             using var gate = new ManualResetEventSlim(false);
-            var backend = new TreeBackend { Parked = "A", Gate = gate };
+            var backend = new TreeBackend { Gate = gate, Parked = { "A" } };
             using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "prefetch-stale-pin.txt"),
                 new SvnPrefetchOptions { Concurrency = 1, QueueDepth = 8 });
             layer.SetRevision(11);
@@ -412,22 +429,149 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (first != "content of A/g.txt" || second != first)
                 throw new Exception($"Shared download produced '{first}' and '{second}'");
         });
+        Check("read-classes-share-the-source", () =>
+        {
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "classes-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, SpeculativeConcurrency = 2 });
+            var classes = layer.Lanes.Snapshot();
+            if (classes.Count != 2) throw new Exception("expected the reader and read-ahead classes, got " + classes.Count);
+            // The reader keeps everything read-ahead cannot use: read-ahead may hold at most its
+            // ceiling, so that much of the source is the only claim it has on it.
+            if (classes[ReadPriority.Demand] is not { Floor: SvnHttpClient.MaxConnections - 2, Ceiling: SvnHttpClient.MaxConnections })
+                throw new Exception($"unexpected reader share: floor={classes[ReadPriority.Demand].Floor} ceiling={classes[ReadPriority.Demand].Ceiling}");
+            if (classes[ReadPriority.Speculative] is not { Floor: 1, Ceiling: 2 })
+                throw new Exception($"unexpected read-ahead share: floor={classes[ReadPriority.Speculative].Floor} ceiling={classes[ReadPriority.Speculative].Ceiling}");
+
+            // And the reads really arrive in those classes: a listing read-ahead asked for is
+            // read-ahead, the same listing asked for by a caller is not.
+            layer.SetRevision(3);
+            layer.ListOwn("");
+            if (backend.Priorities.Count == 0 || backend.Priorities.Any(priority => priority != ReadPriority.Demand))
+                throw new Exception("a demanded listing did not arrive in the reader's class: " + string.Join(",", backend.Priorities));
+            backend.Priorities.Clear();
+            using (ReadPriority.Enter(ReadPriority.Speculative)) layer.ListOwn("A");
+            if (backend.Priorities.Count == 0 || backend.Priorities.Any(priority => priority != ReadPriority.Speculative))
+                throw new Exception("a read-ahead listing did not arrive in read-ahead's class: " + string.Join(",", backend.Priorities));
+        });
+        Check("read-ahead-cannot-crowd-out-the-reader", () =>
+        {
+            var gate = new ManualResetEventSlim(false);
+            var backend = new TreeBackend { Gate = gate, Parked = { "A", "B" } };
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "crowd-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, SpeculativeConcurrency = 2 });
+            layer.SetRevision(5);
+            var held = new List<Thread>();
+            var third = new Thread(() => { });
+            try
+            {
+                // Read-ahead takes its whole share and sits there.
+                foreach (string directory in new[] { "A", "B" })
+                {
+                    var thread = new Thread(() => { using (ReadPriority.Enter(ReadPriority.Speculative)) layer.ListOwn(directory); });
+                    thread.Start();
+                    held.Add(thread);
+                }
+                if (!Until(() => backend.Count("A") == 1 && backend.Count("B") == 1)) throw new Exception("read-ahead never started");
+                if (layer.Lanes.Snapshot()[ReadPriority.Speculative].InFlight != 2)
+                    throw new Exception("read-ahead did not take its share: " + layer.Lanes.Snapshot()[ReadPriority.Speculative].InFlight);
+
+                // A third read-ahead request waits rather than joining it.
+                third = new Thread(() => { using (ReadPriority.Enter(ReadPriority.Speculative)) layer.ListOwn("A/inner"); });
+                third.Start();
+                if (!Until(() => layer.Lanes.Snapshot()[ReadPriority.Speculative].Queued == 1)) throw new Exception("the third request was not waiting");
+                Thread.Sleep(150);
+                if (backend.Count("A/inner") != 0) throw new Exception("read-ahead held more than its share");
+
+                // The reader's own requests are not behind that: the source is nearly all the
+                // reader's however busy read-ahead is.
+                if (!layer.TryGetEntry("A/inner", out _)) throw new Exception("the reader could not resolve a header");
+                if (backend.InfoCount("A/inner") != 1) throw new Exception("the reader's request never reached the source");
+                if (layer.Lanes.Snapshot()[ReadPriority.Demand].WaitMs > 1
+                    || layer.Lanes.Snapshot()[ReadPriority.Demand].Queued != 0)
+                    throw new Exception("a reader waited while read-ahead was busy");
+                if (backend.Count("A/inner") != 0) throw new Exception("the queued read-ahead ran ahead of the reader");
+            }
+            finally
+            {
+                gate.Set();
+                foreach (var thread in held) thread.Join(TimeSpan.FromSeconds(10));
+                third.Join(TimeSpan.FromSeconds(10));
+                gate.Dispose();
+            }
+            if (layer.Lanes.Snapshot()[ReadPriority.Speculative].InFlight != 0)
+                throw new Exception("read-ahead never gave its share back");
+        });
+        Check("a-reader-claims-what-read-ahead-is-waiting-for", () =>
+        {
+            var gate = new ManualResetEventSlim(false);
+            var backend = new TreeBackend { Gate = gate, Parked = { "A" } };
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "claim-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, SpeculativeConcurrency = 1 });
+            layer.SetRevision(6);
+            Thread? slow = null, waiting = null;
+            try
+            {
+                // Headers first, so the read-ahead below goes straight to the listing: this check
+                // is about which request a reader claims, not about what a queued header does.
+                if (!layer.TryGetEntry("A", out _) || !layer.TryGetEntry("B", out _)) throw new Exception("the tree was not resolved");
+
+                // Read-ahead for A holds the one request it is guaranteed; read-ahead for B waits.
+                slow = new Thread(() => { using (ReadPriority.Enter(ReadPriority.Speculative)) layer.ListOwn("A"); });
+                slow.Start();
+                if (!Until(() => backend.Count("A") == 1)) throw new Exception("read-ahead never started");
+                waiting = new Thread(() => { using (ReadPriority.Enter(ReadPriority.Speculative)) layer.ListOwn("B"); });
+                waiting.Start();
+                if (!Until(() => layer.Lanes.Snapshot()[ReadPriority.Speculative].Queued == 1)) throw new Exception("the second request was not waiting");
+                Thread.Sleep(150);
+                if (backend.Count("B") != 0) throw new Exception("read-ahead ran past its share");
+
+                // A caller wanting B itself is what lets it through — and it is served by that
+                // request rather than by a second one.
+                var list = layer.ListOwn("B");
+                if (list.Count != 1 || list[0].Name != "h.txt") throw new Exception("the claimed request did not serve the reader");
+                if (backend.Count("B") != 1) throw new Exception("the file was listed " + backend.Count("B") + " times");
+                if (layer.Lanes.Snapshot()[ReadPriority.Speculative].Promotions != 1)
+                    throw new Exception("the claim was not counted: " + layer.Lanes.Snapshot()[ReadPriority.Speculative].Promotions);
+                if (layer.Lanes.Snapshot()[ReadPriority.Speculative].InFlight != 1)
+                    throw new Exception("the claimed request did not leave read-ahead's share");
+                if (backend.Count("A") != 1) throw new Exception("the reader waited for read-ahead's held request");
+            }
+            finally
+            {
+                gate.Set();
+                slow?.Join(TimeSpan.FromSeconds(10));
+                waiting?.Join(TimeSpan.FromSeconds(10));
+                gate.Dispose();
+            }
+            if (layer.Lanes.Snapshot()[ReadPriority.Speculative].InFlight != 0) throw new Exception("a request was never released");
+        });
         Check("prefetch-options", () =>
         {
             var defaults = SvnPrefetchOptions.From(new Dictionary<string, JsonElement>());
-            if (defaults is not { Concurrency: 2, QueueDepth: 16, Children: 8 })
+            if (defaults is not { Concurrency: 2, QueueDepth: 16, Children: 8, SpeculativeConcurrency: 2 })
                 throw new Exception("Unexpected read-ahead defaults");
             var configured = SvnPrefetchOptions.From(new Dictionary<string, JsonElement>
             {
                 ["PrefetchConcurrency"] = JsonSerializer.SerializeToElement(4),
                 ["PrefetchQueueDepth"] = JsonSerializer.SerializeToElement(64),
-                ["PrefetchChildren"] = JsonSerializer.SerializeToElement(2)
+                ["PrefetchChildren"] = JsonSerializer.SerializeToElement(2),
+                ["SpeculativeConcurrency"] = JsonSerializer.SerializeToElement(6)
             });
-            if (configured is not { Concurrency: 4, QueueDepth: 64, Children: 2 })
+            if (configured is not { Concurrency: 4, QueueDepth: 64, Children: 2, SpeculativeConcurrency: 6 })
                 throw new Exception("Read-ahead parameters were ignored");
-            try { SvnPrefetchOptions.From(new Dictionary<string, JsonElement> { ["PrefetchConcurrency"] = JsonSerializer.SerializeToElement(9) }); }
-            catch (ArgumentException) { return; }
-            throw new Exception("An out-of-range read-ahead worker count was accepted");
+
+            bool Rejected(string key, int value)
+            {
+                try { SvnPrefetchOptions.From(new Dictionary<string, JsonElement> { [key] = JsonSerializer.SerializeToElement(value) }); }
+                catch (ArgumentException) { return true; }
+                return false;
+            }
+            if (!Rejected("PrefetchConcurrency", 9)) throw new Exception("An out-of-range read-ahead worker count was accepted");
+            if (!Rejected("SpeculativeConcurrency", 0)) throw new Exception("A read-ahead share of nothing was accepted");
+            // Read-ahead may not claim more than half the source; past that the reader would no
+            // longer be keeping the larger half of it.
+            if (!Rejected("SpeculativeConcurrency", 9)) throw new Exception("An out-of-range read-ahead share was accepted");
         });
         if (context.Parameters.TryGetValue("svn.repository", out var repository))
             Check("repository-integration", () =>

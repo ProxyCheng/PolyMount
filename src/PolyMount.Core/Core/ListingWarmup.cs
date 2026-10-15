@@ -65,7 +65,10 @@ public sealed class ListingWarmup : IDisposable
             try
             {
                 // Not a client read: it must not count as activity, and it must not steer the
-                // read predictions that belong to whoever is actually using the mount.
+                // read predictions that belong to whoever is actually using the mount. It is
+                // also read-ahead — nobody asked for this directory — so the source is told,
+                // and it is served after the requests the reader did make.
+                using var lane = ReadPriority.Enter(ReadPriority.Speculative);
                 children = _vfs.List(directory, recordAccess: false);
             }
             catch (Exception)
