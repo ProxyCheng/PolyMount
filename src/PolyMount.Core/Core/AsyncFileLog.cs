@@ -28,6 +28,14 @@ public static class AsyncFileLog
                 retainedFileCountLimit: retainedSegments, shared: false),
                 bufferSize: bufferSize, blockWhenFull: false, monitor: monitor)
             .CreateLogger();
+    /// <summary>A file the caller's own thread writes to, for a sink that already has a thread of
+    /// its own: no queue to overflow and nothing rendered on the thread that logs.</summary>
+    public static Logger CreateSynchronous(string path, long segmentBytes, int? retainedSegments) =>
+        new LoggerConfiguration().MinimumLevel.Information()
+            .WriteTo.File(path, outputTemplate: OutputTemplate,
+                fileSizeLimitBytes: segmentBytes, rollOnFileSizeLimit: true,
+                retainedFileCountLimit: retainedSegments, shared: false, buffered: true)
+            .CreateLogger();
 }
 
 /// <summary>What one async sink had to drop. A log that silently lost lines is worse than one

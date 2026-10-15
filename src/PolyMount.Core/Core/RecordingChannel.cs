@@ -46,11 +46,10 @@ public sealed class RecordingChannel : IDisposable
     /// the request path: see <see cref="Write"/> for why that distinction matters.</summary>
     private readonly object _gate = new();
     private readonly string _root;
-    private readonly AsyncLogMonitor _monitor = new();
-    private Logger? _logger;
-    /// <summary>How many writers are inside the sink at this moment, so a detach can wait for them
-    /// instead of racing them.</summary>
-    private int _writers;
+    /// <summary>The handoff to the writing thread, and the thread itself.</summary>
+    private LogRing? _ring;
+    private Thread? _writer;
+    private long _dropped;
     private volatile bool _attached;
     private bool _disposed;
     private string _sessionId = "", _directory = "", _label = "", _mount = "";
@@ -97,8 +96,14 @@ public sealed class RecordingChannel : IDisposable
             _error = null;
             // The flag is set only once the logger is in place: a writer that sees Attached is
             // guaranteed to find a sink behind it.
-            _logger = AsyncFileLog.Create(Path.Combine(_directory, "events.log"), _monitor, SegmentBytes,
-                retainedSegments: null, bufferSize: BufferSize);
+            // The file is written by one thread of our own, synchronously: the request threads
+            // only ever hand it values, so neither rendering a line nor touching the disk is paid
+            // for on the thread that serves a request.
+            var logger = AsyncFileLog.CreateSynchronous(Path.Combine(_directory, "events.log"), SegmentBytes, null);
+            var ring = new LogRing(BufferSize);
+            _ring = ring;
+            _writer = new Thread(() => WriteLoop(ring, logger)) { IsBackground = true, Name = "PolyMount recording writer" };
+            _writer.Start();
             Volatile.Write(ref _startedTicks, _startedUtc.Ticks);
             _attached = true;
             return InfoLocked();
@@ -111,7 +116,8 @@ public sealed class RecordingChannel : IDisposable
     /// than a hope.</summary>
     public RecordingSessionInfo Stop(string reason)
     {
-        Logger? logger;
+        LogRing? ring;
+        Thread? writer;
         lock (_gate)
         {
             if (!_attached) return Info();
@@ -119,44 +125,57 @@ public sealed class RecordingChannel : IDisposable
             Volatile.Write(ref _startedTicks, 0);
             _stopReason = reason;
             _stoppedUtc = DateTime.UtcNow;
-            logger = _logger;
-            _logger = null;
+            ring = _ring;
+            writer = _writer;
+            _ring = null;
+            _writer = null;
         }
-        // No new writer can find the sink now. The ones already inside it are counted, and waiting
-        // them out is what makes the drain below complete rather than nearly complete.
-        WaitForWriters();
-        try { logger?.Dispose(); } // Serilog drains the async queue here.
-        catch (Exception ex) { _error = ex.Message; }
+        // Closing the ring is what makes the drain complete: no further entry may be claimed, and
+        // the writing thread finishes every entry that was — including one a producer had claimed
+        // but not yet published when the reader decided to stop.
+        ring?.Close();
+        if (writer != null && !writer.Join(TimeSpan.FromSeconds(10)))
+            _error = "the recording writer did not finish in time; the last lines may be missing";
         return Info();
     }
 
-    /// <summary>Waits out the writers that were already in the sink when it was detached. One write
-    /// is a format and an enqueue, so this is normally no wait at all; the bound is there so taking
-    /// a recording down can never be held hostage by a thread that is somehow stuck.</summary>
-    private void WaitForWriters()
+    /// <summary>Hands one event to the writing thread. Called once per event per scope, so what it
+    /// costs is charged to the request being measured: claim a slot, copy four values, publish it —
+    /// no lock, no rendering, no disk. An earlier version took the control gate here and rendered
+    /// the line, which cost twice over: the sink could not take events in as fast as they arrived
+    /// and dropped a third of a recording, and because a scope emits its own BEGIN inside the
+    /// window it is measuring, every request billed the wait to itself.</summary>
+    internal void Write(LogEventLevel level, string template, object?[] args)
+        => _ring?.TryWrite(level, template, args);
+
+    /// <summary>The one thread that renders lines and writes them. It is the only thread that
+    /// touches the file, so the sink needs no lock and the work it does is invisible to the
+    /// requests being recorded.</summary>
+    private void WriteLoop(LogRing ring, Logger logger)
     {
-        var deadline = Environment.TickCount64 + 2000;
-        while (Volatile.Read(ref _writers) > 0 && Environment.TickCount64 < deadline) Thread.Sleep(1);
+        int failures = 0;
+        while (ring.TryRead(out var level, out var template, out var args))
+        {
+            try { logger.Write(level, template, args); failures = 0; }
+            catch (Exception ex)
+            {
+                // A sink that cannot be written to stays unwritable: report it once, keep draining
+                // so no producer ever waits, and count what the failure costs.
+                _error = ex.Message;
+                if (++failures > 100) { DrainAndCount(ring); break; }
+            }
+        }
+        // The thread that writes owns the sink, so it is the one that closes it — and closing is
+        // what flushes: the file is buffered, so without this the recording is empty on disk.
+        try { logger.Dispose(); }
+        catch (Exception ex) { _error = ex.Message; }
+        Interlocked.Exchange(ref _dropped, ring.Dropped);
     }
 
-    /// <summary>Writes one event to the recording when one is attached. Called once per event per
-    /// scope, so it must not be a place where request threads meet each other: taking the control
-    /// gate here serialized every writer behind one another, which cost twice over. The sink could
-    /// not take events in as fast as they arrived, so its queue overflowed and dropped a third of
-    /// them; and a scope emits its own BEGIN inside the window it is measuring, so every request
-    /// was billing the time it spent waiting for that lock to itself — the 150x inflation a real
-    /// recording showed against a snapshot for the same path.
-    ///
-    /// The sink is read once and swapped out only by the control plane, and a detach waits for the
-    /// writers it can still count rather than disposing under them.</summary>
-    internal void Write(LogEventLevel level, string template, object?[] args)
+    /// <summary>Empties the ring of a sink that failed, counting what it held.</summary>
+    private static void DrainAndCount(LogRing ring)
     {
-        var logger = Volatile.Read(ref _logger);
-        if (logger == null) return;
-        Interlocked.Increment(ref _writers);
-        try { logger.Write(level, template, args); }
-        catch (Exception) { /* a channel being taken down must never break the request carrying it */ }
-        finally { Interlocked.Decrement(ref _writers); }
+        while (ring.TryRead(out _, out _, out _)) Interlocked.Increment(ref ring.Dropped);
     }
 
     /// <summary>Called once a second by the tracer's flush. A recording that reached its ceiling
@@ -168,6 +187,9 @@ public sealed class RecordingChannel : IDisposable
     }
 
     public RecordingSessionInfo Info() { lock (_gate) return InfoLocked(); }
+
+    /// <summary>What the channel itself refused, from either side of the handoff.</summary>
+    private long Dropped => _ring is { } ring ? Volatile.Read(ref ring.Dropped) : Interlocked.Read(ref _dropped);
 
     public void Dispose()
     {
@@ -188,7 +210,7 @@ public sealed class RecordingChannel : IDisposable
             StoppedUtc = _stoppedUtc?.ToString("O", CultureInfo.InvariantCulture),
             StoppedReason = _stopReason,
             CapacityBytes = CapacityBytes,
-            DroppedEvents = _monitor.Dropped ?? 0,
+            DroppedEvents = Dropped,
             ServiceInstanceId = ServiceInstanceId,
             Error = _error
         };
