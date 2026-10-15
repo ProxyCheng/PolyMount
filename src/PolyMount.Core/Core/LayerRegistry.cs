@@ -10,15 +10,15 @@ public static class LayerRegistry
     static LayerRegistry()
     {
         Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
-        RegisterCache("prediction-cache", (c, ctx) => new PredictionCacheLayer(MemoryCapacity(c), ctx.LowerGeneration,
+        RegisterCache("prediction-cache", (c, ctx) => new PredictionCacheLayer(PredictionCapacity(c), ctx.LowerGeneration,
             ReadPredictionProfiles.Resolve(Text(c, "Profile"), () => CustomPrediction(c)), Path.Combine(ctx.State, "prediction.json")),
-            c => { if (MemoryCapacity(c) < 1 || MemoryCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
+            c => { if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
             new LayerDescriptor { Type = "prediction-cache", Title = LayerTexts.Get("prediction.title"), Icon = "predict-path",
                 Description = LayerTexts.Get("prediction.description"),
                 Fields = new()
                 {
                     new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576,
-                        Minimum = 1, Maximum = 256, DefaultValue = "16", Title = LayerTexts.Get("prediction.capacity") },
+                        Minimum = 1, Maximum = 256, DefaultValue = "256", Title = LayerTexts.Get("prediction.capacity") },
                     new() { Path = "Parameters.Profile", Kind = LayerFieldKind.Choice, DefaultValue = ReadPredictionProfiles.Idle,
                         Title = LayerTexts.Get("prediction.profile"), Description = LayerTexts.Get("prediction.profile.description"),
                         Choices = new()
@@ -62,7 +62,18 @@ public static class LayerRegistry
                     throw new ArgumentException("memory-cache requires capacity >= block size and a power-of-two block size (4 KiB–1 MiB)");
             }, BuiltInLayerDescriptors.Memory());
     }
+    /// <summary>The held budget the prediction layer falls back to. 256 MiB is the ceiling its
+    /// validator allows, and it is where the measurement pointed: at 16 MiB the layer held 456 KB
+    /// against a workload whose reads covered hundreds of megabytes in seconds, so a preloaded
+    /// file was evicted before the loader asked for it -- 551 entries evicted unread against 162
+    /// read (2026-10-15). Preloading can only move a source read earlier, never remove it, so the
+    /// budget buys exactly the window between guessing and being asked.</summary>
+    private const long PredictionCapacityDefault = 256 * 1048576;
     private static long MemoryCapacity(LayerConfig config) => config.Parameters.TryGetValue("CapacityBytes", out var value) ? value.GetInt64() : 16 * 1048576;
+    /// <summary>The prediction layer's own budget: the same parameter and the same validator, a
+    /// different fallback. Sharing <see cref="MemoryCapacity"/>'s 16 MiB with the block cache was
+    /// what kept the predictor from holding anything it had already fetched.</summary>
+    private static long PredictionCapacity(LayerConfig config) => config.Parameters.TryGetValue("CapacityBytes", out var value) ? value.GetInt64() : PredictionCapacityDefault;
 
     private static string Text(LayerConfig config, string key) =>
         config.Parameters.TryGetValue(key, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
