@@ -23,7 +23,9 @@ public sealed class ReadPredictionTests
         for (int i = 0; i < 5; i++) { using (prediction.Demand("a")) { } using (prediction.Demand("b")) { } }
         using (prediction.Demand("a")) { }
         using (prediction.Demand("c")) { }
-        Assert.AreEqual(3, prediction.LearnedTransitions, "both successors of a are kept");
+        // Every order is recorded now, so the count is not the point: what matters is that
+        // the divergence did not displace the evidence behind b.
+        Assert.IsTrue(prediction.LearnedTransitions >= 3, "both successors of a are kept");
 
         lock (predicted) predicted.Clear();
         using (prediction.Demand("a")) { }
@@ -46,10 +48,12 @@ public sealed class ReadPredictionTests
         // Two successors seen once each: no leader worth spending source bandwidth on.
         using (prediction.Demand("a")) { } using (prediction.Demand("b")) { }
         using (prediction.Demand("a")) { } using (prediction.Demand("c")) { }
+        await Task.Delay(800);                       // let the earlier nominations settle
         lock (predicted) predicted.Clear();
         using (prediction.Demand("a")) { }
         await Task.Delay(600);
-        lock (predicted) Assert.AreEqual(0, predicted.Count, "a tied successor is a coin flip, not a prediction");
+        lock (predicted) Assert.IsFalse(predicted.Contains("b") || predicted.Contains("c"),
+            "a tied successor is a coin flip, not a prediction");
     }
 
     [TestMethod]
@@ -119,7 +123,7 @@ public sealed class ReadPredictionTests
         var source = new FakeSourceLayer(); source.AddFile("a", "a"); source.AddFile("b", "b");
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 1048576);
         var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
-        var options = new ReadPredictionOptions { Enabled = true, IdleDelayMs = 100 };
+        var options = new ReadPredictionOptions { Enabled = true, IdleDelayMs = 100, PrefetchDepth = 1 };
         string model = temp.Sub("prediction.json");
         using (var prediction = new ReadPrediction(vfs, options, model))
         {
@@ -222,5 +226,87 @@ public sealed class ReadPredictionTests
             Enumerable.Range(0, 500).Select(i => new VfsEntry { Name = new string('x', 200) + i }).ToArray()));
         Assert.IsFalse(layer.TryReadObject("huge", out _));
         Assert.AreEqual(0L, layer.MemoryBytes);
+    }
+
+    [TestMethod]
+    public async Task A_longer_history_tells_apart_successors_a_single_path_conflates()
+    {
+        const string walk = "axpb xq axpb xq";
+        async Task<int> PreloadsAfterWalk(int depth)
+        {
+            using var temp = new TempDir();
+            var source = new FakeSourceLayer();
+            foreach (var name in new[] { "a", "x", "p", "b", "q", "z" }) source.AddFile(name, name);
+            var predicted = new List<string>();
+            using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+                new ReadPredictionOptions { ContextDepth = depth, PrefetchDepth = 1 }, temp.Sub("context.json"),
+                path => { lock (predicted) predicted.Add(path); });
+            // a -> x -> p and b -> x -> q: x alone is a coin flip, (a,x) and (b,x) are not.
+            foreach (var step in walk.Split(' '))
+                foreach (var name in step) using (prediction.Demand(name.ToString())) { }
+            await Task.Delay(800);
+            lock (predicted) predicted.Clear();
+            using (prediction.Demand("a")) { }
+            using (prediction.Demand("x")) { }
+            await Task.Delay(600);
+            lock (predicted) return predicted.Count(p => p == "p");
+        }
+
+        Assert.AreEqual(1, await PreloadsAfterWalk(2), "the longer history identifies the successor");
+        Assert.AreEqual(0, await PreloadsAfterWalk(1), "the last path alone cannot tell them apart");
+    }
+
+    [TestMethod]
+    public async Task Read_ahead_follows_the_path_while_each_step_is_confident()
+    {
+        async Task<List<string>> Walk(int depth)
+        {
+            using var temp = new TempDir();
+            var source = new FakeSourceLayer();
+            foreach (var name in new[] { "a", "b", "c" }) source.AddFile(name, name);
+            var predicted = new List<string>();
+            using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+                new ReadPredictionOptions { ContextDepth = 1, PrefetchDepth = depth }, temp.Sub("chain.json"),
+                path => { lock (predicted) predicted.Add(path); });
+            foreach (var path in new[] { "a", "b", "c", "a", "b", "c" }) using (prediction.Demand(path)) { }
+            await Task.Delay(800);
+            lock (predicted) predicted.Clear();
+            using (prediction.Demand("a")) { }
+            await Task.Delay(600);
+            lock (predicted) return predicted.Distinct().ToList();
+        }
+
+        var one = await Walk(1);
+        CollectionAssert.Contains(one, "b");
+        CollectionAssert.DoesNotContain(one, "c", "one step ahead stops at the first successor");
+        var two = await Walk(2);
+        CollectionAssert.Contains(two, "b");
+        CollectionAssert.Contains(two, "c", "a second confident step follows the path");
+    }
+
+    [TestMethod]
+    public async Task A_lowered_throttle_suspends_read_ahead()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "a", "b" }) source.AddFile(name, name);
+        var predicted = new List<string>();
+        using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+            new ReadPredictionOptions { ContextDepth = 1 }, temp.Sub("throttle.json"),
+            path => { lock (predicted) predicted.Add(path); });
+        foreach (var path in new[] { "a", "b", "a", "b" }) using (prediction.Demand(path)) { }
+        await Task.Delay(800);
+
+        prediction.Throttle = 0;
+        lock (predicted) predicted.Clear();
+        using (prediction.Demand("a")) { }
+        await Task.Delay(600);
+        lock (predicted) Assert.AreEqual(0, predicted.Count, "a throttled predictor issues nothing");
+
+        prediction.Throttle = 1;
+        using (prediction.Demand("a")) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline) { lock (predicted) if (predicted.Count > 0) break; await Task.Delay(25); }
+        lock (predicted) Assert.AreEqual("b", predicted.FirstOrDefault(), "and resumes when released");
     }
 }

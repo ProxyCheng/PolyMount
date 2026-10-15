@@ -25,6 +25,18 @@ public sealed class ReadPredictionOptions
     /// <summary>Share of a path's observations the leading successor must hold before it is
     /// read ahead. Read-ahead spends real source bandwidth, so a coin flip is not worth it.</summary>
     public double MinConfidence { get; set; } = 0.6;
+    /// <summary>How many recent paths form the key. One is the last-address key; a longer
+    /// window is the history-based key of GHB (Nesbit &amp; Smith), which tells apart
+    /// successors a last-address key conflates.</summary>
+    public int ContextDepth { get; set; } = 2;
+    /// <summary>How many confident steps to follow when reading ahead. Read-ahead issues the
+    /// same reads either way; depth decides how far ahead of the reader they land.</summary>
+    public int PrefetchDepth { get; set; } = 2;
+    /// <summary>How long a held entry may go unread before it counts against the guess for the
+    /// feedback throttle. Eviction alone is too late a signal when the budget is generous.</summary>
+    public int FeedbackWindowMs { get; set; } = 5000;
+    /// <summary>Resolutions per quality window; the throttle is recomputed this often.</summary>
+    public int FeedbackSamples { get; set; } = 32;
     /// <summary>How long an unobserved transition is remembered. Without this a sequence the
     /// loader stopped using keeps being predicted, and the stale guess propagates forward.
     /// Zero keeps transitions until the capacity bound recycles them.</summary>
@@ -84,7 +96,8 @@ public sealed class ReadPrediction : IDisposable
     private readonly Timer _timer;
     private readonly CancellationTokenSource _stop = new();
     private string? _previous;
-    private readonly Queue<string> _candidates = new();
+    private readonly List<string> _history = new();
+    private readonly Queue<Context> _candidates = new();
     private long _lastDemand;
     private int _activeDemand;
     private readonly List<Task> _inFlight = new();
@@ -95,6 +108,14 @@ public sealed class ReadPrediction : IDisposable
     public int LearnedTransitions { get { lock (_gate) return _nodes.Sum(p => p.Value.Count); } }
     public long Predictions { get; private set; }
     public long Completed { get; private set; }
+    /// <summary>How much of the configured read-ahead to actually issue, 0..1. The owning
+    /// cache lowers it when recent guesses have not been paying off.</summary>
+    public double Throttle
+    {
+        get { lock (_gate) return _throttle; }
+        set { lock (_gate) _throttle = Math.Clamp(value, 0, 1); }
+    }
+    private double _throttle = 1;
 
     public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath, Action<string>? preload = null)
     {
@@ -102,6 +123,8 @@ public sealed class ReadPrediction : IDisposable
             options.IdleDelayMs is < 0 or > 60000 || options.TickIntervalMs is < 10 or > 10000 ||
             options.MaxInFlight is < 1 or > 64 || options.MaxActiveDemandForPreload is < 0 or > 1024 ||
             options.MaxSuccessorsPerKey is < 1 or > 16 || options.MinConfidence is < 0 or > 1 ||
+            options.ContextDepth is < 1 or > 4 || options.PrefetchDepth is < 1 or > 8 ||
+            options.FeedbackWindowMs is < 0 or > 600000 || options.FeedbackSamples is < 1 or > 4096 ||
             options.RetentionMs is < 0 or > 7 * 24 * 3600000)
             throw new ArgumentException("Invalid read prediction budgets");
         _vfs = vfs; _options = options; _modelPath = modelPath; _preload = preload;
@@ -136,19 +159,63 @@ public sealed class ReadPrediction : IDisposable
             _activeDemand++; _lastDemand = Environment.TickCount64;
             if (path.Length > 4096) return new DemandScope(this);
             if (_previous != null && !string.Equals(_previous, path, StringComparison.OrdinalIgnoreCase))
-                Observe(_previous, path);
+            {
+                var observed = ContextOf(_previous);
+                Observe(observed.Key, path);
+                // Also record the last path alone: a longer key needs the pattern to repeat
+                // before it has any evidence, and read-ahead should not go dark until then.
+                if (observed.Paths.Length > 1) Observe(_previous, path);
+            }
+            PushHistory(_previous);
             _previous = path;
-            // Nominate the path itself; what to fetch is resolved when read-ahead runs.
-            // Deferring that decision means a nomination cannot act on evidence that has
-            // since been contradicted. Keep a small queue so a later unrelated access does
-            // not erase earlier nominations.
-            if (_nodes.ContainsKey(path) && !_candidates.Contains(path))
+            // Nominate the context, not the successor it points at: what to fetch is resolved
+            // when read-ahead runs, so a nomination cannot act on evidence that has since been
+            // contradicted. Keep a small queue so a later access does not erase earlier ones.
+            var context = ContextOf(path);
+            if (HasEvidence(context) && !_candidates.Any(c => c.Key == context.Key))
             {
                 if (_candidates.Count >= 16) _candidates.Dequeue();
-                _candidates.Enqueue(path);
+                _candidates.Enqueue(context);
             }
         }
         return new DemandScope(this);
+    }
+
+    /// <summary>The paths that precede a prediction, ending with the one just read. A single
+    /// path is the order-1 key; a longer window is GHB's history-based key, which tells apart
+    /// successors that conflate onto one last-address key.</summary>
+    private sealed class Context(string[] paths)
+    {
+        public readonly string[] Paths = paths;
+        public string Key { get; } = paths.Length == 1 ? paths[0] : string.Join((char)31, paths);
+        public Context Follow(string next)
+        {
+            var shifted = new string[Paths.Length];
+            Array.Copy(Paths, 1, shifted, 0, Paths.Length - 1);
+            shifted[^1] = next;
+            return new Context(shifted);
+        }
+        /// <summary>The key of the last <paramref name="length"/> paths, so a shorter history
+        /// can answer when the longest one has nothing to say.</summary>
+        public string Suffix(int length) => length >= Paths.Length
+            ? Key
+            : string.Join((char)31, Paths, Paths.Length - length, length);
+    }
+
+    private Context ContextOf(string path)
+    {
+        int take = Math.Min(_options.ContextDepth - 1, _history.Count);
+        var paths = new string[take + 1];
+        for (int i = 0; i < take; i++) paths[i] = _history[_history.Count - take + i];
+        paths[take] = path;
+        return new Context(paths);
+    }
+
+    private void PushHistory(string? path)
+    {
+        if (path == null || _options.ContextDepth <= 1) return;
+        _history.Add(path);
+        while (_history.Count > _options.ContextDepth - 1) _history.RemoveAt(0);
     }
     private sealed class DemandScope(ReadPrediction owner) : IDisposable
     {
@@ -175,15 +242,36 @@ public sealed class ReadPrediction : IDisposable
         }
     }
 
-    /// <summary>The successor of <paramref name="path"/> if it holds enough of that path's
-    /// observations to be worth the bandwidth — SPP's path confidence, applied per step.</summary>
-    private string? ConfidentSuccessor(string path)
+    /// <summary>The successor of a context if it holds enough of that context's observations
+    /// to be worth the bandwidth - SPP's path confidence, applied per step.</summary>
+    private string? ConfidentSuccessor(string key)
     {
-        if (!_nodes.TryGetValue(path, out var successors) || successors.Count == 0) return null;
-        int total = successors.Sum(t => t.Hits);
-        if (total <= 0) return null;
-        var top = successors.MaxBy(t => t.Hits)!;
-        return (double)top.Hits / total >= _options.MinConfidence ? top.To : null;
+        lock (_gate)
+        {
+            if (!_nodes.TryGetValue(key, out var successors) || successors.Count == 0) return null;
+            int total = successors.Sum(t => t.Hits);
+            if (total <= 0) return null;
+            var top = successors.MaxBy(t => t.Hits)!;
+            return (double)top.Hits / total >= _options.MinConfidence ? top.To : null;
+        }
+    }
+
+    private bool HasEvidence(Context context)
+    {
+        lock (_gate)
+            for (int length = context.Paths.Length; length >= 1; length--)
+                if (_nodes.ContainsKey(context.Suffix(length))) return true;
+        return false;
+    }
+
+    /// <summary>The longest history that still has something confident to say. A pure order-N
+    /// key would answer nothing until the pattern repeated; falling back to a shorter history
+    /// keeps the single-observation behaviour while gaining the longer one's specificity.</summary>
+    private string? PredictedSuccessor(Context context)
+    {
+        for (int length = context.Paths.Length; length >= 1; length--)
+            if (ConfidentSuccessor(context.Suffix(length)) is { } next) return next;
+        return null;
     }
 
     /// <summary>Drops transitions that have not been observed for the retention window, so a
@@ -209,24 +297,38 @@ public sealed class ReadPrediction : IDisposable
         {
             ForgetStale();
             _inFlight.RemoveAll(task => task.IsCompleted);
+            // The owning cache lowers the throttle when recent guesses stopped paying off.
+            int budget = (int)Math.Round(_options.MaxInFlight * _throttle);
             if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload || _candidates.Count == 0 ||
-                _inFlight.Count >= _options.MaxInFlight ||
+                _inFlight.Count >= budget ||
                 (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
-            if (ConfidentSuccessor(_candidates.Dequeue()) is not { } candidate) return;
+            var nominated = _candidates.Dequeue();
+            if (PredictedSuccessor(nominated) is not { } candidate) return;
             Predictions++;
             long epoch = _epoch;
             using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
             {
                 try
                 {
-                    if (_stop.IsCancellationRequested || !_vfs.TryLookup(candidate, out var entry) ||
-                        (!entry.IsDir && entry.Size > _options.MaxFileBytes) || (entry.IsDir && _preload == null)) return;
-                    if (_preload == null && _vfs.Layers.OfType<ICacheLayer>().Any(c => c.TryGetEntry(candidate, out _))) return;
-                    lock (_gate) if (_activeDemand > _options.MaxActiveDemandForPreload || _stop.IsCancellationRequested || epoch != _epoch) return;
-                    using var trace = RequestDiagnostics.Begin("Predict.Preload", candidate, _vfs.Diagnostics);
-                    if (_preload != null) _preload(candidate);
-                    else { using var stream = _vfs.OpenRead(candidate, out _, speculative: true); }
-                    lock (_gate) if (epoch == _epoch) Completed++;
+                    var context = nominated;
+                    for (int step = 0; step < _options.PrefetchDepth; step++)
+                    {
+                        if (_stop.IsCancellationRequested || epoch != _epoch) return;
+                        if (_activeDemand > _options.MaxActiveDemandForPreload) return;
+                        if (!_vfs.TryLookup(candidate, out var entry) || (!entry.IsDir && entry.Size > _options.MaxFileBytes)) return;
+                        if (entry.IsDir && _preload == null) return;
+                        using (var trace = RequestDiagnostics.Begin("Predict.Preload", candidate, _vfs.Diagnostics))
+                        {
+                            if (_preload != null) _preload(candidate);
+                            else { using var stream = _vfs.OpenRead(candidate, out _, speculative: true); }
+                        }
+                        lock (_gate) if (epoch == _epoch) Completed++;
+                        if (_activeDemand > _options.MaxActiveDemandForPreload) return;
+                        // Follow the path: keep going while the next step is still confident.
+                        context = context.Follow(candidate);
+                        if (PredictedSuccessor(context) is not { } next) return;
+                        candidate = next;
+                    }
                 }
                 catch (IOException) { }
                 catch (Exception ex) { using var trace = RequestDiagnostics.Begin("Predict.Failed", candidate, _vfs.Diagnostics); trace?.Stage(ex.GetType().Name); }
@@ -240,7 +342,7 @@ public sealed class ReadPrediction : IDisposable
             // Do not reset live demand counts or abort an already-started I/O.
             // Queued candidates from the old model cannot begin after this reset.
             _epoch++;
-            _nodes.Clear(); _previous = null; _candidates.Clear();
+            _nodes.Clear(); _previous = null; _history.Clear(); _candidates.Clear();
             Predictions = 0; Completed = 0;
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
             string temp = _modelPath + ".tmp";

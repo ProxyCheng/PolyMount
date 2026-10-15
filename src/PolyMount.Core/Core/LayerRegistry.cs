@@ -46,7 +46,11 @@ public static class LayerRegistry
                     new() { Path = "Parameters.MaxSuccessors", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 16,
                         DefaultValue = "4", Title = LayerTexts.Get("prediction.successors"), Description = LayerTexts.Get("prediction.successors.description") },
                     new() { Path = "Parameters.MinConfidencePercent", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 100,
-                        DefaultValue = "60", Title = LayerTexts.Get("prediction.confidence"), Description = LayerTexts.Get("prediction.confidence.description") }
+                        DefaultValue = "60", Title = LayerTexts.Get("prediction.confidence"), Description = LayerTexts.Get("prediction.confidence.description") },
+                    new() { Path = "Parameters.ContextDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 4,
+                        DefaultValue = "2", Title = LayerTexts.Get("prediction.context"), Description = LayerTexts.Get("prediction.context.description") },
+                    new() { Path = "Parameters.PrefetchDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 8,
+                        DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") }
                 } });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
@@ -81,6 +85,10 @@ public static class LayerRegistry
         baseline.MaxTransitions = Number(config, "MaxTransitions", baseline.MaxTransitions);
         baseline.RetentionMs = Number(config, "RetentionMinutes", baseline.RetentionMs / 60000) * 60000;
         baseline.MaxSuccessorsPerKey = Number(config, "MaxSuccessors", baseline.MaxSuccessorsPerKey);
+        baseline.ContextDepth = Number(config, "ContextDepth", baseline.ContextDepth);
+        baseline.PrefetchDepth = Number(config, "PrefetchDepth", baseline.PrefetchDepth);
+        baseline.FeedbackWindowMs = Number(config, "FeedbackWindowMs", baseline.FeedbackWindowMs);
+        baseline.FeedbackSamples = Number(config, "FeedbackSamples", baseline.FeedbackSamples);
         baseline.MinConfidence = Number(config, "MinConfidencePercent", (int)Math.Round(baseline.MinConfidence * 100)) / 100.0;
         if (config.Parameters.TryGetValue("MaxFileBytes", out var bytes) && bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
             baseline.MaxFileBytes = bytes.GetInt64() * 1048576;

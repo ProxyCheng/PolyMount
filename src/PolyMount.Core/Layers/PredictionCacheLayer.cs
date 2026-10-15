@@ -23,6 +23,9 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         public long Bytes = bytes;
         public int Reads;
         public LinkedListNode<string>? Node;
+        public long StoredAt;
+        /// <summary>Counted against the guess already; an entry is judged once.</summary>
+        public bool Scored;
     }
 
     private readonly long _capacity;
@@ -35,6 +38,10 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
     private ReadPrediction? _predictor;
     private string? _generationSnapshot;
     private long _bytes, _hits, _used, _wasted, _wastedBytes, _fetchBytes;
+    // Recent guess quality, judged per entry as soon as it is resolved rather than waiting
+    // for an eviction that a generous budget may never reach.
+    private int _paidOff, _wastedGuesses;
+    private long _lastScored;
 
     public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
     {
@@ -119,7 +126,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             CheckGeneration();
             if (!_entries.TryGetValue(path, out var entry)) { value = null!; return false; }
-            if (entry.Reads++ == 0) _used++;
+            if (entry.Reads++ == 0) { _used++; _paidOff++; PublishQuality(); }
             _hits++;
             _lru.Remove(entry.Node!);
             _lru.AddFirst(entry.Node!);
@@ -135,7 +142,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
             CheckGeneration();
             entry = null!; stream = null!;
             if (!_entries.TryGetValue(path, out var kept) || kept.Content == null) return false;
-            if (kept.Reads++ == 0) _used++;
+            if (kept.Reads++ == 0) { _used++; _paidOff++; PublishQuality(); }
             _hits++;
             _lru.Remove(kept.Node!);
             _lru.AddFirst(kept.Node!);
@@ -169,6 +176,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         lock (_gate)
         {
             CheckGeneration();
+            ScoreStale();
             if (bytes > _capacity) return;
             if (_entries.TryGetValue(path, out var previous))
             {
@@ -176,7 +184,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
                 _lru.Remove(previous.Node!);
                 _entries.Remove(path);
             }
-            var entry = new Entry(value.Snapshot(), payload, bytes);
+            var entry = new Entry(value.Snapshot(), payload, bytes) { StoredAt = Environment.TickCount64 };
             entry.Node = _lru.AddFirst(path);
             _entries[path] = entry;
             _bytes += bytes;
@@ -186,6 +194,37 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
 
     public void Store(string path, string version, VfsEntry entry, Stream content) => StoreObject(path, new(entry), content);
 
+    /// <summary>Counts entries that have sat unread past the feedback window against the
+    /// guess, and republishes the throttle. Runs on read-ahead admission, so it needs no timer
+    /// and costs at most one pass per window.</summary>
+    private void ScoreStale()
+    {
+        if (_options.FeedbackWindowMs <= 0) return;
+        long now = Environment.TickCount64;
+        if (now - _lastScored < _options.FeedbackWindowMs) return;
+        _lastScored = now;
+        long horizon = now - _options.FeedbackWindowMs;
+        foreach (var entry in _entries.Values)
+        {
+            if (entry.Reads > 0 || entry.Scored || entry.StoredAt > horizon) continue;
+            entry.Scored = true;
+            _wastedGuesses++;
+        }
+        PublishQuality();
+    }
+
+    /// <summary>Hands the recent hit rate to the predictor as a throttle once a window has
+    /// filled. Reading ahead spends source bandwidth, so a run of guesses nobody reads should
+    /// slow it down without changing what the model believes.</summary>
+    private void PublishQuality()
+    {
+        int resolved = _paidOff + _wastedGuesses;
+        if (resolved < _options.FeedbackSamples) return;
+        _predictor?.Throttle = (double)_paidOff / resolved;
+        _paidOff = 0;
+        _wastedGuesses = 0;
+    }
+
     /// <summary>Evicts least recently used entries. One that was never read is counted as wasted.</summary>
     private void Trim()
     {
@@ -193,7 +232,7 @@ public sealed class PredictionCacheLayer : CacheLayer, IDisposable
         {
             var key = tail.Value;
             var entry = _entries[key];
-            if (entry.Reads == 0) { _wasted++; _wastedBytes += entry.Bytes; }
+            if (entry.Reads == 0) { _wasted++; _wastedBytes += entry.Bytes; if (!entry.Scored) { entry.Scored = true; _wastedGuesses++; PublishQuality(); } }
             _bytes -= entry.Bytes;
             _entries.Remove(key);
             _lru.RemoveLast();
