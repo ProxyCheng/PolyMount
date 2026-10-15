@@ -183,6 +183,7 @@ internal static class Program
                 dashboard.Capture(Path.Combine(capture, "dashboard.png"));
                 editor.Capture(Path.Combine(capture, "layers.png"));
                 stats.Capture(Path.Combine(capture, "stats.png"));
+                stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
             }
             if (ticks == 20)
             {
