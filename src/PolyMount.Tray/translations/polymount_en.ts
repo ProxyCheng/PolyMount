@@ -884,6 +884,9 @@ Close applications using mounted files first.</translation>
       <source>stats.layer</source>
       <translation>Layer performance · Last second</translation>
     </message>
+    <message><source>stats.accessors</source><translation>readers in the last 60 seconds:</translation></message>
+    <message><source>stats.accessors.none</source><translation>no readers in the last 60 seconds.</translation></message>
+    <message><source>process.unknown</source><translation>unknown process</translation></message>
     <message>
       <source>stats.live</source>
       <translation>Live · Sampling every second</translation>

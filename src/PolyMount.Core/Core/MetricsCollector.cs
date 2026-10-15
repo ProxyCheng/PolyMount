@@ -10,7 +10,7 @@ namespace PolyMount.Core;
 /// </summary>
 public sealed class MetricsCollector
 {
-    private readonly record struct Sample(long TicksUtc, string Layer, double CostMs, long Bytes, bool Cached, bool Write);
+    private readonly record struct Sample(long TicksUtc, string Layer, double CostMs, long Bytes, bool Cached, bool Write, int Pid);
 
     private readonly int _capacity;
     private readonly ConcurrentQueue<Sample> _samples = new();
@@ -31,7 +31,11 @@ public sealed class MetricsCollector
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
     {
         Interlocked.Exchange(ref _lastActivityMs, Environment.TickCount64);
-        _samples.Enqueue(new Sample(DateTime.UtcNow.Ticks, layer, elapsed.TotalMilliseconds, bytes, cached, write));
+        // Who asked for it comes from the request's own scope, which is already there and already
+        // carries the WinFsp caller's process id. Reading it here rather than at each call site
+        // keeps the record sites unchanged and costs one field read.
+        _samples.Enqueue(new Sample(DateTime.UtcNow.Ticks, layer, elapsed.TotalMilliseconds, bytes, cached, write,
+            RequestDiagnostics.AmbientProcessId));
         if (Interlocked.Increment(ref _count) > _capacity)
             if (_samples.TryDequeue(out _)) Interlocked.Decrement(ref _count);
     }
@@ -69,6 +73,19 @@ public sealed class MetricsCollector
         }
 
         result.Layers = result.Layers.OrderByDescending(l => l.Hits).ToList();
+        // Who has been reading and writing, ranked by how much of the window's traffic is theirs.
+        result.Processes = recent
+            .GroupBy(s => s.Pid)
+            .Select(g => new ProcessMetric
+            {
+                Pid = g.Key,
+                Reads = g.Count(s => !s.Write),
+                Writes = g.Count(s => s.Write),
+                Bytes = g.Where(s => !s.Write).Sum(s => s.Bytes)
+            })
+            .OrderByDescending(entry => entry.Reads + entry.Writes)
+            .Take(8)
+            .ToList();
         result.CacheHitPercent = reads.Length == 0 ? 0 : 100.0 * cacheHits / reads.Length;
         return result;
     }

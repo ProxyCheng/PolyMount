@@ -53,6 +53,10 @@ public sealed class RequestDiagnostics : IDisposable
     /// </summary>
     public static RequestDiagnostics? Ambient => Current.Value?._owner;
 
+    /// <summary>The process the request being handled came from, or 0 outside one. Nested scopes
+    /// inherit their parent's, so the innermost answer is the caller's.</summary>
+    public static int AmbientProcessId => Current.Value?.ProcessId ?? 0;
+
     public static Scope? Begin(string operation, string path, RequestDiagnostics? diagnostics = null, int processId = 0)
     {
         var parent = Current.Value;

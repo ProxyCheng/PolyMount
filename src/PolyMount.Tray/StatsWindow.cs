@@ -13,7 +13,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly string? _instanceName;
     private readonly RecordingPanel? _recording;
     private readonly QPushButton _pause;
-    private readonly QPushButton _export;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
     private readonly QLabel _layerLegend;
@@ -37,8 +36,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
     private Task<(ControlResponse Trends, ControlResponse Access, double RequestMs, long Completed)>? _pending;
-    private Task<ExportOutcome>? _pendingExport;
-    private string _exportDirectory;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -47,7 +44,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     public StatsWindow(string? instanceName = null)
     {
         _instanceName = instanceName;
-        _exportDirectory = StatsExport.LoadDirectory();
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
@@ -75,9 +71,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _pause = new QPushButton();
         _pause.Clicked += _ => TogglePause();
         header.AddWidget(_pause);
-        _export = new QPushButton();
-        _export.Clicked += _ => Export();
-        header.AddWidget(_export);
         root.AddLayout(header);
 
         // Recording is a mode of this panel rather than a page beside it: it is the same instance,
@@ -262,9 +255,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     }
 
     /// <summary>Smoke check: the chart summaries describe their samples, the charts carry the
-    /// figures their metric is described by, and an export writes parts that agree with each
-    /// other. Neither needs a running service.</summary>
-    internal void VerifyExport(string directory)
+    /// figures their metric is described by, and the layer table fits the rows it holds. None of
+    /// it needs a running service.</summary>
+    internal void VerifyCharts()
     {
         var stats = ChartStatistics.Of(new[] { 1.0, 2.0, 3.0, 4.0, 10.0 });
         if (stats.Current != 10 || stats.Average != 4 || stats.Peak != 10 || stats.P95 != 10 || stats.Total != 20 || stats.Samples != 5)
@@ -286,46 +279,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
             throw new InvalidOperationException($"Layer table shows {_table.RowCount} rows in {_table.Height} px");
 
-        var snapshot = Snapshot();
-        if (snapshot.CapturedUtc == default)
-            throw new InvalidOperationException("An export does not record the moment its state was captured");
-        var outcome = StatsExport.Write(directory, snapshot);
-        using var summary = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "summary.json")));
-        var root = summary.RootElement;
-        if (root.GetProperty("charts").GetArrayLength() != _charts.Length)
-            throw new InvalidOperationException("Export did not describe every chart");
-        if (root.GetProperty("export").GetProperty("rows").GetInt32() != outcome.Samples)
-            throw new InvalidOperationException("Export sample count does not match its own summary");
-        // Rows are a product of the two counts a reader would otherwise have to divide out.
-        var export = root.GetProperty("export");
-        int rows = export.GetProperty("rows").GetInt32();
-        int ticks = export.GetProperty("ticks").GetInt32();
-        int layers = export.GetProperty("layers").GetInt32();
-        if (rows == 0 ? ticks != 0 || layers != 0 : ticks == 0 || layers == 0 || ticks * layers < rows)
-            throw new InvalidOperationException(
-                $"Export describes {rows} rows as {ticks} seconds of {layers} layers");
-        // The files may be written long after the state was read, so the summary has to carry the
-        // earlier moment rather than leaving the reader to assume it is the file's own timestamp.
-        if (root.GetProperty("export").GetProperty("capturedUtc").GetString() !=
-            snapshot.CapturedUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture))
-            throw new InvalidOperationException("Export does not report the moment its state was captured");
-        if (File.ReadAllLines(Path.Combine(outcome.Directory, "samples.csv")).Length != outcome.Samples + 1)
-            throw new InvalidOperationException("Exported records do not match their summary");
-        if (!root.TryGetProperty("logs", out _) || !root.TryGetProperty("response", out _))
-            throw new InvalidOperationException("Export summary is missing its logs or response overhead");
-        // The digest has to be readable whether or not the service was there to hand over logs,
-        // and its ranked lists must agree with the totals it states beside them.
-        using var digest = JsonDocument.Parse(
-            File.ReadAllText(Path.Combine(outcome.Directory, "requests-summary.json")));
-        var digestRoot = digest.RootElement;
-        var totals = digestRoot.GetProperty("totals");
-        var operations = digestRoot.GetProperty("operations").EnumerateArray().ToArray();
-        // The operation list is capped, so it only has to add up when nothing was cut.
-        if (totals.GetProperty("operations").GetInt32() <= operations.Length &&
-            totals.GetProperty("ends").GetInt64() != operations.Sum(operation => operation.GetProperty("ends").GetInt64()))
-            throw new InvalidOperationException("Request digest operations do not sum to its own totals");
-        if (digestRoot.GetProperty("coverage").GetArrayLength() != outcome.Logs)
-            throw new InvalidOperationException("Request digest does not account for every exported log");
     }
 
     /// <summary>Self-check for a smoke run of the bundle a recording writes. The window's own snapshot
@@ -458,12 +411,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 if (!_paused && visible) _status.SetText(T("stats.gap") + " · " + ex.Message);
             }
         }
-        if (_pendingExport is { IsCompleted: true })
-        {
-            var task = _pendingExport;
-            _pendingExport = null;
-            ReportExport(task);
-        }
         if (visible && !_paused && _pending == null && (_requested || !_wasVisible || DateTime.UtcNow >= _next))
         {
             _requested = false;
@@ -481,61 +428,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _wasVisible = visible;
     }
 
-    /// <summary>Freezes the window and writes what it shows: the figures, the per-second records
-    /// behind them and the service's logs. Sampling is held first, because an export that keeps
-    /// advancing is not a snapshot of anything the reader saw.</summary>
-    /// <summary>Writes the window as it stands when the button is pressed. The state is copied
-    /// here, before the folder prompt: that dialog runs its own event loop, so anything read
-    /// after it would be the state the reader finished choosing a folder in rather than the one
-    /// they clicked on. Sampling carries on behind the dialog — the copy is what makes an export
-    /// a snapshot of a moment, so nothing needs to stop for it.</summary>
-    private void Export()
-    {
-        var snapshot = Snapshot();
-        string? parent = QFileDialog.GetExistingDirectory(this, T("stats.export.choose"), _exportDirectory);
-        if (string.IsNullOrEmpty(parent)) return;
-        _exportDirectory = parent;
-        StatsExport.SaveDirectory(parent);
-        _status.SetText(T("stats.export.running"));
-        _pendingExport = Task.Run(() => StatsExport.Write(parent, snapshot));
-    }
-
-    private void ReportExport(Task<ExportOutcome> task)
-    {
-        try
-        {
-            var outcome = task.GetAwaiter().GetResult();
-            _status.SetText(I18n.F("stats.export.status", outcome.Directory));
-            bool opened = QMessageBox.Information(this, T("stats.export.done"),
-                I18n.F("stats.export.body", System.Net.WebUtility.HtmlEncode(outcome.Directory), outcome.Samples, outcome.Logs),
-                T("stats.export.open"), T("stats.export.close"), null, 0, 1) == 0;
-            if (opened) QDesktopServices.OpenUrl(QUrl.FromLocalFile(outcome.Directory));
-        }
-        catch (Exception ex) { _status.SetText(T("stats.export.failed") + ex.Message); }
-    }
-
-    /// <summary>Everything an export carries, copied off the live window on the UI thread so the
-    /// writer never reads a collection that is still being appended to.</summary>
-    private StatsSnapshot Snapshot() => new()
-    {
-        CapturedUtc = DateTime.UtcNow,
-        Scope = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText),
-        Language = I18n.Language,
-        Frozen = _paused,
-        WindowSeconds = HistorySeconds,
-        Charts = _charts.Select(chart => new ChartRecord(chart.TitleKey, chart.Unit, chart.Statistics)).ToList(),
-        Metrics = _accessMetrics,
-        Samples = _history.Where(mount => mount.Key.Length > 0)
-            .SelectMany(mount => mount.Value.SelectMany(sample => sample.Layers.Select(layer =>
-                new SampleRecord(sample.Time, mount.Key, Relative(layer.Key, mount.Key),
-                    layer.Value.Reads, layer.Value.Bytes, layer.Value.Cost,
-                    layer.Value.WriteBytes, layer.Value.Wasted, layer.Value.WastedBytes,
-                    layer.Value.Accelerated, layer.Value.Fetched, layer.Value.AvgCost, layer.Value.MaxCost))))
-            .OrderBy(row => row.Time).ToList(),
-        ResponseRequest = _responseSamples.Select(sample => sample.Request).ToList(),
-        ResponseDispatch = _responseSamples.Select(sample => sample.Dispatch).ToList(),
-        ResponseUi = _responseSamples.Select(sample => sample.Ui).ToList()
-    };
 
     /// <summary>A layer key is "mount/layer"; the records carry the two apart.</summary>
     private static string Relative(string key, string mount) =>
@@ -685,8 +577,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _pause.SetIcon(TrayIcons.Get(_paused ? "play" : "stop"));
-        _export.SetText(T("stats.export"));
-        _export.SetIcon(TrayIcons.Get("export"));
         _recording?.Translate();
         _mount.SetItemText(0, T("stats.all"));
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });

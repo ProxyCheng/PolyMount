@@ -249,6 +249,17 @@ public sealed class LayerMetric
     public long FetchedBytes { get; set; }
 }
 
+/// <summary>One process's share of a window: who is reading and writing the mount, and how much
+/// of it. The process is identified by the id WinFsp reports for the request, which the front end
+/// turns into a name — the service never asks the operating system about another process.</summary>
+public sealed class ProcessMetric
+{
+    public int Pid { get; set; }
+    public long Reads { get; set; }
+    public long Writes { get; set; }
+    public long Bytes { get; set; }
+}
+
 /// <summary>One priority class's share of a source that serves several. Low is urgent: the
 /// reader is class 0 and holds nearly the whole source, read-ahead is a class with a floor of
 /// one and a small ceiling.</summary>
@@ -285,6 +296,9 @@ public sealed class MountMetrics
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();
+    /// <summary>Who has been using this mount in the window, ranked by requests. Empty when the
+    /// window holds nothing, or when the callers are not WinFsp requests (id 0).</summary>
+    public List<ProcessMetric> Processes { get; set; } = new();
 }
 
 // Action names accepted by the "layerAction" command.

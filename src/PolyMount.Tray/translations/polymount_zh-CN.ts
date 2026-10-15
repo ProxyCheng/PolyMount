@@ -884,6 +884,9 @@
       <source>stats.layer</source>
       <translation>逐层性能 · 最近 1 秒</translation>
     </message>
+    <message><source>stats.accessors</source><translation>最近 60 秒的访问者：</translation></message>
+    <message><source>stats.accessors.none</source><translation>最近 60 秒没有访问者。</translation></message>
+    <message><source>process.unknown</source><translation>未知进程</translation></message>
     <message>
       <source>stats.live</source>
       <translation>实时更新中 · 每秒采样</translation>
