@@ -70,6 +70,9 @@ internal static class RequestLogDigest
         public readonly List<Pending> PendingRequests = new();
         public readonly List<LogCoverage> Coverage = new();
         public long Begins, Ends, PendingCount, Counts, Dropped, Lines;
+        /// <summary>Requests that ended inside the window having begun before it. Their time is
+        /// mostly outside, so they are counted but not measured here.</summary>
+        public long Straddling;
         /// <summary>Set when a ranked list had to drop entries, so a reader is told the list is
         /// the top of a larger set rather than the whole of it.</summary>
         public bool SlowestTrimmed, PendingTrimmed, PathsTrimmed;
@@ -142,10 +145,23 @@ internal static class RequestLogDigest
                     }
                     if (message.StartsWith("END "))
                     {
-                        aggregate.Ends++; events++;
                         string operation = Quoted(message, " op=");
                         string path = Quoted(message, " path='");
                         long elapsed = Number(message, " elapsedMs=");
+                        // A request that began before the window carries time the window never
+                        // contained, and its whole elapsedMs would be charged to it: a 500 ms call
+                        // whose first 480 ms were already running when the window opened reported a
+                        // maximum the window did not have, against a slowest list whose worst entry
+                        // was 72 ms. It is counted apart instead and left out of every figure the
+                        // window reports, so the reader can see how many there were rather than a
+                        // number that came from nowhere.
+                        if (from != null && at - TimeSpan.FromMilliseconds(elapsed) < from)
+                        {
+                            aggregate.Straddling++;
+                            events++;
+                            continue;
+                        }
+                        aggregate.Ends++; events++;
                         var stats = Stats(aggregate.Operations, operation);
                         stats.Ends++; stats.Sum += elapsed;
                         if (elapsed > stats.Max) stats.Max = elapsed;
@@ -312,6 +328,8 @@ internal static class RequestLogDigest
                 dropped = aggregate.Dropped,
                 operations = aggregate.Operations.Count,
                 paths = aggregate.Paths.Count,
+                // END lines the window could not measure because their request began before it.
+                straddling = aggregate.Straddling,
                 // The ranked lists are the top of a larger set when this is true.
                 slowestTrimmed = aggregate.SlowestTrimmed,
                 pendingTrimmed = aggregate.PendingTrimmed,
