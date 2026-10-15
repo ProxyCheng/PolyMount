@@ -16,7 +16,7 @@ internal sealed class Dashboard : QWidget
     private readonly QLabel _detailName, _detailState, _mountPath, _layers, _warmup, _detailError;
     private readonly QWidget _detailBody;
     private readonly QPushButton _refresh, _start, _stop, _create;
-    private readonly QPushButton _toggleMount, _open, _edit, _performance, _inspect, _record;
+    private readonly QPushButton _toggleMount, _open, _edit, _performance, _inspect;
     private readonly QTimer _timer;
     private readonly List<MountStatus> _mounts = new();
     private List<MountStatus> _visible = new();
@@ -192,8 +192,6 @@ internal sealed class Dashboard : QWidget
         body.InsertWidget(1, _edit);
         _performance = Button("mount.performance", OpenPerformance, icon: "chart");
         body.InsertWidget(2, _performance);
-        _record = Button("mount.record", OpenRecording, icon: "record");
-        body.InsertWidget(3, _record);
         _detailError = PlainLabel("", "errorBox");
         body.AddWidget(_detailError);
         body.AddStretch(1);
@@ -449,14 +447,13 @@ internal sealed class Dashboard : QWidget
         _edit.SetEnabled(ready);
         _performance.SetEnabled(ready);
         _inspect.SetEnabled(ready && m!.Providers.Count > 0);
-        _record.SetEnabled(ready);
-        // An instance that is being recorded says so here: the page can be behind another tab, and
-        // this is how the reader finds it again.
+        // A recording is part of the performance panel, and this is how a reader finds it again
+        // after moving the tab somewhere else: the entry says so rather than looking ordinary.
         bool recording = m?.Recording == true;
-        string recordText = T(recording ? "record.active" : "mount.record");
-        if (_record.Text != recordText) _record.SetText(recordText);
-        _record.SetIcon(TrayIcons.Get("record", recording ? "#dc2626" : "#526786"));
-        _record.SetToolTip(T(recording ? "record.active.tip" : "record.open.tip"));
+        string performanceText = T(recording ? "mount.performance.recording" : "mount.performance");
+        if (_performance.Text != performanceText) _performance.SetText(performanceText);
+        _performance.SetIcon(TrayIcons.Get("chart", recording && _performance.IsEnabled() ? "#dc2626" : "#526786"));
+        _performance.SetToolTip(T(recording ? "record.active.tip" : "mount.performance.tip"));
     }
 
     private void ToggleSelected()
@@ -497,17 +494,9 @@ internal sealed class Dashboard : QWidget
     internal StatsWindow OpenPerformance(string name) => (StatsWindow)_tabs.Open("stats:" + name,
         () => new StatsWindow(name), () => I18n.F("stats.instance", name));
 
-    internal RecordingWindow OpenRecording(string name, bool start = true) => (RecordingWindow)_tabs.Open("record:" + name,
-        () => new RecordingWindow(name, start), () => I18n.F("record.instance", name));
-
-    private void OpenRecording()
-    {
-        if (Selected is not { } m) return;
-        OpenRecording(m.Name);
-    }
 
     internal void SmokeTabs(string statsInstance) =>
-        _tabs.SmokeInteractions("editor:L10", "stats:" + statsInstance, "record:" + statsInstance);
+        _tabs.SmokeInteractions("editor:L10", "stats:" + statsInstance);
 
     private void OnConfigSaved() => Refresh();
 

@@ -7,10 +7,11 @@ using System.Text.Json;
 namespace PolyMount.Tray;
 
 /// <summary>Task-manager style performance charts, sampled asynchronously once per second.</summary>
-internal sealed class StatsWindow : QWidget
+internal sealed class StatsWindow : QWidget, ICloseGuard
 {
     private readonly QComboBox _mount;
     private readonly string? _instanceName;
+    private readonly RecordingPanel? _recording;
     private readonly QPushButton _pause;
     private readonly QPushButton _export;
     private readonly QTableWidget _table;
@@ -79,6 +80,15 @@ internal sealed class StatsWindow : QWidget
         header.AddWidget(_export);
         root.AddLayout(header);
 
+        // Recording is a mode of this panel rather than a page beside it: it is the same instance,
+        // the same layers and the same seconds, only kept instead of forgotten after a minute. It
+        // needs an instance to belong to, which is what the mount selector is for.
+        if (instanceName != null)
+        {
+            _recording = new RecordingPanel(instanceName);
+            root.AddWidget(_recording);
+        }
+
         _charts = new[]
         {
             new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume),
@@ -140,6 +150,21 @@ internal sealed class StatsWindow : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>The recording's own checks, driven from here because the panel belongs to this
+    /// window and a smoke run has no other handle on it.</summary>
+    internal void VerifyRecording() => _recording?.Verify();
+    internal void SmokeRecordingStartAndDiscard(string? capture = null) => _recording?.SmokeStartAndDiscard(capture);
+    internal void CaptureRecording(string path) => _recording?.Capture(path);
+
+    /// <summary>The recording belongs to this panel, so closing the panel is the moment to ask
+    /// about it — the recording keeps collecting while the tab is parked, and a tab close is both
+    /// a plausible way of saying "stop" and a plausible accident.</summary>
+    void ICloseGuard.RequestClose(Action proceed)
+    {
+        if (_recording == null) proceed();
+        else _recording.RequestClose(proceed);
+    }
 
     /// <summary>The layer table on its own: the window capture stops above it, and one row per
     /// layer is the whole point of that table.</summary>
@@ -264,6 +289,93 @@ internal sealed class StatsWindow : QWidget
         if (digestRoot.GetProperty("coverage").GetArrayLength() != outcome.Logs)
             throw new InvalidOperationException("Request digest does not account for every exported log");
     }
+
+    /// <summary>Self-check for a smoke run of the bundle a recording writes. The window's own snapshot
+    /// export is one thing; this is the part a reader actually receives, and it has one shape
+    /// nothing else produces: a window that is the session's own length, samples carried rather
+    /// than rebuilt, the copy of the log moved in rather than taken at the end, and a second file
+    /// per second. A recording of a fast workload also has to rank its paths, or the bundle
+    /// answers nothing about which ones cost the time.</summary>
+    internal void VerifyRecordingBundle(string directory)
+    {
+        var started = DateTime.UtcNow.AddSeconds(-3);
+        var ended = DateTime.UtcNow;
+        string work = Path.Combine(directory, "recording-fixture");
+        string logs = Path.Combine(work, "logs", "TX4Package");
+        Directory.CreateDirectory(logs);
+        // Two seconds of a log in the same format the service writes: one traced root and one
+        // probe the sampling rule would have dropped, marked by its negative id.
+        var lines = new List<string>();
+        foreach (var (at, id) in new[] { (started, 1L), (started.AddSeconds(1), -1L) })
+        {
+            string stamp = at.ToString("O");
+            lines.Add($"{stamp} INF BEGIN id={id} parent=0 thread=1 pid=1 op=VFS.Lookup path='a' elapsedMs=0 stage='running'");
+            lines.Add($"{stamp} INF END id={id} parent=0 thread=1 pid=1 op=VFS.Lookup path='a' elapsedMs=12 stage='resolved'");
+        }
+        File.WriteAllLines(Path.Combine(logs, "requests-000.log"), lines);
+        // Two seconds of one layer, so the rows are the product of the two counts a reader
+        // divides back out.
+        File.WriteAllText(Path.Combine(work, "samples.csv"), StatsExport.SamplesCsvHeader
+            + SampleLine(started, 0) + "\n" + SampleLine(started.AddSeconds(1), 1) + "\n");
+
+        var snapshot = new StatsSnapshot
+        {
+            Scope = "TX4Package",
+            Kind = "recording",
+            CapturedUtc = ended,
+            WindowSeconds = 3,
+            SamplesFile = Path.Combine(work, "samples.csv"),
+            LogsDirectory = Path.Combine(work, "logs"),
+            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5) },
+            ResponseRequest = new List<double> { 4 },
+            Recording = new RecordingRecord
+            {
+                SessionId = "fixture", StartedUtc = started.ToString("O"), EndedUtc = ended.ToString("O"),
+                StoppedReason = "saved", Seconds = 3, SampleTicks = 2, SampleRows = 2,
+                Layers = new List<LayerTotalRecord> { new("TX4Package", "svn", "SVN", "#2563eb", false, 2, 0, 0, 6, 12, 0, 0) }
+            }
+        };
+        var outcome = StatsExport.Write(directory, snapshot);
+        using var summary = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "summary.json")));
+        var root = summary.RootElement;
+        if (root.GetProperty("export").GetProperty("kind").GetString() != "recording")
+            throw new InvalidOperationException("A recording bundle does not say it is one");
+        var export = root.GetProperty("export");
+        if (export.GetProperty("ticks").GetInt32() != 2 || export.GetProperty("layers").GetInt32() != 1 ||
+            export.GetProperty("ticks").GetInt32() * export.GetProperty("layers").GetInt32() != export.GetProperty("rows").GetInt32())
+            throw new InvalidOperationException($"A recording bundle describes {export.GetProperty("rows")} rows as "
+                + $"{export.GetProperty("ticks")} seconds of {export.GetProperty("layers")} layers");
+        if (root.GetProperty("recording").GetProperty("sampleTicks").GetInt32() != 2)
+            throw new InvalidOperationException("A recording bundle does not carry the session's own account of itself");
+        if (root.GetProperty("response").GetProperty("samples").GetInt32() != 1)
+            throw new InvalidOperationException("A recording bundle does not report its own polling cost");
+        // The log was moved in rather than copied, so the fixture no longer has it.
+        string moved = Path.Combine(outcome.Directory, "logs", "TX4Package", "requests-000.log");
+        if (!File.Exists(moved) || File.Exists(Path.Combine(logs, "requests-000.log")))
+            throw new InvalidOperationException("A recording's log copy was not moved into the bundle");
+        if (File.ReadAllLines(moved).Length != lines.Count)
+            throw new InvalidOperationException("A recording's log copy lost lines on the way");
+        if (File.ReadAllLines(Path.Combine(outcome.Directory, "seconds.csv")).Length != 2)
+            throw new InvalidOperationException("A recording bundle's per-second file does not match the seconds it measured");
+        using var digest = JsonDocument.Parse(File.ReadAllText(Path.Combine(outcome.Directory, "requests-summary.json")));
+        var window = digest.RootElement.GetProperty("window");
+        if (window.GetProperty("kind").GetString() != "recording" || !window.GetProperty("filtered").GetBoolean())
+            throw new InvalidOperationException("A recording's request digest does not describe the session's window");
+        // The window has to start where the recording did, which is how a reader that only knows
+        // `windowSeconds` still computes the session without knowing anything new.
+        if (DateTimeOffset.Parse(window.GetProperty("fromUtc").GetString()!) != new DateTimeOffset(started, TimeSpan.Zero))
+            throw new InvalidOperationException("A recording's request digest starts somewhere other than the recording did");
+        // A fast workload still has to be ranked: the floor that thins a sample would empty this.
+        var paths = digest.RootElement.GetProperty("paths").EnumerateArray().ToArray();
+        if (paths.Length == 0 || paths.All(path => path.GetProperty("ends").GetInt64() == 0))
+            throw new InvalidOperationException("A recording's request digest ranked no paths");
+        if (digest.RootElement.GetProperty("coverage").GetArrayLength() != outcome.Logs)
+            throw new InvalidOperationException("A recording's digest does not account for every log it carries");
+    }
+
+    private static string SampleLine(DateTime at, int index) =>
+        string.Create(System.Globalization.CultureInfo.InvariantCulture,
+            $"{at:O},TX4Package,svn,{index + 1},0,0,0,0,0,0,0,1.5,12");
 
     private void TogglePause()
     {
@@ -536,6 +648,7 @@ internal sealed class StatsWindow : QWidget
         _pause.SetIcon(TrayIcons.Get(_paused ? "play" : "stop"));
         _export.SetText(T("stats.export"));
         _export.SetIcon(TrayIcons.Get("export"));
+        _recording?.Translate();
         _mount.SetItemText(0, T("stats.all"));
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));

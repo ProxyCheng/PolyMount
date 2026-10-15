@@ -209,9 +209,6 @@ internal static class Program
         var editor = dashboard.OpenEditor("L10")!;
         string instance = LiveInstance() ?? "L10";
         var stats = dashboard.OpenPerformance(instance);
-        // Opened, not started: a smoke run must not leave a recording attached to the service.
-        var recording = dashboard.OpenRecording(instance, start: false);
-        recording.Quiet = true;
         LayerVisualizer.Open("D:\\L10\\20260924");
         dashboard.ShowWindow();
         var timer = new QTimer();
@@ -232,7 +229,7 @@ internal static class Program
                 editor.Capture(Path.Combine(capture, "layers.png"));
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
-                recording.Capture(Path.Combine(capture, "recording.png"));
+                stats.CaptureRecording(Path.Combine(capture, "recording.png"));
             }
             if (ticks == 20)
             {
@@ -268,7 +265,7 @@ internal static class Program
                     dashboard.Capture(Path.Combine(capture, "dashboard-small.png"));
                     editor.Capture(Path.Combine(capture, "layers-small.png"));
                     stats.Capture(Path.Combine(capture, "stats-small.png"));
-                    recording.Capture(Path.Combine(capture, "recording-small.png"));
+                    stats.CaptureRecording(Path.Combine(capture, "recording-small.png"));
                 }
             }
             if (ticks >= 60)
@@ -279,11 +276,12 @@ internal static class Program
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyExport(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
-                    recording.Verify();
-                    recording.VerifyBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
+                    stats.VerifyRecording();
+                    stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
+                    stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
                 }
                 catch (Exception ex) { failure = ex.Message; }
-                Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats, Recording and live localization.");
+                Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats with its recording panel, and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }
         };
@@ -292,7 +290,6 @@ internal static class Program
         GC.KeepAlive(dashboard);
         GC.KeepAlive(editor);
         GC.KeepAlive(stats);
-        GC.KeepAlive(recording);
         GC.KeepAlive(timer);
         return code;
     }
