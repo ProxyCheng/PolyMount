@@ -104,7 +104,7 @@ internal sealed class ChartPreview : QWidget
         {
             new("memory-cache", "#2563eb", 48213, 0), new("cache", "#0891b2", 12044, 0),
             new("overlay", "#059669", 3120, 908), new("svn", "#f59e0b", 1402, 0)
-        }, I18n.F("stats.access.title"));
+        });
     }
 
     /// <summary>One window of readings, one per second: what the layers served, what they hold and

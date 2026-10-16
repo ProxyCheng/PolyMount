@@ -115,10 +115,14 @@
       <translation>Layer operation completed</translation>
     </message>
     <message>
-      <source>stats.access.title</source>
-      <translation>Layer access share · Last 60 seconds (reads + writes)</translation>
+      <source>stats.access.reads</source>
+      <translation>Reads by layer · Last 60 seconds</translation>
     </message>
-    <message><source>stats.access.slice</source><translation>{0} · {1} read · {2} written · {3:0.0}%</translation></message>
+    <message>
+      <source>stats.access.writes</source>
+      <translation>Writes by layer · Last 60 seconds</translation>
+    </message>
+    <message><source>stats.access.slice</source><translation>{0} · {1:N0} · {2:0.0}%</translation></message>
     <message>
       <source>stats.access.counts</source>
       <translation>Reads {0:N0} · Writes {1:N0} · {2:0.#}%</translation>

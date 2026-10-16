@@ -115,12 +115,16 @@
       <translation>层操作已完成</translation>
     </message>
     <message>
-      <source>stats.access.title</source>
-      <translation>各层访问占比 · 最近 60 秒（读 + 写）</translation>
+      <source>stats.access.reads</source>
+      <translation>各层读取来源 · 最近 60 秒</translation>
+    </message>
+    <message>
+      <source>stats.access.writes</source>
+      <translation>各层写入来源 · 最近 60 秒</translation>
     </message>
     <message>
       <source>stats.access.slice</source>
-      <translation>{0} · 读 {1} · 写 {2} · {3:0.0}%</translation>
+      <translation>{0} · {1:N0} · {2:0.0}%</translation>
     </message>
     <message>
       <source>stats.access.counts</source>

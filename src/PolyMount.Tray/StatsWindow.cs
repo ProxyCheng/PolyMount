@@ -1444,7 +1444,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var slices = accessRows.Select(r => new AccessSlice(selected == "" ? r.Mount + "/" + r.Layer.Name
             : string.IsNullOrEmpty(r.Layer.DisplayName) ? r.Layer.Name : r.Layer.DisplayName,
             string.IsNullOrEmpty(r.Layer.Color) ? "#64748B" : r.Layer.Color, r.Layer.Hits, r.Layer.Writes)).ToList();
-        _accessPie.SetSlices(slices, I18n.F("stats.access.title"));
+        _accessPie.SetSlices(slices);
         // The line the layer section keeps while it is folded: how many layers there are and what
         // they served between them, which is enough to tell an instance that is working from one
         // that is not, without opening anything. The chart cards carry their own legend — the same
