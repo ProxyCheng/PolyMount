@@ -50,6 +50,10 @@ Thumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+# Scratch files that live beside the tree but are not part of it
+docs.tmp.py
+image.png
+
 # PolyMount runtime data (local stores, caches, logs, generated config)
 *.log
 config.json
