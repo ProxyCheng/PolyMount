@@ -669,6 +669,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
+        // A line whose oldest observation sits inside the window still starts at the window's
+        // edge, and a run that begins after a gap still starts where its own observations do.
+        if (PerformanceChart.StartX(40, 96, startsSeries: true) != 40 ||
+            PerformanceChart.StartX(40, 96, startsSeries: false) != 96)
+            throw new InvalidOperationException("Chart lines no longer begin at the window's left edge");
         // The layer table carries every layer: no second scrollbar and no row outside the widget.
         if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
@@ -942,9 +947,19 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     }
 
     /// <summary>The rate in force at a moment: the last one measured at or before it.</summary>
+    /// <summary>The rate in effect at <paramref name="time"/>: the last one measured at or before it.
+    ///
+    /// A time older than every measurement takes the earliest measurement rather than zero. That
+    /// case is not rare at the end this matters: the rates come from the process readings, which
+    /// arrive ten times a second, while the chart's points come from the trend samples, which
+    /// arrive at the reader's rate — so the chart's oldest point is regularly older than the first
+    /// process reading by a little, and answering zero there drew one byte of "no layer accounts
+    /// for it" the size of everything the layers served, at the left end. That is the value
+    /// jumping to nothing and back as the window slides.</summary>
     private static double At(List<(DateTime Time, double Rate)> rates, DateTime time)
     {
-        double value = 0;
+        if (rates.Count == 0) return 0;
+        double value = rates[0].Rate;
         foreach (var (at, rate) in rates)
         {
             if (at > time) break;
@@ -1712,6 +1727,17 @@ internal sealed class PerformanceChart : QWidget
         return 0;
     }
 
+    /// <summary>Where a run of observations begins on the x axis.
+    ///
+    /// The run that starts the series is drawn from the window's left edge, whatever x its oldest
+    /// observation works out to. The history holds the window's worth of observations and no more,
+    /// so the oldest is always between nothing and one sampling interval *inside* the edge: drawn
+    /// where it really is, the line began short of the edge by a gap that widened and narrowed
+    /// every time an observation aged out — at two seconds a sample, a twentieth of the chart, and
+    /// moving. A run that starts after a gap keeps its own x: it has no earlier observation that
+    /// could have been what the edge was showing.</summary>
+    internal static double StartX(double left, double actual, bool startsSeries) => startsSeries ? left : actual;
+
     /// <summary>What the card is showing, for the export and its own smoke check.</summary>
     internal string TitleKey => _titleKey;
     internal string Unit => _unit;
@@ -1834,10 +1860,13 @@ internal sealed class PerformanceChart : QWidget
                 {
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
+                // Only the first run is moved to the edge; see StartX.
+                double edge = StartX(left, X(times[start]), start == 0);
                 using var fill = new QPainterPath();
-                fill.MoveTo(X(times[start]), Y(lower[start]));
-                for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
-                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
+                fill.MoveTo(edge, Y(lower[start]));
+                for (int index = start + 1; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
+                for (int index = finish - 1; index > start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
+                fill.LineTo(edge, Y(lower[start]));
                 fill.CloseSubpath();
                 using var fillColor = new QColor(series.Color);
                 fillColor.SetAlpha(155);
@@ -1851,7 +1880,7 @@ internal sealed class PerformanceChart : QWidget
                 else p.SetBrush(new QBrush(fillColor));
                 p.DrawPath(fill);
                 using var line = new QPainterPath();
-                line.MoveTo(X(times[start]), Y(upper[start]));
+                line.MoveTo(edge, Y(upper[start]));
                 for (int index = start + 1; index < finish; index++) line.LineTo(X(times[index]), Y(upper[index]));
                 using var pen = new QPen(new QColor(series.Color));
                 if (series.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
