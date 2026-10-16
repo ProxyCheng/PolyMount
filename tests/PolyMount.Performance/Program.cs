@@ -73,6 +73,56 @@ if (args.Contains("--metrics-cost"))
     Console.WriteLine($"window says  : asked 60s, measured {measured.MeasuredSeconds:0.##}s, {measured.TotalReads:N0} reads over {measured.Layers.Count} layer(s), {measured.RequestCount:N0} requests / {measured.RequestMs:0.0} ms");
     return 0;
 }
+if (args.Contains("--diagnostics-cost"))
+{
+    // What the per-request diagnostics hook costs the thread serving the request, with and without
+    // a recording attached. Every request builds a scope whether or not a line will be written
+    // about it — the sampling rule decides what is logged, not what is measured — and a recording
+    // additionally stops the layer probes being dropped, so this is the instrumentation that runs
+    // on the request threads whatever else is switched off.
+    string benchRoot = Path.Combine(Path.GetTempPath(), "polymount-diagnostics-bench");
+    Directory.CreateDirectory(benchRoot);
+    const int count = 1_000_000;
+    const string path = "Repository/11_3606.local/resource.repository/data/asset.pkg";
+
+    foreach (bool recording in new[] { false, true })
+    {
+        using var diagnostics = new RequestDiagnostics(Path.Combine(benchRoot, "requests.log"))
+        {
+            Channel = new RecordingChannel(Path.Combine(benchRoot, "recording"))
+        };
+        if (recording) diagnostics.Channel.Start("bench", "bench");
+        // Warm up, so the measurement is of the steady state rather than of first-call paths.
+        for (int i = 0; i < 100_000; i++) { using var warm = RequestDiagnostics.Begin("WinFsp.Read", path, diagnostics); }
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < count; i++)
+        {
+            using var scope = RequestDiagnostics.Begin("WinFsp.Read", path, diagnostics);
+            scope?.Stage("reading");
+        }
+        watch.Stop();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"request scope, {(recording ? "recording" : "idle     "),-10}: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
+
+        // A layer probe: dropped outright unless a recording is attached, and the thing that
+        // dominates a cached directory walk when one is.
+        for (int i = 0; i < 100_000; i++) { using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics); using var probe = RequestDiagnostics.Begin("Layer.GetEntry:cache", path, diagnostics); }
+        before = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        for (int i = 0; i < count; i++)
+        {
+            using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics);
+            using var probe = RequestDiagnostics.Begin("Layer.GetEntry:cache", path, diagnostics);
+        }
+        watch.Stop();
+        allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"list + layer probe, {(recording ? "recording" : "idle     "),-10}: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
+    }
+    try { Directory.Delete(benchRoot, true); } catch (IOException) { }
+    return 0;
+}
 if (args.Contains("--warm-probe"))
 {
     WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "TX4Package"),
