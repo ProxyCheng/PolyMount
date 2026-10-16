@@ -66,6 +66,18 @@ public sealed class MetricsCollector
     // so this is the one shared structure on the write path; the counters inside a cell are atomic.
     private readonly ConcurrentDictionary<string, Ring> _layers = new(StringComparer.OrdinalIgnoreCase);
     private long _lastActivityMs;
+
+    /// <summary>Until when reads and writes are counted, on the coarse clock. Nobody watching means
+    /// nothing to count: an event tracer's provider writes nothing until a controller enables it,
+    /// and an EventCounter is not even created until a listener asks. The difference here is that
+    /// enabling costs one comparison rather than a session, because the clock this decides on is
+    /// already being read for the activity stamp.</summary>
+    private long _watchedUntilMs;
+
+    /// <summary>How long one request keeps collection on. Long enough that closing a window and
+    /// reopening it keeps its history, short enough that an instance nobody has looked at for a
+    /// minute stops paying - which is the point of arming at all.</summary>
+    internal static readonly TimeSpan WatchLease = TimeSpan.FromSeconds(60);
     /// <summary>Where the time comes from. A test drives it to place events in known slots; the
     /// process uses the monotonic high-resolution timer, a user-mode read.</summary>
     private readonly Func<long> _slot;
@@ -89,7 +101,16 @@ public sealed class MetricsCollector
     /// <summary>How long the mount has gone without a read or a write, so background work can
     /// stay out of the way of whoever is using it. Updated on every event, collected or not:
     /// a mount nobody is watching is not an idle mount.</summary>
-    public TimeSpan IdleFor => TimeSpan.FromMilliseconds(Math.Max(0, Environment.TickCount64 - Interlocked.Read(ref _lastActivityMs)));
+    public TimeSpan IdleFor => TimeSpan.FromMilliseconds(Math.Max(0, Environment.TickCount64 - Volatile.Read(ref _lastActivityMs)));
+
+    /// <summary>Whether anything is being counted right now.</summary>
+    public bool Watched => Environment.TickCount64 < Volatile.Read(ref _watchedUntilMs);
+
+    /// <summary>Asks this instance to start counting, and to keep counting for a while after the
+    /// asker stops asking. The act of collecting is what turns it on - a metrics request, a
+    /// recording starting - which is how the tools that do this well work: nothing is measured
+    /// until somebody is there to read it.</summary>
+    public void Watch() => Volatile.Write(ref _watchedUntilMs, Environment.TickCount64 + (long)WatchLease.TotalMilliseconds);
 
     public void RecordRead(string layer, TimeSpan elapsed, long bytes, bool cached = false)
     {
@@ -99,10 +120,16 @@ public sealed class MetricsCollector
 
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
     {
+        // The activity stamp moves whether or not anyone is watching: the warm-up reads IdleFor to
+        // stay out of a busy mount's way, and an unobserved mount is not an idle one.
+        long now = Environment.TickCount64;
         // A release store, not an exchange: this is a timestamp, and nobody needs the value that
         // was there. The exchange was a lock-prefixed read-modify-write on a line every reading
         // thread shares, which cost more than the rest of a write put together.
-        Volatile.Write(ref _lastActivityMs, Environment.TickCount64);
+        Volatile.Write(ref _lastActivityMs, now);
+        // One comparison, on a clock reading that was already needed. Everything below this line -
+        // the slot, the layer lookup, the atomic adds - is what nobody watching does not pay.
+        if (now >= Volatile.Read(ref _watchedUntilMs)) return;
         long slot = _slot();
         ref Cell cell = ref CellAt(layer, slot);
         if (write)

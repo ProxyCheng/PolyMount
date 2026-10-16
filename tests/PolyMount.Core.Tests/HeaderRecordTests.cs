@@ -138,6 +138,8 @@ public sealed class HeaderRecordTests
         using var disk = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 4L * 1024 * 1024);
         var vfs = new VirtualFileSystem(new ILayer[] { memory, disk, source });
         vfs.Metrics = new MetricsCollector();
+        // Nothing is counted until somebody asks for a window; this test asks, so it watches first.
+        vfs.Metrics.Watch();
 
         Assert.IsTrue(vfs.TryLookup("dir/video.bin", out _, recordAccess: true));
         Assert.AreEqual("fake", vfs.Metrics.Snapshot("test", 60).Layers.Single(l => l.Hits > 0).Name);

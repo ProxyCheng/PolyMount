@@ -92,7 +92,13 @@ public sealed class MountInstance : IDisposable
     /// <summary>Attaches the recording channel: from here on every event the tracer emits is
     /// written to the session as well, unsampled.</summary>
     public RecordingSessionInfo StartRecording(string? label)
-        => Channel.Start(Profile.Name, label is { Length: > 0 } ? label : Profile.Name);
+    {
+        // A recording counts from the moment it is asked for, not from its first poll: the call
+        // that starts it is somebody watching, and the second in between is the one they started
+        // recording to catch.
+        Metrics.Watch();
+        return Channel.Start(Profile.Name, label is { Length: > 0 } ? label : Profile.Name);
+    }
 
     public RecordingSessionInfo StopRecording(string reason) => Channel.Stop(reason);
 
@@ -210,6 +216,10 @@ public sealed class MountInstance : IDisposable
 
     public MountMetrics GetMetrics(double windowSeconds)
     {
+        // Being asked is what turns counting on. Nothing counts an instance nobody is looking at,
+        // which is what makes this affordable to have at all - the first window after a quiet spell
+        // is short, and says so through MeasuredSeconds rather than pretending to a minute.
+        Metrics.Watch();
         var m = Metrics.Snapshot(Profile.Name, windowSeconds);
         // Include every active provider, even when it served no reads in this window.
         m.Layers = Vfs.Layers.Select(layer => m.Layers.FirstOrDefault(l => l.Name == layer.Name) ?? new LayerMetric { Name = layer.Name }).ToList();

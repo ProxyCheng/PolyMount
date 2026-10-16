@@ -82,6 +82,9 @@ public sealed class ConcurrentObjectTests
         using var temp = new TempDir();
         var profile = new MountProfile { Name = "test", StoreRoot = temp.Sub("store"), Layers = new() { new() { Id = "overlay", Type = "overlay" } } };
         using var mount = new MountInstance(profile);
+        // Counting starts when somebody asks for a window, so a test that reads metrics has to be
+        // watching before the traffic it expects them to describe.
+        mount.Metrics.Watch();
         using (var writer = mount.Vfs.OpenWrite("file", true, out _)) writer.Write("content"u8);
         using (var reader = mount.Vfs.OpenRead("file", out _)) { }
         var metrics = mount.GetMetrics(60);

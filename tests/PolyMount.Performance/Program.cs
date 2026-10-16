@@ -19,7 +19,13 @@ if (args.Contains("--metrics-cost"))
     var watch = System.Diagnostics.Stopwatch.StartNew();
     for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
     watch.Stop();
-    Console.WriteLine($"record        : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
+    Console.WriteLine($"record, nobody watching : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
+    collector.Watch();
+    for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+    watch.Restart();
+    for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
+    watch.Stop();
+    Console.WriteLine($"record, watching        : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
     foreach (int threads in new[] { 1, 4, 8 })
     {
         var per = count / threads;
@@ -34,7 +40,7 @@ if (args.Contains("--metrics-cost"))
         start.Set();
         foreach (var thread in threadsRun) thread.Join();
         concurrent.Stop();
-        Console.WriteLine($"record x{threads,-2}    : {concurrent.Elapsed.TotalNanoseconds / (per * threads):0.0} ns/call  (aggregate)");
+        Console.WriteLine($"record x{threads,-2}    : {concurrent.Elapsed.TotalNanoseconds / (per * threads):0.0} ns/call  (aggregate, watching)");
     }
     foreach (double window in new[] { 0.1, 1.0, 60.0 })
     {

@@ -13,7 +13,31 @@ namespace PolyMount.Core.Tests;
 [TestClass]
 public class MetricsCellTests
 {
-    private static MetricsCollector At(Func<long> clock) => new(clock);
+    /// <summary>A collector with a caller-controlled clock, watched - as one is the moment a front
+    /// end asks it for a window, which is what turns counting on.</summary>
+    private static MetricsCollector At(Func<long> clock)
+    {
+        var collector = new MetricsCollector(clock);
+        collector.Watch();
+        return collector;
+    }
+
+    [TestMethod]
+    public void Nothing_is_counted_until_something_asks()
+    {
+        long slot = 1_000;
+        var idle = new MetricsCollector(() => slot);
+        idle.RecordRead("cache", TimeSpan.FromMicroseconds(500), 1024);
+        // Nothing is watching, so nothing is counted. The activity stamp moves anyway: the warm-up
+        // reads it to stay out of a busy mount's way, and an unwatched mount is not an idle one.
+        Assert.IsTrue(idle.IdleFor < TimeSpan.FromSeconds(5), "activity is stamped whether or not it is counted");
+        Assert.AreEqual(0, idle.Snapshot("m", 1).TotalReads, "an unwatched instance counts nothing");
+
+        idle.Watch();
+        idle.RecordRead("cache", TimeSpan.FromMicroseconds(500), 1024);
+        Assert.AreEqual(1, idle.Snapshot("m", 1).TotalReads, "being asked is what starts it");
+        Assert.IsTrue(idle.Watched);
+    }
 
     [TestMethod]
     public void A_window_adds_up_the_cells_it_covers()
