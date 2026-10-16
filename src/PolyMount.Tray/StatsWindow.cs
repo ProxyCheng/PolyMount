@@ -27,6 +27,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
+    /// <summary>What the instance's own process cost, one row per sampled second. A process is not
+    /// a layer: there is nothing to break down, so these are drawn as plain series rather than as
+    /// contributions that stack.</summary>
+    private readonly List<ProcessSecond> _processHistory = new();
+    private readonly PerformanceChart[] _processCharts;
+    private readonly QWidget _processSection;
+    private readonly QLabel _processFigures;
+    private readonly InstanceProcess _process;
     private readonly Dictionary<string, List<LayerSampler.Sample>> _history = new();
     /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
     /// a rate, so a step only means something next to the interval it was measured over.</summary>
@@ -39,7 +47,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(List<MountMetrics> Trends, List<MountMetrics> Access, double RequestMs, long Completed)>? _pending;
+    private Task<(List<MountMetrics> Trends, List<MountMetrics> Access, ProcessReading Process, double RequestMs, long Completed)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -49,6 +57,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         _instanceName = instanceName;
         _client = instanceName == null ? SupervisorClient.Default : InstanceDirectory.ClientFor(instanceName);
+        _process = new InstanceProcess(instanceName);
         SetObjectName("dashboard");
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
@@ -100,6 +109,33 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
         if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
+
+        // The machine's own account of the instance, next to VFS's account of it. The unit of these
+        // is the process: one instance is one process, so nothing has to be attributed to a mount
+        // for them to be per instance.
+        _processSection = new QWidget();
+        var section = new QVBoxLayout(_processSection);
+        section.SetContentsMargins(0, 0, 0, 0);
+        section.SetSpacing(12);
+        section.AddWidget(Label("stats.process", "sectionTitle"));
+        _processCharts = new[]
+        {
+            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
+            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
+            new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
+        };
+        var processGrid = new QGridLayout();
+        processGrid.SetSpacing(16);
+        for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
+        section.AddLayout(processGrid);
+        _processFigures = new QLabel();
+        _processFigures.SetObjectName("muted");
+        _processFigures.SetWordWrap(true);
+        _processFigures.SetTextFormat(Qt.TextFormat.PlainText);
+        section.AddWidget(_processFigures);
+        section.AddWidget(Label("stats.process.definition", "muted"));
+        root.AddWidget(_processSection);
         _layerLegend = new QLabel();
         _layerLegend.SetWordWrap(true);
         _layerLegend.SetTextFormat(Qt.TextFormat.RichText);
@@ -151,6 +187,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
+    /// <summary>The process section on its own, for a smoke run: it sits below four charts that
+    /// fill a 960 pixel window, so a capture of the window would not show it at all.</summary>
+    internal void CaptureProcess(string path) { using var image = _processSection.Grab(); image.Save(path); }
+
     /// <summary>The recording's own checks, driven from here because the panel belongs to this
     /// window and a smoke run has no other handle on it.</summary>
     internal void VerifyRecording(string? capture = null)
@@ -190,6 +230,27 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             if (capture != null) painted.Save(capture);
         }
     }
+    /// <summary>Self-check for the process cards. Their numbers come from the operating system
+    /// rather than from anything PolyMount counts, so what is checked is that a reading was really
+    /// taken: a card drawn from an empty history looks exactly like a card drawn from a flat one,
+    /// and an instance that reads as having no process at all would chart as zeroes for ever.
+    /// </summary>
+    internal void VerifyProcess()
+    {
+        if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
+        foreach (var chart in _processCharts)
+            if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
+        if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
+        if (_processHistory.Count > HistorySeconds)
+            throw new InvalidOperationException($"The process history kept {_processHistory.Count} seconds of a {HistorySeconds} second window");
+        if (_process.Processes == 0) throw new InvalidOperationException("The instance reads as having no process behind it");
+        var last = _processHistory[^1];
+        if (last.WorkingSet <= 0 || last.Threads <= 0 || last.Handles <= 0)
+            throw new InvalidOperationException($"A process reading came back empty: {last}");
+        if (!_processFigures.Text.Contains(last.Threads.ToString(I18n.Culture), StringComparison.Ordinal))
+            throw new InvalidOperationException("The process figures do not report what was just read");
+    }
+
     internal void SmokeRecordingStartAndDiscard(string? capture = null) => _recording?.SmokeStartAndDiscard(capture);
     internal void CaptureRecording(string path) => _recording?.Capture(path);
 
@@ -393,6 +454,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             try
             {
                 var sample = task.GetAwaiter().GetResult();
+                AcceptProcess(sample.Process, DateTime.UtcNow);
                 if (_requestEpoch == _epoch && !_paused && visible)
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
@@ -421,10 +483,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _pending = Task.Run(() =>
             {
                 var watch = Stopwatch.StartNew();
+                // The process is read here rather than on the thread that draws: it is the
+                // operating system being asked about a process, and it can be gone by the time the
+                // question is asked.
+                var process = _process.Read();
                 var trends = Window(1);
                 var access = Window(HistorySeconds);
                 watch.Stop();
-                return (trends, access, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
+                return (trends, access, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
             });
         }
         _wasVisible = visible;
@@ -441,6 +507,44 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>A layer key is "mount/layer"; the records carry the two apart.</summary>
     private static string Relative(string key, string mount) =>
         key.StartsWith(mount + "/", StringComparison.Ordinal) ? key[(mount.Length + 1)..] : key;
+
+    /// <summary>One second of what the instance's own process cost.</summary>
+    private readonly record struct ProcessSecond(DateTime Time, double Cores, long WorkingSet, long Private, int Threads, int Handles);
+
+    /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
+    /// nothing is running the instance is still a reading — zeroes say the process is not there,
+    /// which is worth seeing rather than a gap the chart would draw as an absence of observation.
+    /// </summary>
+    private void AcceptProcess(ProcessReading reading, DateTime now)
+    {
+        _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes, reading.Threads, reading.Handles));
+        while (_processHistory.Count > HistorySeconds) _processHistory.RemoveAt(0);
+        RenderProcess();
+    }
+
+    /// <summary>The four process cards: the CPU the instance's process used, the memory it holds,
+    /// and the threads and handles it has open. Their figures come from the same rows the charts are
+    /// drawn from, so the header and the line under it cannot disagree.</summary>
+    private void RenderProcess()
+    {
+        DateTime end = _processHistory.Count == 0 ? DateTime.UtcNow : _processHistory[^1].Time;
+        var series = new List<ChartSeries>[]
+        {
+            new() { new(T("stats.process.cpu"), "#0f766e", _processHistory.Select(second => (second.Time, second.Cores)).ToList()) },
+            new() { new(T("stats.process.memory"), "#b45309", _processHistory.Select(second => (second.Time, (double)second.WorkingSet)).ToList()) },
+            new() { new(T("stats.process.threads"), "#475569", _processHistory.Select(second => (second.Time, (double)second.Threads)).ToList()) },
+            new() { new(T("stats.process.handles"), "#64748b", _processHistory.Select(second => (second.Time, (double)second.Handles)).ToList()) }
+        };
+        for (int i = 0; i < _processCharts.Length; i++)
+        {
+            _processCharts[i].SetSeries(series[i], end);
+            _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+        }
+        if (_processHistory.Count == 0) { _processFigures.SetText(T("stats.process.waiting")); return; }
+        var last = _processHistory[^1];
+        _processFigures.SetText(I18n.F("stats.process.figures",
+            _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private), last.Threads, last.Handles));
+    }
 
     private void Accept(List<MountMetrics> trends, List<MountMetrics> metrics)
     {
@@ -591,6 +695,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
+        RenderProcess();
         RenderResponseCost();
     }
     private void RenderResponseCost()
@@ -671,7 +776,7 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
         double peak = times.Select(time => values.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
         double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
         var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
-        double max = Math.Max(unit == "ms" || unit == "B" ? 1 : 5, peak / axis.Scale * 1.15);
+        double max = Math.Max(unit is "ms" or "B" or "cores" ? 1 : 5, peak / axis.Scale * 1.15);
         double step = 0;
         int intervals = 0;
         // D3 nice: round the domain outward, then recompute until the step stabilizes.
@@ -768,7 +873,12 @@ internal sealed class PerformanceChart : QWidget
         RefreshToolTip();
         Update();
     }
-    private string FormatValue(double value) => _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
+    private string FormatValue(double value) => _unit switch
+    {
+        "B" => ByteUnits.Format(value),
+        "" => value.ToString("0.##", I18n.Culture),
+        _ => value.ToString("0.##", I18n.Culture) + " " + _unit
+    };
 
     /// <summary>A figure in the chart's own unit. The window total is an amount rather than a
     /// rate, so the per-second charts drop their suffix there.</summary>

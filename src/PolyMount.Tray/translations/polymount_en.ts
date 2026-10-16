@@ -1052,6 +1052,38 @@ Close applications using mounted files first.</translation>
       <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (two IPC requests per sample; excludes painting)</translation>
     </message>
     <message>
+      <source>stats.process</source>
+      <translation>Process · Per instance</translation>
+    </message>
+    <message>
+      <source>stats.process.cpu</source>
+      <translation>CPU · Cores used</translation>
+    </message>
+    <message>
+      <source>stats.process.memory</source>
+      <translation>Memory · Working set</translation>
+    </message>
+    <message>
+      <source>stats.process.threads</source>
+      <translation>Threads</translation>
+    </message>
+    <message>
+      <source>stats.process.handles</source>
+      <translation>Handles</translation>
+    </message>
+    <message>
+      <source>stats.process.waiting</source>
+      <translation>Process · waiting for a first reading</translation>
+    </message>
+    <message>
+      <source>stats.process.figures</source>
+      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles</translation>
+    </message>
+    <message>
+      <source>stats.process.definition</source>
+      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent.</translation>
+    </message>
+    <message>
       <source>stats.accelerated</source>
       <translation>RAM hits</translation>
     </message>

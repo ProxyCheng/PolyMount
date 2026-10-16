@@ -1052,6 +1052,38 @@
       <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次含两个 IPC 请求，不含绘制）</translation>
     </message>
     <message>
+      <source>stats.process</source>
+      <translation>进程 · 每实例</translation>
+    </message>
+    <message>
+      <source>stats.process.cpu</source>
+      <translation>CPU · 占用核数</translation>
+    </message>
+    <message>
+      <source>stats.process.memory</source>
+      <translation>内存 · 工作集</translation>
+    </message>
+    <message>
+      <source>stats.process.threads</source>
+      <translation>线程</translation>
+    </message>
+    <message>
+      <source>stats.process.handles</source>
+      <translation>句柄</translation>
+    </message>
+    <message>
+      <source>stats.process.waiting</source>
+      <translation>进程 · 等待第一次读数</translation>
+    </message>
+    <message>
+      <source>stats.process.figures</source>
+      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation>
+    </message>
+    <message>
+      <source>stats.process.definition</source>
+      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。</translation>
+    </message>
+    <message>
       <source>stats.accelerated</source>
       <translation>内存命中</translation>
     </message>

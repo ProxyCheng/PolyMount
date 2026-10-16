@@ -274,6 +274,7 @@ internal static class Program
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
+                stats.CaptureProcess(Path.Combine(capture, "process.png"));
                 editor.CaptureCacheAction(Path.Combine(capture, "cache-action.png"));
             }
             if (ticks == 20)
@@ -297,7 +298,9 @@ internal static class Program
             {
                 // A catalog that is missing a key answers with the key itself, which is what the
                 // window would then show, so every string these windows name is asked for here.
-                foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done" })
+                foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
+                    "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
+                    "stats.process.handles", "stats.process.figures", "stats.process.definition" })
                     if (I18n.T(key) == key) failure = "Qt resource translation lookup failed: " + key;
                 I18n.SetLanguage(original);
             }
@@ -328,6 +331,7 @@ internal static class Program
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyCharts();
+                    stats.VerifyProcess();
                     stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));
                     stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
                     stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
