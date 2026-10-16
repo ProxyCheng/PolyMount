@@ -44,6 +44,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly PerformanceChart _heldMemory, _heldDisk;
     private readonly QLabel _reconcile;
     private DateTime _lastHeld = DateTime.MinValue;
+    /// <summary>The moment every card is drawn up to: the newest observation of the window the page
+    /// samples at the reader's rate. The other two histories are read at cadences of their own —
+    /// what the layers hold once a second, what the process costs with every request — and a card
+    /// fed by one of them used to be drawn against that history's own newest row, so the six cards
+    /// disagreed about where "now" was by up to a second and drifted apart as the cadences drifted.
+    /// A series whose own rows stop short of this is carried to it; see PerformanceChart.Windowed.</summary>
+    private DateTime _clock = DateTime.UtcNow;
     private readonly PerformanceChart[] _processCharts;
     private readonly QLabel _processFigures;
     /// <summary>The parts of the page under the charts, each folded away with a line of its own
@@ -678,6 +685,21 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (paused["m/a"][0].Time != start.AddSeconds(40))
             throw new InvalidOperationException(
                 $"A history kept a reading {paused["m/a"][0].Time - start} seconds old in a 30 second window");
+        // A series is cut to the window at both ends, whichever cadence fed it. At the left the
+        // value on the edge is the one the line has there, interpolated between the two rows that
+        // straddle it — moving the older row to the edge and keeping its value stretched that
+        // segment and made its end jump once per sample, which is what a reader saw as the left of
+        // the line moving. At the right a series that stops short of the moment the page is drawn
+        // up to — a level read once a second, on a card redrawn ten times as often — is carried to
+        // it, the same way the tooltip answers for a time between two readings.
+        var cut = PerformanceChart.Windowed(new List<(DateTime Time, double Value)>
+        {
+            (start.AddSeconds(-4), 0.0), (start.AddSeconds(16), 10.0), (start.AddSeconds(26), 20.0)
+        }, start.AddSeconds(30), 30);
+        if (cut.Count != 4 || cut[0].Time != start || Math.Abs(cut[0].Value - 2.0) > 1e-9 ||
+            cut[^1].Time != start.AddSeconds(30) || cut[^1].Value != 20.0)
+            throw new InvalidOperationException(
+                "A series is not cut to its window: " + string.Join(", ", cut.Select(sample => $"{sample.Value:0.###} at {(sample.Time - start).TotalSeconds:0.###}s")));
         // The time axis has to name its span and its ticks in the unit each makes readable: a
         // fifteen-minute range divided into a hundred-second steps would be unreadable, and a
         // caption still saying "60 seconds ago" would be wrong.
@@ -736,6 +758,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
+        // Every card is drawn up to the same moment, whatever cadence feeds it. A card drawn
+        // against its own newest row put the same moment at a different place on each of them, and
+        // the two fed once a second (the layers' holdings, the process's cost) drifted against the
+        // four fed at the reader's rate as their cadences drifted.
+        var ends = _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk)
+            .Select(chart => chart.End).Distinct().ToArray();
+        if (ends.Length > 1)
+            throw new InvalidOperationException(
+                $"The cards are drawn up to {ends.Length} different moments: {string.Join(", ", ends.Select(at => at.ToString("HH:mm:ss.fff")))}");
         // The layer table carries every layer: no second scrollbar and no row outside the widget.
         if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
@@ -970,7 +1001,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// just moved.</summary>
     private void RenderHeld(string selected)
     {
-        DateTime end = _heldHistory.Count == 0 ? DateTime.UtcNow : _heldHistory[^1].Time;
+        DateTime end = _clock;
         // Drawn from the whole history, the reading the window's left edge falls inside included,
         // so the fill starts on the edge; counted over the window's own readings only.
         var rows = _heldHistory;
@@ -1110,18 +1141,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     private readonly record struct HeldSecond(DateTime Time, List<HeldRow> Layers);
 
-    /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
-    /// nothing is running the instance is still a reading — zeroes say the process is not there,
-    /// which is worth seeing rather than a gap the chart would draw as an absence of observation.
-    /// The history is bounded by time rather than by count, because the refresh rate decides how
-    /// many readings fall inside the window.
-    /// </summary>
+    /// <summary>Adds a reading to the window. A reading taken while nothing is running the instance
+    /// is still a reading — zeroes say the process is not there, which is worth seeing rather than a
+    /// gap the chart would draw as an absence of observation. The history is bounded by time rather
+    /// than by count, because the refresh rate decides how many readings fall inside the window.
+    ///
+    /// The cards are not repainted from here: a reading arrives with every request, which is more
+    /// often than the window's own sampling, and a card drawn as its rows arrive is a card with a
+    /// cadence of its own. The page draws every card at the moment it takes a sample, against the
+    /// one clock they share; this reading is drawn with the rest of them then.</summary>
     private void AcceptProcess(ProcessReading reading, DateTime now)
     {
         _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes,
             reading.Threads, reading.Handles, reading.ReadBytes, reading.WriteBytes));
         LayerSampler.Trim(_processHistory, now.AddSeconds(-_rangeSeconds), second => second.Time, BreakSeconds);
-        RenderProcess();
     }
 
     /// <summary>The four process cards: the CPU the instance's process used, the memory it holds,
@@ -1130,7 +1163,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// not counted, which is what keeps the header describing the window the line is drawn over.</summary>
     private void RenderProcess()
     {
-        DateTime end = _processHistory.Count == 0 ? DateTime.UtcNow : _processHistory[^1].Time;
+        DateTime end = _clock;
         var covered = Covered(_processHistory, end, _rangeSeconds, second => second.Time);
         var series = new List<ChartSeries>[]
         {
@@ -1239,6 +1272,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         string selected = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText);
         var samples = _history.GetValueOrDefault(selected) ?? new();
         DateTime end = samples.LastOrDefault()?.Time ?? DateTime.UtcNow;
+        _clock = end;
+        RenderProcess();
         // What the figures, the table and the reconciliation count, against what the charts draw:
         // the history carries one observation more than the window covers, and it is the one the
         // charts need to reach the window's left edge. See Covered.
@@ -1409,7 +1444,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
-        RenderProcess();
         RenderResponseCost();
     }
 
@@ -1637,6 +1671,10 @@ internal sealed class PerformanceChart : QWidget
     /// <summary>What this card is drawing, for the smoke run's check that the byte cards add up to
     /// what the operating system recorded.</summary>
     internal IReadOnlyList<ChartSeries> Series => _series;
+
+    /// <summary>The moment this card was drawn up to, for the smoke run's check that every card is
+    /// drawn up to the same one whatever cadence feeds it.</summary>
+    internal DateTime End => _end;
     private ChartStatistics _stats;
     public PerformanceChart(string titleKey, string color, string unit, ChartSummary summary)
     {
@@ -1718,8 +1756,9 @@ internal sealed class PerformanceChart : QWidget
     /// series are all there is and they are described as they are.</summary>
     public void SetSeries(List<ChartSeries> series, DateTime end, ChartStatistics? figures = null)
     {
-        _series = series;
         _end = end;
+        // The figures describe the observations, so they are taken from the series as they were
+        // handed over, before the drawing cuts them to the window.
         if (figures is { } given) _stats = given;
         else
         {
@@ -1729,8 +1768,49 @@ internal sealed class PerformanceChart : QWidget
             var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
             _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
         }
+        _series = series.Select(item => item with { Samples = Windowed(item.Samples, end, SpanSeconds) }).ToList();
         RefreshToolTip();
         Update();
+    }
+
+    /// <summary>A series as the window shows it. A card is drawn against one moment — the moment
+    /// the page last observed anything — and the rows behind a series are read at whatever cadence
+    /// that series has: the four trend cards at the reader's rate, what the layers hold once a
+    /// second, what the process costs with every request. So a run of rows is cut to the window at
+    /// both ends rather than drawn where it happens to stop.
+    ///
+    /// At the left, the segment crossing the edge is cut at the edge and the value there is
+    /// interpolated between the two rows that straddle it. The alternative — moving the older row
+    /// to the edge and keeping its value — stretches that first segment and makes it jump every
+    /// time the row ages out, one sampling interval wide; the line is the same line either way,
+    /// only cut at the right place.
+    ///
+    /// At the right, a series whose last row is short of the window's end is carried to it, which
+    /// is what a level read once a second has to do to be drawn on a card redrawn ten times as
+    /// often: the value in force at the end is the last one observed, the same reading the tooltip
+    /// and the layer table answer with for a time between two readings.
+    ///
+    /// Nothing is added before the first row: a page younger than its window has no earlier row to
+    /// draw from, and its line still begins where its own rows do.</summary>
+    internal static List<(DateTime Time, double Value)> Windowed(List<(DateTime Time, double Value)> samples,
+        DateTime end, double span)
+    {
+        DateTime start = end.AddSeconds(-span);
+        int first = samples.FindIndex(sample => sample.Time >= start);
+        // Every row is older than the window: the run has left it, and there is nothing to cut.
+        if (first < 0) return samples;
+        var drawn = samples.Skip(first).ToList();
+        // A row landing exactly on the edge is the crossing segment's own end: there is nothing to
+        // cut, and a point inserted beside it would be the same moment twice.
+        if (first > 0 && drawn[0].Time > start)
+        {
+            var (before, after) = (samples[first - 1], samples[first]);
+            double gap = (after.Time - before.Time).TotalSeconds;
+            double weight = gap > 0 ? (start - before.Time).TotalSeconds / gap : 0;
+            drawn.Insert(0, (start, before.Value + (after.Value - before.Value) * weight));
+        }
+        if (drawn[^1].Time < end) drawn.Add((end, drawn[^1].Value));
+        return drawn;
     }
     private string FormatValue(double value) => _unit switch
     {
