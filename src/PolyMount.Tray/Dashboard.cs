@@ -652,6 +652,10 @@ internal sealed class Dashboard : QWidget
 
     private void Feedback(string text, bool error = false)
     {
+        // Every failure this window shows is written down as well: a status line is read once and
+        // then replaced by the next thing, and "it failed yesterday" is a question only a log
+        // answers. Successes are not: they are the normal state of the world.
+        if (error) Serilog.Log.Warning("workspace: {Message}", text);
         _feedback.SetText(text);
         _feedback.SetStyleSheet(error
             ? $"background: {TrayTheme.Tokens.DangerSoft}; color: {TrayTheme.Tokens.Danger}; border: 1px solid {TrayTheme.Tokens.DangerBorder}; border-radius: 8px; padding: 10px 14px;"

@@ -17,7 +17,7 @@ internal static class Program
         // Qt argv includes the executable name; Main(args) omits it.
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
         InstallCrashTracer();
-        TrayLog.Start();
+        TrayLog.Start(window: args.Length == 0);
         I18n.Initialize();
         TrayTheme.Initialize();
         Serilog.Log.Information("PolyMount tray {Version} starting ({Mode})",
@@ -393,7 +393,7 @@ internal static class Program
                     "stats.process.handles", "stats.process.figures", "stats.unit.cores",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
                     "theme", "theme.system", "theme.light", "theme.dark",
-                    "stats.access.reads", "stats.access.writes", "stats.access.readsProcesses", "stats.access.writesProcesses",
+                    "stats.access.reads", "stats.access.writes", "stats.access.byLayer", "stats.access.byProcess",
                     "stats.access.other", "stats.process.pid", "stats.process.unattributed",
                     "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
