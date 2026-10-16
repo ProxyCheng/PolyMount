@@ -371,7 +371,7 @@ internal static class Program
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.process.definition",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
-                    "stats.access.reads", "stats.access.writes", "stats.access.slice",
+                    "stats.access.reads", "stats.access.writes", "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
                     "stats.layerHeld.definition",
                     "stats.reconcile.bytes", "stats.reconcile.definition", "record.process",

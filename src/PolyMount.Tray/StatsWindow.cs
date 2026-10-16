@@ -1859,9 +1859,9 @@ internal sealed class PerformanceChart : QWidget
     /// away. The text keeps an inset of its own, which is what the value labels beside it line up
     /// with.</summary>
     private const int PlotInset = 4, HeaderHeight = 72, FooterInset = 4;
-    /// <summary>The baselines the header's two rows of text share, so they read as two rows rather
-    /// than as four pieces of type that nearly line up.</summary>
-    private const int TitleBaseline = 26, HeadlineBaseline = 58;
+    /// <summary>The baseline the headline and the window's figures share, so the header's row reads
+    /// as one line. The title's baseline belongs to the card face, which every card shares.</summary>
+    private const int HeadlineBaseline = 58;
     /// <summary>Gap between two figures in the headline's row.</summary>
     private const int FigureGap = 20;
     /// <summary>What the chart keeps inside the plot widget before the data gets any of it: its own
@@ -2527,14 +2527,7 @@ internal sealed class PerformanceChart : QWidget
         try
         {
             int width = Width, height = Height;
-            p.SetPen(new QPen(new QColor("#e2e8f0")));
-            p.SetBrush(new QBrush(new QColor("#ffffff")));
-            p.DrawRoundedRect(1, 1, width - 2, height - 2, 12, 12);
-            using var titleFont = new QFont("Segoe UI", 11);
-            titleFont.SetBold(true);
-            p.SetFont(titleFont);
-            p.SetPen(new QPen(new QColor("#334155")));
-            p.DrawText(18, TitleBaseline, I18n.T(_titleKey));
+            CardFace.Paint(p, width, height, I18n.T(_titleKey));
             bool hasData = _series.Any(item => item.Samples.Count > 0);
             DrawHeadline(p, width, hasData);
             // The plot itself is the chart's: it drew its grid, its axes, its labels and its

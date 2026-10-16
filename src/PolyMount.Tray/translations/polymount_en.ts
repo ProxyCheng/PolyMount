@@ -115,6 +115,14 @@
       <translation>Layer operation completed</translation>
     </message>
     <message>
+      <source>stats.access.noreads</source>
+      <translation>No read activity</translation>
+    </message>
+    <message>
+      <source>stats.access.nowrites</source>
+      <translation>No write activity</translation>
+    </message>
+    <message>
       <source>stats.access.reads</source>
       <translation>Reads by layer · Last 60 seconds</translation>
     </message>

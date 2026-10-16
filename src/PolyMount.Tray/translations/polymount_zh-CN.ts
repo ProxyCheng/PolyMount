@@ -115,6 +115,14 @@
       <translation>层操作已完成</translation>
     </message>
     <message>
+      <source>stats.access.noreads</source>
+      <translation>暂无读取活动</translation>
+    </message>
+    <message>
+      <source>stats.access.nowrites</source>
+      <translation>暂无写入活动</translation>
+    </message>
+    <message>
       <source>stats.access.reads</source>
       <translation>各层读取来源 · 最近 60 秒</translation>
     </message>
