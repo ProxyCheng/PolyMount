@@ -54,7 +54,6 @@ QPushButton#navButton:hover { background: @SidebarActive; border-color: @AccentB
 QPushButton#navButton:disabled { color: @SidebarDisabled; border-color: @SidebarBorder; }
 QLineEdit, QComboBox { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 8px 10px; color: @Text; selection-background-color: @Primary; selection-color: @OnPrimary; }
 QLineEdit:focus, QComboBox:focus { border-color: @Primary; }
-QComboBox { padding-right: 26px; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }
 QComboBox::down-arrow { image: url(@ChevronDown); width: 12px; height: 12px; }
 QComboBox::down-arrow:disabled { opacity: 0.4; }

@@ -358,6 +358,7 @@ internal static class Program
             }
             if (ticks == 20)
             {
+                dashboard.VerifyPickers();
                 try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
                 try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
                 catch (Exception ex) { failure = ex.ToString(); }

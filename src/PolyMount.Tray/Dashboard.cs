@@ -32,6 +32,10 @@ internal sealed class Dashboard : QWidget
     private bool _quietPending;
     private Action? _queued;
     private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet, bool ServiceAction = false);
+    /// <summary>The theme picker's items, in the order the modes are numbered: its index is the mode
+    /// the reader chose, which is why they are read by position and re-lettered where they stand
+    /// rather than added again when the language changes.</summary>
+    private static readonly string[] ThemeKeys = { "theme.system", "theme.light", "theme.dark" };
     private static string T(string key) => I18n.T(key);
 
     public Dashboard()
@@ -86,23 +90,24 @@ internal sealed class Dashboard : QWidget
         _theme = ContinuousScrolling.Combo();
         // Named in the reader's language, unlike the language picker: a scheme is not something
         // that names itself, and "system" has to say what it is following.
-        foreach (string key in new[] { "theme.system", "theme.light", "theme.dark" }) _theme.AddItem(I18n.T(key));
+        foreach (string key in ThemeKeys) _theme.AddItem(I18n.T(key));
         _theme.SetCurrentIndex((int)TrayTheme.Mode);
         _theme.CurrentIndexChanged += index => TrayTheme.SetMode((TrayTheme.ThemeMode)index);
-        // Side by side rather than stacked: the sidebar is as tall as the shortest window the
-        // workspace can be shrunk to, and a row of its own for the second picker put both of them
-        // past the bottom edge.
-        var pickers = new QHBoxLayout();
-        pickers.SetSpacing(10);
+        // One to a row, each as wide as the sidebar is. Side by side they had seventy-nine pixels
+        // each, of which the arrow and the padding keep forty-six, and what a picker has to show is
+        // its longest item — "跟随系统", "Follow system" — at fifty-two and eighty-five: it drew the
+        // name as far as it fitted and left the last character standing in half, which a combo box
+        // does without saying anything, having no ellipsis. A row of its own is what makes them
+        // readable, at about thirty pixels of the sidebar's height — which it pays for by scrolling,
+        // being taller than the shortest window the workspace can be shrunk to either way.
         foreach (var (key, combo) in new (string Key, QComboBox Combo)[] { ("language", _language), ("theme", _theme) })
         {
             var column = new QVBoxLayout();
             column.SetSpacing(4);
             column.AddWidget(Label(key, "sidebarMuted"));
             column.AddWidget(combo);
-            pickers.AddLayout(column, 1);
+            nav.AddLayout(column);
         }
-        nav.AddLayout(pickers);
         nav.AddWidget(Label("tray.keepRunning", "sidebarMuted"));
         root.AddWidget(sidebar);
 
@@ -280,6 +285,39 @@ internal sealed class Dashboard : QWidget
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
+    /// <summary>Self-check for the sidebar's two pickers: each is at least as wide as the widest
+    /// thing it can show, in either language. A picker narrower than its own items draws the name as
+    /// far as it fits and stops — a combo box has no ellipsis, so what a reader sees is a word with
+    /// its last character cut in half, and nothing anywhere says so.</summary>
+    internal void VerifyPickers()
+    {
+        string original = I18n.Language;
+        try
+        {
+            foreach (string language in new[] { "zh-CN", "en" })
+            {
+                I18n.SetLanguage(language);
+                // The labels follow the language through a binding and the picker's items through
+                // this window's own answer to the change, which is an event: both have to have
+                // arrived before either can be measured.
+                QCoreApplication.ProcessEvents();
+                foreach (var (name, combo) in new (string Name, QComboBox Combo)[] { ("language", _language), ("theme", _theme) })
+                {
+                    int wanted = combo.SizeHint().Width();
+                    if (combo.Width < wanted)
+                        throw new InvalidOperationException(
+                            $"The {name} picker is {combo.Width} px wide in {language} and its own items want {wanted} of them");
+                }
+            }
+        }
+        finally
+        {
+            I18n.SetLanguage(original);
+            QCoreApplication.ProcessEvents();
+        }
+    }
+
+
     /// <summary>The instance detail panel on its own. The window shot cannot show it: the panel
     /// lives in the workspace, and by the time a smoke run has opened the windows it is testing,
     /// the tabs it opened are lying over it.</summary>
@@ -377,6 +415,12 @@ internal sealed class Dashboard : QWidget
     private void Translate()
     {
         UpdateFilters();
+        // The theme picker is named in the reader's language as well, and its items were lettered
+        // once, at the language the tray was started in: switching to English left the scheme
+        // choices in Chinese beside a label that had changed. They are re-lettered where they
+        // stand, because the index is the mode and re-adding them would move the reader's choice.
+        for (int index = 0; index < _theme.Count && index < ThemeKeys.Length; index++)
+            _theme.SetItemText(index, T(ThemeKeys[index]));
         _table.SetHorizontalHeaderLabels(new[] { T("column.instance"), T("state"), T("column.layers") });
         UpdateConnection();
         if (_connected) UpdateOverview();
