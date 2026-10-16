@@ -1740,25 +1740,45 @@ internal sealed class PerformanceChart : QWidget
             using var detailFont = new QFont("Segoe UI", 8);
             using var detailMetrics = new QFontMetrics(detailFont);
             var summaries = _series.Select(s => (s.Color, Text: s.Name + " " + FormatValue(s.Samples.LastOrDefault().Value))).ToArray();
-            int summariesWidth = summaries.Sum(s => detailMetrics.HorizontalAdvance(s.Text) + 28);
-            if (summariesWidth <= width - 36 && summaries.Length > 0)
+            // The row is drawn as far as it fits rather than all of it or none of it. What is in it
+            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a byte
+            // card gains the hatched slice no layer accounts for — so a card within a few pixels of
+            // the edge used to lose the whole line on a busy sample, get it back on the next quiet
+            // one, and take the top of the plot with it: the plot starts 20 pixels lower when the
+            // row is not there. Nothing is lost by dropping the tail — the tooltip carries every
+            // series already, and the layer table below carries them at length.
+            bool legend = summaries.Length > 0;
+            if (legend)
             {
                 p.SetFont(detailFont);
-                int x = 18;
+                int x = 18, room = width - 18;
                 foreach (var summary in summaries)
                 {
+                    int advance = detailMetrics.HorizontalAdvance(summary.Text);
+                    int available = room - (x + 14);
+                    if (available < 30) break;
+                    // The one that will not fit is cut to the room left rather than left out, and
+                    // the row ends there. Leaving it out would put the tail of the legend in and out
+                    // of the picture as the values change length — "0 B" and "465.64 MiB" are fifty
+                    // pixels apart — and an ellipsis that moves is a quieter thing to watch than a
+                    // name that comes and goes.
+                    bool clipped = advance > available;
+                    string text = clipped
+                        ? detailMetrics.ElidedText(summary.Text, Qt.TextElideMode.ElideRight, available)
+                        : summary.Text;
                     // The dot carries the layer's colour and the value stays in ink, so a light
                     // layer hue cannot leave its own number unreadable.
                     p.SetPen(new QPen(Qt.PenStyle.NoPen));
                     p.SetBrush(new QBrush(new QColor(summary.Color)));
                     p.DrawEllipse(x + 1, SeriesBaseline - 6, 6, 6);
                     p.SetPen(new QPen(new QColor("#334155")));
-                    p.DrawText(x + 14, SeriesBaseline, summary.Text);
-                    x += detailMetrics.HorizontalAdvance(summary.Text) + 28;
+                    p.DrawText(x + 14, SeriesBaseline, text);
+                    if (clipped) break;
+                    x += advance + 28;
                 }
             }
 
-            int top = summariesWidth <= width - 36 && summaries.Length > 0 ? 108 : 88, right = width - 18, bottom = height - 46;
+            int top = legend ? 108 : 88, right = width - 18, bottom = height - 46;
             var domain = ChartDomain.Of(_series, _unit, Math.Max(2, (bottom - top) / 36.0));
             double max = domain.Max, valueStep = domain.Step, floor = domain.Floor;
             int gridLines = domain.GridLines;
