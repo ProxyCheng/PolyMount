@@ -494,7 +494,8 @@ internal sealed class RecordingPanel : QWidget
         if (process.Pid <= 0) return "";
         return I18n.F("record.process", process.Pid, process.CpuSeconds,
             ByteUnits.Format(process.WorkingSetBytes), ByteUnits.Format(process.PrivateBytes),
-            process.Threads, process.Handles);
+            process.Threads, process.Handles, ByteUnits.Format(process.ReadBytes),
+            ByteUnits.Format(process.WriteBytes));
     }
 
     /// <summary>Every stretch the copy knows is missing. Empty is the normal case, and then the
@@ -688,7 +689,7 @@ internal sealed class RecordingPanel : QWidget
             Paths = new List<PathCount> { new() { Operation = "VFS.Lookup", Path = "Char/char3", Count = 12, TotalMs = 90, MaxMs = 40 } }
         };
         return new RecordingPulse(RecordingState.Recording, null, now, 3.5, null, new List<MountMetrics>(),
-            new ProcessReading(12, 0.4, 4096, 8192, 8, 100, 1, 4321),
+            new ProcessReading(12, 0.4, 4096, 8192, 8, 100, 70000, 30000, 1, 4321),
             4096, 40, 1024, 20, 20, 7, counts, 0, Array.Empty<TailGap>(), totals, null);
     }
 }

@@ -1081,7 +1081,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles</translation>
+      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles · read {6} · written {7}</translation>
     </message>
     <message>
       <source>stats.process.definition</source>
@@ -1134,7 +1134,10 @@ Close applications using mounted files first.</translation>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
-    <message><source>record.process</source><translation>Process {0} · CPU {1:0.0} s spent · working set {2} · private {3} · {4} threads · {5} handles</translation></message>
+    <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
+    <message><source>stats.process.io.read</source><translation>Read</translation></message>
+    <message><source>stats.process.io.write</source><translation>Written</translation></message>
+    <message><source>record.process</source><translation>Process {0} · CPU {1:0.0} s spent · working set {2} · private {3} · {4} threads · {5} handles · read {6} · written {7}</translation></message>
     <message><source>record.evidence.live</source><translation>ok</translation></message>
     <message><source>record.evidence.waiting</source><translation>waiting for the service</translation></message>
     <message><source>record.evidence.truncated</source><translation>at its ceiling</translation></message>

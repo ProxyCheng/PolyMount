@@ -355,7 +355,8 @@ internal sealed class RecordingSession
             _overhead.Add(requestMs);
             _seconds.Add(new SecondRecord(utcNow, reads, bytes, cost, writes, requestMs, 0, 0,
                 process.CpuSeconds, process.WorkingSetBytes, process.PrivateBytes,
-                process.Threads, process.Handles, process.Pid));
+                process.Threads, process.Handles, process.Pid,
+                process.ReadBytes, process.WriteBytes));
             _lastSample = sample;
             _lastMetrics = metrics;
         }

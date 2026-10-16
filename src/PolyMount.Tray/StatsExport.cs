@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using PolyMount.Core;
 using PolyMount.Core.Ipc;
 
 namespace PolyMount.Tray;
@@ -96,7 +97,8 @@ internal sealed record LayerTotalRecord(string Mount, string Layer, string Displ
 /// <summary>One second of a recording as the machine running it saw it.</summary>
 internal readonly record struct SecondRecord(DateTime Time, double Reads, double Bytes, double Cost,
     double WriteBytes, double RequestMs, double DispatchMs, double UiMs, double CpuSeconds,
-    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles, int WorkerPid);
+    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles, int WorkerPid,
+    long ProcessReadBytes, long ProcessWriteBytes);
 
 /// <summary>One chart's headline and summary figures.</summary>
 internal readonly record struct ChartRecord(string Chart, string Unit, ChartStatistics Statistics);
@@ -377,7 +379,13 @@ internal static class StatsExport
         workingSetBytes = sample.WorkingSetBytes,
         privateBytes = sample.PrivateBytes,
         threads = sample.Threads,
-        handles = sample.Handles
+        handles = sample.Handles,
+        // What the operating system says this process moved, which is what the per-layer account of
+        // bytes is reconciled against: we count what each layer served, not what the process did.
+        readBytes = sample.ReadBytes,
+        writeBytes = sample.WriteBytes,
+        readOperations = sample.ReadOperations,
+        writeOperations = sample.WriteOperations
     } : null;
 
     private static double Average(List<double> values) => values.Count == 0 ? 0 : values.Average();
@@ -419,7 +427,7 @@ internal static class StatsExport
     private static string SecondsCsv(List<SecondRecord> seconds)
     {
         var csv = new StringBuilder(
-            "time_utc,reads,bytes,avg_cost_ms,write_bytes,request_ms,dispatch_ms,ui_ms,cpu_seconds,working_set_bytes,private_bytes,threads,handles,worker_pid\n");
+            "time_utc,reads,bytes,avg_cost_ms,write_bytes,request_ms,dispatch_ms,ui_ms,cpu_seconds,working_set_bytes,private_bytes,threads,handles,worker_pid,process_read_bytes,process_write_bytes\n");
         foreach (var second in seconds)
             csv.Append(second.Time.ToString("O", CultureInfo.InvariantCulture)).Append(',')
                 .Append(Number(second.Reads)).Append(',').Append(Number(second.Bytes)).Append(',')
@@ -430,7 +438,9 @@ internal static class StatsExport
                 .Append(second.PrivateBytes.ToString(CultureInfo.InvariantCulture)).Append(',')
                 .Append(second.Threads.ToString(CultureInfo.InvariantCulture)).Append(',')
                 .Append(second.Handles.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(second.WorkerPid.ToString(CultureInfo.InvariantCulture)).Append('\n');
+                .Append(second.WorkerPid.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(second.ProcessReadBytes.ToString(CultureInfo.InvariantCulture)).Append(',')
+                .Append(second.ProcessWriteBytes.ToString(CultureInfo.InvariantCulture)).Append('\n');
         return csv.ToString();
     }
 
@@ -440,17 +450,20 @@ internal static class StatsExport
         ? field : '"' + field.Replace("\"", "\"\"") + '"';
 }
 
-/// <summary>One reading of one instance's own process, for the snapshot the bundle carries and for
-/// the per-second series a recording collects. Every instance is served by a process of its own, so
-/// the reading is asked for by pid: the supervisor says which process runs the instance, and this is
-/// where that pid becomes numbers. Absent when that process is not there — a worker that was
-/// restarted between two polls leaves a gap rather than a reading taken from another instance.
+/// <summary>One instance's own process, as the operating system reports it, with the start time and
+/// uptime a bundle wants beside the counters themselves. Every instance is served by a process of
+/// its own, so the reading is asked for by pid: the supervisor says which process runs the instance,
+/// and this is where that pid becomes numbers. Absent when the process is not there — a worker that
+/// was restarted between two polls leaves a gap rather than a reading taken from another instance.
 ///
 /// These are the operating system's own figures for that process, which is why they are the whole
 /// of what this instance cost: no thread has to be attributed to a mount, and no other instance's
-/// work can land in them.</summary>
+/// work can land in them. The transfer counts are the other half of that: what the process read and
+/// wrote is what the per-layer account is checked against, since we do not count those ourselves.
+/// </summary>
 internal sealed record ServiceProcessReading(int Id, string StartTimeUtc, double UptimeSeconds, double CpuSeconds,
-    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles)
+    long WorkingSetBytes, long PrivateBytes, int Threads, int Handles,
+    long ReadBytes, long WriteBytes, long ReadOperations, long WriteOperations)
 {
     public static ServiceProcessReading? For(int pid)
     {
@@ -458,9 +471,11 @@ internal sealed record ServiceProcessReading(int Id, string StartTimeUtc, double
         try
         {
             using var process = System.Diagnostics.Process.GetProcessById(pid);
+            if (ProcessCounters.Of(pid) is not { } counters) return null;
             return new(process.Id, process.StartTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture),
-                (DateTime.Now - process.StartTime).TotalSeconds, process.TotalProcessorTime.TotalSeconds,
-                process.WorkingSet64, process.PrivateMemorySize64, process.Threads.Count, process.HandleCount);
+                (DateTime.Now - process.StartTime).TotalSeconds, counters.CpuSeconds,
+                counters.WorkingSetBytes, counters.PrivateBytes, counters.Threads, counters.Handles,
+                counters.ReadBytes, counters.WriteBytes, counters.ReadOperations, counters.WriteOperations);
         }
         catch { return null; }
     }

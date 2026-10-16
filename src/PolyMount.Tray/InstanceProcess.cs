@@ -7,9 +7,9 @@ namespace PolyMount.Tray;
 /// one instance reports that instance's own process; the "all instances" view adds up every
 /// instance's, so the numbers are the whole service's work and nothing else is running in them.</summary>
 internal readonly record struct ProcessReading(double CpuSeconds, double Cores, long WorkingSetBytes,
-    long PrivateBytes, int Threads, int Handles, int Processes, int Pid)
+    long PrivateBytes, int Threads, int Handles, long ReadBytes, long WriteBytes, int Processes, int Pid)
 {
-    public static readonly ProcessReading None = new(0, 0, 0, 0, 0, 0, 0, 0);
+    public static readonly ProcessReading None = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 /// <summary>
@@ -53,13 +53,15 @@ internal sealed class InstanceProcess
     /// <summary>Reads the processes now, asking the supervisor where they are if this is the moment
     /// to ask again. CPU is reported both as the total spent since the process started — which is
     /// what a recording logs, and what two recordings can be differenced over — and as the cores it
-    /// was using since the previous reading, which is what a chart of it should draw.</summary>
+    /// was using since the previous reading, which is what a chart of it should draw. The transfer
+    /// counts are totals for the same reason: an amount to difference over a window rather than a
+    /// rate that would depend on when the reader looked.</summary>
     public ProcessReading Read()
     {
         if (DateTime.UtcNow >= _next) Refresh();
 
         double cpu = 0;
-        long working = 0, priv = 0;
+        long working = 0, priv = 0, read = 0, written = 0;
         int threads = 0, handles = 0, found = 0, first = 0;
         foreach (int pid in _pids)
         {
@@ -71,6 +73,8 @@ internal sealed class InstanceProcess
             priv += reading.PrivateBytes;
             threads += reading.Threads;
             handles += reading.Handles;
+            read += reading.ReadBytes;
+            written += reading.WriteBytes;
         }
 
         var now = DateTime.UtcNow;
@@ -93,7 +97,7 @@ internal sealed class InstanceProcess
             (_previousCpu, _previousAt) = (cpu, now);
         }
 
-        return new ProcessReading(cpu, _cores, working, priv, threads, handles, found, first);
+        return new ProcessReading(cpu, _cores, working, priv, threads, handles, read, written, found, first);
     }
 
     /// <summary>Asks where the processes are. An instance that has none yet is asked again a second

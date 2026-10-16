@@ -153,6 +153,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
             new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.process.io", "#0369a1", "B", ChartSummary.Volume),
             new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
             new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
         };
@@ -230,7 +231,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// grabbed or drawn on screen, which is the case a smoke run can rely on.</summary>
     internal void CaptureProcess(string directory)
     {
-        string[] files = { "process-cpu.png", "process-memory.png", "process-threads.png", "process-handles.png" };
+        string[] files = { "process-cpu.png", "process-memory.png", "process-io.png", "process-threads.png", "process-handles.png" };
         for (int i = 0; i < _processCharts.Length; i++)
         {
             using var chart = _processCharts[i].Grab();
@@ -286,7 +287,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// </summary>
     internal void VerifyProcess()
     {
-        if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
+        if (_processCharts.Length != 5) throw new InvalidOperationException("The process section does not carry its five cards");
         foreach (var chart in _processCharts)
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
@@ -459,7 +460,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             WindowSeconds = 3,
             SamplesFile = Path.Combine(work, "samples.csv"),
             LogsDirectory = Path.Combine(work, "logs"),
-            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5, 0) },
+            Seconds = new List<SecondRecord> { new(ended, 2, 4096, 1.5, 0, 4, 0, 0, 1, 2, 3, 4, 5, 0, 0, 0) },
             ResponseRequest = new List<double> { 4 },
             Recording = new RecordingRecord
             {
@@ -612,7 +613,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     /// <summary>One sample of what the instance's own process cost. CPU is a cumulative reading
     /// divided by the interval, so a row is that interval's share of a core.</summary>
-    private readonly record struct ProcessSecond(DateTime Time, double Cores, long WorkingSet, long Private, int Threads, int Handles);
+    private readonly record struct ProcessSecond(DateTime Time, double Cores, long WorkingSet, long Private,
+        int Threads, int Handles, long ReadBytes, long WriteBytes);
 
     /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
     /// nothing is running the instance is still a reading — zeroes say the process is not there,
@@ -622,7 +624,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// </summary>
     private void AcceptProcess(ProcessReading reading, DateTime now)
     {
-        _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes, reading.Threads, reading.Handles));
+        _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes,
+            reading.Threads, reading.Handles, reading.ReadBytes, reading.WriteBytes));
         while (_processHistory.Count > 1 && _processHistory[0].Time < now.AddSeconds(-HistorySeconds)) _processHistory.RemoveAt(0);
         RenderProcess();
     }
@@ -633,10 +636,24 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private void RenderProcess()
     {
         DateTime end = _processHistory.Count == 0 ? DateTime.UtcNow : _processHistory[^1].Time;
+        // The transfer counters are totals for the process's whole life, so the card is drawn as
+        // the rate between consecutive rows — over the interval those two rows actually span, which
+        // is what makes it read the same at any refresh rate.
+        var read = new List<(DateTime, double)>();
+        var written = new List<(DateTime, double)>();
+        for (int i = 1; i < _processHistory.Count; i++)
+        {
+            var (previous, current) = (_processHistory[i - 1], _processHistory[i]);
+            double elapsed = (current.Time - previous.Time).TotalSeconds;
+            if (elapsed <= 0) continue;
+            read.Add((current.Time, Math.Max(0, current.ReadBytes - previous.ReadBytes) / elapsed));
+            written.Add((current.Time, Math.Max(0, current.WriteBytes - previous.WriteBytes) / elapsed));
+        }
         var series = new List<ChartSeries>[]
         {
             new() { new(T("stats.process.cpu"), "#0f766e", _processHistory.Select(second => (second.Time, second.Cores)).ToList()) },
             new() { new(T("stats.process.memory"), "#b45309", _processHistory.Select(second => (second.Time, (double)second.WorkingSet)).ToList()) },
+            new() { new(T("stats.process.io.read"), "#0369a1", read), new(T("stats.process.io.write"), "#0891b2", written) },
             new() { new(T("stats.process.threads"), "#475569", _processHistory.Select(second => (second.Time, (double)second.Threads)).ToList()) },
             new() { new(T("stats.process.handles"), "#64748b", _processHistory.Select(second => (second.Time, (double)second.Handles)).ToList()) }
         };
@@ -649,7 +666,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (_processHistory.Count == 0) { _processFigures.SetText(T("stats.process.waiting")); return; }
         var last = _processHistory[^1];
         _processFigures.SetText(I18n.F("stats.process.figures",
-            _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private), last.Threads, last.Handles));
+            _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private),
+            last.Threads, last.Handles, ByteUnits.Format(last.ReadBytes), ByteUnits.Format(last.WriteBytes)));
     }
 
     /// <summary>Takes a 60-second window: the table, the pie, the legend, and the layer list the

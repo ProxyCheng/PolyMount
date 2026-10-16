@@ -1081,7 +1081,7 @@
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation>
+      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5} · 读 {6} · 写 {7}</translation>
     </message>
     <message>
       <source>stats.process.definition</source>
@@ -1134,7 +1134,10 @@
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
-    <message><source>record.process</source><translation>进程 {0} · CPU 累计 {1:0.0} 秒 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation></message>
+    <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
+    <message><source>stats.process.io.read</source><translation>读</translation></message>
+    <message><source>stats.process.io.write</source><translation>写</translation></message>
+    <message><source>record.process</source><translation>进程 {0} · CPU 累计 {1:0.0} 秒 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5} · 读 {6} · 写 {7}</translation></message>
     <message><source>record.evidence.live</source><translation>正常</translation></message>
     <message><source>record.evidence.waiting</source><translation>等待服务</translation></message>
     <message><source>record.evidence.truncated</source><translation>已达上限</translation></message>
