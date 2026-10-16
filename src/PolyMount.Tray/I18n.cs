@@ -7,7 +7,6 @@ namespace PolyMount.Tray;
 /// <summary>Qt translation catalogs; settings only select the active QTranslator.</summary>
 internal static class I18n
 {
-    private static readonly string SettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount", "ui.json");
     private static QTranslator? _translator;
     private static TranslationEvents? _events;
     public static string Language { get; private set; } = LoadLanguage();
@@ -66,23 +65,10 @@ internal static class I18n
         if (Language == language) return;
         Language = language;
         Install(language);
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new { Language }));
-        }
-        catch (IOException) { }
-        catch (UnauthorizedAccessException) { }
+        UiSettings.Set("Language", Language);
     }
-    private static string LoadLanguage()
-    {
-        try
-        {
-            using var json = JsonDocument.Parse(File.ReadAllText(SettingsPath));
-            return json.RootElement.GetProperty("Language").GetString() == "en" ? "en" : "zh-CN";
-        }
-        catch { return CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en"; }
-    }
+    private static string LoadLanguage() =>
+        UiSettings.Get("Language") ?? (CultureInfo.CurrentUICulture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase) ? "zh-CN" : "en");
     private sealed class ObjectTranslationFilter(QObject parent, Action translate) : QObject(parent)
     {
         public void Retranslate() => translate();

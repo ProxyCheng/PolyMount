@@ -44,7 +44,7 @@ internal sealed class ChartPreview : QWidget
     {
         _span = span;
         SetObjectName("dashboard");
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         var grid = new QGridLayout(this);
         grid.SetContentsMargins(24, 22, 24, 20);
         grid.SetSpacing(16);

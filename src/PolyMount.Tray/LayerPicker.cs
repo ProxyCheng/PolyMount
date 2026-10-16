@@ -21,7 +21,7 @@ internal sealed class LayerPicker : QDialog
         SetObjectName("layerPicker");
         SetWindowTitle(T("picker.title"));
         SetWindowIcon(TrayIcons.App);
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         Resize(840, 650);
         SetMinimumSize(720, 540);
         var root = new QVBoxLayout(this);
@@ -104,7 +104,7 @@ internal sealed class LayerPicker : QDialog
         _add = new QPushButton();
         I18n.Bind(_add.SetText, "picker.add");
         _add.SetObjectName("primary");
-        _add.SetIcon(TrayIcons.Get("plus", "#ffffff"));
+        _add.SetIcon(TrayIcons.Get("plus", TrayTheme.Tokens.OnPrimary));
         _add.SetDefault(true);
         _add.Clicked += _ => ConfirmSelection();
         footer.AddWidget(_add);
@@ -177,8 +177,8 @@ internal sealed class LayerPicker : QDialog
         _add.SetEnabled(Selected != null);
         foreach (var (descriptor, _, card, _, _) in _cards)
             card.SetStyleSheet(ReferenceEquals(descriptor, Selected)
-                ? "QWidget#pickerCard { background: #eaf1ff; border: 1px solid #7ba3e5; border-radius: 9px; }"
-                : "QWidget#pickerCard { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 9px; }");
+                ? "QWidget#pickerCard { background: " + TrayTheme.Tokens.PrimarySoft + "; border: 1px solid " + TrayTheme.Tokens.AccentBorder + "; border-radius: 9px; }"
+                : "QWidget#pickerCard { background: " + TrayTheme.Tokens.Surface + "; border: 1px solid " + TrayTheme.Tokens.Border + "; border-radius: 9px; }");
     }
     private void ConfirmSelection() { if (Selected != null) Accept(); }
 

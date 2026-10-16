@@ -10,7 +10,7 @@ internal sealed class Dashboard : QWidget
 {
     private readonly QTableWidget _table;
     private readonly QLineEdit _search;
-    private readonly QComboBox _filter, _language;
+    private readonly QComboBox _filter, _language, _theme;
     private readonly QLabel _service, _total, _active, _issues, _layerTotal;
     private readonly QLabel _listCount, _empty, _feedback, _updated;
     private readonly QLabel _detailName, _detailState, _mountPath, _layers, _warmup, _detailError;
@@ -39,7 +39,7 @@ internal sealed class Dashboard : QWidget
         SetObjectName("dashboard");
         SetWindowIcon(TrayIcons.App);
         Resize(1280, 820);
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         I18n.Bind(SetWindowTitle, "dashboard.title");
         SetMinimumSize(480, 360);
         var shell = new QVBoxLayout(this);
@@ -75,16 +75,34 @@ internal sealed class Dashboard : QWidget
         nav.AddWidget(_start);
         nav.AddWidget(_stop);
         nav.AddSpacing(12);
-        nav.AddWidget(Label("language", "sidebarMuted"));
         _language = ContinuousScrolling.Combo();
         // A language picker names each language in its own language, so both entries read
         // the same whichever catalog is active; the platform supplies the endonym instead
         // of writing it into the code, where only the catalogs belong.
-        _language.AddItem(CultureInfo.GetCultureInfo("zh-CN").NativeName);
+        _language.AddItem(CultureInfo.GetCultureInfo("zh").NativeName);
         _language.AddItem(CultureInfo.GetCultureInfo("en").NativeName);
         _language.SetCurrentIndex(I18n.Language == "zh-CN" ? 0 : 1);
         _language.CurrentIndexChanged += i => I18n.SetLanguage(i == 0 ? "zh-CN" : "en");
-        nav.AddWidget(_language);
+        _theme = ContinuousScrolling.Combo();
+        // Named in the reader's language, unlike the language picker: a scheme is not something
+        // that names itself, and "system" has to say what it is following.
+        foreach (string key in new[] { "theme.system", "theme.light", "theme.dark" }) _theme.AddItem(I18n.T(key));
+        _theme.SetCurrentIndex((int)TrayTheme.Mode);
+        _theme.CurrentIndexChanged += index => TrayTheme.SetMode((TrayTheme.ThemeMode)index);
+        // Side by side rather than stacked: the sidebar is as tall as the shortest window the
+        // workspace can be shrunk to, and a row of its own for the second picker put both of them
+        // past the bottom edge.
+        var pickers = new QHBoxLayout();
+        pickers.SetSpacing(10);
+        foreach (var (key, combo) in new (string Key, QComboBox Combo)[] { ("language", _language), ("theme", _theme) })
+        {
+            var column = new QVBoxLayout();
+            column.SetSpacing(4);
+            column.AddWidget(Label(key, "sidebarMuted"));
+            column.AddWidget(combo);
+            pickers.AddLayout(column, 1);
+        }
+        nav.AddLayout(pickers);
         nav.AddWidget(Label("tray.keepRunning", "sidebarMuted"));
         root.AddWidget(sidebar);
 
@@ -237,6 +255,19 @@ internal sealed class Dashboard : QWidget
         _timer.Start(100);
         Translate();
         Refresh();
+        TrayTheme.OnChanged(Retheme, this);
+    }
+
+    /// <summary>A scheme change repaints most of this window by itself: labels and tables ask the
+    /// theme what colour they are when they are painted. The icons do not — they are pictures drawn
+    /// with a colour baked in — so the actions are put together again with them.</summary>
+    private void Retheme()
+    {
+        UpdateOverview();
+        FillTable();
+        UpdateActions();
+        UpdateConnection();
+        Update();
     }
 
     public void ShowWindow()
@@ -382,7 +413,7 @@ internal sealed class Dashboard : QWidget
         SetText(_active, _mounts.Count(m => m.Mounted).ToString());
         int issues = _mounts.Count(m => !string.IsNullOrWhiteSpace(m.Error));
         SetText(_issues, issues.ToString());
-        string style = issues > 0 ? "color: #dc2626;" : "color: #17243b;";
+        string style = issues > 0 ? "color: " + TrayTheme.Tokens.DangerStrong + ";" : "color: " + TrayTheme.Tokens.Text + ";";
         if (_issues.StyleSheet != style) _issues.SetStyleSheet(style);
         SetText(_layerTotal, _mounts.Sum(m => m.Providers.Count).ToString());
     }
@@ -439,7 +470,7 @@ internal sealed class Dashboard : QWidget
         _detailBody.SetVisible(m != null);
         SetText(_detailName, m?.Name ?? T("detail.select"));
         SetText(_detailState, m == null ? T("detail.hint") : (_connected ? StateText(m) : T("detail.offline")));
-        string style = m == null || !_connected ? "color: #64748b;" : $"color: {StateColor(m)};";
+        string style = m == null || !_connected ? "color: " + TrayTheme.Tokens.Muted + ";" : $"color: {StateColor(m)};";
         if (_detailState.StyleSheet != style) _detailState.SetStyleSheet(style);
         if (m != null)
         {
@@ -476,7 +507,7 @@ internal sealed class Dashboard : QWidget
         if (_toggleMount.Text != toggleText)
         {
             _toggleMount.SetText(toggleText);
-            _toggleMount.SetIcon(TrayIcons.Get(m is { Mounted: true, Enabled: true } ? "stop" : "play", "#ffffff"));
+            _toggleMount.SetIcon(TrayIcons.Get(m is { Mounted: true, Enabled: true } ? "stop" : "play", TrayTheme.Tokens.OnPrimary));
         }
         _toggleMount.SetToolTip(T(disabled ? "enable.tip" : "selected.tip"));
         // Offered only while there is something to switch off. An instance that is already off has
@@ -495,7 +526,7 @@ internal sealed class Dashboard : QWidget
         bool recording = m?.Recording == true;
         string performanceText = T(recording ? "mount.performance.recording" : "mount.performance");
         if (_performance.Text != performanceText) _performance.SetText(performanceText);
-        _performance.SetIcon(TrayIcons.Get("chart", recording && _performance.IsEnabled() ? "#dc2626" : "#526786"));
+        _performance.SetIcon(TrayIcons.Get("chart", recording && _performance.IsEnabled() ? TrayTheme.Tokens.DangerStrong : TrayTheme.Tokens.Icon));
         _performance.SetToolTip(T(recording ? "record.active.tip" : "mount.performance.tip"));
     }
 
@@ -620,8 +651,8 @@ internal sealed class Dashboard : QWidget
     {
         _feedback.SetText(text);
         _feedback.SetStyleSheet(error
-            ? "background: #fff1f2; color: #b42335; border: 1px solid #fecdd3; border-radius: 8px; padding: 10px 14px;"
-            : "background: #eef4ff; color: #315ca8; border: 1px solid #dae6fc; border-radius: 8px; padding: 10px 14px;");
+            ? $"background: {TrayTheme.Tokens.DangerSoft}; color: {TrayTheme.Tokens.Danger}; border: 1px solid {TrayTheme.Tokens.DangerBorder}; border-radius: 8px; padding: 10px 14px;"
+            : $"background: {TrayTheme.Tokens.InfoSoft}; color: {TrayTheme.Tokens.Info}; border: 1px solid {TrayTheme.Tokens.InfoBorder}; border-radius: 8px; padding: 10px 14px;");
     }
 
     private QTableWidgetItem Cell(int row, int col, string text)
@@ -633,7 +664,7 @@ internal sealed class Dashboard : QWidget
     }
     private static void SetText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
     private static string StateText(MountStatus m) => T(!string.IsNullOrWhiteSpace(m.Error) ? "state.error" : m.Mounted ? "state.mounted" : !m.Enabled ? "state.disabled" : "state.unmounted");
-    private static string StateColor(MountStatus m) => !string.IsNullOrWhiteSpace(m.Error) ? "#dc2626" : m.Mounted ? "#059669" : "#64748b";
+    private static string StateColor(MountStatus m) => !string.IsNullOrWhiteSpace(m.Error) ? TrayTheme.Tokens.DangerStrong : m.Mounted ? TrayTheme.Tokens.Success : TrayTheme.Tokens.Muted;
 
     private static QWidget Panel(string name)
     {
@@ -665,7 +696,7 @@ internal sealed class Dashboard : QWidget
         I18n.Bind(button.SetText, key);
         button.SetObjectName(name);
         button.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
-        if (icon != null) button.SetIcon(TrayIcons.Get(icon, name == "primary" ? "#ffffff" : name == "navButton" ? "#c8d4e6" : "#526786"));
+        if (icon != null) button.SetIcon(TrayIcons.Get(icon, name == "primary" ? TrayTheme.Tokens.OnPrimary : name == "navButton" ? TrayTheme.Tokens.SidebarText : TrayTheme.Tokens.Icon));
         button.Clicked += _ => action();
         return button;
     }
@@ -680,7 +711,7 @@ internal sealed class Dashboard : QWidget
         header.AddWidget(Label(title, "muted"));
         header.AddStretch(1);
         var image = new QLabel();
-        image.SetPixmap(TrayIcons.Get(icon, "#7890b2").Pixmap(20, 20));
+        image.SetPixmap(TrayIcons.Get(icon, TrayTheme.Tokens.SidebarMuted).Pixmap(20, 20));
         header.AddWidget(image);
         layout.AddLayout(header);
         var number = PlainLabel("—", "metricValue");

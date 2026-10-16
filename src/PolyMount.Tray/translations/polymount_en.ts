@@ -1179,5 +1179,21 @@ The remote view changes. Local modifications are kept.</translation>
     <message><source>record.close.body</source><translation>This instance has been recorded for {0}. Closing the tab does not stop the collecting, but it is how you would save it.</translation></message>
     <message><source>record.close.keep</source><translation>Keep recording (cancel)</translation></message>
     <message><source>record.close.discard</source><translation>End and discard</translation></message>
+      <message>
+      <source>theme</source>
+      <translation>Appearance</translation>
+    </message>
+      <message>
+      <source>theme.system</source>
+      <translation>Follow system</translation>
+    </message>
+      <message>
+      <source>theme.light</source>
+      <translation>Light</translation>
+    </message>
+      <message>
+      <source>theme.dark</source>
+      <translation>Dark</translation>
+    </message>
   </context>
 </TS>

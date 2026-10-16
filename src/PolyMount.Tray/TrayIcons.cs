@@ -28,8 +28,11 @@ internal static class TrayIcons
         }
     }
 
-    public static QIcon Get(string name, string color = "#526786")
+    public static QIcon Get(string name, string? color = null)
     {
+        // No colour given means the scheme's own icon ink: an icon stroke has to be readable on the
+        // surface it is drawn on, and that is a question the theme answers, not the caller.
+        color ??= TrayTheme.Tokens.Icon;
         string key = name + color;
         if (Cache.TryGetValue(key, out var existing)) return existing;
         using var image = new QImage(64, 64, QImage.Format.Format_ARGB32_Premultiplied);
@@ -55,8 +58,8 @@ internal static class TrayIcons
         {
             case "close": Line(7, 7, 17, 17); Line(17, 7, 7, 17); break;
             case "app":
-                p.SetBrush(new QBrush(new QColor("#2563eb")));
-                p.SetPen(new QPen(new QColor("#2563eb")));
+                p.SetBrush(new QBrush(new QColor(TrayTheme.Tokens.Primary)));
+                p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Primary)));
                 p.DrawRoundedRect(1, 1, 22, 22, 6, 6);
                 p.SetPen(pen);
                 p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));

@@ -30,7 +30,7 @@ internal sealed class LayerVisualizer : QWidget
         _path = path;
         _client = InstanceDirectory.ClientForPath(path);
         SetObjectName("dashboard");
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "object.manageBoundary");
         Resize(700, 700);
@@ -139,10 +139,10 @@ internal sealed class LayerVisualizer : QWidget
         _header.SetText(_path + "\n" + (_probe.Found ? I18n.T("probe.effective") + _probe.EffectiveLayer : I18n.T("probe.invisible")));
         foreach (var layer in _probe.Layers)
         {
-            string color = layer.Effective ? "#059669" : layer.Exists ? "#d97706" : "#94a3b8";
+            string color = layer.Effective ? TrayTheme.Tokens.Success : layer.Exists ? TrayTheme.Tokens.Warning : TrayTheme.Tokens.Faint;
             var card = new QWidget();
             card.SetAttribute(Qt.WidgetAttribute.WA_StyledBackground);
-            card.SetStyleSheet($"background: #ffffff; border: 1px solid #e2e8f0; border-left: 4px solid {color}; border-radius: 8px;");
+            card.SetStyleSheet($"background: {TrayTheme.Tokens.Surface}; border: 1px solid {TrayTheme.Tokens.Border}; border-left: 4px solid {color}; border-radius: 8px;");
             var layout = new QVBoxLayout(card);
             layout.SetContentsMargins(16, 14, 16, 14);
             var identity = new QHBoxLayout();
@@ -294,21 +294,21 @@ internal sealed class LayerBoundaryView : QWidget
             {
                 var layer = _probe.Layers[i];
                 int y = Top + i * Row + 7;
-                p.SetPen(new QPen(new QColor(layer.Effective ? "#059669" : "#dbe3ef")));
-                p.SetBrush(new QBrush(new QColor(i < Boundary && layer.Manageable ? "#fff1f2" : "#ffffff")));
+                p.SetPen(new QPen(new QColor(layer.Effective ? TrayTheme.Tokens.Success : TrayTheme.Tokens.BorderStrong)));
+                p.SetBrush(new QBrush(new QColor(i < Boundary && layer.Manageable ? TrayTheme.Tokens.DangerSoft : TrayTheme.Tokens.Surface)));
                 p.DrawRoundedRect(20, y, Width - 40, Row - 14, 8, 8);
-                p.SetBrush(new QBrush(new QColor(string.IsNullOrEmpty(layer.Color) ? "#94a3b8" : layer.Color)));
+                p.SetBrush(new QBrush(TrayTheme.Series(string.IsNullOrEmpty(layer.Color) ? TrayTheme.Tokens.Faint : layer.Color)));
                 p.DrawEllipse(34, y + 18, 14, 14);
-                p.SetPen(new QPen(new QColor("#26354b")));
+                p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Body)));
                 p.DrawText(60, y + 21, layer.Name + " · " + I18n.T(layer.Effective ? "object.active" : layer.Exists ? "object.recorded" : "object.absent"));
-                p.SetPen(new QPen(new QColor("#718096")));
+                p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Muted)));
                 p.DrawText(60, y + 40, I18n.T(!layer.Manageable ? "object.skipReadonly" : i < Boundary ? "object.willRelease" : "object.keep"));
             }
             int lineY = Top + Boundary * Row;
-            using var pen = new QPen(new QColor("#2563eb")); pen.SetWidthF(3); p.SetPen(pen);
+            using var pen = new QPen(new QColor(TrayTheme.Tokens.Primary)); pen.SetWidthF(3); p.SetPen(pen);
             p.DrawLine(10, lineY, Width - 10, lineY);
-            p.SetBrush(new QBrush(new QColor("#2563eb"))); p.DrawEllipse(1, lineY - 7, 14, 14);
-            p.SetPen(new QPen(new QColor("#2563eb")));
+            p.SetBrush(new QBrush(new QColor(TrayTheme.Tokens.Primary))); p.DrawEllipse(1, lineY - 7, 14, 14);
+            p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Primary)));
             p.DrawText(22, 18, I18n.T("object.dragBoundary"));
         }
         finally { p.End(); }

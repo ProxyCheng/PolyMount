@@ -1182,5 +1182,21 @@
     <message><source>record.close.body</source><translation>这个实例已录制 {0}。关闭页签不会停止采集，但会失去保存它的入口。</translation></message>
     <message><source>record.close.keep</source><translation>继续录制（取消关闭）</translation></message>
     <message><source>record.close.discard</source><translation>结束并丢弃</translation></message>
+      <message>
+      <source>theme</source>
+      <translation>外观</translation>
+    </message>
+      <message>
+      <source>theme.system</source>
+      <translation>跟随系统</translation>
+    </message>
+      <message>
+      <source>theme.light</source>
+      <translation>浅色</translation>
+    </message>
+      <message>
+      <source>theme.dark</source>
+      <translation>深色</translation>
+    </message>
   </context>
 </TS>

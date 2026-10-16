@@ -406,7 +406,7 @@ internal sealed class TabWorkspace : QWidget
         {
             _owner = owner;
             SetWindowIcon(TrayIcons.App);
-            SetStyleSheet(TrayTheme.StyleSheet);
+            
             SetMinimumSize(480, 360);
             Body = new QVBoxLayout(this);
             Body.SetContentsMargins(0, 0, 0, 0);

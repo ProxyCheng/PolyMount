@@ -4,6 +4,10 @@
     <file alias="check.png">check.png</file>
     <file alias="chevron-left.png">chevron-left.png</file>
     <file alias="chevron-right.png">chevron-right.png</file>
+    <file alias="chevron-left-dark.png">chevron-left-dark.png</file>
+    <file alias="chevron-right-dark.png">chevron-right-dark.png</file>
+    <file alias="chevron-down.png">chevron-down.png</file>
+    <file alias="chevron-down-dark.png">chevron-down-dark.png</file>
     <file alias="translations/polymount_en.qm">../translations/polymount_en.qm</file>
     <file alias="translations/polymount_zh-CN.qm">../translations/polymount_zh-CN.qm</file>
   </qresource>

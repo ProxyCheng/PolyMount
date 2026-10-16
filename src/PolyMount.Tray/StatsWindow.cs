@@ -139,7 +139,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _client = instanceName == null ? SupervisorClient.Default : InstanceDirectory.ClientFor(instanceName);
         _process = new InstanceProcess(instanceName);
         SetObjectName("dashboard");
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "stats.title");
         Resize(1180, 960);
@@ -2057,7 +2057,7 @@ internal sealed class PerformanceChart : QWidget
         _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
         _chart.SetBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundVisible(false);
-        _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor("#ffffff")));
+        _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor(TrayTheme.Tokens.Surface)));
         _chart.SetLocalizeNumbers(false);
         // What the chart keeps around its plot is its own business: it makes room for its axis
         // labels and grows the margins it is given where they are not enough. Its default is twenty
@@ -2083,18 +2083,18 @@ internal sealed class PerformanceChart : QWidget
         // picture does, and in the order the page's layer table lists the same layers.
         _chart.Legend().SetReverseMarkers(true);
         _chart.Legend().SetBackgroundVisible(false);
-        _chart.Legend().SetLabelColor(new QColor("#334155"));
+        _chart.Legend().SetLabelColor(new QColor(TrayTheme.Tokens.Body));
         _chart.Legend().SetFont(new QFont("Segoe UI", 8));
         // Both axes carry their own labels: dark enough to read, over a faint grid, with no axis
         // line of their own — the plot's white background is what the areas are read against.
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
-        _valueAxis.SetLabelsColor(new QColor("#718096"));
-        _valueAxis.SetGridLineColor(new QColor("#e7edf5"));
+        _valueAxis.SetLabelsColor(new QColor(TrayTheme.Tokens.Muted));
+        _valueAxis.SetGridLineColor(new QColor(TrayTheme.Tokens.Grid));
         _valueAxis.SetLineVisible(false);
         _valueAxis.SetMinorTickCount(0);
         _timeAxis.SetLabelsFont(new QFont("Segoe UI", 8));
-        _timeAxis.SetLabelsColor(new QColor("#718096"));
-        _timeAxis.SetGridLineColor(new QColor("#e7edf5"));
+        _timeAxis.SetLabelsColor(new QColor(TrayTheme.Tokens.Muted));
+        _timeAxis.SetGridLineColor(new QColor(TrayTheme.Tokens.Grid));
         _timeAxis.SetLineVisible(false);
         _timeAxis.SetMinorTickCount(0);
         _chart.AddAxis(_timeAxis, Qt.Alignment.AlignBottom);
@@ -2103,7 +2103,7 @@ internal sealed class PerformanceChart : QWidget
         _plot.SetRenderHint(QPainter.RenderHint.Antialiasing);
         // The card is white behind the plot: a view's own viewport is otherwise the platform's
         // window colour, which shows through wherever the chart draws nothing.
-        _plot.SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
+        _plot.SetBackgroundBrush(new QBrush(new QColor(TrayTheme.Tokens.Surface)));
         // A card's plot is repainted whole rather than in the pieces Qt works out have changed: the
         // window moves under the chart at every sample, every series is re-mapped with it, and what
         // a partial update leaves showing is the frame before — which is the plot blinking.
@@ -2302,8 +2302,8 @@ internal sealed class PerformanceChart : QWidget
     /// already on the card rather than a layer of its own.</summary>
     private static void Style(QAreaSeries area, string color, bool hatched)
     {
-        using var fill = new QColor(color);
-        fill.SetAlpha(155);
+        using var fill = TrayTheme.Series(color);
+        fill.SetAlpha(TrayTheme.Tokens.SeriesFillAlpha);
         if (hatched)
         {
             using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
@@ -2311,7 +2311,7 @@ internal sealed class PerformanceChart : QWidget
             area.SetBrush(hatch);
         }
         else area.SetBrush(new QBrush(fill));
-        using var stroke = new QColor(color);
+        using var stroke = TrayTheme.Series(color);
         using var pen = new QPen(stroke);
         if (hatched) pen.SetStyle(Qt.PenStyle.DashLine);
         pen.SetWidthF(1.8);
@@ -2587,13 +2587,14 @@ internal sealed class PerformanceChart : QWidget
         var (number, unit) = _unit == "B" ? ByteUnits.Split(_stats.Current) : (_stats.Current.ToString("0.##", I18n.Culture), UnitText);
         string text = hasData ? number : "—";
         p.SetFont(numberFont);
-        p.SetPen(new QPen(new QColor(_color)));
+        using var ink = TrayTheme.Series(_color);
+        p.SetPen(new QPen(ink));
         p.DrawText(18, HeadlineBaseline, text);
         int headRight = 18 + numberMetrics.HorizontalAdvance(text);
         if (hasData && unit.Length > 0)
         {
             p.SetFont(unitFont);
-            p.SetPen(new QPen(new QColor("#718096")));
+            p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Muted)));
             p.DrawText(headRight + 5, HeadlineBaseline, unit);
             headRight += 5 + unitMetrics.HorizontalAdvance(unit);
         }
@@ -2615,11 +2616,11 @@ internal sealed class PerformanceChart : QWidget
         for (int i = 0; i < keep; i++)
         {
             p.SetFont(labelFont);
-            p.SetPen(new QPen(new QColor("#718096")));
+            p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Muted)));
             p.DrawText(x, HeadlineBaseline, labels[i]);
             x += labelMetrics.HorizontalAdvance(labels[i]) + 6;
             p.SetFont(figureFont);
-            p.SetPen(new QPen(new QColor("#334155")));
+            p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Body)));
             p.DrawText(x, HeadlineBaseline, values[i]);
             x += figureMetrics.HorizontalAdvance(values[i]) + FigureGap;
         }
@@ -2654,7 +2655,7 @@ internal sealed class PerformanceChart : QWidget
                 var view = _plot.Geometry;
                 using var noteFont = new QFont("Segoe UI", 8);
                 p.SetFont(noteFont);
-                p.SetPen(new QPen(new QColor("#94a3b8")));
+                p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Faint)));
                 p.DrawText(view.X() + 12, view.Y() + 30, I18n.T("stats.noData"));
             }
         }

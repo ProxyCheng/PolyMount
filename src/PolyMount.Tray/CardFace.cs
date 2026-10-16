@@ -17,13 +17,13 @@ internal static class CardFace
     /// itself is a child widget drawn over the middle of it.</summary>
     internal static void Paint(QPainter p, int width, int height, string title)
     {
-        p.SetBrush(new QBrush(new QColor("#ffffff")));
-        p.SetPen(new QPen(new QColor("#e2e8f0")));
+        p.SetBrush(new QBrush(new QColor(TrayTheme.Tokens.Surface)));
+        p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Border)));
         p.DrawRoundedRect(1, 1, width - 2, height - 2, 12, 12);
         using var titleFont = new QFont("Segoe UI", 11);
         titleFont.SetBold(true);
         p.SetFont(titleFont);
-        p.SetPen(new QPen(new QColor("#334155")));
+        p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Body)));
         p.DrawText(TextInset, TitleBaseline, title);
     }
 }

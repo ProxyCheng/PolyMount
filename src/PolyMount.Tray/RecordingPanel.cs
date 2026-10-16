@@ -87,7 +87,7 @@ internal sealed class RecordingPanel : QWidget
         head.AddWidget(_elapsed);
         _start.Clicked += _ => Begin();
         head.AddWidget(_start);
-        _end.SetIcon(TrayIcons.Get("stop", "#ffffff"));
+        _end.SetIcon(TrayIcons.Get("stop", TrayTheme.Tokens.OnPrimary));
         _end.Clicked += _ => End();
         head.AddWidget(_end);
         root.AddLayout(head);
@@ -163,14 +163,14 @@ internal sealed class RecordingPanel : QWidget
     private void MarkStart()
     {
         _markPending = true;
-        Mark("record.marker.start", "#dc2626");
+        Mark("record.marker.start", TrayTheme.Tokens.DangerStrong);
     }
 
     private void MarkEnd()
     {
         if (!_markPending) return;
         _markPending = false;
-        Mark("record.marker.stop", "#64748b");
+        Mark("record.marker.stop", TrayTheme.Tokens.Muted);
     }
 
     /// <summary>Grabs the panel on its own, for the smoke run's screenshots.</summary>
@@ -550,8 +550,8 @@ internal sealed class RecordingPanel : QWidget
     {
         if ((button.ObjectName == "primary") == primary) return;
         button.SetObjectName(primary ? "primary" : "");
-        button.SetIcon(TrayIcons.Get(icon, primary ? "#ffffff" : "#526786"));
-        SetStyleSheet(TrayTheme.StyleSheet);
+        button.SetIcon(TrayIcons.Get(icon, primary ? TrayTheme.Tokens.OnPrimary : TrayTheme.Tokens.Icon));
+        
     }
 
     private string Count(long value) => value.ToString("N0", I18n.Culture);

@@ -45,7 +45,7 @@ internal sealed class RecordingLamp : QWidget
         try
         {
             bool live = _mode == LampMode.Live;
-            using var color = new QColor(live ? "#dc2626" : "#94a3b8");
+            using var color = new QColor(live ? TrayTheme.Tokens.DangerStrong : TrayTheme.Tokens.Faint);
             if (live && !_bright) color.SetAlpha(120);
             p.SetPen(new QPen(Qt.PenStyle.NoPen));
             p.SetBrush(new QBrush(color));

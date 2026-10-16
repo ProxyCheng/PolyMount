@@ -68,7 +68,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         OriginalName = mountName;
         _addAfterLoad = create;
         SetObjectName("dashboard");
-        SetStyleSheet(TrayTheme.StyleSheet);
+        
         SetWindowIcon(TrayIcons.App);
         Resize(1000, 820);
         var root = new QVBoxLayout(WindowScrollArea.Create(this, 900));
@@ -111,7 +111,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _layerList.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
         _layerList.SetSpacing(8);
         _layerList.SetMinimumHeight(285);
-        _layerList.SetStyleSheet("QListWidget::item { background: #f5f7fb; border: 1px solid #e2e8f0; padding: 15px 12px; } QListWidget::item:selected { background: #eaf1ff; border-color: #7ba3e5; color: #1e40af; }");
+        _layerList.SetStyleSheet("QListWidget::item { background: " + TrayTheme.Tokens.SurfaceAlt + "; border: 1px solid " + TrayTheme.Tokens.Border + "; padding: 15px 12px; } QListWidget::item:selected { background: #eaf1ff; border-color: #7ba3e5; color: #1e40af; }");
         _layerList.CurrentRowChanged += _ => OnLayerSelected();
         _layerList.ItemClicked += _ => OnLayerSelected();
         _layerList.Model().RowsMoved += (_, _, _, _, _) => ReorderLayers();
@@ -201,7 +201,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         footer.AddWidget(Button("mount.delete", OnRemove, "trash"));
         _save = Button("save", OnSave, "check");
         _save.SetObjectName("primary");
-        _save.SetIcon(TrayIcons.Get("check", "#ffffff"));
+        _save.SetIcon(TrayIcons.Get("check", TrayTheme.Tokens.OnPrimary));
         footer.AddWidget(_save);
         root.AddLayout(footer);
         _timer = new QTimer(this);
@@ -763,8 +763,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         if (index < 0) return;
         var item = _layerList.Item(index);
         item.SetText(LayerText(_layer));
-        item.SetIcon(TrayIcons.Get(Descriptor(_layer.Type).Icon, _layer.Enabled ? LayerColor(_layer) : "#94A3B8"));
-        item.SetForeground(new QBrush(new QColor(_layer.Enabled ? "#26354B" : "#94A3B8")));
+        item.SetIcon(TrayIcons.Get(Descriptor(_layer.Type).Icon, _layer.Enabled ? LayerColor(_layer) : TrayTheme.Tokens.Faint));
+        item.SetForeground(new QBrush(new QColor(_layer.Enabled ? TrayTheme.Tokens.Text : TrayTheme.Tokens.Faint)));
     }
     private void SetColor(string color) => _color.SetText(color);
 

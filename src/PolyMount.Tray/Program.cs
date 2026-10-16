@@ -18,6 +18,7 @@ internal static class Program
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
         InstallCrashTracer();
         I18n.Initialize();
+        TrayTheme.Initialize();
         using var options = new QCommandLineParser();
         options.SetApplicationDescription("PolyMount tray and object layer management.");
         using var help = options.AddHelpOption();
@@ -388,6 +389,7 @@ internal static class Program
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
+                    "theme", "theme.system", "theme.light", "theme.dark",
                     "stats.access.reads", "stats.access.writes", "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
                     "stats.reconcile.bytes", "record.process",
@@ -404,7 +406,8 @@ internal static class Program
             if (ticks == 50)
             {
                 if (dashboard.Width > 560)
-                    failure = "Workspace windows could not shrink to the requested size";
+                    failure = $"Workspace windows could not shrink to the requested size: "
+                        + $"{dashboard.Width}x{dashboard.Height} where 560x420 was asked for";
                 if (capture != null)
                 {
                     dashboard.Capture(Path.Combine(capture, "dashboard-small.png"));

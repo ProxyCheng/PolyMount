@@ -97,11 +97,11 @@ internal sealed class LayerAccessPie : QWidget
             SetRenderHint(QPainter.RenderHint.Antialiasing);
             // The pie sits on the card's white, not on the platform's window colour: the chart
             // itself draws nothing behind its slices.
-            SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
+            SetBackgroundBrush(new QBrush(new QColor(TrayTheme.Tokens.Surface)));
             _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
             _chart.SetBackgroundVisible(false);
             _chart.SetPlotAreaBackgroundVisible(false);
-            _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor("#ffffff")));
+            _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor(TrayTheme.Tokens.Surface)));
             // The card around it keeps the same inset the trend cards keep, and the chart keeps
             // nothing more: its own padding is a floor, so what is asked for here is a little of it
             // taken back, the way the line charts do.
@@ -113,7 +113,7 @@ internal sealed class LayerAccessPie : QWidget
             // longest name needs and nothing is cut.
             _chart.Legend().SetAlignment(Qt.Alignment.AlignRight);
             _chart.Legend().SetBackgroundVisible(false);
-            _chart.Legend().SetLabelColor(new QColor("#334155"));
+            _chart.Legend().SetLabelColor(new QColor(TrayTheme.Tokens.Body));
             // A size down from the cards' legends: it is what the longest of these names needs to be
             // read whole, and a list of elided names is a pie nobody can read.
             _chart.Legend().SetFont(new QFont("Segoe UI", 7));
@@ -135,9 +135,10 @@ internal sealed class LayerAccessPie : QWidget
             {
                 using var empty = new QPieSlice();
                 empty.SetValue(1);
-                empty.SetBrush(new QBrush(new QColor("#e2e8f0")));
+                empty.SetBrush(new QBrush(new QColor(TrayTheme.Tokens.Border)));
                 empty.SetPen(new QPen(Qt.PenStyle.NoPen));
                 empty.SetLabel(I18n.T(_reads ? "stats.access.noreads" : "stats.access.nowrites"));
+                empty.SetLabelColor(new QColor(TrayTheme.Tokens.Muted));
                 _series.Append(empty);
                 return;
             }
@@ -145,7 +146,7 @@ internal sealed class LayerAccessPie : QWidget
             {
                 using var piece = new QPieSlice();
                 piece.SetValue(Count(slice));
-                piece.SetBrush(new QBrush(new QColor(slice.Color)));
+                piece.SetBrush(new QBrush(TrayTheme.Series(slice.Color)));
                 piece.SetPen(new QPen(Qt.PenStyle.NoPen));
                 // Which layer it is and what share of this direction it answered, in the one place
                 // the chart prints words of its own.
