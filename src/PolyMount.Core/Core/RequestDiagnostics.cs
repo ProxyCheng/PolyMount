@@ -54,7 +54,14 @@ public sealed class RequestDiagnostics : IDisposable
     public static RequestDiagnostics? Ambient => Current.Value?._owner;
 
     /// <summary>The process the request being handled came from, or 0 outside one. Nested scopes
-    /// inherit their parent's, so the innermost answer is the caller's.</summary>
+    /// inherit their parent's, so the innermost answer is the caller's — which is what makes this
+    /// readable from anywhere inside a request, the layers included: only the file system boundary
+    /// can ask WinFsp who is calling, and it is the outermost scope.
+    ///
+    /// Zero is a real answer and not a failure: the read-ahead the service does for itself runs in
+    /// a task whose flow was suppressed (see <c>ReadPrediction</c> and <c>DurableCacheLayer</c>),
+    /// so there is no scope around it and the work is nobody's. That is the same reading the mount
+    /// takes when it charges a request to process 0.</summary>
     public static int AmbientProcessId => Current.Value?.ProcessId ?? 0;
 
     public static Scope? Begin(string operation, string path, RequestDiagnostics? diagnostics = null, int processId = 0)
@@ -62,6 +69,12 @@ public sealed class RequestDiagnostics : IDisposable
         var parent = Current.Value;
         diagnostics ??= parent?._owner;
         if (diagnostics == null) return null;
+        // A caller is named once per request, at the boundary that could ask: every scope opened
+        // below it — the VFS's lookups and reads, the layers' own probes — is work that caller
+        // asked for, so it inherits the id rather than logging and reading as 0. Nothing passes a
+        // different one down, and a scope opened with no parent above it (read-ahead, warm-up) is
+        // still nobody's.
+        if (processId == 0) processId = parent?.ProcessId ?? 0;
         // Layer probes dominate cached directory enumeration. Unsampled parent
         // operations already track total latency and pending work; nested SVN
         // calls still receive their own always-traced scopes. A recording wants

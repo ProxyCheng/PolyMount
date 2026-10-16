@@ -100,11 +100,59 @@ public sealed class MetricsCollector
     /// <summary>What one process has done on one thread, in the second the thread is in. Nothing
     /// here is cleared by a reader: it is flushed into the ring's current second and cleared in
     /// place, the way a layer's counts are, so the objects are reused and a record allocates
-    /// nothing.</summary>
+    /// nothing.
+    ///
+    /// It carries two accounts of that process, and they answer different questions: the fields are
+    /// the requests it made, counted where the boundary charged them, and <see cref="Layers"/> is
+    /// what the layers did on its behalf, counted where each layer served or was probed. The two
+    /// are not the same total and were never meant to be — a metadata call is a request no layer
+    /// answered, and a layer the service read ahead into was work no process asked for.</summary>
     private sealed class ProcessCounts
     {
         public long Reads, ReadBytes, Writes, WriteBytes;
-        public void Clear() => Reads = ReadBytes = Writes = WriteBytes = 0;
+        /// <summary>That process's traffic, by the layer that served it. This is the one thing
+        /// neither margin can be read for: a layer's own count says what answered, this process's
+        /// count says how much it asked, and neither says which layer answered <em>it</em>. Kept
+        /// only where a layer record has a caller, and the caller is read from the request's own
+        /// scope rather than passed down.
+        ///
+        /// Made when the first layer is charged rather than with the object: most of what a mount
+        /// counts for a process is charged at the boundary, where no layer is known, and a
+        /// dictionary built for each of those would be an allocation on the request path for a
+        /// table that stays empty.</summary>
+        public Dictionary<string, LayerCounts>? Layers;
+        /// <summary>The layer this process last touched on this thread, so the common case — one
+        /// reader walking one directory — is two comparisons rather than a dictionary lookup. The
+        /// same shape the shard keeps for the process itself, one level down.</summary>
+        public string LastLayer = "";
+        public LayerCounts? LastLayerCounts;
+
+        public LayerCounts For(string layer)
+        {
+            if (!ReferenceEquals(LastLayerCounts, null) &&
+                string.Equals(LastLayer, layer, StringComparison.OrdinalIgnoreCase))
+                return LastLayerCounts;
+            Layers ??= new Dictionary<string, LayerCounts>(StringComparer.OrdinalIgnoreCase);
+            if (!Layers.TryGetValue(layer, out var counts)) Layers[layer] = counts = new LayerCounts();
+            LastLayer = layer;
+            LastLayerCounts = counts;
+            return counts;
+        }
+
+        public void Clear()
+        {
+            Reads = ReadBytes = Writes = WriteBytes = 0;
+            // Cleared rather than emptied: a thread that keeps serving the same layers keeps its
+            // entries, so a second of counting allocates nothing after the first.
+            if (Layers != null) foreach (var counts in Layers.Values) counts.Reset();
+        }
+    }
+
+    /// <summary>One process's reads and writes on one layer, on one thread, in one second.</summary>
+    private sealed class LayerCounts
+    {
+        public long Reads, Writes;
+        public void Reset() => Reads = Writes = 0;
     }
 
     /// <summary>What one thread has counted in the cell it is in. A record is a plain add here —
@@ -266,16 +314,7 @@ public sealed class MetricsCollector
         long now = Environment.TickCount64;
         Volatile.Write(ref _lastActivityMs, now);
         if (now >= Volatile.Read(ref _watchedUntilMs)) return;
-        var shard = ShardFor(_slot());
-        ProcessCounts counts;
-        if (shard.LastProcessId == processId && shard.LastProcess != null) counts = shard.LastProcess;
-        else
-        {
-            if (!shard.Processes.TryGetValue(processId, out counts!))
-                shard.Processes[processId] = counts = new ProcessCounts();
-            shard.LastProcessId = processId;
-            shard.LastProcess = counts;
-        }
+        var counts = ProcessCountsFor(ShardFor(_slot()), processId);
         if (write)
         {
             counts.Writes++;
@@ -286,6 +325,34 @@ public sealed class MetricsCollector
             counts.Reads++;
             if (bytes > 0) counts.ReadBytes += bytes;
         }
+    }
+
+    /// <summary>What this thread has counted for one process in the cell it is in, made if it is
+    /// not there yet. The common case is the process the last record was about, which is what the
+    /// shard remembers.</summary>
+    private static ProcessCounts ProcessCountsFor(Shard shard, int processId)
+    {
+        if (shard.LastProcessId == processId && shard.LastProcess != null) return shard.LastProcess;
+        if (!shard.Processes.TryGetValue(processId, out var counts))
+            shard.Processes[processId] = counts = new ProcessCounts();
+        shard.LastProcessId = processId;
+        shard.LastProcess = counts;
+        return counts;
+    }
+
+    /// <summary>Charges a layer's work to the process that asked for it, so that what a layer
+    /// answered and who asked it are one reading rather than two.
+    ///
+    /// The caller is not passed down here: it is read from the scope this record is running
+    /// inside, which the file system boundary opened with the id WinFsp could name. That keeps a
+    /// dictionary dimension off every signature between the boundary and the layer — and it is
+    /// what puts the service's own read-ahead in the bucket for nobody, because that work runs in
+    /// a task with its flow suppressed and therefore has no scope to read.</summary>
+    private static void Attribute(Shard shard, string layer, bool write)
+    {
+        var counts = ProcessCountsFor(shard, RequestDiagnostics.AmbientProcessId).For(layer);
+        if (write) counts.Writes++;
+        else counts.Reads++;
     }
 
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
@@ -300,7 +367,8 @@ public sealed class MetricsCollector
         // One comparison, on a clock reading that was already needed. Everything below this line -
         // the slot, the layer lookup, the atomic adds - is what nobody watching does not pay.
         if (now >= Volatile.Read(ref _watchedUntilMs)) return;
-        Counts counts = LayerCounts(ShardFor(_slot()), layer);
+        var shard = ShardFor(_slot());
+        Counts counts = CountsFor(shard, layer);
         if (write)
         {
             counts.Writes++;
@@ -320,6 +388,9 @@ public sealed class MetricsCollector
                 if (cost > counts.MaxNs) counts.MaxNs = cost;
             }
         }
+        // Beside what answered, who asked. Below the watch gate like everything else, so an
+        // instance nobody is reading pays the same one comparison it paid before this existed.
+        Attribute(shard, layer, write);
     }
 
     /// <summary>This thread's shard for the cell it is in, flushing the previous one if the cell
@@ -360,7 +431,7 @@ public sealed class MetricsCollector
     /// <summary>The counts this thread is holding for the layer it last touched. Consecutive
     /// records usually belong to the same layer, so the common case is three comparisons; the
     /// dictionary is only reached when the layer changes.</summary>
-    private static Counts LayerCounts(Shard shard, string layer)
+    private static Counts CountsFor(Shard shard, string layer)
     {
         // The layer name is the same string instance every time it is recorded - the file system
         // holds one per layer - so the common case is a reference check rather than a comparison.
@@ -435,6 +506,17 @@ public sealed class MetricsCollector
                 target.ReadBytes += counts.ReadBytes;
                 target.Writes += counts.Writes;
                 target.WriteBytes += counts.WriteBytes;
+                // The layer split rides along with the process it belongs to, and the cell it lands
+                // in is the same second: a reader asking who used which layer gets both halves of
+                // the answer out of one cell.
+                if (counts.Layers == null) continue;
+                foreach (var (layer, held) in counts.Layers)
+                {
+                    if (held.Reads == 0 && held.Writes == 0) continue;
+                    var sum = target.For(layer);
+                    sum.Reads += held.Reads;
+                    sum.Writes += held.Writes;
+                }
             }
         }
         foreach (var counts in shard.Processes.Values) counts.Clear();
@@ -618,13 +700,21 @@ public sealed class MetricsCollector
         long processSlots = Math.Min(Math.Max(1, (long)Math.Round(windowSeconds * 1000 / ProcessCellMilliseconds)), ProcessCellCount);
         long oldestProcess = Math.Max(0, nowProcess - processSlots + 1);
         var callersById = new Dictionary<int, ProcessCounts>();
-        void AddCaller(int processId, long callerReads, long callerReadBytes, long callerWrites, long callerWriteBytes)
+        void AddCaller(int processId, ProcessCounts counts)
         {
             if (!callersById.TryGetValue(processId, out var sum)) callersById[processId] = sum = new ProcessCounts();
-            sum.Reads += callerReads;
-            sum.ReadBytes += callerReadBytes;
-            sum.Writes += callerWrites;
-            sum.WriteBytes += callerWriteBytes;
+            sum.Reads += counts.Reads;
+            sum.ReadBytes += counts.ReadBytes;
+            sum.Writes += counts.Writes;
+            sum.WriteBytes += counts.WriteBytes;
+            if (counts.Layers == null) return;
+            foreach (var (layer, held) in counts.Layers)
+            {
+                if (held.Reads == 0 && held.Writes == 0) continue;
+                var into = sum.For(layer);
+                into.Reads += held.Reads;
+                into.Writes += held.Writes;
+            }
         }
         for (long slot = oldestProcess; slot <= nowProcess; slot++)
         {
@@ -632,15 +722,13 @@ public sealed class MetricsCollector
             lock (cell)
             {
                 if (cell.Slot != slot) continue;
-                foreach (var (processId, counts) in cell.Pids)
-                    AddCaller(processId, counts.Reads, counts.ReadBytes, counts.Writes, counts.WriteBytes);
+                foreach (var (processId, counts) in cell.Pids) AddCaller(processId, counts);
             }
         }
         foreach (var shard in shards)
         {
             if (shard.ProcessSlot < oldestProcess) continue;
-            foreach (var (processId, counts) in shard.Processes)
-                AddCaller(processId, counts.Reads, counts.ReadBytes, counts.Writes, counts.WriteBytes);
+            foreach (var (processId, counts) in shard.Processes) AddCaller(processId, counts);
         }
 
         // What was watched, as opposed to what was asked for: the window, the ring's depth, and
@@ -687,7 +775,16 @@ public sealed class MetricsCollector
         var callers = new List<ProcessMetric>();
         foreach (var (processId, counts) in callersById)
         {
-            if (counts.Reads == 0 && counts.Writes == 0) continue;
+            // Process 0 is not a process: it is the bucket for layer work no caller asked for —
+            // the read-ahead and the warm-up the service did for itself. It is reported beside the
+            // processes rather than among them, because a row saying "nobody" next to rows naming
+            // tools invites a reader to compare them, and it is the one row that is not a tool.
+            if (processId == 0)
+            {
+                result.Unattributed = Ranked(counts);
+                continue;
+            }
+            if (counts.Reads == 0 && counts.Writes == 0 && counts.Layers == null) continue;
             string? name = ProcessNames.Of(processId);
             callers.Add(new ProcessMetric
             {
@@ -700,11 +797,27 @@ public sealed class MetricsCollector
                 Reads = counts.Reads,
                 Writes = counts.Writes,
                 ReadBytes = counts.ReadBytes,
-                WriteBytes = counts.WriteBytes
+                WriteBytes = counts.WriteBytes,
+                ByLayer = Ranked(counts)
             });
         }
         result.Processes = ProcessFold.Top(callers);
         foreach (var row in result.Processes) if (row.Other) row.Color = "#94A3B8";
         return result;
+    }
+
+    /// <summary>One caller's traffic as the layers saw it, busiest layer first. This is what lets a
+    /// reader put the two margins together: the rows of a process add up to what the layers served
+    /// on its behalf, so the column totals of the whole table are the layer ring's own counts. A
+    /// caller the layers never served — one whose requests were all metadata — has none, which is
+    /// an answer rather than a gap.</summary>
+    private static List<ProcessLayerCount> Ranked(ProcessCounts counts)
+    {
+        if (counts.Layers == null) return new List<ProcessLayerCount>();
+        return counts.Layers
+            .Where(entry => entry.Value.Reads > 0 || entry.Value.Writes > 0)
+            .OrderByDescending(entry => entry.Value.Reads + entry.Value.Writes)
+            .Select(entry => new ProcessLayerCount { Name = entry.Key, Reads = entry.Value.Reads, Writes = entry.Value.Writes })
+            .ToList();
     }
 }

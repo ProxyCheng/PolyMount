@@ -329,9 +329,22 @@ public sealed class ProcessMetric
     /// rather than the call count. Free to collect where the transfer already knows its length.</summary>
     public long ReadBytes { get; set; }
     public long WriteBytes { get; set; }
+    /// <summary>What the layers did on this process's behalf, busiest layer first. The counts above
+    /// are the requests it made, which is a different total: a metadata call is a request no layer
+    /// answered. This is the half that puts the two margins of the access section together — a
+    /// process's layers add up to its own traffic, and every process's do to the layers'.</summary>
+    public List<ProcessLayerCount> ByLayer { get; set; } = new();
     /// <summary>The bucket the processes past the named ones were folded into, so a pie of them can
     /// still add up to everything that happened.</summary>
     public bool Other { get; set; }
+}
+
+/// <summary>What one caller's traffic was served by, on one layer.</summary>
+public sealed class ProcessLayerCount
+{
+    public string Name { get; set; } = "";
+    public long Reads { get; set; }
+    public long Writes { get; set; }
 }
 
 /// <summary>One priority class's share of a source that serves several. Low is urgent: the
@@ -389,6 +402,13 @@ public sealed class MountMetrics
     /// the busiest first, with everything past the first few folded into one bucket. A process that
     /// has since exited keeps the name it was last seen under.</summary>
     public List<ProcessMetric> Processes { get; set; } = new();
+    /// <summary>The layer traffic that had no caller, by layer: the read-ahead and the warm-up the
+    /// service did for itself, which runs in tasks with their flow suppressed and so belongs to no
+    /// process. It is kept apart from <see cref="Processes"/> rather than folded in as process 0 —
+    /// a row saying "nobody" sitting among rows naming tools invites a comparison, and this is the
+    /// one row that is not a tool. Without it the layer side of the access section would not add
+    /// up: the layers served that work, and no process asked for it.</summary>
+    public List<ProcessLayerCount> Unattributed { get; set; } = new();
 }
 
 // Action names accepted by the "layerAction" command.

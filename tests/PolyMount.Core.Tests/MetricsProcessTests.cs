@@ -138,4 +138,120 @@ public class MetricsProcessTests
         idle.RecordProcessAccess(4321, write: false);
         Assert.AreEqual(1, idle.Snapshot("m", 60).Processes.Single().Reads, "being asked is what starts it");
     }
+
+    /// <summary>A read served by a layer, taken while a request is in hand. The collector finds the
+    /// caller in the scope the record is running inside rather than being told: neither the layer
+    /// nor the VFS below the boundary knows who asked, and the boundary is the only place WinFsp
+    /// can name them.</summary>
+    private static void ServeAs(MetricsCollector collector, RequestDiagnostics diagnostics, int processId, string layer, bool write)
+    {
+        using var boundary = RequestDiagnostics.Begin("WinFsp.Read", "/x", diagnostics, processId);
+        // The VFS and the layer open scopes of their own and name no caller; that the caller still
+        // reaches the collector is the whole of what is pinned here.
+        using var nested = RequestDiagnostics.Begin("VFS.OpenRead", "/x", diagnostics);
+        using var deepest = RequestDiagnostics.Begin("Layer.GetEntry", "/x", diagnostics);
+        if (write) collector.RecordWrite(layer, TimeSpan.Zero, 1);
+        else collector.RecordRead(layer, TimeSpan.Zero, 1);
+    }
+
+    /// <summary>A tracer for the tests that need a request around the record. A real one rather
+    /// than a stand-in: the caller is found in this type's ambient scope, and what is being pinned
+    /// is that the scopes the VFS opens below the boundary do not lose it.</summary>
+    private static RequestDiagnostics Tracing(TempDir temp) => new(temp.Sub("requests.log"));
+
+    [TestMethod]
+    public void A_layer_is_charged_to_the_caller_of_the_request_it_served()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        using var temp = new TempDir();
+        using var diagnostics = Tracing(temp);
+        ServeAs(collector, diagnostics, 4321, "cache", write: false);
+        ServeAs(collector, diagnostics, 4321, "svn", write: false);
+        ServeAs(collector, diagnostics, 9999, "cache", write: false);
+        ServeAs(collector, diagnostics, 9999, "cache", write: false);
+
+        var metrics = collector.Snapshot("m", 60);
+        var one = metrics.Processes.Single(row => row.Pid == 4321);
+        Assert.AreEqual(2, one.ByLayer.Count, "the two layers it was served by");
+        Assert.AreEqual(1, one.ByLayer.Single(row => row.Name == "cache").Reads);
+        Assert.AreEqual(1, one.ByLayer.Single(row => row.Name == "svn").Reads);
+        var other = metrics.Processes.Single(row => row.Pid == 9999);
+        Assert.AreEqual(2, other.ByLayer.Single(row => row.Name == "cache").Reads,
+            "the same layer is counted apart for the two callers");
+    }
+
+    [TestMethod]
+    public void A_layer_served_with_nobody_in_scope_is_nobody_s()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        using var temp = new TempDir();
+        using var diagnostics = Tracing(temp);
+        ServeAs(collector, diagnostics, 4321, "cache", write: false);
+        // Read-ahead runs in a task whose flow was suppressed, so there is no scope around it and
+        // the caller it finds is nobody — the same reading the boundary takes when a request names
+        // no process.
+        collector.RecordRead("svn", TimeSpan.Zero, 4096);
+
+        var metrics = collector.Snapshot("m", 60);
+        Assert.AreEqual(1, metrics.Processes.Count, "the tool that asked");
+        Assert.AreEqual("svn", metrics.Unattributed.Single().Name);
+        Assert.AreEqual(1, metrics.Unattributed.Single().Reads, "the layer the service read for itself");
+    }
+
+    [TestMethod]
+    public void Every_layer_a_process_used_adds_up_to_what_the_layers_served()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        using var temp = new TempDir();
+        using var diagnostics = Tracing(temp);
+        // Two callers and the service's own work, over two layers: whatever a reader does with the
+        // rows, the column totals have to be the layer ring's own counts.
+        ServeAs(collector, diagnostics, 4321, "cache", write: false);
+        ServeAs(collector, diagnostics, 4321, "svn", write: true);
+        ServeAs(collector, diagnostics, 9999, "cache", write: false);
+        collector.RecordRead("cache", TimeSpan.Zero, 4096);
+
+        var metrics = collector.Snapshot("m", 60);
+        var byLayer = metrics.Processes
+            .SelectMany(row => row.ByLayer)
+            .Concat(metrics.Unattributed)
+            .GroupBy(row => row.Name, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => (Reads: group.Sum(row => row.Reads), Writes: group.Sum(row => row.Writes)));
+        foreach (var layer in metrics.Layers)
+        {
+            Assert.AreEqual(layer.Hits, byLayer[layer.Name].Reads, $"reads on {layer.Name}");
+            Assert.AreEqual(layer.Writes, byLayer[layer.Name].Writes, $"writes on {layer.Name}");
+        }
+        Assert.AreEqual(metrics.TotalReads, byLayer.Values.Sum(pair => pair.Reads), "and nothing is left over");
+    }
+
+    [TestMethod]
+    public void The_fold_carries_the_layers_of_what_it_folds()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        using var temp = new TempDir();
+        using var diagnostics = Tracing(temp);
+        // More callers than a window names, each served by both layers, so the bucket has to hold
+        // the layers of the processes it swallowed or the columns stop adding up at the fold.
+        int callers = ProcessFold.Named + 4;
+        for (int i = 0; i < callers; i++)
+        {
+            ServeAs(collector, diagnostics, 1000 + i, "cache", write: false);
+            ServeAs(collector, diagnostics, 1000 + i, "svn", write: false);
+        }
+
+        var metrics = collector.Snapshot("m", 60);
+        Assert.AreEqual(ProcessFold.Named + 1, metrics.Processes.Count, "the named ones and one bucket");
+        var other = metrics.Processes.Single(row => row.Other);
+        Assert.AreEqual(2, other.ByLayer.Count);
+        Assert.AreEqual(4, other.ByLayer.Single(row => row.Name == "cache").Reads, "the folded tail's own layers");
+        Assert.AreEqual(callers, metrics.Layers.Single(layer => layer.Name == "cache").Hits,
+            "every caller read the one layer, named or folded");
+        Assert.AreEqual(2 * callers, metrics.Processes.SelectMany(row => row.ByLayer).Sum(row => row.Reads),
+            "and the rows still carry every read the layers counted");
+    }
 }

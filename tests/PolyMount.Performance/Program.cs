@@ -93,6 +93,35 @@ if (args.Contains("--metrics-cost"))
         Console.WriteLine($"caller, watching, 1 pid : {callerOne:0.0} ns/call  ({count:N0} calls, one thread)");
         Console.WriteLine($"caller, watching, 8 pids: {callerMany:0.0} ns/call  ({count:N0} calls, one thread)");
     }
+    // What a layer record costs when it has a caller to charge as well as a layer: this is the loop
+    // that runs for every read the mount serves, and what it adds is a scope read (the caller is
+    // not passed down) and one entry under the process the record belongs to. The scope is opened
+    // around the whole loop rather than per call, so what is measured is the record and not the
+    // per-request tracing that was already there; the two loops differ in nothing but whether the
+    // caller they read is a process or nobody.
+    double jointCaller = 0, jointNobody = 0;
+    {
+        string benchRoot = Path.Combine(Path.GetTempPath(), "polymount-metrics-bench");
+        Directory.CreateDirectory(benchRoot);
+        using var diagnostics = new RequestDiagnostics(Path.Combine(benchRoot, "requests.log"));
+        collector = new MetricsCollector();
+        collector.Watch();
+        using (RequestDiagnostics.Begin("WinFsp.Read", "/x", diagnostics, 4321))
+        {
+            for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+            watch.Restart();
+            for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, true);
+            watch.Stop();
+            jointCaller = watch.Elapsed.TotalNanoseconds / count;
+        }
+        for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+        watch.Restart();
+        for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, true);
+        watch.Stop();
+        jointNobody = watch.Elapsed.TotalNanoseconds / count;
+        Console.WriteLine($"layer record, one caller : {jointCaller:0.0} ns/call  (watching, a request around it)");
+        Console.WriteLine($"layer record, no caller  : {jointNobody:0.0} ns/call  (watching, nobody to charge)");
+    }
     if (args.Contains("--assert"))
     {
         // A gate, not a benchmark: the budgets are loose enough for a busy machine and tight
@@ -119,6 +148,12 @@ if (args.Contains("--metrics-cost"))
         Within("caller, nobody watching", callerIdle, 40);
         Within("caller, one pid", callerOne, 60);
         Within("caller, eight pids", callerMany, 90);
+        // The layer record is the one that runs for every read the mount serves, so this is the
+        // budget that matters: what it may cost with a caller to charge on top of the layer it
+        // already charged. Both loops pay the scope read; the difference between them is which
+        // bucket the entry lands in, which is why they are asserted against the same figure.
+        Within("layer record, one caller", jointCaller, 150);
+        Within("layer record, no caller", jointNobody, 150);
         if (allocatedCallers > count / 1000) failures.Add($"caller record allocated {allocatedCallers} bytes over {count:N0} calls");
         if (failures.Count == 0)
             Console.WriteLine($"assert: within budget (record {recordIdle:0.#}/{recordWatching:0.#} ns, request {requestIdle:0.#}/{requestWatching:0.#} ns, no allocation)");
