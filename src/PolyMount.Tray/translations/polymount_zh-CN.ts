@@ -119,6 +119,10 @@
       <translation>各层访问占比 · 最近 60 秒（读 + 写）</translation>
     </message>
     <message>
+      <source>stats.access.slice</source>
+      <translation>{0} · 读 {1} · 写 {2} · {3:0.0}%</translation>
+    </message>
+    <message>
       <source>stats.access.counts</source>
       <translation>读 {0:N0} · 写 {1:N0} · {2:0.#}%</translation>
     </message>

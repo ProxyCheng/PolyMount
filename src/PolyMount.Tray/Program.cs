@@ -339,7 +339,7 @@ internal static class Program
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.process.definition",
-                    "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
+                    "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
                     "stats.layerHeld.definition",
                     "stats.reconcile.bytes", "stats.reconcile.definition", "record.process",

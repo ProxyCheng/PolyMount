@@ -23,7 +23,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly QTableWidget _table;
     private readonly QLabel _status;
     private readonly LayerAccessPie _accessPie;
-    private readonly QLabel _accessLegend;
     private readonly QLabel _responseCost;
     private readonly Queue<(double Request, double Dispatch, double Ui, DateTime At)> _responseSamples = new();
     private readonly QComboBox _refresh, _range;
@@ -243,11 +242,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         layerBody.SetSpacing(14);
         var access = new QHBoxLayout();
         _accessPie = new LayerAccessPie();
-        access.AddWidget(_accessPie);
-        _accessLegend = new QLabel();
-        _accessLegend.SetTextFormat(Qt.TextFormat.RichText);
-        _accessLegend.SetWordWrap(true);
-        access.AddWidget(_accessLegend, 1);
+        access.AddWidget(_accessPie, 1);
         layerBody.AddLayout(access);
         _table = ContinuousScrolling.Table();
         _table.SetColumnCount(8);
@@ -1427,11 +1422,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var slices = accessRows.Select(r => new AccessSlice(selected == "" ? r.Mount + "/" + r.Layer.Name
             : string.IsNullOrEmpty(r.Layer.DisplayName) ? r.Layer.Name : r.Layer.DisplayName,
             string.IsNullOrEmpty(r.Layer.Color) ? "#64748B" : r.Layer.Color, r.Layer.Hits, r.Layer.Writes)).ToList();
-        _accessPie.SetSlices(slices);
-        string accessLegend = "<b>" + T("stats.access.title") + "</b><br>" + string.Join("<br>", slices.Select(s =>
-            $"<span style='color:{s.Color}'>●</span> " + System.Net.WebUtility.HtmlEncode(s.Name) + " · " +
-            I18n.F("stats.access.counts", s.Reads, s.Writes, total == 0 ? 0 : 100.0 * (s.Reads + s.Writes) / total)));
-        if (_accessLegend.Text != accessLegend) _accessLegend.SetText(accessLegend);
+        _accessPie.SetSlices(slices, I18n.F("stats.access.title"));
         // The line the layer section keeps while it is folded: how many layers there are and what
         // they served between them, which is enough to tell an instance that is working from one
         // that is not, without opening anything. The chart cards carry their own legend — the same
@@ -1820,13 +1811,22 @@ internal sealed class PerformanceChart : QWidget
         // the chart — its grid, its axes, the areas and the lines — so the two cannot disagree
         // about where a value or a moment is.
         _chart = new QChart();
-        _chart.SetTheme(QChart.ChartTheme.ChartThemeLight);
         _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
         _chart.SetBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundVisible(false);
-        // The margins are what the chart keeps around its plot area for the axis labels: the edge
-        // labels are drawn there, and a chart that keeps none clips them to an ellipsis.
-        _chart.SetMargins(new QMargins(38, 4, 8, 0));
+        _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor("#ffffff")));
+        // The chart's own legend, which is the card's row of series: each series carries its name
+        // and its current value, and the legend is laid out above the plot the way the row it
+        // replaces was. Qt decides where it fits, which is the point of using it.
+        _chart.Legend().SetAlignment(Qt.Alignment.AlignTop);
+        _chart.Legend().SetBackgroundVisible(false);
+        _chart.Legend().SetLabelColor(new QColor("#334155"));
+        _chart.Legend().SetFont(new QFont("Segoe UI", 8));
+        _chart.Legend().SetMarkerShape(QLegend.MarkerShape.MarkerShapeCircle);
+        // What the chart keeps around its plot area: room at the left for the value axis' labels
+        // and at the top for the legend's row, both of which Qt lays out itself. A chart that keeps
+        // none clips the labels to an ellipsis and draws the legend over the plot.
+        _chart.SetMargins(new QMargins(46, 46, 10, 0));
         _chart.SetLocalizeNumbers(false);
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
         _valueAxis.SetLabelsColor(new QColor("#718096"));
@@ -1844,6 +1844,9 @@ internal sealed class PerformanceChart : QWidget
         _chart.AddAxis(_valueAxis, Qt.Alignment.AlignLeft);
         _plot = new QChartView(_chart, this);
         _plot.SetRenderHint(QPainter.RenderHint.Antialiasing);
+        // The card is white behind the plot: the view's own viewport is otherwise the platform's
+        // window colour, which shows through wherever the chart draws nothing.
+        _plot.SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
     }
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
@@ -1979,6 +1982,7 @@ internal sealed class PerformanceChart : QWidget
                     bottom.Append(x, lower[index]);
                 }
                 var area = new QAreaSeries(top, bottom);
+                area.SetName(item.Name + " " + FormatValue(item.Samples.LastOrDefault().Value));
                 using var fill = new QColor(item.Color);
                 fill.SetAlpha(155);
                 if (item.Hatched)
@@ -1994,8 +1998,8 @@ internal sealed class PerformanceChart : QWidget
                 pen.SetWidthF(1.8);
                 area.SetPen(pen);
                 _chart.AddSeries(area);
-                area.AttachAxis(_timeAxis);
-                area.AttachAxis(_valueAxis);
+                _chart.SetAxisX(_timeAxis, area);
+                _chart.SetAxisY(_valueAxis, area);
                 _bands.Add(area);
                 start = finish;
             }
@@ -2056,8 +2060,8 @@ internal sealed class PerformanceChart : QWidget
             pen.SetWidthF(1.2);
             line.SetPen(pen);
             _chart.AddSeries(line);
-            line.AttachAxis(_timeAxis);
-            line.AttachAxis(_valueAxis);
+            _chart.SetAxisX(_timeAxis, line);
+            _chart.SetAxisY(_valueAxis, line);
             _edges.Add(line);
 
             if (slot >= NoteSlots) break;
@@ -2091,7 +2095,7 @@ internal sealed class PerformanceChart : QWidget
     /// and the row of series. It is a fixed strip, which is what the plot's own top edge used to
     /// be, so a card does not move its plot when the legend row comes or goes.
     /// </summary>
-    private int HeaderHeight => _series.Count > 0 ? 108 : 88;
+    private const int HeaderHeight = 88;
 
     /// <summary>Gives the chart everything the card does not keep: the header above the plot, and
     /// the strip below it where the time axis' ticks are lettered and the two captions sit. The
@@ -2291,47 +2295,6 @@ internal sealed class PerformanceChart : QWidget
             var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
             var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
             DrawHeadline(p, width, times.Length > 0);
-
-            using var detailFont = new QFont("Segoe UI", 8);
-            using var detailMetrics = new QFontMetrics(detailFont);
-            var summaries = _series.Select(s => (s.Color, Text: s.Name + " " + FormatValue(s.Samples.LastOrDefault().Value))).ToArray();
-            // The row is drawn as far as it fits rather than all of it or none of it. What is in it
-            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a legend
-            // that gains a layer when an instance is mounted — so a card within a few pixels of the
-            // edge used to lose the whole line on a busy sample, get it back on the next quiet one,
-            // and take the top of the plot with it: the plot starts 20 pixels lower when the row is
-            // not there. Nothing is lost by dropping the tail — the tooltip carries every series
-            // already, and the layer table below carries them at length.
-            bool legend = summaries.Length > 0;
-            if (legend)
-            {
-                p.SetFont(detailFont);
-                int x = 18, room = width - 18;
-                foreach (var summary in summaries)
-                {
-                    int advance = detailMetrics.HorizontalAdvance(summary.Text);
-                    int available = room - (x + 14);
-                    if (available < 30) break;
-                    // The one that will not fit is cut to the room left rather than left out, and
-                    // the row ends there. Leaving it out would put the tail of the legend in and out
-                    // of the picture as the values change length — "0 B" and "465.64 MiB" are fifty
-                    // pixels apart — and an ellipsis that moves is a quieter thing to watch than a
-                    // name that comes and goes.
-                    bool clipped = advance > available;
-                    string text = clipped
-                        ? detailMetrics.ElidedText(summary.Text, Qt.TextElideMode.ElideRight, available)
-                        : summary.Text;
-                    // The dot carries the layer's colour and the value stays in ink, so a light
-                    // layer hue cannot leave its own number unreadable.
-                    p.SetPen(new QPen(Qt.PenStyle.NoPen));
-                    p.SetBrush(new QBrush(new QColor(summary.Color)));
-                    p.DrawEllipse(x + 1, SeriesBaseline - 6, 6, 6);
-                    p.SetPen(new QPen(new QColor("#334155")));
-                    p.DrawText(x + 14, SeriesBaseline, text);
-                    if (clipped) break;
-                    x += advance + 28;
-                }
-            }
 
             // The plot itself is the chart's: it drew its grid, its axes, the areas and the lines
             // as this event was reached. What is left for the card is the lettering around it —
