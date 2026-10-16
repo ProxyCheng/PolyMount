@@ -1198,5 +1198,9 @@
       <source>theme.dark</source>
       <translation>深色</translation>
     </message>
+      <message>
+      <source>stats.unit.cores</source>
+      <translation>核</translation>
+    </message>
   </context>
 </TS>

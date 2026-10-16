@@ -381,7 +381,10 @@ internal sealed class Dashboard : QWidget
         UpdateConnection();
         if (_connected) UpdateOverview();
         FillTable();
-        _feedback.SetText(T(_connected ? "connected" : "connecting"));
+        // Through Feedback rather than SetText: the colour is part of the message, and this used
+        // to set the words and leave whatever style was on the label — which is how a service that
+        // had come back was still announcing itself in the red of the failure before it.
+        Feedback(T(_connected ? "connected" : "connecting"));
         _updated.SetText(T("auto.refresh"));
     }
     public override void ChangeEvent(QEvent e)

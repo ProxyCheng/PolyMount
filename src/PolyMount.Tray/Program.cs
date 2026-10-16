@@ -387,7 +387,7 @@ internal static class Program
                 // than quietly painting the key itself into a chart title.
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
-                    "stats.process.handles", "stats.process.figures",
+                    "stats.process.handles", "stats.process.figures", "stats.unit.cores",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
                     "theme", "theme.system", "theme.light", "theme.dark",
                     "stats.access.reads", "stats.access.writes", "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",

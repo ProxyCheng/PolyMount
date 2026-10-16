@@ -1195,5 +1195,9 @@ The remote view changes. Local modifications are kept.</translation>
       <source>theme.dark</source>
       <translation>Dark</translation>
     </message>
+      <message>
+      <source>stats.unit.cores</source>
+      <translation>cores</translation>
+    </message>
   </context>
 </TS>

@@ -274,12 +274,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // page looked, which is the refresh rate.
         _processCharts = new[]
         {
-            // "cores" rather than a catalog key: the unit reaches the value axis through
-            // QValueAxis::SetLabelFormat, which the binding marshals as an ANSI format string, so a
-            // unit that is a word in the reader's language arrives as "?" on every gridline label
-            // (measured). A symbol - "/s", "ms", "B" - is ASCII and survives it; see UnitText for
-            // the paths that do take the reader's language.
-            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Gauge),
+            new PerformanceChart("stats.process.cpu", "#0f766e", "stats.unit.cores", ChartSummary.Gauge),
             new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Gauge),
             new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Gauge),
             new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Gauge)
@@ -1842,7 +1837,7 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
             double next = NiceStep(max / targetIntervals);
             // Counts and cores are read in whole numbers — a gridline every half a request, or
             // every third of a core, is one nobody counts by. Durations and bytes have no grain.
-            if (unit is not ("ms" or "B" or "cores")) next = Math.Max(1, next);
+            if (unit is not ("ms" or "B" or "stats.unit.cores")) next = Math.Max(1, next);
             if (next == step) break;
             step = next;
             intervals = Intervals(max, step);
