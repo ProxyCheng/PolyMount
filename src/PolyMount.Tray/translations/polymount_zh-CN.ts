@@ -1139,7 +1139,8 @@
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
     <message><source>stats.reconcile.wall</source><translation>墙钟 · 近 {0:0.#} 秒：请求共 {1:0.0} 毫秒，各层记到 {2:0.0} 毫秒 —— 未归因 {3:0.0} 毫秒。</translation></message>
     <message><source>stats.layerUnknown</source><translation>未知 · 没有层为它记账</translation></message>
-    <message><source>stats.layerHeld</source><translation>层持有字节 · 每层（内存 + 磁盘）</translation></message>
+    <message><source>stats.layerHeld.memory</source><translation>层持有内存 · 每层</translation></message>
+    <message><source>stats.layerHeld.disk</source><translation>层持有磁盘 · 每层</translation></message>
     <message><source>stats.layerHeld.definition</source><translation>每层当前占着的量：内存与磁盘字节，按层相加。进程的内存没法拆到层上——上面那组进程卡就是它的全部——但每层自己持有了多少是我们自己数的，是这个层自己的开销。</translation></message>
     <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，没有层记账的 {3}。</translation></message>
     <message><source>stats.reconcile.definition</source><translation>墙钟那一行，比的是文件系统边界上花掉的时间与各层为这些请求记到的时间：没有层答复的请求没人可记——应用去问它可能没有的文件所产生的负查询就落在那里，时间没按层记的路径也在那里。字节那一行，比的是各层答复的文件大小与操作系统看到的、本进程的读写量，差已经画进字节图里那一片「未知」，所以摞起来的总和与系统记录一致。两个差都不是错误；为了量它们，每个请求多花几十纳秒，仅在有人看的时候付。</translation></message>

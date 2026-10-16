@@ -71,7 +71,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         SetStyleSheet(TrayTheme.StyleSheet);
         SetWindowIcon(TrayIcons.App);
         Resize(1000, 820);
-        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900, 720));
+        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900));
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         _heading = Plain("", "pageTitle");

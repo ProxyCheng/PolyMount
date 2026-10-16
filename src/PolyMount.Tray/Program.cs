@@ -296,12 +296,14 @@ internal static class Program
                 dashboard.Capture(Path.Combine(capture, "dashboard.png"));
                 dashboard.CaptureDetail(capture);
                 editor.Capture(Path.Combine(capture, "layers.png"));
-                stats.Capture(Path.Combine(capture, "stats.png"));
-                // The window above is the part of the page that fits on screen. These two are the
-                // whole of it: as a reader gets it, and with every section opened, which is the
-                // only way one picture can show a page taller than the window.
+                // Folded page first, then folded window, then the window again with the sections
+                // opened — and the expanded window *before* the expanded page, deliberately: the
+                // page capture lays the whole page out, which is a thing the live window never
+                // does for itself, so taking it first would hide exactly what this shot is for.
                 stats.CapturePage(Path.Combine(capture, "stats-page.png"));
+                stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.ExpandAll();
+                stats.Capture(Path.Combine(capture, "stats-expanded.png"));
                 stats.CapturePage(Path.Combine(capture, "stats-page-expanded.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
                 stats.CaptureCharts(capture);
@@ -337,7 +339,8 @@ internal static class Program
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.process.definition",
-                    "stats.layerUnknown", "stats.layerHeld", "stats.layerHeld.definition",
+                    "stats.layerUnknown", "stats.layerHeld.memory", "stats.layerHeld.disk",
+                    "stats.layerHeld.definition",
                     "stats.reconcile.bytes", "stats.reconcile.definition", "record.process",
                     "disable", "disable.done", "disable.tip", "enable.tip", "confirm.disable",
                     "stats.section.layers", "stats.section.layers.summary",
@@ -371,6 +374,7 @@ internal static class Program
                     VerifyInstanceStatus();
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
+                    stats.VerifyLayout();
                     stats.VerifyCharts();
                     stats.VerifyProcess();
                     stats.VerifyByteAccount();

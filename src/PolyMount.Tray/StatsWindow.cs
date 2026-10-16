@@ -37,7 +37,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// A process's memory cannot be split between layers, but this can: it is our own count of what
     /// each layer keeps, which is that layer's own share of the cost.</summary>
     private readonly List<HeldSecond> _heldHistory = new();
-    private readonly PerformanceChart _heldChart;
+    /// <summary>What the layers hold, in two cards: the memory they keep and the bytes they take on
+    /// disk. It was one card that added the two together, which hid which of them had moved — they
+    /// move for different reasons, a memory budget evicting against a disk budget filling up, and
+    /// the sum of them is a number with no budget behind it.</summary>
+    private readonly PerformanceChart _heldMemory, _heldDisk;
     private readonly QLabel _reconcile;
     private DateTime _lastHeld = DateTime.MinValue;
     private readonly PerformanceChart[] _processCharts;
@@ -97,7 +101,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<(string Key, string Name, string Color, long Held)>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
+    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -122,7 +126,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         Resize(1180, 960);
         // The page itself, kept because it is what a capture of the whole page is taken of: the
         // window shows the part of it that fits, and the scroll area is what shows the rest.
-        _page = WindowScrollArea.Create(this, 900, 900);
+        _page = WindowScrollArea.Create(this, 900);
         var root = new QVBoxLayout(_page);
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
@@ -203,12 +207,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
-        // A fifth card for what the layers keep: the other four are what they did, this is what they
-        // hold. It belongs beside them because it is their own number, not the process's, and it
-        // takes the whole of the last row: a fifth card in a two-column grid would otherwise leave
-        // the column beside it empty, and a chart is the one thing here that reads better wide.
-        _heldChart = new PerformanceChart("stats.layerHeld", "#7c3aed", "B", ChartSummary.Volume);
-        grid.AddWidget(_heldChart, _charts.Length / 2, 0, 1, 2);
+        // The next two cards for what the layers keep: the other four are what they did, these are
+        // what they hold. Two of them, because memory and disk have budgets of their own and it is
+        // worth seeing which one is filling — a single stack of both answers neither question.
+        _heldMemory = new PerformanceChart("stats.layerHeld.memory", "#7c3aed", "B", ChartSummary.Volume);
+        _heldDisk = new PerformanceChart("stats.layerHeld.disk", "#c026d3", "B", ChartSummary.Volume);
+        grid.AddWidget(_heldMemory, _charts.Length / 2, 0);
+        grid.AddWidget(_heldDisk, _charts.Length / 2, 1);
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
         if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
@@ -240,6 +245,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _table.SetVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);
         layerBody.AddWidget(_table);
         layerBody.AddWidget(Label("stats.layerBytes.definition", "muted"));
+        // What the two held-bytes cards above are counting. It belongs here, with the layer table,
+        // rather than under the cards themselves: a chart card carries a number and a line of
+        // legend, and a paragraph under it would be read once and then be in the way every second
+        // after that.
+        layerBody.AddWidget(Label("stats.layerHeld.definition", "muted"));
 
         // The machine's own account of the instance, next to VFS's account of it. The unit of these
         // is the process: one instance is one process, so nothing has to be attributed to a mount
@@ -352,13 +362,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         section.Save(Path.Combine(directory, "process.png"));
     }
 
-    /// <summary>The held-bytes card and the byte account, for a smoke run: they sit below the fold
-    /// of a 960 pixel window, the same way the process section does.</summary>
+    /// <summary>The two held-bytes cards, for a smoke run: they sit below the fold of a 960 pixel
+    /// window, the same way the process section does, and the byte account below them.</summary>
     internal void CaptureHeld(string directory)
     {
         _accountSection.SetExpanded(true);
-        using var card = _heldChart.Grab();
-        card.Save(Path.Combine(directory, "layer-held.png"));
+        using var memory = _heldMemory.Grab();
+        memory.Save(Path.Combine(directory, "layer-held.png"));
+        using var disk = _heldDisk.Grab();
+        disk.Save(Path.Combine(directory, "layer-held-disk.png"));
         using var line = _reconcile.Grab();
         line.Save(Path.Combine(directory, "reconcile.png"));
     }
@@ -445,6 +457,43 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException("The process figures do not report what was just read");
     }
 
+    /// <summary>The page has to be given at least the room its own layout asks for.
+    ///
+    /// It is checked because of how this fails: silently, and looking like a styling problem. A
+    /// scroll area sizes the page to the minimum it was told, and one told a number *below* what the
+    /// layout wants answers by squeezing the layout rather than scrolling. Measured before this
+    /// check existed: the page was pinned at 900 pixels against a layout that wanted more, and drew
+    /// chart cards 173 pixels tall inside a 210 pixel minimum — which put each card's axis labels
+    /// inside its own plot, while the top of the page, where the header and the recording bar are,
+    /// looked perfectly normal in a screenshot.
+    /// </summary>
+    internal void VerifyLayout()
+    {
+        if (_page.Layout() is not { } layout) return;
+        // Only the height is compared against what the layout asks for, and that comparison is the
+        // one that found a real defect: a page pinned at 900 pixels tall against a layout that
+        // wanted more, drawing chart cards 173 pixels tall inside a 210 pixel minimum, which put
+        // each card's axis labels inside its own plot.
+        //
+        // The width is deliberately not compared the same way. Measured while the sections were
+        // open, this page reported a minimum width of 2851 pixels in a state where nothing was
+        // horizontally squeezed: the layer table asks for the width of its contents while stretching
+        // into whatever width it is given — in the same run it drew 852 pixels wide and read
+        // perfectly. A number that is not a floor is not something to check against; what a real
+        // horizontal squeeze would look like is a card narrower than its own minimum, and that is
+        // checked below.
+        var needed = layout.MinimumSize();
+        if (_page.Height < needed.Height())
+            throw new InvalidOperationException(
+                $"The page is {_page.Height} pixels tall where its layout needs at least {needed.Height()}");
+        // The cards are where a squeeze shows, on either axis: nothing can be laid out smaller than
+        // its own minimum, so a card that is, is one the layout had no room for.
+        foreach (var chart in _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk))
+            if (chart.Height < chart.MinimumHeight || chart.Width < chart.MinimumWidth)
+                throw new InvalidOperationException(
+                    $"{chart.TitleKey} is {chart.Width}x{chart.Height}, under its own " +
+                    $"{chart.MinimumWidth}x{chart.MinimumHeight} minimum");
+    }
     /// <summary>The two byte cards draw an extra slice — whatever no layer accounts for — so that
     /// their stack adds up to what the operating system says the process moved. That is an invariant
     /// of the data rather than of the picture, so it is checked on the data: every period of every
@@ -825,41 +874,52 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>What every layer of this window's instances holds. The metrics describe what the
     /// layers did; what they keep is a status question, and for the "all instances" view it takes
     /// every instance's own answer rather than the supervisor's summary of them.</summary>
-    private List<(string Key, string Name, string Color, long Held)> Held()
+    private List<HeldRow> Held()
     {
         var status = _instanceName == null ? InstanceView.Status() : _client.Status();
-        var layers = new List<(string Key, string Name, string Color, long Held)>();
+        var layers = new List<HeldRow>();
         foreach (var mount in status.Mounts.Where(m => _instanceName == null || m.Name == _instanceName))
             foreach (var provider in mount.Providers)
                 if (provider.StorageUsage is { } usage)
-                    layers.Add((mount.Name + "/" + provider.Name,
+                    layers.Add(new HeldRow(mount.Name + "/" + provider.Name,
                         string.IsNullOrEmpty(provider.DisplayName) ? provider.Name : provider.DisplayName,
-                        provider.Color, usage.MemoryBytes + usage.DiskBytes));
+                        provider.Color, usage.MemoryBytes, usage.DiskBytes));
         return layers;
     }
 
-    /// <summary>The card for what the layers hold, drawn the way the other layer cards are: one
-    /// series per layer, in that layer's own color, from this window's own once-a-second readings.
-    /// </summary>
+    /// <summary>What the layers are holding, in two cards: the memory they keep and the bytes they
+    /// take on disk. Both are drawn the way the other layer cards are — one series per layer, in
+    /// that layer's own colour, from this window's own once-a-second readings — because they are one
+    /// reading split by where it lives, and two cards is what makes it visible which of the two has
+    /// just moved.</summary>
     private void RenderHeld(string selected)
     {
         DateTime end = _heldHistory.Count == 0 ? DateTime.UtcNow : _heldHistory[^1].Time;
         var rows = _heldHistory.Where(row => row.Time >= end.AddSeconds(-_rangeSeconds)).ToList();
-        var drawn = new List<ChartSeries>();
+        var drawn = new[] { new List<ChartSeries>(), new List<ChartSeries>() };
         if (_heldHistory.Count > 0)
-            foreach (var (key, name, color, _) in _heldHistory[^1].Layers)
+            foreach (var (key, name, color, _, _) in _heldHistory[^1].Layers)
             {
                 if (selected.Length > 0 && !key.StartsWith(selected + "/", StringComparison.Ordinal)) continue;
-                drawn.Add(new ChartSeries(selected.Length == 0 ? key : name,
-                    string.IsNullOrEmpty(color) ? "#7c3aed" : color,
-                    rows.Select(row => (row.Time, (double)row.Layers.FirstOrDefault(layer => layer.Key == key).Held)).ToList()));
+                string label = selected.Length == 0 ? key : name;
+                string seriesColor = string.IsNullOrEmpty(color) ? "#7c3aed" : color;
+                drawn[0].Add(new ChartSeries(label, seriesColor,
+                    rows.Select(row => (row.Time, (double)row.Layers.FirstOrDefault(layer => layer.Key == key).Memory)).ToList()));
+                drawn[1].Add(new ChartSeries(label, seriesColor,
+                    rows.Select(row => (row.Time, (double)row.Layers.FirstOrDefault(layer => layer.Key == key).Disk)).ToList()));
             }
-        double[] totals = rows.Select(row => (double)row.Layers.Where(layer =>
-            selected.Length == 0 || layer.Key.StartsWith(selected + "/", StringComparison.Ordinal)).Sum(layer => layer.Held)).ToArray();
-        _heldChart.SpanSeconds = _rangeSeconds;
-        _heldChart.GapSeconds = Math.Max(BreakSeconds, 3);
-        _heldChart.SetSeries(drawn, end, ChartStatistics.Of(totals));
-        _heldChart.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+        var cards = new[] { _heldMemory, _heldDisk };
+        for (int card = 0; card < cards.Length; card++)
+        {
+            int which = card;
+            double[] totals = rows.Select(row => (double)row.Layers
+                .Where(layer => selected.Length == 0 || layer.Key.StartsWith(selected + "/", StringComparison.Ordinal))
+                .Sum(layer => which == 0 ? layer.Memory : layer.Disk)).ToArray();
+            cards[card].SpanSeconds = _rangeSeconds;
+            cards[card].GapSeconds = Math.Max(BreakSeconds, 3);
+            cards[card].SetSeries(drawn[card], end, ChartStatistics.Of(totals));
+            cards[card].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+        }
     }
 
     /// <summary>What the process moved per second, as a step function of the readings taken once a
@@ -953,7 +1013,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     /// <summary>One reading of what every layer holds, with the names and colors the layer charts
     /// already use, so the card reads as part of that family rather than as its own thing.</summary>
-    private readonly record struct HeldSecond(DateTime Time, List<(string Key, string Name, string Color, long Held)> Layers);
+    /// <summary>One layer's holdings at one reading, split by where they live: the memory the layer
+    /// keeps and the bytes it takes on disk. Two numbers rather than one, because they are two
+    /// budgets — a memory budget evicting and a disk budget filling up are different things
+    /// happening, and their sum is a number nothing is bounded by.</summary>
+    private readonly record struct HeldRow(string Key, string Name, string Color, long Memory, long Disk);
+
+    private readonly record struct HeldSecond(DateTime Time, List<HeldRow> Layers);
 
     /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
     /// nothing is running the instance is still a reading — zeroes say the process is not there,

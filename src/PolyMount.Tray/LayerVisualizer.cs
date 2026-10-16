@@ -34,7 +34,7 @@ internal sealed class LayerVisualizer : QWidget
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "object.manageBoundary");
         Resize(700, 700);
-        var root = new QVBoxLayout(WindowScrollArea.Create(this, 640, 680));
+        var root = new QVBoxLayout(WindowScrollArea.Create(this, 640));
         root.SetContentsMargins(24, 24, 24, 20);
         var title = new QLabel();
         title.SetObjectName("pageTitle");

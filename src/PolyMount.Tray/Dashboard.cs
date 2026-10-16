@@ -48,7 +48,7 @@ internal sealed class Dashboard : QWidget
         shell.AddWidget(_tabs);
         var overviewPage = new QWidget();
         _tabs.Open("overview", () => overviewPage, () => T("overview"), pinned: true);
-        var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080, 720));
+        var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080));
         overviewPage.SetMinimumSize(0, 0);
         overviewPage.SetSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored);
         root.SetContentsMargins(0, 0, 0, 0);
