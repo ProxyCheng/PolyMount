@@ -1823,10 +1823,7 @@ internal sealed class PerformanceChart : QWidget
         _chart.Legend().SetLabelColor(new QColor("#334155"));
         _chart.Legend().SetFont(new QFont("Segoe UI", 8));
         _chart.Legend().SetMarkerShape(QLegend.MarkerShape.MarkerShapeCircle);
-        // What the chart keeps around its plot area: room at the left for the value axis' labels
-        // and at the top for the legend's row, both of which Qt lays out itself. A chart that keeps
-        // none clips the labels to an ellipsis and draws the legend over the plot.
-        _chart.SetMargins(new QMargins(46, 46, 10, 0));
+        _chart.SetMargins(new QMargins(0, 0, 0, 0));
         _chart.SetLocalizeNumbers(false);
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
         _valueAxis.SetLabelsColor(new QColor("#718096"));
@@ -2008,6 +2005,7 @@ internal sealed class PerformanceChart : QWidget
                     if (upper[index] > baseline[index]) baseline[index] = upper[index];
         }
         PlotNotes(domain);
+        PlaceChart();
     }
 
     /// <summary>The number format for the value axis' labels: as many decimals as the step the
@@ -2108,12 +2106,32 @@ internal sealed class PerformanceChart : QWidget
         var plot = _plot.Geometry;
         if (plot.X() != PlotInset || plot.Y() != HeaderHeight || plot.Width() != width || plot.Height() != height)
             _plot.SetGeometry(PlotInset, HeaderHeight, width, height);
+        PlaceChart();
+    }
+
+    /// <summary>What the chart keeps around its plot area, measured rather than guessed: the
+    /// widest label the value axis is about to print, one row of the legend above the plot, and a
+    /// little at the right. The chart draws its legend inside these margins and clips an axis whose
+    /// labels have none, so a card at its minimum and a card filling a maximised window both need
+    /// the numbers the same card would hold — which is why they are taken from the fonts here
+    /// instead of being fixed.</summary>
+    private void PlaceChart()
+    {
+        using var labelFont = new QFont("Segoe UI", 8);
+        using var metrics = new QFontMetrics(labelFont);
+        int widest = 0;
+        for (int index = 0; index <= _domain.GridLines; index++)
+            widest = Math.Max(widest, metrics.HorizontalAdvance(
+                TickText(_domain.Floor + ChartDomain.TickValue(index, _domain.Step), _domain.Step)));
+        int legend = _chart.Legend().IsVisible() ? metrics.Height() + 6 : 0;
+        _chart.SetMargins(new QMargins(widest + 12, legend + 6, 10, 0));
     }
 
     public override void ResizeEvent(QResizeEvent e)
     {
         base.ResizeEvent(e);
         PlacePlot();
+        PlaceChart();
         Plot();
     }
 
