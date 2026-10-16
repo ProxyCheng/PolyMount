@@ -377,6 +377,7 @@ internal static class Program
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
                     stats.VerifyCharts();
+                    stats.VerifyChartsModule(capture == null ? null : Path.Combine(capture, "charts-module.png"));
                     stats.VerifyHistories();
                     stats.VerifyProcess();
                     stats.VerifyByteAccount();

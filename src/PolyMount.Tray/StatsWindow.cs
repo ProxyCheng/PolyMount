@@ -770,6 +770,44 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>Smoke check: the chart summaries describe their samples, the charts carry the
     /// figures their metric is described by, and the layer table fits the rows it holds. None of
     /// it needs a running service.</summary>
+    /// <summary>Self-check for the charts module the cards are drawn with. It is a package of its
+    /// own — the binding, its native glue and Qt6Charts.dll beside the ones the core binding ships —
+    /// and a module that failed to load draws nothing rather than throwing, so what it drew is read
+    /// back here: a chart built off-screen, and the ink that came out of it.</summary>
+    internal void VerifyChartsModule(string? capture = null)
+    {
+        using var series = new QtSharp.Charts.QLineSeries();
+        series.SetName("module");
+        series.Append(0.0, 1.0);
+        series.Append(1.0, 4.0);
+        series.Append(2.0, 2.0);
+        if (series.Count() != 3) throw new InvalidOperationException("The charts module kept none of the points it was given");
+        using var chart = new QtSharp.Charts.QChart();
+        chart.AddSeries(series);
+        chart.CreateDefaultAxes();
+        if (chart.Axes().Length != 2)
+            throw new InvalidOperationException($"A chart built its own axes as {chart.Axes().Length} axes rather than two");
+        using var view = new QtSharp.Charts.QChartView(chart);
+        view.Resize(240, 160);
+        using var painted = view.Grab();
+        if (painted.Width() != 240 || painted.Height() != 160)
+            throw new InvalidOperationException($"A chart rendered {painted.Width()}x{painted.Height()} in a 240x160 view");
+        // A blank image is what a module that did not really load produces: the widget is there, the
+        // pen never reaches the canvas. The stroke is the series' own colour, so the count of
+        // pixels that are not the background is what is asked for.
+        using var rendered = painted.ToImage().ConvertToFormat(QImage.Format.Format_ARGB32);
+        int ink = 0;
+        for (int y = 0; y < rendered.Height(); y++)
+            for (int x = 0; x < rendered.Width(); x++)
+            {
+                using var pixel = rendered.PixelColor(x, y);
+                if (pixel.Alpha() > 0 && pixel.Red() + pixel.Green() + pixel.Blue() < 720) ink++;
+            }
+        if (capture != null) painted.Save(capture);
+        if (ink < 100)
+            throw new InvalidOperationException($"A chart drew {ink} pixels of ink, which is nothing a line through three points would leave");
+    }
+
     internal void VerifyCharts()
     {
         var stats = ChartStatistics.Of(new[] { 1.0, 2.0, 3.0, 4.0, 10.0 });

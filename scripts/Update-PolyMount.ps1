@@ -9,7 +9,12 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
-    [string]$PipeName = 'PolyMount.Control'
+    [string]$PipeName = 'PolyMount.Control',
+    # Publish and restart the tray alone, leaving the supervisor and every instance worker
+    # running: the mounts, their caches and whatever they are warming stay untouched. For a
+    # change that is the tray's own - a window, a chart - stopping the backend for it only
+    # costs the reader a remount.
+    [switch]$TrayOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -85,7 +90,7 @@ try {
     if (-not (Test-Path -LiteralPath $serviceProject) -or -not (Test-Path -LiteralPath $trayProject)) {
         throw "PolyMount projects were not found under $repo"
     }
-    if ($installed) {
+    if ($installed -and -not $TrayOnly) {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
         if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
@@ -96,6 +101,27 @@ try {
         if (-not [string]::Equals($registeredPath, $serviceExe, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Installed service points to $registeredPath. Select its matching build configuration instead of $Configuration."
         }
+    }
+
+    if ($TrayOnly) {
+        # Nothing here touches the service: it is not stopped, not published and not asked
+        # anything. The tray is the only process whose files this run replaces.
+        Write-Host '[1/2] Stopping the tray (the service keeps running)...'
+        Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue | Stop-Process
+        Start-Sleep -Milliseconds 500
+        Write-Host '[2/2] Publishing the tray...'
+        & dotnet publish $trayProject -c $Configuration --self-contained false -o $trayDir --nologo -v minimal
+        if ($LASTEXITCODE -ne 0) { throw "Publish failed: $trayProject. The service is untouched and still running." }
+        if (-not (Test-Path -LiteralPath $trayExe)) { throw 'Published tray executable was not found.' }
+        Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
+        try {
+            $status = Send-Control 'status'
+            Write-Host ("Tray-only update complete. The service answered with {0} instance(s) (unchanged)." -f @($status.Mounts).Count) -ForegroundColor Green
+        }
+        catch {
+            Write-Warning "Tray-only update complete, but the service did not answer ($($_.Exception.Message)). Start it, or run Update.bat without -TrayOnly."
+        }
+        exit 0
     }
 
     Write-Host "[1/3] Stopping PolyMount ($Configuration)..."
