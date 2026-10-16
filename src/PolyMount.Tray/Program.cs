@@ -330,8 +330,7 @@ internal static class Program
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.process.definition",
-                    "stats.process.io", "stats.process.io.read", "stats.process.io.write",
-                    "stats.layerHeld", "stats.layerHeld.definition",
+                    "stats.layerUnknown", "stats.layerHeld", "stats.layerHeld.definition",
                     "stats.reconcile.bytes", "stats.reconcile.definition", "record.process" })
                     if (I18n.T(key) == key) failure = "Qt resource translation lookup failed: " + key;
                 I18n.SetLanguage(original);
@@ -364,6 +363,7 @@ internal static class Program
                     stats.VerifyChartScale();
                     stats.VerifyCharts();
                     stats.VerifyProcess();
+                    stats.VerifyByteAccount();
                     stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));
                     stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
                     stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));

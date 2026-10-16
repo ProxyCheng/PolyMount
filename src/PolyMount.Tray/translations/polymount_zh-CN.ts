@@ -226,7 +226,7 @@
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。</translation>
+      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节，外加各层持有的字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。灰色斜纹那一层是「操作系统说进程搬了、而各层没记账」的部分——请求日志、缓存库、这个窗口读的管道，以及本套记账没有建模的东西；它可以是负的：文件被解析到大小却没真读，各层记的就比进程搬的多。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -1093,11 +1093,11 @@
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5} · 读 {6} · 写 {7}</translation>
+      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation>
     </message>
     <message>
       <source>stats.process.definition</source>
-      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。</translation>
+      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。进程搬了多少字节不在这里：那部分落在下面两张字节图上，作为「没有层为它记账」的那一片。</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1146,10 +1146,11 @@
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
+    <message><source>stats.layerUnknown</source><translation>未知 · 没有层为它记账</translation></message>
     <message><source>stats.layerHeld</source><translation>层持有字节 · 每层（内存 + 磁盘）</translation></message>
     <message><source>stats.layerHeld.definition</source><translation>每层当前占着的量：内存与磁盘字节，按层相加。进程的内存没法拆到层上——上面那组进程卡就是它的全部——但每层自己持有了多少是我们自己数的，是这个层自己的开销。</translation></message>
-    <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，未归因 {3}。</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>解析字节是各层答复的文件大小之和；传输字节是操作系统看到的、本进程读了写了的量。两者的差不是错误：里面有与挂载无关的 IO（日志、缓存库、通往这个窗口的管道），而源端在它自己进程里抓取的那些又不在其中。</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，没有层记账的 {3}。</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>解析字节是各层答复的文件大小之和；传输字节是操作系统看到的、本进程读了写了的量。两者的差已经画进字节图里那一片「未知」，所以摞起来的总和与系统记录一致。差在哪一边都不是错误：里面有与挂载无关的 IO，而源端在它自己进程里抓取的那些又不在其中。</translation></message>
     <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
     <message><source>stats.process.io.read</source><translation>读</translation></message>
     <message><source>stats.process.io.write</source><translation>写</translation></message>

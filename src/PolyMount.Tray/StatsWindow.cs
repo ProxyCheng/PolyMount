@@ -202,7 +202,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
             new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
-            new PerformanceChart("stats.process.io", "#0369a1", "B", ChartSummary.Volume),
             new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
             new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
         };
@@ -362,7 +361,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// </summary>
     internal void VerifyProcess()
     {
-        if (_processCharts.Length != 5) throw new InvalidOperationException("The process section does not carry its five cards");
+        if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
         foreach (var chart in _processCharts)
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
@@ -377,6 +376,36 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException($"A process reading came back empty: {last}");
         if (!_processFigures.Text.Contains(last.Threads.ToString(I18n.Culture), StringComparison.Ordinal))
             throw new InvalidOperationException("The process figures do not report what was just read");
+    }
+
+    /// <summary>The two byte cards draw an extra slice — whatever no layer accounts for — so that
+    /// their stack adds up to what the operating system says the process moved. That is an invariant
+    /// of the data rather than of the picture, so it is checked on the data: every period of every
+    /// series in the resolved-bytes and written-bytes cards, added up, has to be the process's own
+    /// rate for that period. It holds trivially when nothing moved, which is still the invariant.
+    /// </summary>
+    internal void VerifyByteAccount()
+    {
+        var reads = TransferRates(reads: true);
+        var writes = TransferRates(reads: false);
+        foreach (var (chart, rates) in new[] { (_charts[1], reads), (_charts[3], writes) })
+        {
+            var series = chart.Series;
+            if (series.Count == 0 || rates.Count == 0)
+                throw new InvalidOperationException("A byte card is not drawing the process's own transfer rate");
+            if (!series.Any(item => item.Name == T("stats.layerUnknown")))
+                throw new InvalidOperationException("A byte card is missing the slice no layer accounts for: " + string.Join(", ", series.Select(item => item.Name)));
+            int points = series[0].Samples.Count;
+            for (int i = 0; i < points; i++)
+            {
+                DateTime at = series[0].Samples[i].Time;
+                double stacked = series.Sum(item => item.Samples[i].Value);
+                double moved = At(rates, at);
+                if (Math.Abs(stacked - moved) > Math.Max(1, moved * 0.001))
+                    throw new InvalidOperationException(
+                        $"The byte card under {chart.TitleKey} stacks to {stacked:0.#} where the process moved {moved:0.#} at {at:HH:mm:ss.fff}");
+            }
+        }
     }
 
     internal void SmokeRecordingStartAndDiscard(string? capture = null) => _recording?.SmokeStartAndDiscard(capture);
@@ -761,6 +790,37 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _heldChart.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
     }
 
+    /// <summary>What the process moved per second, as a step function of the readings taken once a
+    /// second: a chart point between two readings is answered with the rate of the interval it is
+    /// in. A counter that went backwards is a worker that was replaced, and that interval has no
+    /// rate to report.</summary>
+    private List<(DateTime Time, double Rate)> TransferRates(bool reads)
+    {
+        var rates = new List<(DateTime, double)>();
+        for (int i = 1; i < _processHistory.Count; i++)
+        {
+            var (previous, current) = (_processHistory[i - 1], _processHistory[i]);
+            double elapsed = (current.Time - previous.Time).TotalSeconds;
+            long now = reads ? current.ReadBytes : current.WriteBytes;
+            long before = reads ? previous.ReadBytes : previous.WriteBytes;
+            if (elapsed <= 0 || now < before) continue;
+            rates.Add((current.Time, (now - before) / elapsed));
+        }
+        return rates;
+    }
+
+    /// <summary>The rate in force at a moment: the last one measured at or before it.</summary>
+    private static double At(List<(DateTime Time, double Rate)> rates, DateTime time)
+    {
+        double value = 0;
+        foreach (var (at, rate) in rates)
+        {
+            if (at > time) break;
+            value = rate;
+        }
+        return value;
+    }
+
     /// <summary>The two counts that describe bytes, and the difference between them. The layers
     /// report the sizes of the files they resolved, which is our own bookkeeping; the process
     /// reports what it actually moved, which is the operating system's. They answer different
@@ -825,24 +885,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private void RenderProcess()
     {
         DateTime end = _processHistory.Count == 0 ? DateTime.UtcNow : _processHistory[^1].Time;
-        // The transfer counters are totals for the process's whole life, so the card is drawn as
-        // the rate between consecutive rows — over the interval those two rows actually span, which
-        // is what makes it read the same at any refresh rate.
-        var read = new List<(DateTime, double)>();
-        var written = new List<(DateTime, double)>();
-        for (int i = 1; i < _processHistory.Count; i++)
-        {
-            var (previous, current) = (_processHistory[i - 1], _processHistory[i]);
-            double elapsed = (current.Time - previous.Time).TotalSeconds;
-            if (elapsed <= 0) continue;
-            read.Add((current.Time, Math.Max(0, current.ReadBytes - previous.ReadBytes) / elapsed));
-            written.Add((current.Time, Math.Max(0, current.WriteBytes - previous.WriteBytes) / elapsed));
-        }
         var series = new List<ChartSeries>[]
         {
             new() { new(T("stats.process.cpu"), "#0f766e", _processHistory.Select(second => (second.Time, second.Cores)).ToList()) },
             new() { new(T("stats.process.memory"), "#b45309", _processHistory.Select(second => (second.Time, (double)second.WorkingSet)).ToList()) },
-            new() { new(T("stats.process.io.read"), "#0369a1", read), new(T("stats.process.io.write"), "#0891b2", written) },
             new() { new(T("stats.process.threads"), "#475569", _processHistory.Select(second => (second.Time, (double)second.Threads)).ToList()) },
             new() { new(T("stats.process.handles"), "#64748b", _processHistory.Select(second => (second.Time, (double)second.Handles)).ToList()) }
         };
@@ -857,7 +903,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var last = _processHistory[^1];
         _processFigures.SetText(I18n.F("stats.process.figures",
             _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private),
-            last.Threads, last.Handles, ByteUnits.Format(last.ReadBytes), ByteUnits.Format(last.WriteBytes)));
+            last.Threads, last.Handles));
     }
 
     /// <summary>Takes a 60-second window: the table, the pie, the legend, and the layer list the
@@ -965,6 +1011,23 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     double step = layer == null ? 0 : metric == 0 ? layer.Wasted : layer.WastedBytes;
                     return (s.Time, -step / Rate(s));
                 }).ToList()) { Hatched = true });
+            }
+            // The transfer counters are a third opinion on the same window, and the layer account
+            // is short of them by everything no layer answered for: the request log and the cache
+            // database, the pipe this window reads, and bytes this account does not model. That
+            // shortfall is drawn as a layer of its own, so the stack adds up to what the operating
+            // system recorded. It is signed: a file whose size was resolved but never read leaves
+            // the layers accounting for more than the process moved, and then the slice is the
+            // correction rather than an addition.
+            if (metric is 1 or 3 && drawn.Count > 0)
+            {
+                var transfer = TransferRates(reads: metric == 1);
+                if (transfer.Count > 0)
+                {
+                    var unknown = points.Select((point, i) =>
+                        (point.Time, At(transfer, point.Time) - drawn.Sum(series => series.Samples[i].Value))).ToList();
+                    drawn.Add(new ChartSeries(T("stats.layerUnknown"), "#94a3b8", unknown) { Hatched = true });
+                }
             }
             _charts[chart].SpanSeconds = _rangeSeconds;
             // A gap is what the drawing cannot join: bucketed points are further apart than the
@@ -1241,6 +1304,10 @@ internal sealed class PerformanceChart : QWidget
     private readonly ChartFigure[] _figures;
     private DateTime _end;
     private List<ChartSeries> _series = new();
+
+    /// <summary>What this card is drawing, for the smoke run's check that the byte cards add up to
+    /// what the operating system recorded.</summary>
+    internal IReadOnlyList<ChartSeries> Series => _series;
     private ChartStatistics _stats;
     public PerformanceChart(string titleKey, string color, string unit, ChartSummary summary)
     {

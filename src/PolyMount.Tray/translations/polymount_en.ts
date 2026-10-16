@@ -226,7 +226,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>Charts show read requests per second, resolved read bytes per second, average read-resolution time and written bytes per second. Each figure is a rate over the interval between samples, so it reads the same at any refresh rate. Resolved read bytes count file sizes resolved by VFS, not physical disk throughput. Layer contributions stack; latency is request-weighted. Byte units scale automatically (1024 per unit).</translation>
+      <translation>Charts show read requests, resolved read bytes, average read-resolution time and written bytes in the last second, plus what the layers hold. Every figure is the rate over the interval between two samples, so changing the refresh rate does not change what it reads. Resolved read bytes count the file sizes VFS resolved, not physical disk throughput. Layer contributions stack; latency is request-weighted; byte units scale automatically (1024 per unit). The grey hatched slice is what the operating system says the process moved beyond what the layers account for — the log, the cache database, the pipe this window reads, and what this account does not model. It can be negative: a file whose size was resolved but never read leaves the layers accounting for more than the process moved.</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -1093,11 +1093,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles · read {6} · written {7}</translation>
+      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles</translation>
     </message>
     <message>
       <source>stats.process.definition</source>
-      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent.</translation>
+      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent. What the process moved is not here: it is drawn in the two byte charts, as the part of them no layer accounts for.</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1146,10 +1146,11 @@ Close applications using mounted files first.</translation>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
+    <message><source>stats.layerUnknown</source><translation>Unknown · no layer accounts for it</translation></message>
     <message><source>stats.layerHeld</source><translation>Bytes held · Per layer (memory + disk)</translation></message>
     <message><source>stats.layerHeld.definition</source><translation>What each layer is holding: its memory and the bytes it takes on disk, summed per layer. A process's memory cannot be split between layers — the process cards above are the whole of it — but what a layer keeps is our own count and is that layer's own cost.</translation></message>
-    <message><source>stats.reconcile.bytes</source><translation>Byte account · last {0} s: the process moved {1}, the layers resolved {2} — unattributed {3}.</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>Resolved bytes are the sizes of the files the layers answered with; transferred bytes are what the operating system saw this process read and write. The difference is not an error: it holds IO that belongs to no mount (logs, the cache database, the pipe to this window) and misses whatever the source fetched in a process of its own.</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>Byte account · last {0} s: the process moved {1}, the layers resolved {2} — no layer accounts for {3}.</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>Resolved bytes are the sizes of the files the layers answered with; transferred bytes are what the operating system saw this process read and write. The difference is drawn into the byte charts as the unknown slice, so the stack adds up to what the system recorded. It is not an error either way: it holds IO that belongs to no mount, and it misses whatever the source fetched in a process of its own.</translation></message>
     <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
     <message><source>stats.process.io.read</source><translation>Read</translation></message>
     <message><source>stats.process.io.write</source><translation>Written</translation></message>
