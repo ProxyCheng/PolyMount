@@ -131,12 +131,12 @@
       <translation>写入来源</translation>
     </message>
     <message>
-      <source>stats.access.readsProcesses</source>
-      <translation>读取进程</translation>
+      <source>stats.access.byLayer</source>
+      <translation>按层</translation>
     </message>
     <message>
-      <source>stats.access.writesProcesses</source>
-      <translation>写入进程</translation>
+      <source>stats.access.byProcess</source>
+      <translation>按进程</translation>
     </message>
     <message>
       <source>stats.access.other</source>

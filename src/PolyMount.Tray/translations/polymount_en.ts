@@ -131,12 +131,12 @@
       <translation>Writes by layer</translation>
     </message>
     <message>
-      <source>stats.access.readsProcesses</source>
-      <translation>Reads by process</translation>
+      <source>stats.access.byLayer</source>
+      <translation>by layer</translation>
     </message>
     <message>
-      <source>stats.access.writesProcesses</source>
-      <translation>Writes by process</translation>
+      <source>stats.access.byProcess</source>
+      <translation>by process</translation>
     </message>
     <message>
       <source>stats.access.other</source>
