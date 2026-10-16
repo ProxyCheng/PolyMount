@@ -6,6 +6,8 @@ namespace PolyMount.Core;
 public sealed class VirtualFileSystem
 {
     private readonly List<ILayer> _layers;
+    /// <summary>The trace name of each layer, per kind of operation, in layer order.</summary>
+    private readonly string[] _getEntry, _readObject, _probe;
     // Only mutations coordinate parent snapshot updates. Provider reads never
     // take this lock, including network-backed metadata and directory queries.
     private readonly object _mutationGate = new();
@@ -13,7 +15,16 @@ public sealed class VirtualFileSystem
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>> _resolutions = new();
     private long _resolutionEpoch;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
-    public VirtualFileSystem(IEnumerable<ILayer> layers) => _layers = layers.ToList();
+    public VirtualFileSystem(IEnumerable<ILayer> layers)
+    {
+        _layers = layers.ToList();
+        // The names a trace line carries for a layer, built once per layer: a probe is the most
+        // frequent operation there is, and `"Layer.GetEntry:" + name` at the call site allocates a
+        // string for every one of them - including the ones the sampling rule drops unread.
+        _getEntry = _layers.Select(layer => "Layer.GetEntry:" + layer.Name).ToArray();
+        _readObject = _layers.Select(layer => "Layer.ReadObject:" + layer.Name).ToArray();
+        _probe = _layers.Select(layer => "Layer.Probe:" + layer.Name).ToArray();
+    }
     public IReadOnlyList<ILayer> Layers => _layers;
     public bool Writable => _layers.Any(l => l.Writable);
     public MetricsCollector? Metrics { get; set; }
@@ -47,7 +58,7 @@ public sealed class VirtualFileSystem
         long epoch = Interlocked.Read(ref _resolutionEpoch);
         for (index = 0; index < _layers.Count; index++)
         {
-            using var request = RequestDiagnostics.Begin("Layer.ReadObject:" + _layers[index].Name, path);
+            using var request = RequestDiagnostics.Begin(_readObject[index], path);
             if (!((IObjectLayer)_layers[index]).TryReadObject(path, out value!)) continue;
             TouchBelow(path, index);
             if (fill && value.Header.IsDir)
@@ -88,7 +99,7 @@ public sealed class VirtualFileSystem
     {
         for (index = 0; index < (limit ?? _layers.Count); index++)
         {
-            using var request = RequestDiagnostics.Begin("Layer.GetEntry:" + _layers[index].Name, path);
+            using var request = RequestDiagnostics.Begin(_getEntry[index], path);
             if (!_layers[index].TryGetEntry(path, out entry!)) continue;
             TouchBelow(path, index);
             return true;
@@ -196,7 +207,9 @@ public sealed class VirtualFileSystem
             for (int i = 0; i < _layers.Count; i++)
             {
                 var layer = _layers[i];
-                request?.Stage("opening content: " + layer.Name);
+                // Named only when there is a scope to name it on: `request?.Stage("..." + name)`
+                // builds the string whatever request is, which is the cost this avoids.
+                if (request != null) request.Stage("opening content: " + layer.Name);
                 if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
                 TouchBelow(path, i);
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
@@ -470,7 +483,7 @@ public sealed class VirtualFileSystem
         ResolveHeader(path, out _, out int effective);
         return _layers.Select((layer, index) =>
         {
-            using var layerRequest = RequestDiagnostics.Begin("Layer.Probe:" + layer.Name, path);
+            using var layerRequest = RequestDiagnostics.Begin(_probe[index], path);
             bool exists = layer.TryGetEntry(path, out var header);
             return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header.IsDir,
                 Size = exists ? header.Size : 0, Effective = visible && exists && index == effective,

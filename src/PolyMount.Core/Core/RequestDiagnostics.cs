@@ -150,7 +150,10 @@ public sealed class RequestDiagnostics : IDisposable
         internal Scope(RequestDiagnostics owner, Scope? parent, string operation, string path, int processId, bool suppressed)
         {
             _owner = owner; _parent = parent; _operation = operation; _suppressed = suppressed;
-            _path = path.Replace('\r', ' ').Replace('\n', ' ');
+            // Kept as it was given: two Replace calls allocate two strings, and a scope is built
+            // for every request while a line is written about a tiny fraction of them. The newline
+            // an operation path must never contain is removed where the line is made, below.
+            _path = path;
             // A scope the sampling rule would have discarded takes its id from a range of its own.
             // Sharing the sequence would let attaching a recording shift which root requests the
             // 1/128 draw picks, and two exports taken either side of a recording would no longer
@@ -169,10 +172,13 @@ public sealed class RequestDiagnostics : IDisposable
         internal void Emit(string kind)
         {
             if (_suppressed || !(kind == "PENDING" || Trace || (kind == "END" && ElapsedMs >= 100))) return;
+            // Sanitised here rather than when the scope was built: a path with a newline in it is
+            // the rare case, and this runs for the rare case.
+            string path = _path.AsSpan().IndexOfAny('\r', '\n') < 0 ? _path : _path.Replace('\r', ' ').Replace('\n', ' ');
             object?[] args =
             {
                 kind, Id, _parent?._owner == _owner ? _parent.Id : 0, _thread,
-                ProcessId, _operation, _path, ElapsedMs, Volatile.Read(ref _stage)
+                ProcessId, _operation, path, ElapsedMs, Volatile.Read(ref _stage)
             };
             _owner._logger.Information(LineTemplate, args);
         }

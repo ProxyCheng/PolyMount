@@ -119,7 +119,61 @@ if (args.Contains("--diagnostics-cost"))
         watch.Stop();
         allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         Console.WriteLine($"list + layer probe, {(recording ? "recording" : "idle     "),-10}: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
+
+        // The probe's own name. A probe is the most frequent operation there is, so how the caller
+        // spells its name matters more than anything inside the scope: concatenating it at the call
+        // site builds a string for every probe, including the ones the rule drops unread, while
+        // keeping one string per layer builds none.
+        string layer = "memory-cache";
+        for (int i = 0; i < 100_000; i++) { using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics); using var probe = RequestDiagnostics.Begin("Layer.GetEntry:" + layer, path, diagnostics); }
+        before = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        for (int i = 0; i < count; i++)
+        {
+            using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics);
+            using var probe = RequestDiagnostics.Begin("Layer.GetEntry:" + layer, path, diagnostics);
+        }
+        watch.Stop();
+        allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"probe, name built per call: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
+
+        string kept = "Layer.GetEntry:" + layer;
+        for (int i = 0; i < 100_000; i++) { using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics); using var probe = RequestDiagnostics.Begin(kept, path, diagnostics); }
+        before = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        for (int i = 0; i < count; i++)
+        {
+            using var outer = RequestDiagnostics.Begin("VFS.List", path, diagnostics);
+            using var probe = RequestDiagnostics.Begin(kept, path, diagnostics);
+        }
+        watch.Stop();
+        allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Console.WriteLine($"probe, name kept per layer: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
     }
+    // What is left of the scope's cost once nothing is written: the object itself, the stopwatch
+    // inside it, the entry in the active map, and the ambient marker. The last one is measured on
+    // its own because it is the part that is easy to overlook - an AsyncLocal write copies the
+    // execution context, which is an allocation, and a scope does it twice.
+    const int markerCount = 1_000_000;
+    var ambient = new AsyncLocal<object?>();
+    var value = new object();
+    for (int i = 0; i < 100_000; i++) { ambient.Value = value; ambient.Value = null; }
+    long beforeMarker = GC.GetAllocatedBytesForCurrentThread();
+    var markerWatch = System.Diagnostics.Stopwatch.StartNew();
+    for (int i = 0; i < markerCount; i++) { ambient.Value = value; ambient.Value = null; }
+    markerWatch.Stop();
+    long markerBytes = GC.GetAllocatedBytesForCurrentThread() - beforeMarker;
+    Console.WriteLine($"ambient marker, set+clear: {markerWatch.Elapsed.TotalNanoseconds / markerCount:0.0} ns/call, {markerBytes / (double)markerCount:0.0} B/call allocated");
+
+    var plain = new Stopwatch();
+    for (int i = 0; i < 100_000; i++) { plain = Stopwatch.StartNew(); }
+    long beforeWatch = GC.GetAllocatedBytesForCurrentThread();
+    var stopwatchWatch = System.Diagnostics.Stopwatch.StartNew();
+    for (int i = 0; i < markerCount; i++) { plain = Stopwatch.StartNew(); }
+    stopwatchWatch.Stop();
+    long watchBytes = GC.GetAllocatedBytesForCurrentThread() - beforeWatch;
+    Console.WriteLine($"a stopwatch per call    : {stopwatchWatch.Elapsed.TotalNanoseconds / markerCount:0.0} ns/call, {watchBytes / (double)markerCount:0.0} B/call allocated");
+    GC.KeepAlive(plain);
     try { Directory.Delete(benchRoot, true); } catch (IOException) { }
     return 0;
 }
