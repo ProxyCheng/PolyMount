@@ -1959,7 +1959,15 @@ internal sealed class PerformanceChart : QWidget
         // pixels on every side, and measured, that is exactly what a card was paying for nothing —
         // the same chart in the same rectangle drew a plot 40 pixels wider and 40 taller with this
         // set to nothing, which is a fifth of the card's height handed to no one.
-        _chart.SetMargins(new QMargins(0, 0, 0, 0));
+        // What the chart keeps around its plot is its own business: it makes room for its axis
+        // labels and holds the margins it is given to as a floor, so asking for none still leaves
+        // about twenty pixels a side of its own padding — measured, that padding is most of what a
+        // reader sees between the plot and the card. It is a floor rather than a cap, and a negative
+        // margin is how a card takes half of it back: measured on a card of 418x280, the plot goes
+        // from 338x115 to 358x139, the ink beside it from 19 and 18 pixels off the edges to 9, and
+        // the white under the legend from 27 pixels to 15. What is left is still Qt's: the labels
+        // sit in it, and the label area under the plot needs the eighteen pixels that remain.
+        _chart.SetMargins(new QMargins(-10, -12, -10, -12));
         // The legend is the chart's own, under the plot where Qt puts it: one row of the series'
         // names, wrapped and cut off by the chart. It costs the plot the height of that row, and
         // nothing else does — drawing that row here as well meant three things had to agree about
