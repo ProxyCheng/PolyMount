@@ -418,11 +418,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             var cache = new List<(DateTime Time, double Value)>();
             var svn = new List<(DateTime Time, double Value)>();
             double step = Math.Max(1, span / 600);
-            // Started one sample inside the window rather than exactly on its edge, which is where a
-            // real history leaves it — the trim keeps the window's worth of observations and no
-            // more — and which is the case the left-edge rule exists for. Started on the edge, the
-            // rule does nothing and this capture would not test it.
-            for (double back = span - step; back >= 0; back -= step)
+            for (double back = span; back >= 0; back -= step)
             {
                 double wave = Math.Sin(back / 7.0);
                 cache.Add((end.AddSeconds(-back), 6.0 + wave * 3.0));
@@ -673,11 +669,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
-        // A line whose oldest observation sits inside the window still starts at the window's
-        // edge, and a line whose window was never covered starts where its observations do.
-        if (PerformanceChart.StartX(40, 96, coversWindow: true) != 40 ||
-            PerformanceChart.StartX(40, 96, coversWindow: false) != 96)
-            throw new InvalidOperationException("Chart lines no longer begin at the window's left edge");
         // The layer table carries every layer: no second scrollbar and no row outside the widget.
         if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
@@ -1740,22 +1731,6 @@ internal sealed class PerformanceChart : QWidget
         return 0;
     }
 
-    /// <summary>Where a run of observations begins on the x axis.
-    ///
-    /// <paramref name="coversWindow"/> says whether this run's oldest observation is close enough to
-    /// the window's left edge that the difference is the sampling rather than an absence of data.
-    /// When it is, the run is drawn from the edge: the history holds the window's worth of
-    /// observations and no more, so its oldest is always between nothing and one sampling interval
-    /// *inside* the edge, and a line drawn from where it really is began short of the edge by a gap
-    /// that widened and narrowed every time an observation aged out — at two seconds a sample, a
-    /// twentieth of the chart, and moving.
-    ///
-    /// When it is not, the run keeps its own x. That observation is a minute inside the edge because
-    /// nothing was measured before it — a page that has just opened, a window that was paused, a
-    /// sample that never came — and drawing from the edge would be a flat line across a width
-    /// nothing was ever measured over.</summary>
-    internal static double StartX(double left, double actual, bool coversWindow) => coversWindow ? left : actual;
-
     /// <summary>What the card is showing, for the export and its own smoke check.</summary>
     internal string TitleKey => _titleKey;
     internal string Unit => _unit;
@@ -1878,21 +1853,10 @@ internal sealed class PerformanceChart : QWidget
                 {
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
-                // Only the run that starts the series, and only when its oldest observation is
-                // inside the edge by no more than the gap the drawing already joins across; see
-                // StartX for why both halves of that are needed.
-                bool coversWindow = start == 0 && (_end - times[start]).TotalSeconds >= SpanSeconds - GapSeconds;
-                double edge = StartX(left, X(times[start]), coversWindow);
                 using var fill = new QPainterPath();
-                fill.MoveTo(edge, Y(lower[start]));
-                // Up the left side to the top before the top edge begins. Without this the top edge
-                // is drawn from the baseline at the edge straight to the second observation, which
-                // leaves a triangle of nothing where the first observation's contribution is — and
-                // reads as the series starting at zero.
-                fill.LineTo(edge, Y(upper[start]));
-                for (int index = start + 1; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
-                for (int index = finish - 1; index > start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
-                fill.LineTo(edge, Y(lower[start]));
+                fill.MoveTo(X(times[start]), Y(lower[start]));
+                for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
+                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
                 fill.CloseSubpath();
                 using var fillColor = new QColor(series.Color);
                 fillColor.SetAlpha(155);
@@ -1906,7 +1870,7 @@ internal sealed class PerformanceChart : QWidget
                 else p.SetBrush(new QBrush(fillColor));
                 p.DrawPath(fill);
                 using var line = new QPainterPath();
-                line.MoveTo(edge, Y(upper[start]));
+                line.MoveTo(X(times[start]), Y(upper[start]));
                 for (int index = start + 1; index < finish; index++) line.LineTo(X(times[index]), Y(upper[index]));
                 using var pen = new QPen(new QColor(series.Color));
                 if (series.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
