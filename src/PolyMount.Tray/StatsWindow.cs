@@ -836,13 +836,31 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             foreach (var (key, layer) in sample.Layers)
                 if (selected.Length == 0 || key.StartsWith(selected + "/", StringComparison.Ordinal))
                     served += (long)layer.Bytes;
-        if (_processHistory.Count == 0) { _reconcile.SetText(""); return; }
-        var first = _processHistory[0];
-        var last = _processHistory[^1];
-        long moved = Math.Max(0, last.ReadBytes + last.WriteBytes - first.ReadBytes - first.WriteBytes);
-        double seconds = Math.Max(1, (last.Time - first.Time).TotalSeconds);
-        _reconcile.SetText(I18n.F("stats.reconcile.bytes", (long)Math.Round(seconds),
-            ByteUnits.Format(moved), ByteUnits.Format(served), ByteUnits.Format(moved - served)));
+
+        // The wall-clock row: what the requests took, against what the layers were charged for.
+        // A request no layer answered for is charged to nobody, so the difference is made of those
+        // — the negative lookups an application produces by asking for files it may not have — and
+        // of the paths whose time is not recorded per layer.
+        var access = _accessMetrics.Where(m => selected.Length == 0 || m.Mount == selected).ToList();
+        var lines = new List<string>();
+        if (access.Count > 0)
+        {
+            double requests = access.Sum(m => m.RequestMs);
+            double layers = access.Sum(m => m.Layers.Sum(l => l.AvgCostMs * l.Hits));
+            lines.Add(I18n.F("stats.reconcile.wall", access.Max(m => m.MeasuredSeconds),
+                requests, layers, requests - layers));
+        }
+
+        if (_processHistory.Count > 1)
+        {
+            var first = _processHistory[0];
+            var last = _processHistory[^1];
+            long moved = Math.Max(0, last.ReadBytes + last.WriteBytes - first.ReadBytes - first.WriteBytes);
+            double seconds = Math.Max(1, (last.Time - first.Time).TotalSeconds);
+            lines.Add(I18n.F("stats.reconcile.bytes", (long)Math.Round(seconds),
+                ByteUnits.Format(moved), ByteUnits.Format(served), ByteUnits.Format(moved - served)));
+        }
+        _reconcile.SetText(string.Join("\n", lines));
     }
 
     /// <summary>One window of read analytics: the instance's own process answers for itself, and
