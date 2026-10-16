@@ -208,6 +208,10 @@ int engineFiles = int.Parse(Option("--engine-files", "16"));
 int engineRounds = int.Parse(Option("--engine-rounds", "2"));
 int remoteDelayMs = int.Parse(Option("--remote-delay-ms", "5"));
 bool engineOnly = args.Contains("--engine-only");
+// Which collector the process is running under, said out loud: a run's numbers are only
+// comparable to another run's when this line matches. DOTNET_gcServer=1 is how the other mode is
+// asked for, and a comparison that did not say which one it measured is not a comparison.
+Console.WriteLine($"GC: server={System.Runtime.GCSettings.IsServerGC} latencyMode={System.Runtime.GCSettings.LatencyMode} heapHardLimit={(System.AppContext.GetData("GCHeapHardLimit") ?? "none")}");
 bool breakdown = args.Contains("--engine-breakdown");
 if (engineDirectories <= 0 || engineFiles <= 0 || engineRounds <= 0 || remoteDelayMs < 0) throw new ArgumentException("Invalid engine workload sizes");
 if (repeats <= 0 || fileMb <= 0 || smallFiles <= 0 || workers.Any(w => w <= 0)) throw new ArgumentException("All workload sizes must be positive");
