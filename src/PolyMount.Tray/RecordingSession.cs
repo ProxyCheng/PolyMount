@@ -21,7 +21,7 @@ internal enum RecordingState
 /// <summary>What one poll produced, read by the page on the UI thread. The page reaches into the
 /// session for nothing a drawing needs.</summary>
 internal sealed record RecordingPulse(RecordingState State, string? Note, DateTime Time, double RequestMs,
-    LayerSampler.Sample? Sample, IReadOnlyList<MountMetrics> Metrics, ServiceProcessReading? Process,
+    LayerSampler.Sample? Sample, IReadOnlyList<MountMetrics> Metrics, ProcessReading Process,
     long RequestBytes, long RequestLines, long ServiceBytes, long ServiceLines, long SampleRows,
     long SecondRows, RecordingCounts? Counts, int Restarts, IReadOnlyList<TailGap> Gaps,
     IReadOnlyList<LayerTotalRecord> Totals, string? Error);
@@ -72,10 +72,11 @@ internal sealed class RecordingSession
     /// every few megabytes under load, so the segments are matched again on each pass.</summary>
     private string _detailDirectory = "", _serviceLogPattern = "", _instanceLogPattern = "", _serviceSessionId = "";
     private RecordingCounts? _counts;
-    /// <summary>The process serving this instance. Every instance has one of its own, so the cost
+    /// <summary>The process serving this instance: every instance has one of its own, so the cost
     /// the recording collects is that process's cost and no thread has to be attributed to a mount.
-    /// It changes only if the worker is restarted, so it is re-read with the recording status.</summary>
-    private int _workerPid;
+    /// It is the same sampler the performance window uses, so the two cannot report different
+    /// numbers for the same instance.</summary>
+    private readonly InstanceProcess _process;
     private int _restarts;
     private string? _note, _error;
 
@@ -85,6 +86,7 @@ internal sealed class RecordingSession
         // A session is a conversation with one instance, and it is that instance's own process
         // that counts what it serves: the session holds it for as long as it runs.
         _client = InstanceDirectory.ClientFor(mount);
+        _process = new InstanceProcess(mount);
         WorkingDirectory = workingDirectory;
         StartedUtc = DateTime.UtcNow;
         // The copies live under one subtree of their own, because that subtree becomes the
@@ -167,7 +169,7 @@ internal sealed class RecordingSession
     {
         // The instance's own process: a reading of "the service" would now be whichever worker
         // happened to have started last, which is another instance's number dressed as this one's.
-        var process = ServiceProcessReading.For(_workerPid);
+        var process = _process.Read();
         double requestMs = 0;
         try
         {
@@ -215,7 +217,6 @@ internal sealed class RecordingSession
         if (info.Active && info.SessionId == ServiceSessionId)
         {
             Remember(info);
-            RememberWorker();
             return;
         }
         if (info.Active)
@@ -258,22 +259,8 @@ internal sealed class RecordingSession
             if (State is RecordingState.Unreachable or RecordingState.Stopped) State = RecordingState.Recording;
         }
         Remember(info);
-        RememberWorker();
     }
 
-    /// <summary>Learns which process serves this instance. The supervisor is the one that knows:
-    /// a worker reports what its mount is doing, not which process it is. A failure leaves the last
-    /// one — an unreadable pid is not a reason to attribute this instance's cost to another.</summary>
-    private void RememberWorker()
-    {
-        try
-        {
-            var status = SupervisorClient.Default.Status();
-            if (status.Mounts.FirstOrDefault(m => string.Equals(m.Name, Mount, StringComparison.OrdinalIgnoreCase)) is { WorkerPid: > 0 } row)
-                lock (_gate) _workerPid = row.WorkerPid;
-        }
-        catch (Exception) { }
-    }
 
     private void Remember(RecordingSessionInfo info)
     {
@@ -329,7 +316,7 @@ internal sealed class RecordingSession
         catch (IOException) { return Array.Empty<string>(); }
     }
 
-    private void Accept(DateTime utcNow, List<MountMetrics> metrics, ServiceProcessReading? process, double requestMs)
+    private void Accept(DateTime utcNow, List<MountMetrics> metrics, ProcessReading process, double requestMs)
     {
         var sample = LayerSampler.Capture(utcNow, metrics, LayerSampler.Steps(utcNow, metrics, _wasteSteps, 3));
         double reads = sample.Layers.Values.Sum(layer => layer.Reads);
@@ -367,8 +354,8 @@ internal sealed class RecordingSession
             _writeSeries.Add(writes);
             _overhead.Add(requestMs);
             _seconds.Add(new SecondRecord(utcNow, reads, bytes, cost, writes, requestMs, 0, 0,
-                process?.CpuSeconds ?? 0, process?.WorkingSetBytes ?? 0, process?.PrivateBytes ?? 0,
-                process?.Threads ?? 0, process?.Handles ?? 0, process?.Id ?? _workerPid));
+                process.CpuSeconds, process.WorkingSetBytes, process.PrivateBytes,
+                process.Threads, process.Handles, process.Pid));
             _lastSample = sample;
             _lastMetrics = metrics;
         }
@@ -378,7 +365,7 @@ internal sealed class RecordingSession
         metrics.SelectMany(m => m.Layers.Select(l => (Mount: m, Layer: l)));
 
     private RecordingPulse Pulse(DateTime utcNow, double requestMs, LayerSampler.Sample? sample,
-        IReadOnlyList<MountMetrics> metrics, ServiceProcessReading? process, string? error)
+        IReadOnlyList<MountMetrics> metrics, ProcessReading process, string? error)
     {
         lock (_gate)
             return new RecordingPulse(State, _note, utcNow, requestMs, sample, metrics, process,

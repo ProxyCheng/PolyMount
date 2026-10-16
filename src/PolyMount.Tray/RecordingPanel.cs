@@ -27,7 +27,7 @@ internal sealed class RecordingPanel : QWidget
     private readonly QPushButton _start = new(), _end = new();
     private readonly RecordingLamp _lamp = new();
     private readonly QLabel _state = new(), _elapsed = new(), _collected = new();
-    private readonly QLabel _evidence = new(), _totals = new(), _capacity = new(), _message = new(), _paths = new();
+    private readonly QLabel _evidence = new(), _totals = new(), _capacity = new(), _process = new(), _message = new(), _paths = new();
     private readonly QTableWidget _gaps;
     private readonly QTimer _timer;
     private RecordingSession? _session;
@@ -102,6 +102,10 @@ internal sealed class RecordingPanel : QWidget
         root.AddWidget(_totals);
         _capacity.SetObjectName("muted");
         root.AddWidget(_capacity);
+        _process.SetObjectName("muted");
+        _process.SetWordWrap(true);
+        _process.SetTextFormat(Qt.TextFormat.PlainText);
+        root.AddWidget(_process);
         _gaps = ContinuousScrolling.Table();
         _gaps.SetColumnCount(3);
         _gaps.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
@@ -404,6 +408,7 @@ internal sealed class RecordingPanel : QWidget
         Show(_evidence, EvidenceLine(pulse));
         Show(_totals, TotalsLine(pulse));
         Show(_capacity, CapacityLine(pulse));
+        Show(_process, ProcessLine(pulse));
         _elapsed.SetVisible(_session != null || _elsewhere != null);
         RenderGaps(pulse);
         string message = _transient.Length > 0 ? _transient
@@ -477,6 +482,19 @@ internal sealed class RecordingPanel : QWidget
         return T("record.counts") + " " + string.Join(" · ", counts.Operations.Take(4).Select(operation =>
             string.Format(I18n.Culture, "{0} {1:N0} / {2:N0}ms",
                 operation.Operation, operation.Count, operation.TotalMs)));
+    }
+
+    /// <summary>What the process behind the recording is spending: the operating system's own
+    /// numbers for that one process, which is the whole reason an instance is a process. The window
+    /// on the same instance charts these per second; this says what the recording has cost so far.
+    /// </summary>
+    private string ProcessLine(RecordingPulse? pulse)
+    {
+        var process = pulse?.Process ?? ProcessReading.None;
+        if (process.Pid <= 0) return "";
+        return I18n.F("record.process", process.Pid, process.CpuSeconds,
+            ByteUnits.Format(process.WorkingSetBytes), ByteUnits.Format(process.PrivateBytes),
+            process.Threads, process.Handles);
     }
 
     /// <summary>Every stretch the copy knows is missing. Empty is the normal case, and then the
@@ -625,6 +643,10 @@ internal sealed class RecordingPanel : QWidget
         _latest = Synthetic();
         Render();
         Quiet = wasQuiet;
+        // A recording is about one instance, and an instance is a process: the line that says what
+        // that process spent has to name the process the fixture gave it.
+        if (!_process.Text.Contains("4321", StringComparison.Ordinal) || !_process.Text.Contains(ByteUnits.Format(4096), StringComparison.Ordinal))
+            throw new InvalidOperationException("The recording panel does not report the process behind it: " + _process.Text);
         string figures = I18n.F("record.collected", ByteUnits.Format(4096), 40, 7);
         if (_collected.Text != figures)
             throw new InvalidOperationException($"The panel reports '{_collected.Text}' instead of '{figures}'");
@@ -666,7 +688,7 @@ internal sealed class RecordingPanel : QWidget
             Paths = new List<PathCount> { new() { Operation = "VFS.Lookup", Path = "Char/char3", Count = 12, TotalMs = 90, MaxMs = 40 } }
         };
         return new RecordingPulse(RecordingState.Recording, null, now, 3.5, null, new List<MountMetrics>(),
-            new ServiceProcessReading(1, now.ToString("O"), 10, 12, 4096, 8192, 8, 100),
+            new ProcessReading(12, 0.4, 4096, 8192, 8, 100, 1, 4321),
             4096, 40, 1024, 20, 20, 7, counts, 0, Array.Empty<TailGap>(), totals, null);
     }
 }

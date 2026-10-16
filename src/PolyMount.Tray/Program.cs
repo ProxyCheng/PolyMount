@@ -274,7 +274,7 @@ internal static class Program
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
-                stats.CaptureProcess(Path.Combine(capture, "process.png"));
+                stats.CaptureProcess(capture);
                 editor.CaptureCacheAction(Path.Combine(capture, "cache-action.png"));
             }
             if (ticks == 20)
@@ -336,7 +336,7 @@ internal static class Program
                     stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
                     stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
                 }
-                catch (Exception ex) { failure = ex.Message; }
+                catch (Exception ex) { failure = ex.ToString(); }
                 Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats with its recording panel, and live localization.");
                 _app.Exit(failure == null ? 0 : 1);
             }

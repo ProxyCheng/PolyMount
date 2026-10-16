@@ -7,9 +7,9 @@ namespace PolyMount.Tray;
 /// one instance reports that instance's own process; the "all instances" view adds up every
 /// instance's, so the numbers are the whole service's work and nothing else is running in them.</summary>
 internal readonly record struct ProcessReading(double CpuSeconds, double Cores, long WorkingSetBytes,
-    long PrivateBytes, int Threads, int Handles, int Processes)
+    long PrivateBytes, int Threads, int Handles, int Processes, int Pid)
 {
-    public static readonly ProcessReading None = new(0, 0, 0, 0, 0, 0, 0);
+    public static readonly ProcessReading None = new(0, 0, 0, 0, 0, 0, 0, 0);
 }
 
 /// <summary>
@@ -29,8 +29,13 @@ internal sealed class InstanceProcess
     private readonly TimeSpan _interval;
     private DateTime _next = DateTime.MinValue;
     private int[] _pids = Array.Empty<int>();
-    private double _previousCpu;
+    private double _previousCpu, _cores;
     private DateTime _previousAt;
+
+    /// <summary>The shortest interval a rate is measured over. A reader that refreshes ten times a
+    /// second would otherwise be handed a rate over a tenth of a second — a number that says more
+    /// about when the reader looked than about the process — so below this the last one stands.</summary>
+    private static readonly TimeSpan RateInterval = TimeSpan.FromMilliseconds(500);
 
     /// <param name="instance">The instance to follow, or null for every instance at once.</param>
     /// <param name="refreshSeconds">How long a pid is believed. A worker keeps its pipe but not its
@@ -55,11 +60,12 @@ internal sealed class InstanceProcess
 
         double cpu = 0;
         long working = 0, priv = 0;
-        int threads = 0, handles = 0, found = 0;
+        int threads = 0, handles = 0, found = 0, first = 0;
         foreach (int pid in _pids)
         {
             if (ServiceProcessReading.For(pid) is not { } reading) continue;
             found++;
+            if (found == 1) first = pid;
             cpu += reading.CpuSeconds;
             working += reading.WorkingSetBytes;
             priv += reading.PrivateBytes;
@@ -68,14 +74,26 @@ internal sealed class InstanceProcess
         }
 
         var now = DateTime.UtcNow;
-        double cores = 0;
-        // A restart starts the count again, so a total that went backwards is a new process rather
-        // than a negative rate: that second has no rate to report.
-        if (found > 0 && _previousAt != default && cpu >= _previousCpu && (now - _previousAt).TotalSeconds > 0)
-            cores = (cpu - _previousCpu) / (now - _previousAt).TotalSeconds;
-        (_previousCpu, _previousAt) = (cpu, now);
+        if (found == 0)
+        {
+            // Nothing is running it. There is no rate to report, and the next process to appear is
+            // a new one whose count starts from its own beginning.
+            (_cores, _previousCpu, _previousAt) = (0, 0, default);
+        }
+        else if (_previousAt == default || cpu < _previousCpu)
+        {
+            // The first reading, or a worker that was replaced: a count that went backwards is not
+            // a negative rate, and measuring from it would hold the rate at zero until the new
+            // process caught up with the old one's total. The next reading is measured from here.
+            (_cores, _previousCpu, _previousAt) = (0, cpu, now);
+        }
+        else if (now - _previousAt >= RateInterval)
+        {
+            _cores = (cpu - _previousCpu) / (now - _previousAt).TotalSeconds;
+            (_previousCpu, _previousAt) = (cpu, now);
+        }
 
-        return new ProcessReading(cpu, cores, working, priv, threads, handles, found);
+        return new ProcessReading(cpu, _cores, working, priv, threads, handles, found, first);
     }
 
     /// <summary>Asks where the processes are. An instance that has none yet is asked again a second
