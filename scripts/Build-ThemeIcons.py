@@ -37,5 +37,11 @@ if __name__ == "__main__":
     if not DESTINATION.is_dir():
         raise RuntimeError("Theme resource directory does not exist")
     glyph("check.png", [(8, 16), (14, 22), (24, 10)], (255, 255, 255), 3)
-    glyph("chevron-left.png", [(20, 8), (12, 16), (20, 24)], (82, 103, 134), 2.5)
-    glyph("chevron-right.png", [(12, 8), (20, 16), (12, 24)], (82, 103, 134), 2.5)
+    # One set per theme: a glyph is a raster, so the colour it is drawn in is the colour it keeps,
+    # and the dark page needs the same shapes in its own ink.
+    for suffix, color in (("", (82, 103, 134)), ("-dark", (143, 160, 184))):
+        glyph(f"chevron-left{suffix}.png", [(20, 8), (12, 16), (20, 24)], color, 2.5)
+        glyph(f"chevron-right{suffix}.png", [(12, 8), (20, 16), (12, 24)], color, 2.5)
+        # The one a combo box's own button carries, which Qt otherwise draws in the platform's
+        # colours beside a page that has none of them.
+        glyph(f"chevron-down{suffix}.png", [(8, 12), (16, 20), (24, 12)], color, 2.5)
