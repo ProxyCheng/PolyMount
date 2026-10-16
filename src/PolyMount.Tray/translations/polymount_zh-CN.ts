@@ -10,15 +10,15 @@
     <message><source>object.boundaryNone</source><translation>保留所有层记录</translation></message>
     <message><source>object.boundaryAfter</source><translation>分界线位于 {0} 之后</translation></message>
     <message><source>object.boundaryAffected</source><translation>释放当前对象在以下层的记录：{0}</translation></message>
-    <message><source>object.boundaryScope</source><translation>仅作用于当前路径；选中文件夹时释放目录对象，不递归子项。分界线上方的本地修改也会被释放，不支持管理的来源层自动跳过。</translation></message>
+    <message><source>object.boundaryScope</source><translation>仅作用于当前路径；目录不递归子项。分界线以上的本地修改也会被释放。</translation></message>
     <message><source>picker.title</source><translation>添加层</translation></message>
-    <message><source>picker.subtitle</source><translation>为当前层栈选择一个提供器，先了解用途与可配置属性，再确认添加。</translation></message>
+    <message><source>picker.subtitle</source><translation>选择一个层类型，先看用途与可配置属性，再添加。</translation></message>
     <message><source>picker.search</source><translation>搜索层名称、类型或用途…</translation></message>
     <message><source>picker.empty</source><translation>没有匹配的层，请尝试其他关键词。</translation></message>
     <message><source>picker.preview</source><translation>层预览</translation></message>
     <message><source>picker.fields</source><translation>可配置属性</translation></message>
-    <message><source>picker.configure</source><translation>添加后，在右侧属性面板中完成配置。</translation></message>
-    <message><source>picker.draft</source><translation>添加到配置草稿，保存实例后生效；可拖动调整层顺序。</translation></message>
+    <message><source>picker.configure</source><translation>添加后在右侧完成配置。</translation></message>
+    <message><source>picker.draft</source><translation>先加入草稿，保存实例后生效；可拖动调整顺序。</translation></message>
     <message><source>picker.add</source><translation>添加此层</translation></message>
     <message><source>picker.count</source><translation>可用层 · {0}</translation></message>
     <message><source>picker.select</source><translation>请选择一个层类型</translation></message>
@@ -56,7 +56,7 @@
     </message>
     <message>
       <source>metric.layers.hint</source>
-      <translation>所有实例的有效层</translation>
+      <translation>所有实例启用的层</translation>
     </message>
     <message>
       <source>column.layers</source>
@@ -88,7 +88,7 @@
     </message>
     <message>
       <source>instance.missing</source>
-      <translation>此实例已不存在，请返回主界面</translation>
+      <translation>此实例已不存在，请返回工作台</translation>
     </message>
     <message>
       <source>layer.name</source>
@@ -124,11 +124,11 @@
     </message>
     <message>
       <source>stats.access.reads</source>
-      <translation>各层读取来源 · 最近 60 秒</translation>
+      <translation>读取来源</translation>
     </message>
     <message>
       <source>stats.access.writes</source>
-      <translation>各层写入来源 · 最近 60 秒</translation>
+      <translation>写入来源</translation>
     </message>
     <message>
       <source>stats.access.slice</source>
@@ -149,12 +149,11 @@
     </message>
     <message>
       <source>usage.cacheDetails</source>
-      <translation>实际磁盘占用 {0}
-持久修改 {1} · {2:N0} 个对象（不参与缓存淘汰）</translation>
+      <translation>实际磁盘占用 {0} / 持久修改 {1} · {2:N0} 个对象（不参与淘汰）</translation>
     </message>
     <message>
       <source>usage.capacityHint</source>
-      <translation>进度表示可淘汰缓存对象占容量的比例；数据库和持久修改另计。</translation>
+      <translation>进度条只算可淘汰的缓存对象；数据库与持久修改另计。</translation>
     </message>
     <message>
       <source>usage.notApplied</source>
@@ -182,7 +181,7 @@
     </message>
     <message>
       <source>object.releaseConfirm</source>
-      <translation>移除分界线以上可管理层对所选对象的记录？只读层会跳过，下层记录保留。该操作不能撤销；当前挂载会短暂重建以释放句柄。目录仅移除该目录对象，不递归删除子对象。</translation>
+      <translation>移除分界线以上可管理层对所选对象的记录？只读层跳过，不能撤销，挂载会短暂重建；目录不递归。</translation>
     </message>
     <message>
       <source>object.active</source>
@@ -226,19 +225,15 @@
     </message>
     <message>
       <source>layer.operation.saveFirst</source>
-      <translation>请先保存并应用配置，再操作对应运行层。</translation>
+      <translation>请先保存并应用，再操作运行中的层。</translation>
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>读取解析字节 · 每秒</translation>
+      <translation>读取字节</translation>
     </message>
     <message>
       <source>stats.series.count</source>
       <translation>{0} 个层</translation>
-    </message>
-    <message>
-      <source>stats.layerBytes.definition</source>
-      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节，外加各层持有的字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。两张字节图**只画各层自己的账**；操作系统给进程的那本账在下面「进程 · 每实例」里单独一张卡，两者之差（有符号）在「字节账目」那节里作为数字给出——它们数的不是一回事，摞在一起会让表头和图形各说一个总量。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -246,7 +241,7 @@
     </message>
     <message>
       <source>workspace</source>
-      <translation>工作空间</translation>
+      <translation>工作台</translation>
     </message>
     <message>
       <source>overview</source>
@@ -286,7 +281,7 @@
     </message>
     <message>
       <source>dashboard.subtitle</source>
-      <translation>连接数据源，让文件像本地一样触手可及。</translation>
+      <translation>把远端数据源挂成本地盘。</translation>
     </message>
     <message>
       <source>refresh</source>
@@ -294,7 +289,7 @@
     </message>
     <message>
       <source>refresh.tip</source>
-      <translation>窗口打开时每 10 秒自动刷新</translation>
+      <translation>打开时每 10 秒自动刷新。</translation>
     </message>
     <message>
       <source>mount.new</source>
@@ -302,7 +297,7 @@
     </message>
     <message>
       <source>metric.total</source>
-      <translation>挂载实例</translation>
+      <translation>实例</translation>
     </message>
     <message>
       <source>metric.total.hint</source>
@@ -334,7 +329,7 @@
     </message>
     <message>
       <source>mount.instances</source>
-      <translation>挂载实例</translation>
+      <translation>实例</translation>
     </message>
     <message>
       <source>search.placeholder</source>
@@ -342,7 +337,7 @@
     </message>
     <message>
       <source>mount.list.hint</source>
-      <translation>选择实例查看详情 · 双击已挂载实例打开目录</translation>
+      <translation>选择实例查看详情 · 双击打开目录</translation>
     </message>
     <message>
       <source>detail</source>
@@ -374,7 +369,7 @@
     </message>
     <message>
       <source>layers.heading</source>
-      <translation>PROVIDER 链 · 上层优先</translation>
+      <translation>层链 · 上层优先</translation>
     </message>
     <message>
       <source>layers.inspect</source>
@@ -410,7 +405,7 @@
     </message>
     <message>
       <source>connected</source>
-      <translation>服务已连接，状态同步正常</translation>
+      <translation>服务已连接，状态已同步</translation>
     </message>
     <message>
       <source>connection.failed</source>
@@ -486,18 +481,15 @@
     </message>
     <message>
       <source>empty.offline</source>
-      <translation>尚未连接服务
-启动服务后，这里会显示挂载实例。</translation>
+      <translation>服务未连接|启动服务后，这里会显示实例。</translation>
     </message>
     <message>
       <source>empty.new</source>
-      <translation>还没有挂载实例
-点击「新建挂载」，连接第一个数据源。</translation>
+      <translation>还没有实例|选择「新建挂载」开始。</translation>
     </message>
     <message>
       <source>empty.search</source>
-      <translation>没有匹配的实例
-试试其他关键词或「全部状态」。</translation>
+      <translation>没有匹配的实例|换个关键词或状态再试。</translation>
     </message>
     <message>
       <source>detail.select</source>
@@ -505,7 +497,7 @@
     </message>
     <message>
       <source>detail.hint</source>
-      <translation>状态、层链和操作会显示在这里</translation>
+      <translation>这里显示状态、层链与操作</translation>
     </message>
     <message>
       <source>detail.offline</source>
@@ -549,11 +541,11 @@
     </message>
     <message>
       <source>disable.tip</source>
-      <translation>在配置里关掉这个实例：服务重启后不会再启动</translation>
+      <translation>从配置里关掉：服务重启后不再启动</translation>
     </message>
     <message>
       <source>enable.tip</source>
-      <translation>启动这个实例，并在配置里保持启用</translation>
+      <translation>启动，并在配置里保持启用</translation>
     </message>
     <message>
       <source>selected.tip</source>
@@ -561,17 +553,15 @@
     </message>
     <message>
       <source>confirm.disable</source>
-      <translation>关掉「{0}」？它会立即停止，且服务重启后不再启动。已保存的数据会保留。</translation>
+      <translation>停用「{0}」？立即停止，服务重启后也不启动。已保存的数据保留。</translation>
     </message>
     <message>
       <source>confirm.unmount</source>
-      <translation>卸载「{0}」后，{1} 将无法访问。
-请先关闭正在使用此目录的文件。</translation>
+      <translation>卸载「{0}」后 {1} 不可访问。|请先关闭正在使用它的文件。</translation>
     </message>
     <message>
       <source>confirm.cache</source>
-      <translation>清空「{0}」的 {1} 缓存？
-本地修改会保留，后续读取将从源重新加载。</translation>
+      <translation>清空「{0}」的 {1} 缓存？|本地修改保留，之后从源重新读取。</translation>
     </message>
     <message>
       <source>confirm.head</source>
@@ -580,8 +570,7 @@
     </message>
     <message>
       <source>confirm.service</source>
-      <translation>服务停止后，所有挂载目录都将无法访问。
-请先关闭使用挂载文件的应用。</translation>
+      <translation>服务停止后所有挂载目录都不可访问。|请先关闭正在使用它们的应用。</translation>
     </message>
     <message>
       <source>confirm</source>
@@ -597,7 +586,7 @@
     </message>
     <message>
       <source>mount.done</source>
-      <translation>实例已挂载，现在可以打开目录</translation>
+      <translation>已挂载，可以打开目录了</translation>
     </message>
     <message>
       <source>cache.done</source>
@@ -617,7 +606,7 @@
     </message>
     <message>
       <source>tray.open</source>
-      <translation>打开 Dashboard</translation>
+      <translation>打开工作台</translation>
     </message>
     <message>
       <source>tray.shell</source>
@@ -661,7 +650,7 @@
     </message>
     <message>
       <source>editor.subtitle</source>
-      <translation>管理此实例的层与参数。禁用层会跳过解析，配置与数据保留。</translation>
+      <translation>管理此实例的层与参数。禁用的层会被跳过，配置与数据保留。</translation>
     </message>
     <message>
       <source>name</source>
@@ -825,11 +814,11 @@
     </message>
     <message>
       <source>preset.confirm</source>
-      <translation>按预设调整层顺序，保留已有层的配置并补齐缺少的层？其他层将保留在末尾。</translation>
+      <translation>按预设调整层顺序？已有层的配置保留，缺少的层会补上，其他层留在末尾。</translation>
     </message>
     <message>
       <source>remove.mount.confirm</source>
-      <translation>删除此挂载实例的配置？磁盘上的层数据会保留。</translation>
+      <translation>删除这个实例的配置？磁盘上的层数据保留。</translation>
     </message>
     <message>
       <source>remove.layer.confirm</source>
@@ -841,7 +830,7 @@
     </message>
     <message>
       <source>layer.required</source>
-      <translation>层类型与顺序由你决定。无可写层时为只读；禁用层保留配置。</translation>
+      <translation>层类型与顺序由你决定。没有可写层时挂载为只读；禁用的层保留配置。</translation>
     </message>
     <message>
       <source>stats.title</source>
@@ -853,7 +842,7 @@
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>每秒速率 · 实时视图 · 按挂载实例查看</translation>
+      <translation>每秒速率 · 按实例查看</translation>
     </message>
     <message>
       <source>stats.unit.seconds</source>
@@ -865,11 +854,11 @@
     </message>
     <message>
       <source>stats.range.hint</source>
-      <translation>图表显示多长的时间范围。曲线只画本窗口自己采到的样本，所以长档位一开始是空的、看着才填满；表格与饼图仍保留各自的 60 秒窗口。</translation>
+      <translation>图表显示的时间范围。长范围一开始是空的，看着才填满。</translation>
     </message>
     <message>
       <source>stats.all</source>
-      <translation>全部挂载</translation>
+      <translation>全部</translation>
     </message>
     <message>
       <source>stats.pause</source>
@@ -877,7 +866,7 @@
     </message>
     <message>
       <source>stats.refresh.hint</source>
-      <translation>图表刷新频率。所有数值都是每秒速率，换档不会改变曲线的高低；刷新越快，实例自身进程的开销越大。</translation>
+      <translation>图表刷新频率。所有读数都是每秒速率，换档不变。</translation>
     </message>
     <message>
       <source>stats.resume</source>
@@ -885,7 +874,7 @@
     </message>
     <message>
       <source>stats.reads</source>
-      <translation>读取请求数 · 每秒</translation>
+      <translation>读取请求</translation>
     </message>
     <message>
       <source>stats.hit</source>
@@ -893,11 +882,11 @@
     </message>
     <message>
       <source>stats.latency</source>
-      <translation>平均读取解析耗时</translation>
+      <translation>读取耗时</translation>
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>写入字节 · 每秒</translation>
+      <translation>写入字节</translation>
     </message>
     <message><source>stats.accessors</source><translation>最近 60 秒的访问者：</translation></message>
     <message><source>stats.accessors.none</source><translation>最近 60 秒没有访问者。</translation></message>
@@ -908,15 +897,15 @@
     </message>
     <message>
       <source>stats.paused</source>
-      <translation>已暂停采样</translation>
+      <translation>已暂停</translation>
     </message>
     <message>
       <source>stats.noData</source>
-      <translation>暂无读取活动</translation>
+      <translation>暂无数据</translation>
     </message>
     <message>
       <source>stats.gap</source>
-      <translation>采样中断，等待重新连接</translation>
+      <translation>采样中断，正在重连</translation>
     </message>
     <message>
       <source>stats.history</source>
@@ -980,7 +969,7 @@
     </message>
     <message>
       <source>hits</source>
-      <translation>读取次数</translation>
+      <translation>读取</translation>
     </message>
     <message>
       <source>share</source>
@@ -996,7 +985,7 @@
     </message>
     <message>
       <source>bytes</source>
-      <translation>字节数</translation>
+      <translation>字节</translation>
     </message>
     <message>
       <source>layer</source>
@@ -1008,7 +997,7 @@
     </message>
     <message>
       <source>probe.legend</source>
-      <translation>绿=生效 · 琥珀=被覆盖或目录清单不可见 · 灰=未命中</translation>
+      <translation>绿=生效 · 琥珀=被覆盖 · 灰=未命中</translation>
     </message>
     <message>
       <source>probe.drop</source>
@@ -1028,7 +1017,7 @@
     </message>
     <message>
       <source>probe.invisible</source>
-      <translation>不可见（目录清单未包含或对象不存在）</translation>
+      <translation>不可见（清单未包含或对象不存在）</translation>
     </message>
     <message>
       <source>probe.shadowed</source>
@@ -1048,15 +1037,15 @@
     </message>
     <message>
       <source>stats.response.waiting</source>
-      <translation>响应开销 · 等待采样</translation>
+      <translation>响应 · 等待采样</translation>
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次一个趋势请求，另有每秒钟一次的 60 秒窗口；不含绘制）</translation>
+      <translation>响应 · 请求平均 {0:0.00} ms · P95 {1:0.00} ms · 主线程 {2:0.00} ms · 界面 {3:0.00} ms</translation>
     </message>
     <message>
       <source>stats.section.account</source>
-      <translation>字节账目 · 响应开销</translation>
+      <translation>开销</translation>
     </message>
     <message>
       <source>stats.section.account.summary</source>
@@ -1064,11 +1053,11 @@
     </message>
     <message>
       <source>stats.section.layers</source>
-      <translation>逐层明细 · 最近 60 秒</translation>
+      <translation>各层明细</translation>
     </message>
     <message>
       <source>stats.section.layers.summary</source>
-      <translation>{0} 层 · 共 {1} 次请求</translation>
+      <translation>{0} 层 · 近 60 秒 {1} 次访问</translation>
     </message>
     <message>
       <source>stats.section.process.summary</source>
@@ -1076,15 +1065,15 @@
     </message>
     <message>
       <source>stats.process</source>
-      <translation>进程 · 每实例</translation>
+      <translation>进程</translation>
     </message>
     <message>
       <source>stats.process.cpu</source>
-      <translation>CPU · 占用核数</translation>
+      <translation>CPU</translation>
     </message>
     <message>
       <source>stats.process.memory</source>
-      <translation>内存 · 工作集</translation>
+      <translation>内存</translation>
     </message>
     <message>
       <source>stats.process.threads</source>
@@ -1092,15 +1081,15 @@
     </message>
     <message>
       <source>stats.process.moved</source>
-      <translation>进程移动字节 · 每秒</translation>
+      <translation>I/O</translation>
     </message>
     <message>
       <source>stats.process.moved.read</source>
-      <translation>进程读取</translation>
+      <translation>读取</translation>
     </message>
     <message>
       <source>stats.process.moved.write</source>
-      <translation>进程写入</translation>
+      <translation>写入</translation>
     </message>
     <message>
       <source>stats.process.handles</source>
@@ -1108,15 +1097,11 @@
     </message>
     <message>
       <source>stats.process.waiting</source>
-      <translation>进程 · 等待第一次读数</translation>
+      <translation>进程 · 等待读数</translation>
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} 个进程 · CPU {1:0.00} 核 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation>
-    </message>
-    <message>
-      <source>stats.process.definition</source>
-      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。上面四张是**量级**（核数、工作集、线程、句柄），所以只报整窗的平均与峰值——量级按采样点相加得到的数会随刷新频率一起变大，没有意义。最后一行是进程自己搬动的字节，来自操作系统给这个进程的计数器：它数的是**这个进程动过的每一个字节**，不分是挂载还是别的（日志、缓存库、这个窗口读的管道），而它**看不到**源自己的抓取——那发生在 `svn.exe` 里，是另一个进程。读取与写入是两个方向，所以并排画、不叠加。</translation>
+      <translation>{0} 个进程 · CPU {1:0.00} 核 · 内存 {2}</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1131,12 +1116,12 @@
       <translation>窗口内由内存供出 {0}</translation>
     </message>
     <message><source>mount.record</source><translation>录制…</translation></message>
-    <message><source>record.active.tip</source><translation>此实例正在录制，点击回到录制界面</translation></message>
+    <message><source>record.active.tip</source><translation>正在录制这个实例，点击回到录制</translation></message>
     <message><source>record.end</source><translation>结束</translation></message>
     <message><source>record.discard.keep</source><translation>返回保存</translation></message>
     <message><source>record.state.stopping</source><translation>正在结束</translation></message>
     <message><source>record.ending</source><translation>已停止采集，正在写出证据包…</translation></message>
-    <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。全程数据都在证据包里；趋势图显示的是工具栏里选的自己的时间范围。</translation></message>
+    <message><source>record.hint</source><translation>录制期间每个请求都会记入，到达上限会自动停止。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>
     <message><source>record.save</source><translation>结束并保存</translation></message>
@@ -1150,27 +1135,25 @@
     <message><source>record.state.idle</source><translation>未在录制</translation></message>
     <message><source>record.state.elsewhere</source><translation>服务端已有录制</translation></message>
     <message><source>record.evidence.line</source><translation>状态 {0} · 请求明细（抽样日志）{1} / {2} 行 · 每秒 {3} 行 · 精确计数 {4} 次请求 / {5} 种操作</translation></message>
-    <message><source>record.evidence.elsewhere</source><translation>服务端这一段录制由别处发起，本面板只显示它的规模。</translation></message>
-    <message><source>mount.performance.tip</source><translation>这个实例的实时性能（工具栏所选时间范围的趋势、逐层命中与访问开销）</translation></message>
+    <message><source>record.evidence.elsewhere</source><translation>这段录制由别处发起，这里只显示它的规模。</translation></message>
+    <message><source>mount.performance.tip</source><translation>这个实例的实时性能</translation></message>
     <message><source>mount.performance.recording</source><translation>性能 · 录制中</translation></message>
     <message><source>record.adopt</source><translation>接管录制</translation></message>
     <message><source>record.elsewhere.figures</source><translation>已录 {0}（本面板没有它的计数）</translation></message>
-    <message><source>record.elsewhere</source><translation>服务端正在录制这个实例（已 {0}，{1}），但不是这个页面在录——可能是托盘重启前留下的。「接管录制」会从它已经写下的内容接着算，保存时一并写出。</translation></message>
+    <message><source>record.elsewhere</source><translation>服务端正在录制这个实例（已 {0}，{1}）。「接管录制」会接着它已写下的内容算。</translation></message>
     <message><source>record.state.failed</source><translation>无法开始</translation></message>
     <message><source>record.starting</source><translation>正在挂上录制通道…</translation></message>
     <message><source>record.start.failed</source><translation>无法开始录制：</translation></message>
-    <message><source>record.idle</source><translation>没有正在进行的录制。按「开始录制」从此刻起重新采集。</translation></message>
+    <message><source>record.idle</source><translation>按「开始录制」开始采集。</translation></message>
     <message><source>record.marker.start</source><translation>录制开始</translation></message>
     <message><source>record.marker.stop</source><translation>录制结束</translation></message>
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
-    <message><source>stats.reconcile.wall</source><translation>墙钟 · 近 {0:0.#} 秒：请求共 {1:0.0} 毫秒，各层记到 {2:0.0} 毫秒 —— 未归因 {3:0.0} 毫秒。</translation></message>
-    <message><source>stats.layerHeld.memory</source><translation>层持有内存 · 每层</translation></message>
-    <message><source>stats.layerHeld.disk</source><translation>层持有磁盘 · 每层</translation></message>
-    <message><source>stats.layerHeld.definition</source><translation>每层当前占着的量：内存与磁盘字节，按层相加。进程的内存没法拆到层上——上面那组进程卡就是它的全部——但每层自己持有了多少是我们自己数的，是这个层自己的开销。</translation></message>
-    <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，没有层记账的 {3}。</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>墙钟那一行，比的是文件系统边界上花掉的时间与各层为这些请求记到的时间：没有层答复的请求没人可记——应用去问它可能没有的文件所产生的负查询就落在那里，时间没按层记的路径也在那里。字节那一行，比的是各层答复的文件大小与操作系统看到的、本进程的读写量——**这两个数不是一回事**：层记的是「解析到的文件大小」（解析那一刻记一次，不管你后来读了多少），系统记的是这个进程真正搬动的每一个字节（含日志、缓存库、这条管道，且看不到 `svn.exe` 里的抓取）。所以差可正可负，它只是两本账的缺口：**账各自成卡**（系统那本在「进程 · 每实例」里），这个差只在这里作为数字给出，不再摊进字节图。两个差都不是错误；为了量它们，每个请求多花几十纳秒，仅在有人看的时候付。</translation></message>
+    <message><source>stats.reconcile.wall</source><translation>耗时 · 近 {0:0.#} 秒：请求 {1:0.0} ms · 各层 {2:0.0} ms · 未归因 {3:0.0} ms</translation></message>
+    <message><source>stats.layerHeld.memory</source><translation>内存占用</translation></message>
+    <message><source>stats.layerHeld.disk</source><translation>磁盘占用</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>字节 · 近 {0} 秒：进程 {1} · 各层 {2} · 差 {3}</translation></message>
     <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
     <message><source>stats.process.io.read</source><translation>读</translation></message>
     <message><source>stats.process.io.write</source><translation>写</translation></message>
@@ -1190,13 +1173,13 @@
     <message><source>record.save.running</source><translation>录制已结束，正在写出证据包…</translation></message>
     <message><source>record.save.done</source><translation>已保存：{0}</translation></message>
     <message><source>record.save.title</source><translation>录制已保存</translation></message>
-    <message><source>record.save.body</source><translation>完整证据包已写入：&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;逐层每秒 {1} 行，日志 {2} 份。录制已结束。</translation></message>
+    <message><source>record.save.body</source><translation>证据包已保存到：&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;</translation></message>
     <message><source>record.save.failed</source><translation>保存失败：</translation></message>
     <message><source>record.discard.title</source><translation>结束这次录制？</translation></message>
     <message><source>record.discard.body</source><translation>已采集的数据会被删除，无法恢复。</translation></message>
     <message><source>record.discard.confirm</source><translation>结束并丢弃</translation></message>
     <message><source>record.close.title</source><translation>录制仍在进行</translation></message>
-    <message><source>record.close.body</source><translation>这个实例已录制 {0}。关闭这个页签不会停止采集，但你会失去保存它的入口。</translation></message>
+    <message><source>record.close.body</source><translation>这个实例已录制 {0}。关闭页签不会停止采集，但会失去保存它的入口。</translation></message>
     <message><source>record.close.keep</source><translation>继续录制（取消关闭）</translation></message>
     <message><source>record.close.discard</source><translation>结束并丢弃</translation></message>
   </context>

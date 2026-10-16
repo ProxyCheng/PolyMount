@@ -386,12 +386,11 @@ internal static class Program
                 // than quietly painting the key itself into a chart title.
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
-                    "stats.process.handles", "stats.process.figures", "stats.process.definition",
+                    "stats.process.handles", "stats.process.figures",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
                     "stats.access.reads", "stats.access.writes", "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
-                    "stats.layerHeld.definition",
-                    "stats.reconcile.bytes", "stats.reconcile.definition", "record.process",
+                    "stats.reconcile.bytes", "record.process",
                     "disable", "disable.done", "disable.tip", "enable.tip", "confirm.disable",
                     "stats.section.layers", "stats.section.layers.summary",
                     "stats.section.process.summary", "stats.section.account", "stats.section.account.summary" })

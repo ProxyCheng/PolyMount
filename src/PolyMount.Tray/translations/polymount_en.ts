@@ -10,19 +10,19 @@
     <message><source>object.boundaryNone</source><translation>Keep all layer records</translation></message>
     <message><source>object.boundaryAfter</source><translation>Boundary after {0}</translation></message>
     <message><source>object.boundaryAffected</source><translation>Release this object's records from: {0}</translation></message>
-    <message><source>object.boundaryScope</source><translation>Applies to this path only. For folders, this releases the folder object, not its descendants. Local changes above the boundary are also released; unmanaged source layers are skipped.</translation></message>
+    <message><source>object.boundaryScope</source><translation>Applies to this path only; for a folder it is not recursive. Local changes above the boundary are released too.</translation></message>
     <message><source>picker.title</source><translation>Add a layer</translation></message>
-    <message><source>picker.subtitle</source><translation>Choose a provider for your stack. Preview its purpose and settings before adding it.</translation></message>
+    <message><source>picker.subtitle</source><translation>Choose a layer type: what it does, and what it can be configured with, before adding it.</translation></message>
     <message><source>picker.search</source><translation>Search layer names, types or descriptions…</translation></message>
     <message><source>picker.empty</source><translation>No matching layers. Try a different search.</translation></message>
     <message><source>picker.preview</source><translation>LAYER PREVIEW</translation></message>
     <message><source>picker.fields</source><translation>CONFIGURABLE PROPERTIES</translation></message>
-    <message><source>picker.configure</source><translation>Configure this layer in the property panel after adding it.</translation></message>
-    <message><source>picker.draft</source><translation>Added to the draft only. Save the instance to apply changes; drag layers to reorder.</translation></message>
+    <message><source>picker.configure</source><translation>Configure it in the panel on the right after adding.</translation></message>
+    <message><source>picker.draft</source><translation>Added to the draft; save the instance to apply. Drag to reorder.</translation></message>
     <message><source>picker.add</source><translation>Add layer</translation></message>
     <message><source>picker.count</source><translation>AVAILABLE LAYERS · {0}</translation></message>
-    <message><source>picker.select</source><translation>Select a layer to continue</translation></message>
-    <message><source>picker.commonOnly</source><translation>Name, visibility and color</translation></message>
+    <message><source>picker.select</source><translation>Select a layer type</translation></message>
+    <message><source>picker.commonOnly</source><translation>Name, enabled state and color</translation></message>
     <message><source>picker.selected</source><translation>Selected: {0}</translation></message>
     <message><source>picker.atEnd</source><translation>Placement: end of the layer stack</translation></message>
     <message><source>picker.after</source><translation>Placement: after “{0}”</translation></message>
@@ -52,15 +52,15 @@
     </message>
     <message>
       <source>metric.layers</source>
-      <translation>Active layers</translation>
+      <translation>Enabled layers</translation>
     </message>
     <message>
       <source>metric.layers.hint</source>
-      <translation>Active providers across instances</translation>
+      <translation>Enabled layers across instances</translation>
     </message>
     <message>
       <source>column.layers</source>
-      <translation>Active layers</translation>
+      <translation>Enabled layers</translation>
     </message>
     <message>
       <source>layer.count</source>
@@ -124,11 +124,11 @@
     </message>
     <message>
       <source>stats.access.reads</source>
-      <translation>Reads by layer · Last 60 seconds</translation>
+      <translation>Reads by layer</translation>
     </message>
     <message>
       <source>stats.access.writes</source>
-      <translation>Writes by layer · Last 60 seconds</translation>
+      <translation>Writes by layer</translation>
     </message>
     <message><source>stats.access.slice</source><translation>{0} · {1:N0} · {2:0.0}%</translation></message>
     <message>
@@ -146,12 +146,11 @@
     </message>
     <message>
       <source>usage.cacheDetails</source>
-      <translation>Physical disk usage {0}
-Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
+      <translation>Physical disk usage {0} / durable changes {1} · {2:N0} objects (not evicted)</translation>
     </message>
     <message>
       <source>usage.capacityHint</source>
-      <translation>Capacity bar covers evictable cache objects; database overhead and durable changes are separate.</translation>
+      <translation>The bar covers evictable cache objects only; the database and durable changes are separate.</translation>
     </message>
     <message>
       <source>usage.notApplied</source>
@@ -179,7 +178,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>object.releaseConfirm</source>
-      <translation>Remove this object's records from manageable layers above the boundary? Read-only layers are skipped and lower records remain. This cannot be undone; the mount is briefly rebuilt to release handles. For a directory, only its own record is removed, not its descendants.</translation>
+      <translation>Remove this object's records from manageable layers above the boundary? Read-only layers are skipped, it cannot be undone, and the mount is briefly rebuilt. A folder's descendants are not included.</translation>
     </message>
     <message>
       <source>object.active</source>
@@ -199,11 +198,11 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>object.willRelease</source>
-      <translation>Will release</translation>
+      <translation>Will give up managing</translation>
     </message>
     <message>
       <source>object.keep</source>
-      <translation>Keep record</translation>
+      <translation>Keep managing</translation>
     </message>
     <message>
       <source>object.dragBoundary</source>
@@ -223,19 +222,15 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>layer.operation.saveFirst</source>
-      <translation>Save and apply the configuration before operating on the runtime layer.</translation>
+      <translation>Save and apply before operating on a running layer.</translation>
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>Resolved read bytes · Per second</translation>
+      <translation>Bytes read</translation>
     </message>
     <message>
       <source>stats.series.count</source>
       <translation>{0} layers</translation>
-    </message>
-    <message>
-      <source>stats.layerBytes.definition</source>
-      <translation>The charts are read requests per second, resolved read bytes per second, average read cost, and written bytes per second, plus what each layer holds. Every figure is a rate over the interval between two observations, so changing the refresh rate does not change the reading. Resolved read bytes count the sizes of the files VFS resolved, not physical disk throughput. Layers stack, latency is weighted by requests; byte units follow 1024. The two byte cards draw the layers' own account only: the account the operating system keeps for the process is a card of its own under the process's numbers, and the signed difference between them is a figure in the byte account below — they do not count the same thing, and stacked into one card they left the header stating one total and the picture another.</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -283,7 +278,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>dashboard.subtitle</source>
-      <translation>Connect your sources. Access files as if they were local.</translation>
+      <translation>Mount your sources as local drives.</translation>
     </message>
     <message>
       <source>refresh</source>
@@ -291,7 +286,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>refresh.tip</source>
-      <translation>Automatically refreshes every 10 seconds while open</translation>
+      <translation>Refreshes every 10 seconds while open.</translation>
     </message>
     <message>
       <source>mount.new</source>
@@ -299,7 +294,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>metric.total</source>
-      <translation>Mount instances</translation>
+      <translation>Instances</translation>
     </message>
     <message>
       <source>metric.total.hint</source>
@@ -331,7 +326,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>mount.instances</source>
-      <translation>Mount instances</translation>
+      <translation>Instance</translation>
     </message>
     <message>
       <source>search.placeholder</source>
@@ -339,7 +334,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>mount.list.hint</source>
-      <translation>Select for details · Double-click a mounted instance to open</translation>
+      <translation>Select for details · double-click to open the folder</translation>
     </message>
     <message>
       <source>detail</source>
@@ -371,7 +366,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>layers.heading</source>
-      <translation>PROVIDER CHAIN · TOP WINS</translation>
+      <translation>LAYER CHAIN · TOP WINS</translation>
     </message>
     <message>
       <source>layers.inspect</source>
@@ -407,7 +402,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>connected</source>
-      <translation>Service connected. Status is up to date.</translation>
+      <translation>Service connected; status is up to date</translation>
     </message>
     <message>
       <source>connection.failed</source>
@@ -455,7 +450,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>service.offline</source>
-      <translation>Service offline</translation>
+      <translation>Service not connected</translation>
     </message>
     <message>
       <source>column.instance</source>
@@ -479,22 +474,19 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>last.known</source>
-      <translation>Last known</translation>
+      <translation>Last recorded</translation>
     </message>
     <message>
       <source>empty.offline</source>
-      <translation>Service is offline
-Start the service to see your mounts.</translation>
+      <translation>Service not connected|Start the service to see your instances.</translation>
     </message>
     <message>
       <source>empty.new</source>
-      <translation>No mounts yet
-Choose New mount to connect your first source.</translation>
+      <translation>No instances yet|Choose New mount to start.</translation>
     </message>
     <message>
       <source>empty.search</source>
-      <translation>No matching mounts
-Try another search or select All states.</translation>
+      <translation>No matching instances|Try another search or state.</translation>
     </message>
     <message>
       <source>detail.select</source>
@@ -502,7 +494,7 @@ Try another search or select All states.</translation>
     </message>
     <message>
       <source>detail.hint</source>
-      <translation>View its status, layers and actions here</translation>
+      <translation>Status, layers and actions appear here</translation>
     </message>
     <message>
       <source>detail.offline</source>
@@ -546,11 +538,11 @@ Try another search or select All states.</translation>
     </message>
     <message>
       <source>disable.tip</source>
-      <translation>Switch this instance off in the configuration: it will not start again when the service restarts</translation>
+      <translation>Turns it off in the configuration; it stays off across restarts</translation>
     </message>
     <message>
       <source>enable.tip</source>
-      <translation>Start this instance, and keep it enabled in the configuration</translation>
+      <translation>Starts it and keeps it enabled in the configuration</translation>
     </message>
     <message>
       <source>selected.tip</source>
@@ -558,17 +550,15 @@ Try another search or select All states.</translation>
     </message>
     <message>
       <source>confirm.disable</source>
-      <translation>Turn off “{0}”? It stops now, and will not start again when the service restarts. What it has stored is kept.</translation>
+      <translation>Turn off "{0}"? It stops now and stays off across restarts. What it stored is kept.</translation>
     </message>
     <message>
       <source>confirm.unmount</source>
-      <translation>Unmounting “{0}” makes {1} unavailable.
-Close files using this directory first.</translation>
+      <translation>Unmounting "{0}" makes {1} unavailable.|Close any files that are using it first.</translation>
     </message>
     <message>
       <source>confirm.cache</source>
-      <translation>Clear {1} of cache for “{0}”?
-Local changes are kept. Files will reload from the source.</translation>
+      <translation>Clear {1} of cache for "{0}"?|Local changes are kept; files reload from the source.</translation>
     </message>
     <message>
       <source>confirm.head</source>
@@ -577,8 +567,7 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>confirm.service</source>
-      <translation>Stopping the service makes every mount unavailable.
-Close applications using mounted files first.</translation>
+      <translation>Stopping the service makes every mount unavailable.|Close applications using them first.</translation>
     </message>
     <message>
       <source>confirm</source>
@@ -594,7 +583,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>mount.done</source>
-      <translation>Instance mounted. You can now open its folder.</translation>
+      <translation>Mounted. You can open its folder now.</translation>
     </message>
     <message>
       <source>cache.done</source>
@@ -614,7 +603,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>tray.open</source>
-      <translation>Open dashboard</translation>
+      <translation>Open workspace</translation>
     </message>
     <message>
       <source>tray.shell</source>
@@ -658,7 +647,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>editor.subtitle</source>
-      <translation>Configure this instance’s layers. Disabled layers are skipped; settings and data are kept.</translation>
+      <translation>Configure this instance's layers and parameters. Disabled layers are skipped; their settings and data are kept.</translation>
     </message>
     <message>
       <source>name</source>
@@ -686,7 +675,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>saved.errors</source>
-      <translation>Configuration saved, but some mounts failed:</translation>
+      <translation>Configuration saved, but some instances failed to mount:</translation>
     </message>
     <message>
       <source>load.failed</source>
@@ -706,7 +695,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>layer.stack</source>
-      <translation>Layer stack · Drag to reorder</translation>
+      <translation>Layer stack · drag to set priority</translation>
     </message>
     <message>
       <source>layer.hint</source>
@@ -822,11 +811,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>preset.confirm</source>
-      <translation>Apply the preset order, keep existing layer settings and add missing layers? Extra layers will be kept at the end.</translation>
+      <translation>Apply the preset order? Existing settings are kept, missing layers are added, and other layers stay at the end.</translation>
     </message>
     <message>
       <source>remove.mount.confirm</source>
-      <translation>Delete this mount configuration? Layer data on disk is kept.</translation>
+      <translation>Delete this instance's configuration? Layer data on disk is kept.</translation>
     </message>
     <message>
       <source>remove.layer.confirm</source>
@@ -838,7 +827,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>layer.required</source>
-      <translation>Choose any layers and order. Without writable providers the mount is read-only. Disabled layers keep their settings.</translation>
+      <translation>Any layers, any order. Without a writable layer the mount is read-only; disabled layers keep their settings.</translation>
     </message>
     <message>
       <source>stats.title</source>
@@ -850,7 +839,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>Per-second rates · Live view · Per-mount view</translation>
+      <translation>Per-second rates · per instance</translation>
     </message>
     <message>
       <source>stats.unit.seconds</source>
@@ -862,11 +851,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.range.hint</source>
-      <translation>How much time the charts show. Only this window's own samples are drawn, so a long span starts empty and fills as it is watched; the table and the pie keep their own 60-second window.</translation>
+      <translation>How much time the charts show. A long range starts empty and fills as it is watched.</translation>
     </message>
     <message>
       <source>stats.all</source>
-      <translation>All mounts</translation>
+      <translation>All</translation>
     </message>
     <message>
       <source>stats.pause</source>
@@ -874,7 +863,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.refresh.hint</source>
-      <translation>How often the charts are refreshed. Every figure is a per-second rate, so the line reads the same at any rate; refreshing faster costs the instance's own process more.</translation>
+      <translation>How often the charts refresh. Every reading is a per-second rate; the rate does not depend on it.</translation>
     </message>
     <message>
       <source>stats.resume</source>
@@ -882,7 +871,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.reads</source>
-      <translation>Read requests · Per second</translation>
+      <translation>Reads</translation>
     </message>
     <message>
       <source>stats.hit</source>
@@ -890,11 +879,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.latency</source>
-      <translation>Average read-resolution time</translation>
+      <translation>Read time</translation>
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>Written bytes · Per second</translation>
+      <translation>Bytes written</translation>
     </message>
     <message><source>stats.accessors</source><translation>readers in the last 60 seconds:</translation></message>
     <message><source>stats.accessors.none</source><translation>no readers in the last 60 seconds.</translation></message>
@@ -905,15 +894,15 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.paused</source>
-      <translation>Sampling paused</translation>
+      <translation>Paused</translation>
     </message>
     <message>
       <source>stats.noData</source>
-      <translation>No read activity</translation>
+      <translation>No data</translation>
     </message>
     <message>
       <source>stats.gap</source>
-      <translation>Sampling interrupted. Waiting to reconnect.</translation>
+      <translation>Sampling interrupted; reconnecting</translation>
     </message>
     <message>
       <source>stats.history</source>
@@ -1005,7 +994,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>probe.legend</source>
-      <translation>Green: effective · Amber: shadowed or excluded by directory listing · Gray: not found</translation>
+      <translation>Green: effective · Amber: shadowed · Gray: not found</translation>
     </message>
     <message>
       <source>probe.drop</source>
@@ -1025,7 +1014,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>probe.invisible</source>
-      <translation>Not visible (excluded by directory listing or object missing)</translation>
+      <translation>Not visible (excluded by the listing, or the object is gone)</translation>
     </message>
     <message>
       <source>probe.shadowed</source>
@@ -1033,7 +1022,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>probe.unknown</source>
-      <translation>Unknown</translation>
+      <translation>Not found</translation>
     </message>
     <message>
       <source>probe.directory</source>
@@ -1045,15 +1034,15 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.response.waiting</source>
-      <translation>Response overhead · Waiting for samples</translation>
+      <translation>Response · waiting for samples</translation>
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (one trend request per sample, plus the 60-second window once a second; excludes painting)</translation>
+      <translation>Response · request avg {0:0.00} ms · P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms</translation>
     </message>
     <message>
       <source>stats.section.account</source>
-      <translation>Byte account · Response overhead</translation>
+      <translation>Overhead</translation>
     </message>
     <message>
       <source>stats.section.account.summary</source>
@@ -1061,11 +1050,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.section.layers</source>
-      <translation>Layer detail · Last 60 seconds</translation>
+      <translation>Layers</translation>
     </message>
     <message>
       <source>stats.section.layers.summary</source>
-      <translation>{0} layers · {1} requests served</translation>
+      <translation>{0} layers · {1} accesses in 60 s</translation>
     </message>
     <message>
       <source>stats.section.process.summary</source>
@@ -1073,15 +1062,15 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process</source>
-      <translation>Process · Per instance</translation>
+      <translation>Processes</translation>
     </message>
     <message>
       <source>stats.process.cpu</source>
-      <translation>CPU · Cores used</translation>
+      <translation>CPU</translation>
     </message>
     <message>
       <source>stats.process.memory</source>
-      <translation>Memory · Working set</translation>
+      <translation>Memory</translation>
     </message>
     <message>
       <source>stats.process.threads</source>
@@ -1089,15 +1078,15 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process.moved</source>
-      <translation>Bytes the process moved · per second</translation>
+      <translation>I/O</translation>
     </message>
     <message>
       <source>stats.process.moved.read</source>
-      <translation>process read</translation>
+      <translation>Read</translation>
     </message>
     <message>
       <source>stats.process.moved.write</source>
-      <translation>process write</translation>
+      <translation>Written</translation>
     </message>
     <message>
       <source>stats.process.handles</source>
@@ -1105,15 +1094,11 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process.waiting</source>
-      <translation>Process · waiting for a first reading</translation>
+      <translation>Process · waiting for a reading</translation>
     </message>
     <message>
       <source>stats.process.figures</source>
-      <translation>{0} process(es) · CPU {1:0.00} cores · working set {2} · private {3} · {4} threads · {5} handles</translation>
-    </message>
-    <message>
-      <source>stats.process.definition</source>
-      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent. The four cards above are levels — cores, working set, threads, handles — so they report what the window averaged and peaked at and not what their samples add up to, a number that would grow with the refresh rate. The last row is what that process moved, from the counters the operating system keeps for it: every byte it moved, whether or not a mount asked for it (its logs, the cache database, the pipe this window reads), and blind to the source's own fetching, which happens in a process of its own. Reads and writes are two directions, so they are drawn beside each other rather than stacked.</translation>
+      <translation>{0} processes · {1:0.00} CPU · {2}</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1128,12 +1113,12 @@ Close applications using mounted files first.</translation>
       <translation>{0} served from RAM in this window</translation>
     </message>
     <message><source>mount.record</source><translation>Record…</translation></message>
-    <message><source>record.active.tip</source><translation>This instance is being recorded; click to return to the recording</translation></message>
+    <message><source>record.active.tip</source><translation>This instance is recording; click to return</translation></message>
     <message><source>record.end</source><translation>End</translation></message>
-    <message><source>record.discard.keep</source><translation>Choose a folder</translation></message>
+    <message><source>record.discard.keep</source><translation>Back to saving</translation></message>
     <message><source>record.state.stopping</source><translation>Ending</translation></message>
     <message><source>record.ending</source><translation>Collecting has stopped; writing the bundle…</translation></message>
-    <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The recording is kept in the bundle; the charts show their own span, which the toolbar sets.</translation></message>
+    <message><source>record.hint</source><translation>Every request is recorded while a recording runs; it stops itself at its ceiling.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
     <message><source>record.save</source><translation>End and save</translation></message>
@@ -1147,27 +1132,25 @@ Close applications using mounted files first.</translation>
     <message><source>record.state.idle</source><translation>Not recording</translation></message>
     <message><source>record.state.elsewhere</source><translation>The service is recording</translation></message>
     <message><source>record.evidence.line</source><translation>state {0} · sampled detail {1} / {2} lines · {3} per-second rows · counted {4} requests / {5} operations</translation></message>
-    <message><source>record.evidence.elsewhere</source><translation>Another front-end started this recording, so this panel reports only its size.</translation></message>
-    <message><source>mount.performance.tip</source><translation>This instance's live performance: its trend over the span the toolbar sets, by layer, with their share and their access cost</translation></message>
+    <message><source>record.evidence.elsewhere</source><translation>Another front-end started this recording; only its size is shown here.</translation></message>
+    <message><source>mount.performance.tip</source><translation>This instance's live performance</translation></message>
     <message><source>mount.performance.recording</source><translation>Performance · recording</translation></message>
     <message><source>record.adopt</source><translation>Take it over</translation></message>
     <message><source>record.elsewhere.figures</source><translation>recording for {0} (this panel has no counts for it)</translation></message>
-    <message><source>record.elsewhere</source><translation>The service is recording this instance ({0} so far, {1}) and this page is not the one collecting it — most likely a tray that restarted. Taking it over counts what it has already written, and saving writes that too.</translation></message>
+    <message><source>record.elsewhere</source><translation>The service is recording this instance ({0} so far, {1}). Taking it over continues from what it has already written.</translation></message>
     <message><source>record.state.failed</source><translation>Could not start</translation></message>
     <message><source>record.starting</source><translation>Attaching the recording channel…</translation></message>
     <message><source>record.start.failed</source><translation>Could not start the recording: </translation></message>
-    <message><source>record.idle</source><translation>Nothing is being recorded. Start recording begins collecting again from that moment.</translation></message>
+    <message><source>record.idle</source><translation>Press Start recording to begin.</translation></message>
     <message><source>record.marker.start</source><translation>recording started</translation></message>
     <message><source>record.marker.stop</source><translation>recording ended</translation></message>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
-    <message><source>stats.reconcile.wall</source><translation>Wall clock · {0:0.#} s: requests {1:0.0} ms, layers charged {2:0.0} ms \u2014 unattributed {3:0.0} ms.</translation></message>
-    <message><source>stats.layerHeld.memory</source><translation>Bytes held in memory · Per layer</translation></message>
-    <message><source>stats.layerHeld.disk</source><translation>Bytes held on disk · Per layer</translation></message>
-    <message><source>stats.layerHeld.definition</source><translation>What each layer is holding: its memory and the bytes it takes on disk, summed per layer. A process's memory cannot be split between layers — the process cards above are the whole of it — but what a layer keeps is our own count and is that layer's own cost.</translation></message>
-    <message><source>stats.reconcile.bytes</source><translation>Byte account · last {0} s: the process moved {1}, the layers resolved {2} — no layer accounts for {3}.</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>The wall-clock row compares what the file system boundary took with what the layers were charged for it: a request no layer answered for is charged to nobody, which is where the negative lookups an application makes land, along with the paths whose time is not recorded per layer. The byte row compares the sizes of the files the layers answered with against what the operating system saw this process read and write - and those two are not the same measurement: a layer counts the size of the file it resolved, once, at the moment it resolved it, however much of it was read afterwards, while the system counts every byte this process moved - its logs, the cache database, the pipe this window reads - and never the source's own fetching, which happens in svn.exe. The difference is therefore positive or negative according to which account ran ahead, and it is the gap between two accounts, each of which has a card of its own; it is given here as a figure rather than spread into a chart. Neither difference is an error, and both are measured on every request, which is what costs the file system a few tens of nanoseconds per request while something is watching.</translation></message>
+    <message><source>stats.reconcile.wall</source><translation>Time · last {0:0.#} s: requests {1:0.0} ms · layers {2:0.0} ms · unattributed {3:0.0} ms</translation></message>
+    <message><source>stats.layerHeld.memory</source><translation>Memory held</translation></message>
+    <message><source>stats.layerHeld.disk</source><translation>Disk held</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>Bytes · last {0} s: process {1} · layers {2} · gap {3}</translation></message>
     <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
     <message><source>stats.process.io.read</source><translation>Read</translation></message>
     <message><source>stats.process.io.write</source><translation>Written</translation></message>
@@ -1187,7 +1170,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.save.running</source><translation>The recording has ended; writing the bundle…</translation></message>
     <message><source>record.save.done</source><translation>Saved: {0}</translation></message>
     <message><source>record.save.title</source><translation>Recording saved</translation></message>
-    <message><source>record.save.body</source><translation>The whole recording was written to:&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;&lt;br&gt;&lt;br&gt;{1} per-second rows and {2} log files. The recording has ended.</translation></message>
+    <message><source>record.save.body</source><translation>The bundle was written to:&lt;br&gt;&lt;b&gt;{0}&lt;/b&gt;</translation></message>
     <message><source>record.save.failed</source><translation>Saving failed: </translation></message>
     <message><source>record.discard.title</source><translation>End this recording?</translation></message>
     <message><source>record.discard.body</source><translation>What has been collected will be deleted, and cannot be recovered.</translation></message>

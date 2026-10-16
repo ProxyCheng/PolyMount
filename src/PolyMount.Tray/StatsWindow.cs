@@ -261,12 +261,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // of layers is never hidden behind a second scrollbar.
         _table.SetVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);
         layerBody.AddWidget(_table);
-        layerBody.AddWidget(Label("stats.layerBytes.definition", "muted"));
-        // What the two held-bytes cards above are counting. It belongs here, with the layer table,
-        // rather than under the cards themselves: a chart card carries a number and a line of
-        // legend, and a paragraph under it would be read once and then be in the way every second
-        // after that.
-        layerBody.AddWidget(Label("stats.layerHeld.definition", "muted"));
 
         // The machine's own account of the instance, next to VFS's account of it. The unit of these
         // is the process: one instance is one process, so nothing has to be attributed to a mount
@@ -280,6 +274,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // page looked, which is the refresh rate.
         _processCharts = new[]
         {
+            // "cores" rather than a catalog key: the unit reaches the value axis through
+            // QValueAxis::SetLabelFormat, which the binding marshals as an ANSI format string, so a
+            // unit that is a word in the reader's language arrives as "?" on every gridline label
+            // (measured). A symbol - "/s", "ms", "B" - is ASCII and survives it; see UnitText for
+            // the paths that do take the reader's language.
             new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Gauge),
             new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Gauge),
             new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Gauge),
@@ -298,7 +297,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _processFigures.SetWordWrap(true);
         _processFigures.SetTextFormat(Qt.TextFormat.PlainText);
         processBody.AddWidget(_processFigures);
-        processBody.AddWidget(Label("stats.process.definition", "muted"));
 
         // What the layers served and what the process moved are two different counts, and the
         // difference is the part nobody has attributed yet: this is that arithmetic, said out loud.
@@ -313,7 +311,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _reconcile.SetWordWrap(true);
         _reconcile.SetTextFormat(Qt.TextFormat.PlainText);
         accountBody.AddWidget(_reconcile);
-        accountBody.AddWidget(Label("stats.reconcile.definition", "muted"));
         _responseCost = new QLabel();
         _responseCost.SetObjectName("muted");
         _responseCost.SetWordWrap(true);
@@ -503,7 +500,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var last = _processHistory[^1];
         if (last.WorkingSet <= 0 || last.Threads <= 0 || last.Handles <= 0)
             throw new InvalidOperationException($"A process reading came back empty: {last}");
-        if (!_processFigures.Text.Contains(last.Threads.ToString(I18n.Culture), StringComparison.Ordinal))
+        // The line under the cards is the section's own summary — how many processes, what they
+        // cost and what they hold — so it is the working set it has to be reporting.
+        if (!_processFigures.Text.Contains(ByteUnits.Format(last.WorkingSet), StringComparison.Ordinal))
             throw new InvalidOperationException("The process figures do not report what was just read");
     }
 
@@ -2028,6 +2027,12 @@ internal sealed class PerformanceChart : QWidget
     /// <summary>What the card is showing, for the export and its own smoke checks.</summary>
     internal string TitleKey => _titleKey;
     internal string Unit => _unit;
+    /// <summary>The unit as it is written out. A unit can be a catalog key — cores are counted in a
+    /// word, where a rate, a byte and a millisecond are counted in a symbol the whole world spells
+    /// the same — so it is lettered here rather than where the card is built, which is once. A
+    /// string with no translation of its own comes back as itself, which is what the symbols do.
+    /// </summary>
+    private string UnitText => I18n.T(_unit);
     internal IReadOnlyList<ChartFigure> Figures => _figures;
     internal ChartStatistics Statistics => _stats;
     internal ChartDomain Domain => _domain;
@@ -2368,6 +2373,10 @@ internal sealed class PerformanceChart : QWidget
     /// first domain's labels to make room for.</summary>
     private void ConfigureAxes()
     {
+        // A legend names the series so a reader can tell which band is which; a card that draws one
+        // series has nothing to tell apart, and its row would only repeat the title above it. It is
+        // decided before the axes are scaled because the room it takes is part of that answer.
+        _chart.Legend().SetVisible(_series.Count > 1);
         // How many intervals the value axis can carry is a question about how much of the plot the
         // data actually gets, and a chart elides a label that does not fit rather than crowding it:
         // asked for too many, it answers with a column of dots. So the domain is given a ceiling
@@ -2382,7 +2391,7 @@ internal sealed class PerformanceChart : QWidget
         // that are upright, and every label that carries its own unit needs nothing explained. A
         // byte card is scaled into kilobytes or megabytes by what it holds, so the label says which
         // one it is; a card with no unit of its own — threads, handles — says nothing extra.
-        string value = ChartDomain.TickFormat(_domain.Step) + (_domain.Unit.Length > 0 ? " " + _domain.Unit : "");
+        string value = ChartDomain.TickFormat(_domain.Step) + (_domain.Unit.Length > 0 ? " " + I18n.T(_domain.Unit) : "");
         _valueAxis.SetRange(_domain.Floor, _domain.Max);
         _valueAxis.SetTickType(QValueAxis.TickType.TicksFixed);
         _valueAxis.SetTickCount(_domain.GridLines + 1);
@@ -2539,7 +2548,7 @@ internal sealed class PerformanceChart : QWidget
     {
         "B" => ByteUnits.Format(value),
         "" => value.ToString("0.##", I18n.Culture),
-        _ => value.ToString("0.##", I18n.Culture) + " " + _unit
+        _ => value.ToString("0.##", I18n.Culture) + " " + UnitText
     };
 
     /// <summary>A figure in the chart's own unit. The window total is an amount rather than a
@@ -2554,7 +2563,7 @@ internal sealed class PerformanceChart : QWidget
             _ => _stats.Total
         };
         if (figure == ChartFigure.Total && _unit == "/s") return value.ToString("0.##", I18n.Culture);
-        return _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + _unit;
+        return _unit == "B" ? ByteUnits.Format(value) : value.ToString("0.##", I18n.Culture) + " " + UnitText;
     }
 
     private static string FigureKey(ChartFigure figure) => figure switch
@@ -2575,7 +2584,7 @@ internal sealed class PerformanceChart : QWidget
         using var unitFont = new QFont("Segoe UI", 11);
         using var numberMetrics = new QFontMetrics(numberFont);
         using var unitMetrics = new QFontMetrics(unitFont);
-        var (number, unit) = _unit == "B" ? ByteUnits.Split(_stats.Current) : (_stats.Current.ToString("0.##", I18n.Culture), _unit);
+        var (number, unit) = _unit == "B" ? ByteUnits.Split(_stats.Current) : (_stats.Current.ToString("0.##", I18n.Culture), UnitText);
         string text = hasData ? number : "—";
         p.SetFont(numberFont);
         p.SetPen(new QPen(new QColor(_color)));
