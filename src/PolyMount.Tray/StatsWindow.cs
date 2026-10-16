@@ -1,6 +1,7 @@
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
+using QtSharp.Charts;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -1764,10 +1765,36 @@ internal sealed class PerformanceChart : QWidget
     private const int HeadlineBaseline = 63, SeriesBaseline = 80;
     /// <summary>Gap between the headline and the first figure, and between figures.</summary>
     private const int FigureGap = 20;
+    /// <summary>The room the card keeps outside the plot: at the sides, above it for the value
+    /// axis' unit, and under it for the time axis' ticks and the two captions.</summary>
+    private const int PlotInset = 18, UnitStrip = 14, CaptionStrip = 34;
     private readonly string _titleKey, _color, _unit;
     private readonly ChartFigure[] _figures;
     private DateTime _end;
     private List<ChartSeries> _series = new();
+    /// <summary>The plot itself: a Qt chart the card hosts as a child widget. It owns the grid, the
+    /// axes, the areas and the lines, which is what keeps a value and the line under it from ending
+    /// up a pixel apart — one transform decides both. The card keeps its frame, its headline, its
+    /// figures and its own legend row, and letters the time axis itself from the positions the
+    /// chart maps its own ticks to.</summary>
+    private readonly QChart _chart;
+    private readonly QChartView _plot;
+    private readonly QValueAxis _valueAxis = new();
+    private readonly QValueAxis _timeAxis = new();
+    /// <summary>What the chart is holding, so a rebuild can take it back: the series it was given,
+    /// and the notes drawn into it (a recording's edges, which are not data).</summary>
+    private readonly List<QAreaSeries> _bands = new();
+    private readonly List<QLineSeries> _edges = new();
+    private readonly List<QGraphicsSimpleTextItem> _notes = new();
+
+    /// <summary>How many recording edges can be lettered at once: two rows of two, which is more
+    /// than one recording's pair and the one that has just left the window.</summary>
+    private const int NoteSlots = 4;
+    /// <summary>What the last plot was drawn against: the value domain the axis was set from, and
+    /// the step its ticks stand at. The card letters the axes from these, so its own words come
+    /// from the numbers the chart drew its grid with.</summary>
+    private ChartDomain _domain;
+    private double _tickStep = 1;
 
     /// <summary>What this card is drawing, for the smoke run's check that the byte cards add up to
     /// what the operating system recorded.</summary>
@@ -1789,6 +1816,34 @@ internal sealed class PerformanceChart : QWidget
             _ => new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total }
         };
         SetMinimumSize(330, 210);
+        // The card's own furniture is painted by the card; everything inside the plot comes from
+        // the chart — its grid, its axes, the areas and the lines — so the two cannot disagree
+        // about where a value or a moment is.
+        _chart = new QChart();
+        _chart.SetTheme(QChart.ChartTheme.ChartThemeLight);
+        _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
+        _chart.SetBackgroundVisible(false);
+        _chart.SetPlotAreaBackgroundVisible(false);
+        // The margins are what the chart keeps around its plot area for the axis labels: the edge
+        // labels are drawn there, and a chart that keeps none clips them to an ellipsis.
+        _chart.SetMargins(new QMargins(38, 4, 8, 0));
+        _chart.SetLocalizeNumbers(false);
+        _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
+        _valueAxis.SetLabelsColor(new QColor("#718096"));
+        _valueAxis.SetGridLineColor(new QColor("#e7edf5"));
+        _valueAxis.SetLineVisible(false);
+        _valueAxis.SetMinorTickCount(0);
+        // The time axis keeps its gridlines and gives up its labels: the card letters them, because
+        // what they say is a span and a unit the reader chose ("-30s" at thirty seconds, "5m" at
+        // five minutes), which is a sentence rather than a number format.
+        _timeAxis.SetLabelsVisible(false);
+        _timeAxis.SetGridLineColor(new QColor("#e7edf5"));
+        _timeAxis.SetLineVisible(false);
+        _timeAxis.SetMinorTickCount(0);
+        _chart.AddAxis(_timeAxis, Qt.Alignment.AlignBottom);
+        _chart.AddAxis(_valueAxis, Qt.Alignment.AlignLeft);
+        _plot = new QChartView(_chart, this);
+        _plot.SetRenderHint(QPainter.RenderHint.Antialiasing);
     }
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
@@ -1803,6 +1858,9 @@ internal sealed class PerformanceChart : QWidget
     public void SetMarkers(IReadOnlyList<ChartMarker> markers)
     {
         _markers = markers;
+        // A recording's edges arrive between samples — the moment one is opened or closed — so they
+        // are drawn into the chart as they come rather than waiting for the window to move.
+        PlotNotes(_domain);
         RefreshToolTip();
         Update();
     }
@@ -1873,8 +1931,203 @@ internal sealed class PerformanceChart : QWidget
             _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
         }
         _series = series.Select(item => item with { Samples = Windowed(item.Samples, end, SpanSeconds) }).ToList();
+        PlacePlot();
+        Plot();
         RefreshToolTip();
         Update();
+    }
+
+    /// <summary>Hands the window to the chart: an area per run of every series, the two axes, and a
+    /// note per recording edge. Runs are split the way the drawing always split them — a gap wider
+    /// than <see cref="GapSeconds"/> is a pause, and a series is not one line across it.
+    ///
+    /// The series are added back to front, so the first one in the list is drawn last and reads as
+    /// the top of the stack; what is not stacked is drawn over what came before it instead.</summary>
+    private void Plot()
+    {
+        foreach (var band in _bands) { _chart.RemoveSeries(band); band.Dispose(); }
+        foreach (var edge in _edges) { _chart.RemoveSeries(edge); edge.Dispose(); }
+        _bands.Clear();
+        _edges.Clear();
+
+        var domain = ChartDomain.Of(_series, _unit, Math.Max(2, _plot.Height / 42.0));
+        _domain = domain;
+        _valueAxis.SetRange(domain.Floor, domain.Max);
+        _valueAxis.SetTickCount(domain.GridLines + 1);
+        _valueAxis.SetLabelFormat(TickFormat(domain.Step));
+        _timeAxis.SetRange(0, SpanSeconds);
+
+        var times = _series.SelectMany(item => item.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
+        var values = _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+        var baseline = new double[times.Length];
+        for (int layer = _series.Count - 1; layer >= 0; layer--)
+        {
+            var item = _series[layer];
+            var lower = times.Select((time, index) => !item.Stacked || values[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
+            var upper = times.Select((time, index) => lower[index] + values[layer].GetValueOrDefault(time)).ToArray();
+            int start = 0;
+            while (start < times.Length)
+            {
+                int finish = start + 1;
+                while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
+                var top = new QLineSeries();
+                var bottom = new QLineSeries();
+                for (int index = start; index < finish; index++)
+                {
+                    double x = SpanSeconds - (_end - times[index]).TotalSeconds;
+                    top.Append(x, upper[index]);
+                    bottom.Append(x, lower[index]);
+                }
+                var area = new QAreaSeries(top, bottom);
+                using var fill = new QColor(item.Color);
+                fill.SetAlpha(155);
+                if (item.Hatched)
+                {
+                    using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
+                    hatch.SetColor(fill);
+                    area.SetBrush(hatch);
+                }
+                else area.SetBrush(new QBrush(fill));
+                using var stroke = new QColor(item.Color);
+                using var pen = new QPen(stroke);
+                if (item.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
+                pen.SetWidthF(1.8);
+                area.SetPen(pen);
+                _chart.AddSeries(area);
+                area.AttachAxis(_timeAxis);
+                area.AttachAxis(_valueAxis);
+                _bands.Add(area);
+                start = finish;
+            }
+            if (item.Stacked)
+                for (int index = 0; index < times.Length; index++)
+                    if (upper[index] > baseline[index]) baseline[index] = upper[index];
+        }
+        PlotNotes(domain);
+    }
+
+    /// <summary>The number format for the value axis' labels: as many decimals as the step the
+    /// domain chose has, so a step of 0.5 does not letter itself "0" over and over.</summary>
+    private static string TickFormat(double step) =>
+        "%." + Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15).ToString(I18n.Culture) + "f";
+
+    /// <summary>How long ago each tick of the time axis is, from the oldest end of the window to
+    /// now: the card letters the axis from this, so the words under the gridlines and the gridlines
+    /// themselves come from one list.</summary>
+    internal double[] Ticks()
+    {
+        int width = Math.Max(240, _plot.Width);
+        double labelWidth = width / 8.0;
+        _tickStep = TimeStep(SpanSeconds / Math.Max(2, width / Math.Max(70, labelWidth)));
+        var ticks = new List<double>();
+        for (double at = 0; at <= SpanSeconds + _tickStep / 1000; at += _tickStep) ticks.Add(at);
+        return ticks.ToArray();
+    }
+
+    /// <summary>What the time axis says at one of its ticks: how long ago that moment was, in the
+    /// unit the step is readable in — seconds up to a minute, minutes past it.</summary>
+    private string TickText(double tick) =>
+        SpanSeconds - tick <= 0.0001 ? "0" : "−" + TimeTick(SpanSeconds - tick, _tickStep);
+
+    /// <summary>A recording's edges, drawn into the chart as annotation rather than as data: a
+    /// hairline dashed in the recording's own colour, dashed so it never reads as the boundary of a
+    /// fill, and faint enough that the series it crosses stay the subject. Each carries its words
+    /// beside it, on the side with room; two edges close together drop to a second row rather than
+    /// overprint each other. Both fade over the last stretch of the window, so a mark leaves the
+    /// way it arrived instead of being cut off at the edge.</summary>
+    private void PlotNotes(ChartDomain domain)
+    {
+        if (_plot.Scene() is not { } scene) return;
+        using var labelFont = new QFont("Segoe UI", 8);
+        var placed = new List<(double Left, double Right, int Row)>();
+        int slot = 0;
+        foreach (var marker in _markers.OrderBy(mark => mark.Time))
+        {
+            if (marker.Time < _end.AddSeconds(-SpanSeconds) || marker.Time > _end) continue;
+            double x = SpanSeconds - (_end - marker.Time).TotalSeconds;
+            double fade = x >= SpanSeconds * 0.12 ? 1 : Math.Clamp(x / (SpanSeconds * 0.12), 0, 1);
+            var line = new QLineSeries();
+            line.Append(x, domain.Floor);
+            line.Append(x, domain.Max);
+            using var hairline = new QColor(marker.Color);
+            hairline.SetAlpha((int)Math.Min(fade, 0.45) * 255);
+            using var pen = new QPen(hairline);
+            pen.SetStyle(Qt.PenStyle.DashLine);
+            pen.SetWidthF(1.2);
+            line.SetPen(pen);
+            _chart.AddSeries(line);
+            line.AttachAxis(_timeAxis);
+            line.AttachAxis(_valueAxis);
+            _edges.Add(line);
+
+            if (slot >= NoteSlots) break;
+            while (_notes.Count <= slot)
+            {
+                var fresh = new QGraphicsSimpleTextItem();
+                fresh.SetFont(labelFont);
+                scene.AddItem(fresh);
+                _notes.Add(fresh);
+            }
+            var item = _notes[slot++];
+            item.SetText(I18n.T(marker.LabelKey));
+            using var ink = new QColor(marker.Color);
+            ink.SetAlpha((int)(fade * 255));
+            item.SetBrush(new QBrush(ink));
+            var at = _chart.MapToPosition(new QPointF(x, domain.Max));
+            double width = item.BoundingRect().Width();
+            double beside = at.X() + 5 + width <= _plot.Width ? at.X() + 5 : at.X() - 5 - width;
+            double left = Math.Clamp(beside, 0, Math.Max(0, _plot.Width - width));
+            int row = placed.Any(other => other.Row == 0 && left < other.Right + 6 && left + width > other.Left - 6) ? 1 : 0;
+            if (row > 0 && placed.Any(other => other.Row == 1 && left < other.Right + 6 && left + width > other.Left - 6)) { slot--; continue; }
+            placed.Add((left, left + width, row));
+            item.SetPos(left, at.Y() + 3 + row * 16);
+            item.SetVisible(true);
+        }
+        // The rest of the slots belong to edges that have left the window since.
+        for (int rest = slot; rest < _notes.Count; rest++) _notes[rest].SetVisible(false);
+    }
+
+    /// <summary>What the card keeps above the plot for its own furniture: the title, the headline
+    /// and the row of series. It is a fixed strip, which is what the plot's own top edge used to
+    /// be, so a card does not move its plot when the legend row comes or goes.
+    /// </summary>
+    private int HeaderHeight => _series.Count > 0 ? 108 : 88;
+
+    /// <summary>Gives the chart everything the card does not keep: the header above the plot, and
+    /// the strip below it where the time axis' ticks are lettered and the two captions sit. The
+    /// chart is a child widget, so what the card paints is only visible outside this rectangle.
+    /// </summary>
+    private void PlacePlot()
+    {
+        int width = Math.Max(1, Width - 2 * PlotInset);
+        int height = Math.Max(1, Height - HeaderHeight - CaptionStrip);
+        var plot = _plot.Geometry;
+        if (plot.X() != PlotInset || plot.Y() != HeaderHeight || plot.Width() != width || plot.Height() != height)
+            _plot.SetGeometry(PlotInset, HeaderHeight, width, height);
+    }
+
+    public override void ResizeEvent(QResizeEvent e)
+    {
+        base.ResizeEvent(e);
+        PlacePlot();
+        Plot();
+    }
+
+    /// <summary>Where a moment of the window sits inside the card, in the card's own coordinates:
+    /// the chart maps it into the scene, and the scene is the view's viewport.</summary>
+    private QPointF At(double seconds, double value)
+    {
+        var mapped = _chart.MapToPosition(new QPointF(seconds, value));
+        var plot = _plot.Geometry;
+        return new QPointF(plot.X() + mapped.X(), plot.Y() + mapped.Y());
+    }
+
+    /// <summary>The plot's rectangle inside the card.</summary>
+    private QRectF PlotInCard()
+    {
+        var area = _chart.PlotArea;
+        var plot = _plot.Geometry;
+        return new QRectF(plot.X() + area.X(), plot.Y() + area.Y(), area.Width(), area.Height());
     }
 
     /// <summary>A series as the window shows it. A card is drawn against one moment — the moment
@@ -2080,161 +2333,47 @@ internal sealed class PerformanceChart : QWidget
                 }
             }
 
-            int top = legend ? 108 : 88, right = width - 18, bottom = height - 46;
-            var domain = ChartDomain.Of(_series, _unit, Math.Max(2, (bottom - top) / 36.0));
-            double max = domain.Max, valueStep = domain.Step, floor = domain.Floor;
-            int gridLines = domain.GridLines;
+            // The plot itself is the chart's: it drew its grid, its axes, the areas and the lines
+            // as this event was reached. What is left for the card is the lettering around it —
+            // every position below comes from the chart's own mapping, so a caption sits under the
+            // gridline it names rather than near it.
+            var area = PlotInCard();
+            if (area.Width() <= 0 || area.Height() <= 0) return;
             using var smallFont = new QFont("Segoe UI", 8);
-            p.SetFont(smallFont);
             using var fontMetrics = new QFontMetrics(smallFont);
-            int labelWidth = Enumerable.Range(0, gridLines + 1)
-                .Max(i => fontMetrics.HorizontalAdvance(TickText(floor + ChartDomain.TickValue(i, valueStep), valueStep)));
-            int left = 18 + labelWidth + 10;
-            int timeLabelWidth = fontMetrics.HorizontalAdvance("−" + TimeTick(SpanSeconds, SpanSeconds)) + 24;
-            double timeStep = TimeStep(SpanSeconds / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth)));
+            p.SetFont(smallFont);
             p.SetPen(new QPen(new QColor("#718096")));
-            string maxLabel = TickText(max, valueStep) + " " + domain.Unit;
-            p.DrawText(right - fontMetrics.HorizontalAdvance(maxLabel), top - 8, maxLabel);
-            p.DrawText(left, height - 10, I18n.F("stats.history", SpanText(SpanSeconds)));
-            p.DrawText(right - fontMetrics.HorizontalAdvance(I18n.T("stats.now")), height - 10, I18n.T("stats.now"));
-            using var gridPen = new QPen(new QColor("#e7edf5"));
-            using var labelPen = new QPen(new QColor("#718096"));
-            for (int i = 0; i <= gridLines; i++)
+            var view = _plot.Geometry;
+            // The unit the value axis is scaled in, over the top right corner of the plot: the one
+            // place a reader looks for it, and the one the chart itself does not use.
+            if (_unit.Length > 0 && _series.Count > 0)
             {
-                int y = bottom - (int)Math.Round((bottom - top) * i / (double)gridLines);
-                p.SetPen(gridPen);
-                p.DrawLine(left, y, right, y);
-                string label = TickText(floor + ChartDomain.TickValue(i, valueStep), valueStep);
-                p.SetPen(labelPen);
-                p.DrawText(left - 10 - fontMetrics.HorizontalAdvance(label), y + 4, label);
+                string top = TickText(_domain.Max, _domain.Step) + " " + _domain.Unit;
+                p.DrawText((int)(area.Right() - fontMetrics.HorizontalAdvance(top)), view.Y() - 4, top);
             }
-            for (double seconds = 0; seconds <= SpanSeconds; seconds += timeStep)
+            // The ticks are lettered under the plot rather than by the chart, because what they say
+            // is a span and a unit the reader chose ("-30s" at thirty seconds, "5m" at five
+            // minutes). Where they go is not this card's guess: each sits under the gridline the
+            // chart drew for it.
+            int ticksY = view.Y() + view.Height() + 12;
+            foreach (double tick in Ticks())
             {
-                int x = right - (int)Math.Round((right - left) * seconds / SpanSeconds);
-                p.SetPen(gridPen);
-                p.DrawLine(x, top, x, bottom);
-                string label = seconds == 0 ? "0" : "−" + TimeTick(seconds, timeStep);
-                int textWidth = fontMetrics.HorizontalAdvance(label);
-                p.SetPen(labelPen);
-                p.DrawText(Math.Clamp(x - textWidth / 2, left, right - textWidth), bottom + 17, label);
+                string text = TickText(tick);
+                int at = (int)Math.Round(At(tick, _domain.Floor).X());
+                int room = fontMetrics.HorizontalAdvance(text);
+                int x = Math.Clamp(at - room / 2, PlotInset, Math.Max(PlotInset, PlotInset + view.Width() - room));
+                p.DrawText(x, ticksY, text);
             }
-
-            double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / SpanSeconds, 0, 1) * (right - left);
-            // Clamped to the domain, so a sample reaching past the floor rests on it rather
-            // than somewhere off the canvas.
-            double Y(double number) => bottom - (Math.Clamp(number / domain.Scale, floor, max) - floor) / (max - floor) * (bottom - top);
-            var baseline = new double[times.Length];
-            // The last provider is the bottom of the chain and of the area stack.
-            for (int layer = _series.Count - 1; layer >= 0; layer--)
-            {
-                var series = _series[layer];
-                // A contribution that is not part of a stack is drawn at its own value, from the
-                // zero line; a negative one hangs below the line either way.
-                var lower = times.Select((time, index) => !series.Stacked || valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
-                var upper = times.Select((time, index) => lower[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
-                int start = 0;
-                while (start < times.Length)
-                {
-                int finish = start + 1;
-                while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
-                using var fill = new QPainterPath();
-                fill.MoveTo(X(times[start]), Y(lower[start]));
-                for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
-                for (int index = finish - 1; index >= start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
-                fill.CloseSubpath();
-                using var fillColor = new QColor(series.Color);
-                fillColor.SetAlpha(155);
-                p.SetPen(new QPen(Qt.PenStyle.NoPen));
-                if (series.Hatched)
-                {
-                    using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
-                    hatch.SetColor(fillColor);
-                    p.SetBrush(hatch);
-                }
-                else p.SetBrush(new QBrush(fillColor));
-                p.DrawPath(fill);
-                using var line = new QPainterPath();
-                line.MoveTo(X(times[start]), Y(upper[start]));
-                for (int index = start + 1; index < finish; index++) line.LineTo(X(times[index]), Y(upper[index]));
-                using var pen = new QPen(new QColor(series.Color));
-                if (series.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
-                pen.SetWidthF(1.8);
-                p.SetPen(pen);
-                p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
-                p.DrawPath(line);
-                start = finish;
-                }
-                if (series.Stacked)
-                    for (int index = 0; index < times.Length; index++)
-                        if (upper[index] > baseline[index]) baseline[index] = upper[index];
-            }
-            if (times.Length == 0)
+            int caption = Math.Min(Height - 6, ticksY + 15);
+            p.DrawText(PlotInset, caption, I18n.F("stats.history", SpanText(SpanSeconds)));
+            string now = I18n.T("stats.now");
+            p.DrawText(PlotInset + view.Width() - fontMetrics.HorizontalAdvance(now), caption, now);
+            if (_series.Count == 0)
             {
                 p.SetPen(new QPen(new QColor("#94a3b8")));
-                p.DrawText(left + 12, top + 30, I18n.T("stats.noData"));
+                p.DrawText((int)area.Left() + 12, (int)area.Top() + 30, I18n.T("stats.noData"));
             }
-            DrawMarkers(p, left, right, top, bottom);
         }
         finally { p.End(); }
-    }
-
-    /// <summary>A recording's edges, drawn as annotation rather than as data: a hairline dashed in
-    /// the recording's own colour, dashed so it never reads as the boundary of a fill, and faint
-    /// enough that the series it crosses stay the subject. Each carries a small pill at the top of
-    /// the plot — white enough to be read over any fill, outlined and lettered in the same colour.
-    /// Both fade over the last stretch of the window, so a mark leaves the way it arrived instead
-    /// of being cut off at the edge. Two marks that would overlap keep their lines and drop the
-    /// label: the axis position is the information, the words are the convenience.</summary>
-    private void DrawMarkers(QPainter p, int left, int right, int top, int bottom)
-    {
-        if (_markers.Count == 0) return;
-        double fadeFrom = left + (right - left) * 0.12;
-        using var labelFont = new QFont("Segoe UI", 8);
-        using var metrics = new QFontMetrics(labelFont);
-        var placed = new List<(int Left, int Right, int Row)>();
-        foreach (var marker in _markers.OrderBy(mark => mark.Time))
-        {
-            if (marker.Time < _end.AddSeconds(-SpanSeconds) || marker.Time > _end) continue;
-            int x = (int)Math.Round(left + Math.Clamp(1 - (_end - marker.Time).TotalSeconds / SpanSeconds, 0, 1) * (right - left));
-            int alpha = x >= fadeFrom ? 255 : (int)Math.Clamp(255.0 * (x - left) / (fadeFrom - left), 0, 255);
-            using var color = new QColor(marker.Color);
-            using var hairline = new QColor(marker.Color);
-            hairline.SetAlpha(Math.Min(alpha, 110));
-            using var pen = new QPen(hairline);
-            pen.SetStyle(Qt.PenStyle.DashLine);
-            pen.SetWidthF(1.2);
-            p.SetPen(pen);
-            p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
-            p.DrawLine(x, top, x, bottom);
-
-            string text = I18n.T(marker.LabelKey);
-            int width = metrics.HorizontalAdvance(text) + 14, height = 16;
-            // The label sits beside its line, on the side with room, and drops to a second row when
-            // a mark nearby already claimed the first: two edges of one recording are close together
-            // by nature, and their words are the part a reader came for — the line alone would say
-            // where, not what.
-            int pill = x + 5;
-            if (pill + width > right) pill = x - 5 - width;
-            pill = Math.Clamp(pill, left, Math.Max(left, right - width));
-            int row = 0;
-            while (row < 2 && placed.Any(other => other.Row == row && pill < other.Right + 6 && pill + width > other.Left - 6)) row++;
-            if (row == 2) continue;
-            placed.Add((pill, pill + width, row));
-            int bodyTop = top + 3 + row * (height + 3);
-            using var body = new QColor("#ffffff");
-            body.SetAlpha(alpha * 5 / 6);
-            p.SetPen(new QPen(Qt.PenStyle.NoPen));
-            p.SetBrush(new QBrush(body));
-            p.DrawRoundedRect(pill, bodyTop, width, height, 8, 8);
-            color.SetAlpha(alpha);
-            using var edge = new QPen(color);
-            edge.SetWidthF(1.0);
-            p.SetPen(edge);
-            p.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
-            p.DrawRoundedRect(pill, bodyTop, width, height, 8, 8);
-            p.SetPen(new QPen(color));
-            p.SetFont(labelFont);
-            p.DrawText(pill + 7, bodyTop + height - 5, text);
-        }
     }
 }
