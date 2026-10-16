@@ -104,6 +104,13 @@ internal sealed class ChartPreview : QWidget
         {
             new("memory-cache", "#2563eb", 48213, 0), new("cache", "#0891b2", 12044, 0),
             new("overlay", "#059669", 3120, 908), new("svn", "#f59e0b", 1402, 0)
+        },
+        // Who asked over the same window: two tools doing the reading, one of them writing too, and
+        // a background service that only shows up because it read something.
+        new List<AccessSlice>
+        {
+            new("Code.exe", "#7c3aed", 39104, 640), new("Explorer.EXE", "#0891b2", 14822, 12),
+            new("svn.exe", "#f59e0b", 6102, 0), new("MsMpEng.exe", "#94a3b8", 4201, 0)
         });
     }
 

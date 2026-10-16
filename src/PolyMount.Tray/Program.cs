@@ -17,8 +17,11 @@ internal static class Program
         // Qt argv includes the executable name; Main(args) omits it.
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
         InstallCrashTracer();
+        TrayLog.Start();
         I18n.Initialize();
         TrayTheme.Initialize();
+        Serilog.Log.Information("PolyMount tray {Version} starting ({Mode})",
+            typeof(Program).Assembly.GetName().Version, args.Length == 0 ? "window" : string.Join(' ', args));
         using var options = new QCommandLineParser();
         options.SetApplicationDescription("PolyMount tray and object layer management.");
         using var help = options.AddHelpOption();
@@ -161,7 +164,7 @@ internal static class Program
                 NativeLibrary.GetExport(library, "InstallCrashTracer"), typeof(CrashTracerInstall));
             install();
         }
-        catch (Exception ex) { Console.Error.WriteLine("crash tracer not installed: " + ex.Message); }
+        catch (Exception ex) { Serilog.Log.Warning(ex, "the crash tracer was not installed"); }
     }
 
     private static QMenu BuildMenu()
@@ -390,7 +393,9 @@ internal static class Program
                     "stats.process.handles", "stats.process.figures", "stats.unit.cores",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
                     "theme", "theme.system", "theme.light", "theme.dark",
-                    "stats.access.reads", "stats.access.writes", "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
+                    "stats.access.reads", "stats.access.writes", "stats.access.readsProcesses", "stats.access.writesProcesses",
+                    "stats.access.other", "stats.process.pid", "stats.process.unattributed",
+                    "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
                     "stats.reconcile.bytes", "record.process",
                     "disable", "disable.done", "disable.tip", "enable.tip", "confirm.disable",
@@ -428,6 +433,8 @@ internal static class Program
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
                     stats.VerifyCharts();
+                    stats.VerifySmoothing();
+                    stats.VerifyFrames();
                     stats.VerifyChartsModule(capture == null ? null : Path.Combine(capture, "charts-module.png"));
                     stats.VerifyHistories();
                     stats.VerifyProcess();

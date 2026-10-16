@@ -130,6 +130,26 @@
       <source>stats.access.writes</source>
       <translation>Writes by layer</translation>
     </message>
+    <message>
+      <source>stats.access.readsProcesses</source>
+      <translation>Reads by process</translation>
+    </message>
+    <message>
+      <source>stats.access.writesProcesses</source>
+      <translation>Writes by process</translation>
+    </message>
+    <message>
+      <source>stats.access.other</source>
+      <translation>other</translation>
+    </message>
+    <message>
+      <source>stats.process.pid</source>
+      <translation>PID {0}</translation>
+    </message>
+    <message>
+      <source>stats.process.unattributed</source>
+      <translation>no attributable process</translation>
+    </message>
     <message><source>stats.access.slice</source><translation>{0} · {1:N0} · {2:0.0}%</translation></message>
     <message>
       <source>stats.access.counts</source>

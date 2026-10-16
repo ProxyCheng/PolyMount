@@ -42,13 +42,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// move for different reasons, a memory budget evicting against a disk budget filling up, and
     /// the sum of them is a number with no budget behind it.</summary>
     private readonly PerformanceChart _heldMemory, _heldDisk;
+    /// <summary>Every card the page draws, in one list: what a frame of the movement between two
+    /// samples hands a later moment to, all of them at that one moment.</summary>
+    private readonly PerformanceChart[] _cards;
     private readonly QLabel _reconcile;
     /// <summary>The moment every card is drawn up to: the newest observation of the window the page
-    /// samples at the reader's rate. The other two histories are read at cadences of their own —
-    /// what the layers hold once a second, what the process costs with every request — and a card
-    /// fed by one of them used to be drawn against that history's own newest row, so the six cards
-    /// disagreed about where "now" was by up to a second and drifted apart as the cadences drifted.
-    /// A series whose own rows stop short of this is carried to it; see PerformanceChart.Windowed.</summary>
+    /// samples at the reader's rate, and between samples whatever moment the movement of the picture
+    /// has reached — see <see cref="Animate"/>. The other two histories are read at cadences of their
+    /// own — what the layers hold once a second, what the process costs with every request — and a
+    /// card fed by one of them used to be drawn against that history's own newest row, so the six
+    /// cards disagreed about where "now" was by up to a second and drifted apart as the cadences
+    /// drifted. A series whose own rows stop short of this moment ends there; see
+    /// PerformanceChart.Windowed.</summary>
     private DateTime _clock = DateTime.UtcNow;
     private readonly PerformanceChart[] _processCharts;
     /// <summary>What the instance's own process moved, read and written: the operating system's
@@ -91,6 +96,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// than a screen can show, and past this the drawing folds them into buckets - the figures
     /// still come from every observation.</summary>
     private const int MaxPoints = 1200;
+    /// <summary>How far the picture may move between two frames of the movement between samples,
+    /// in pixels. Two is where a step sideways starts to be visible as one, so it is both the
+    /// reason to draw a frame and the size of the step: a sample that moves the curve less than
+    /// this does not need anything drawn between it and the last one.</summary>
+    private const double AnimationPixels = 2;
     /// <summary>Where the two choices below are remembered, beside the other preferences this tray
     /// keeps for a reader. Declared before them: a static initializer runs in the order it is
     /// written, and one that read this after it was set up would find it empty.</summary>
@@ -280,6 +290,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Gauge)
         };
         _processIo = new PerformanceChart("stats.process.moved", "#475569", "B", ChartSummary.Volume);
+        // Every card the page draws, in one list: what the movement between two samples has to hand
+        // a later moment to. The page does not draw them one at a time — it draws them at one
+        // moment, which is what stops the same instant landing a second apart on two of them.
+        _cards = _charts.Concat(new[] { _heldMemory, _heldDisk }).Concat(_processCharts).Append(_processIo).ToArray();
         var processGrid = new QGridLayout();
         processGrid.SetSpacing(16);
         for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
@@ -576,6 +590,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 throw new InvalidOperationException(
                     $"{chart.TitleKey} had to elide its value labels to fit its plot: {areas}");
         }
+        // The access section's four circles are cards of the same kind and squeeze the same way. What
+        // a squeeze does to them is worse than to a chart: a pie below its own width is one whose
+        // legend has been cut, and a legend of three-letter names is a circle nobody can read —
+        // measured with four of them across the page instead of two, which is why they are two to a
+        // row.
+        foreach (var (title, width, height, minWidth, minHeight) in _accessPie.Cards)
+            if (width < minWidth || height < minHeight)
+                throw new InvalidOperationException(
+                    $"The '{title}' access card is {width}x{height}, under its own {minWidth}x{minHeight} minimum");
     }
 
     /// <summary>Every chart card on this page, in the order the page lays them out.</summary>
@@ -738,19 +761,19 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (paused["m/a"][0].Time != start.AddSeconds(40))
             throw new InvalidOperationException(
                 $"A history kept a reading {paused["m/a"][0].Time - start} seconds old in a 30 second window");
-        // A series is cut to the window at both ends, whichever cadence fed it. At the left the
-        // value on the edge is the one the line has there, interpolated between the two rows that
-        // straddle it — moving the older row to the edge and keeping its value stretched that
-        // segment and made its end jump once per sample, which is what a reader saw as the left of
-        // the line moving. At the right a series that stops short of the moment the page is drawn
-        // up to — a level read once a second, on a card redrawn ten times as often — is carried to
-        // it, the same way the tooltip answers for a time between two readings.
+        // A series is cut to the window at its left edge, whichever cadence fed it, and at the right
+        // it is drawn no further than it was read. At the left the value on the edge is the one the
+        // line has there, interpolated between the two rows that straddle it — moving the older row
+        // to the edge and keeping its value stretched that segment and made its end jump once per
+        // sample, which is what a reader saw as the left of the line moving. At the right a series
+        // that stops short of the moment the page is drawn up to stops there: the part of the plot
+        // after its last reading is a part nothing was read for.
         var cut = PerformanceChart.Windowed(new List<(DateTime Time, double Value)>
         {
             (start.AddSeconds(-4), 0.0), (start.AddSeconds(16), 10.0), (start.AddSeconds(26), 20.0)
         }, start.AddSeconds(30), 30);
-        if (cut.Count != 4 || cut[0].Time != start || Math.Abs(cut[0].Value - 2.0) > 1e-9 ||
-            cut[^1].Time != start.AddSeconds(30) || cut[^1].Value != 20.0)
+        if (cut.Count != 3 || cut[0].Time != start || Math.Abs(cut[0].Value - 2.0) > 1e-9 ||
+            cut[^1].Time != start.AddSeconds(26) || cut[^1].Value != 20.0)
             throw new InvalidOperationException(
                 "A series is not cut to its window: " + string.Join(", ", cut.Select(sample => $"{sample.Value:0.###} at {(sample.Time - start).TotalSeconds:0.###}s")));
         // The time axis has to name its span and its ticks in the unit each makes readable: a
@@ -914,6 +937,110 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
             throw new InvalidOperationException($"Layer table shows {_table.RowCount} rows in {_table.Height} px");
 
+    }
+
+    /// <summary>Self-check for the line drawn between two observations: it passes through each of
+    /// them at the value that was measured, between two of them it never leaves the stretch they
+    /// span, readings that only rise are drawn only rising, and the grid the readings are drawn on
+    /// is the readings themselves wherever they are already close enough together to be a curve.
+    /// None of it needs a chart or a service.</summary>
+    internal void VerifySmoothing()
+    {
+        // A peak between two quiet stretches: the shape a curve that overshoots would round up into
+        // something taller than the reading it was given.
+        double[] nodes = { 0, 1, 2, 3, 4 };
+        double[] peak = { 0, 0, 10, 0, 0 };
+        var grid = new List<double>();
+        for (int i = 0; i < nodes.Length - 1; i++)
+            for (int part = 0; part < 8; part++)
+                grid.Add(nodes[i] + (nodes[i + 1] - nodes[i]) * part / 8.0);
+        grid.Add(nodes[^1]);
+        var drawn = SmoothCurve.Through(nodes, peak, grid.ToArray());
+        if (drawn.Length != grid.Count)
+            throw new InvalidOperationException($"The curve came back as {drawn.Length} points for the {grid.Count} it was asked about");
+        for (int i = 0; i < nodes.Length; i++)
+        {
+            int at = grid.IndexOf(nodes[i]);
+            if (at < 0) throw new InvalidOperationException($"The curve was not asked about the reading at {nodes[i]}");
+            if (drawn[at] != peak[i])
+                throw new InvalidOperationException($"The curve draws {drawn[at]} at a reading of {peak[i]}, which is not the reading");
+        }
+        for (int i = 0; i < grid.Count; i++)
+        {
+            int segment = Math.Min(nodes.Length - 2, (int)Math.Floor(grid[i]));
+            double low = Math.Min(peak[segment], peak[segment + 1]);
+            double high = Math.Max(peak[segment], peak[segment + 1]);
+            if (drawn[i] < low - 1e-9 || drawn[i] > high + 1e-9)
+                throw new InvalidOperationException(
+                    $"The curve reaches {drawn[i]:0.###} between the readings of {low} and {high}");
+        }
+        var rising = SmoothCurve.Through(nodes, new double[] { 0, 1, 2, 3, 4 }, grid.ToArray());
+        for (int i = 1; i < rising.Length; i++)
+            if (rising[i] < rising[i - 1] - 1e-9)
+                throw new InvalidOperationException(
+                    $"Readings that only rise were drawn falling at {grid[i]}: {rising[i - 1]:0.###} then {rising[i]:0.###}");
+        // The grid itself: a second of readings across fifteen minutes is a tenth of a pixel and is
+        // left alone; across a minute it is six pixels and is drawn in two; and a pause is not drawn
+        // across, so nothing is inserted into it.
+        if (PerformanceChart.Subdivisions(1, 900, 2.5, 360) != 1 ||
+            PerformanceChart.Subdivisions(1, 60, 2.5, 360) != 2 ||
+            PerformanceChart.Subdivisions(2, 60, 2.5, 360) != 3 ||
+            PerformanceChart.Subdivisions(30, 60, 2.5, 360) != 1)
+            throw new InvalidOperationException(
+                "The grid between readings is not the one the plot has room for: " +
+                $"{PerformanceChart.Subdivisions(1, 900, 2.5, 360)}, {PerformanceChart.Subdivisions(1, 60, 2.5, 360)}, " +
+                $"{PerformanceChart.Subdivisions(2, 60, 2.5, 360)}, {PerformanceChart.Subdivisions(30, 60, 2.5, 360)}");
+    }
+
+    /// <summary>Self-check for the movement between two samples: the same readings handed back a
+    /// moment later move the picture on the time axis and change nothing else — not the value axis,
+    /// which is scaled from readings that have not changed, and not the height the picture reaches —
+    /// and a window of different readings is scaled again rather than drawn against the axis of the
+    /// one before it. None of it needs a service.</summary>
+    internal void VerifyFrames()
+    {
+        DateTime at = DateTime.UtcNow;
+        using var card = new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume);
+        card.SpanSeconds = 30;
+        card.GapSeconds = 2.5;
+        card.SetSeries(Peaked(at, 4), at);
+        var scaled = card.Domain;
+        if (card.End != at)
+            throw new InvalidOperationException($"A card handed a reading at {at:HH:mm:ss.fff} drew up to {card.End:HH:mm:ss.fff}");
+        var (before, _) = card.Drawn;
+        card.Advance(at.AddSeconds(1));
+        if (card.End != at.AddSeconds(1))
+            throw new InvalidOperationException($"A card moved to {card.End:HH:mm:ss.fff} rather than to the moment it was given");
+        if (card.Domain != scaled)
+            throw new InvalidOperationException($"A frame of the same readings rescaled the axis from {scaled} to {card.Domain}");
+        // Nothing is drawn where nothing was read: the card moved a second on, and the newest
+        // reading is still where it was read rather than stretched out to the edge it moved to.
+        // A rate held over an interval nobody measured is a picture of something the page was
+        // never told, and it is the end of the line changing shape at every sample.
+        foreach (var series in card.Series)
+            if (series.Samples.Count == 0 || series.Samples[^1].Time != at)
+                throw new InvalidOperationException(
+                    $"A card moved to {at.AddSeconds(1):HH:mm:ss.fff} draws {series.Name} out to " +
+                    $"{series.Samples.LastOrDefault().Time:HH:mm:ss.fff}, which is not its last reading");
+        var (after, _) = card.Drawn;
+        // The peak the window reaches is where the reading put it: a curve drawn between readings
+        // that ran past one of them would show up here as a window reaching higher than its own
+        // readings do.
+        if (Math.Abs(before - 4) > 1e-9 || Math.Abs(after - 4) > 1e-9)
+            throw new InvalidOperationException($"A window of readings reaching 4 was drawn reaching {before} and then {after}");
+        card.SetSeries(Peaked(at.AddSeconds(1), 40), at.AddSeconds(1));
+        if (card.Domain == scaled)
+            throw new InvalidOperationException("Ten times the readings were scaled to the axis of the window before them");
+    }
+
+    /// <summary>One window of readings a second apart, with a peak in it that recurs, so that a
+    /// card's own checks have something to scale an axis to and something to keep reaching for.</summary>
+    private static List<ChartSeries> Peaked(DateTime end, double height)
+    {
+        var samples = new List<(DateTime Time, double Value)>();
+        for (int back = 30; back >= 0; back--)
+            samples.Add((end.AddSeconds(-back), back % 7 < 3 ? height : height * 0.4));
+        return new List<ChartSeries> { new("svn", "#f59e0b", samples) };
     }
 
     /// <summary>Self-check for a smoke run of the bundle a recording writes. The window's own snapshot
@@ -1126,6 +1253,43 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 });
             }
         }
+        // Between two samples the picture moves rather than waiting: the readings are the same
+        // ones, a moment of the clock later, which is a frame of the movement the reader sees.
+        Animate();
+    }
+
+    /// <summary>The movement between two samples. A reader on a slow rate sees the whole picture
+    /// step sideways once a second, a whole sampling interval at a time; what this draws is the
+    /// steps in between, so that what the page shows is the window sliding rather than the window
+    /// jumping.
+    ///
+    /// It is one moment for every card, taken here, because a card that moved to its own idea of
+    /// now would put the same instant in a different place on each of them — which is the drift the
+    /// cards were made to share a moment to avoid in the first place.
+    ///
+    /// Two things decide when a frame is drawn. The moment it draws to is now, so that the right
+    /// edge of every card is the moment the reader is reading it at; the readings behind it are
+    /// where they were read, and what has not been read since is the empty stretch between the last
+    /// reading and that edge — see Windowed. A frame is drawn once the moment has moved the curve
+    /// two pixels, which is where a step sideways starts to be visible as one: a span or a rate
+    /// whose samples already move it less than that is not drawn between them at all, and a slow
+    /// rate is drawn in steps of just those two pixels. And frames only happen while somebody is
+    /// looking at the page — the reading goes on either way, and a page nobody is looking at is
+    /// redrawn whole at its next sample's moment regardless.
+    ///
+    /// The frame rate is what the tick the page already runs on allows, ten a second, and what it
+    /// costs is one draw of the cards and nothing else: the tables, the pie and the reconciliation
+    /// are answers about the readings, and the readings have not changed.</summary>
+    private void Animate()
+    {
+        if (_paused || !IsVisible()) return;
+        double room = _charts[0].Areas.PlotWidth;
+        if (room <= 0) return;
+        double step = AnimationPixels * _rangeSeconds / room;
+        DateTime end = DateTime.UtcNow;
+        if (end < _clock.AddSeconds(step)) return;
+        foreach (var card in _cards) card.Advance(end);
+        _clock = end;
     }
 
 
@@ -1528,7 +1692,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var slices = accessRows.Select(r => new AccessSlice(selected == "" ? r.Mount + "/" + r.Layer.Name
             : string.IsNullOrEmpty(r.Layer.DisplayName) ? r.Layer.Name : r.Layer.DisplayName,
             string.IsNullOrEmpty(r.Layer.Color) ? "#64748B" : r.Layer.Color, r.Layer.Hits, r.Layer.Writes)).ToList();
-        _accessPie.SetSlices(slices);
+        // Who asked, over the same window, ranked and folded together: one application may be in two
+        // mounts' answers, so the fold is over the merged list rather than per instance — which is
+        // also why Core sends counts rather than shares for these. The row that stands for what was
+        // left over, and a process whose own name could not be read, are named by the page.
+        var processRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
+            .SelectMany(m => m.Processes).ToList();
+        var processSlices = ProcessFold.Top(processRows).Select(row => new AccessSlice(
+            row.Other ? I18n.T("stats.access.other")
+                : row.Name.Length > 0 ? row.Name : I18n.F("stats.process.pid", row.Pid),
+            row.Other ? "#94A3B8" : string.IsNullOrEmpty(row.Color) ? "#64748B" : row.Color,
+            row.Reads, row.Writes)).ToList();
+        _accessPie.SetSlices(slices, processSlices);
         // The line the layer section keeps while it is folded: how many layers there are and what
         // they served between them, which is enough to tell an instance that is working from one
         // that is not, without opening anything. The chart cards carry their own legend — the same
@@ -1804,22 +1979,34 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
     {
         var samples = series.ToList();
         var times = samples.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
-        var values = samples.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+        // As in Runs: the series on a card share one timeline, so when their times line up index for
+        // index there is nothing to look up and no dictionary to build - and this runs on every card
+        // on every sample, which is where a reader's stutter comes from.
+        bool aligned = samples.All(s => s.Samples.Count == times.Length);
+        for (int i = 0; aligned && i < samples.Count; i++)
+            aligned = samples[i].Samples.Select(sample => sample.Time).SequenceEqual(times);
+        var values = aligned
+            ? null
+            : samples.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         // What is stacked adds up, and what is drawn at its own value is only a candidate: two
         // overlaid series reach the taller of them, not their sum, and scaling to the sum would
         // leave the taller one short of the top of the plot.
-        double peak = times.Select(time =>
+        double At(int index, int step) => values == null
+            ? samples[index].Samples[step].Value
+            : values[index].GetValueOrDefault(times[step]);
+        double peak = times.Select((time, step) =>
         {
             double stacked = 0, alone = 0;
             for (int i = 0; i < samples.Count; i++)
             {
-                double value = values[i].GetValueOrDefault(time);
+                double value = At(i, step);
                 if (samples[i].Stacked) stacked += Math.Max(0, value);
                 else alone = Math.Max(alone, Math.Max(0, value));
             }
             return Math.Max(stacked, alone);
         }).DefaultIfEmpty(0).Max();
-        double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
+        double trough = times.Select((time, step) => samples.Select((s, i) => Math.Min(0, At(i, step))).Sum())
+            .DefaultIfEmpty(0).Min();
         var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
         // The axis is scaled to what the window reached, and to nothing else. The floor this used
         // to keep under that — five, for a rate — left the busiest second of a quiet instance drawn
@@ -1963,6 +2150,11 @@ internal sealed class PerformanceChart : QWidget
     private readonly ChartFigure[] _figures;
     private DateTime _end;
     private List<ChartSeries> _series = new();
+    /// <summary>The readings the last draw was handed, before they were cut to the window. A frame
+    /// between two samples is those same readings at a later moment, and it cuts them again from
+    /// here rather than from the window the last frame drew — a window cut twice is a window whose
+    /// own left edge has already been moved once.</summary>
+    private List<ChartSeries>? _given;
     /// <summary>The plot itself: a Qt chart the card hosts as a child widget. It owns the grid, the
     /// axes, the areas and the lines — and its own layout, which is the rectangle the axes and the
     /// legend leave it.</summary>
@@ -2191,7 +2383,37 @@ internal sealed class PerformanceChart : QWidget
             _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
         }
         _series = series.Select(item => item with { Samples = Windowed(item.Samples, end, SpanSeconds) }).ToList();
+        _given = series;
         Plot();
+        RefreshToolTip();
+        Update();
+    }
+
+    /// <summary>Draws the card at a moment later than the readings it was handed, with those same
+    /// readings: what a reader watching a slow rate sees is the whole picture stepping sideways once
+    /// a second, and this is the page drawing the steps in between.
+    ///
+    /// The moment is the page's and the readings are not: they are the ones it was given, cut to the
+    /// window this moment makes, so nothing is invented between them — the newest reading stays
+    /// where it was read, and the stretch between it and the right-hand edge is empty until the next
+    /// reading extends the line into it. The value axis is left as the last draw scaled it: it is
+    /// scaled from the readings, the readings are the same ones, and a frame that is a moment of the
+    /// same window is not a reason to move every gridline under it. What sliding the window does
+    /// change is which readings it still covers — a moment of them leaving on the left — and where
+    /// that has taken the tall ones with it, the axis is scaled again rather than left describing a
+    /// window that is gone.</summary>
+    public void Advance(DateTime end)
+    {
+        if (_given is not { } readings || end <= _end) return;
+        _end = end;
+        _series = readings.Select(item => item with { Samples = Windowed(item.Samples, end, SpanSeconds) }).ToList();
+        Plot(keepAxis: true);
+        var (peak, axis) = Drawn;
+        if (axis > 0 && (peak > axis * 1.001 || peak < axis * 0.5))
+        {
+            ConfigureAxes();
+            Plot(keepAxis: true);
+        }
         RefreshToolTip();
         Update();
     }
@@ -2208,6 +2430,11 @@ internal sealed class PerformanceChart : QWidget
     /// plot that does not exist yet — while the height it has been given is known immediately.</summary>
     private double PlotRoom() =>
         Math.Max(40, _plot.Height - AxisFurniture - (_chart.Legend().IsVisible() ? _chart.Legend().Geometry.Height() : 0));
+
+    /// <summary>How much of the plot widget the data gets across, counted the same way the height
+    /// is: what the chart's own corner padding and the value axis' labels leave of it. It is what
+    /// decides how finely the readings are drawn between each other — see DrawGrid.</summary>
+    private double PlotWidth => Math.Max(40, _plot.Width - AxisFurniture);
 
     /// <summary>One stretch of one series as the chart is holding it: the area, and the two lines it
     /// is built from. These are kept between draws and given new points, because a chart that is
@@ -2245,10 +2472,15 @@ internal sealed class PerformanceChart : QWidget
     /// A draw whose runs are the same runs as the last one moves their points rather than replacing
     /// them, which is the steady state of a page that is being watched: the same layers, drawn
     /// again, a moment later. Anything else — a layer appearing or going, a gap opening in the
-    /// readings — is a new set of items, and the chart is rebuilt for it.</summary>
-    private void Plot()
+    /// readings — is a new set of items, and the chart is rebuilt for it.
+    ///
+    /// <paramref name="keepAxis"/> draws the window against the value axis the last draw scaled,
+    /// which is what a frame of the movement between two samples does: it is a moment of the same
+    /// readings, and rescaling the axis for it would step the gridlines back and forth ten times a
+    /// second. See <see cref="Advance"/>, which is the only caller that asks for it.</summary>
+    private void Plot(bool keepAxis = false)
     {
-        ConfigureAxes();
+        if (!keepAxis) ConfigureAxes();
         var runs = Runs();
         bool same = runs.Count == _bands.Count;
         for (int index = 0; same && index < runs.Count; index++) same = _bands[index].Name == runs[index].Name;
@@ -2320,19 +2552,59 @@ internal sealed class PerformanceChart : QWidget
     /// taken in: a byte card's values are bytes and its axis is in whatever unit its tallest reading
     /// is read in (kilobytes, megabytes), which is what makes the axis readable and what makes a
     /// series drawn at its raw byte count an area that fills the plot whatever it holds — measured
-    /// on a card holding 15.94 MiB against an axis of 20 MiB, the fill reached the top of it.</summary>
+    /// on a card holding 15.94 MiB against an axis of 20 MiB, the fill reached the top of it.
+    ///
+    /// The readings are drawn on a grid rather than joined up: every stretch between two of them
+    /// that is wider than a few pixels gets points between them, and the values at those points come
+    /// off the monotone cubic through the window's own readings (see <see cref="SmoothCurve"/>).
+    /// Every layer is read on the same grid, which is what keeps the bands adjacent — the top of one
+    /// is the bottom of the next, point for point — and every reading is a node of it, so the drawn
+    /// curve still passes through each measurement at the value that was measured. Where the
+    /// readings are already closer together than a few pixels the grid is the readings themselves
+    /// and nothing at all is inserted, which is every long range and every fast rate.</summary>
     private List<(string Name, string Color, bool Hatched, QPointF[] Top, QPointF[] Bottom)> Runs()
     {
         var times = _series.SelectMany(item => item.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
-        var values = _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-        var baseline = new double[times.Length];
+        // Every series on a card is built from the same observations — the page hands it one
+        // timeline and a value per layer — so their times line up index for index, and a dictionary
+        // built for the occasion is a lookup nobody needs: at ten hertz across a dozen cards that
+        // was a dictionary per layer per card per sample, and it is the allocation, not the lookup,
+        // that a reader feels. When the times do line up the values are read by index; a series with
+        // a timeline of its own (a gap the others do not have) takes the dictionaries as before.
+        bool aligned = _series.All(item => item.Samples.Count == times.Length);
+        for (int layer = 0; aligned && layer < _series.Count; layer++)
+            aligned = _series[layer].Samples.Select(sample => sample.Time).SequenceEqual(times);
+        var values = aligned
+            ? null
+            : _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+        var nodes = times.Select(Along).ToArray();
+        var (grid, at) = DrawGrid(times, nodes);
+
+        bool drawn = grid.Length > nodes.Length;
+        // Each layer's own reading at each point of the grid: its measurements where nothing was
+        // inserted between them, its curve where something was.
+        var readings = new double[_series.Count][];
+        for (int layer = 0; layer < _series.Count; layer++)
+        {
+            var measured = values == null
+                ? _series[layer].Samples.Select(sample => sample.Value).ToArray()
+                : times.Select(time => values[layer].GetValueOrDefault(time)).ToArray();
+            readings[layer] = drawn ? SmoothCurve.Through(nodes, measured, grid) : measured;
+        }
+        var baseline = new double[grid.Length];
         double scale = _domain.Scale;
         var runs = new List<(string, string, bool, QPointF[], QPointF[])>();
         for (int layer = _series.Count - 1; layer >= 0; layer--)
         {
             var item = _series[layer];
-            var lower = times.Select((time, index) => !item.Stacked || values[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
-            var upper = times.Select((time, index) => lower[index] + values[layer].GetValueOrDefault(time)).ToArray();
+            var reading = readings[layer];
+            var lower = new double[grid.Length];
+            var upper = new double[grid.Length];
+            for (int index = 0; index < grid.Length; index++)
+            {
+                lower[index] = !item.Stacked || reading[index] < 0 ? 0 : baseline[index];
+                upper[index] = lower[index] + reading[index];
+            }
             int start = 0;
             while (start < times.Length)
             {
@@ -2340,22 +2612,56 @@ internal sealed class PerformanceChart : QWidget
                 // curve: the run ends there and the next one begins where the readings resume.
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
-                var top = new QPointF[finish - start];
-                var bottom = new QPointF[finish - start];
-                for (int index = start; index < finish; index++)
+                int from = at[start], to = at[finish - 1];
+                var top = new QPointF[to - from + 1];
+                var bottom = new QPointF[to - from + 1];
+                for (int index = from; index <= to; index++)
                 {
-                    top[index - start] = new QPointF(Along(times[index]), upper[index] / scale);
-                    bottom[index - start] = new QPointF(Along(times[index]), lower[index] / scale);
+                    top[index - from] = new QPointF(grid[index], upper[index] / scale);
+                    bottom[index - from] = new QPointF(grid[index], lower[index] / scale);
                 }
                 runs.Add((item.Name, item.Color, item.Hatched, top, bottom));
                 start = finish;
             }
             if (item.Stacked)
-                for (int index = 0; index < times.Length; index++)
+                for (int index = 0; index < grid.Length; index++)
                     if (upper[index] > baseline[index]) baseline[index] = upper[index];
         }
         return runs;
     }
+
+    /// <summary>The grid a window is drawn on: every reading's own place on the time axis, with the
+    /// stretches between two of them given the points that turn a corner into a curve.
+    /// <paramref name="at"/> says where each reading landed on it, which is how a run — a stretch of
+    /// readings with no pause in it — is found on the grid rather than on the readings.
+    ///
+    /// What has room for a point between two readings is a question about pixels: a reading a second
+    /// apart across a minute of a three-hundred-pixel plot is six pixels from the next one, and six
+    /// pixels is a corner; the same second across fifteen minutes is a third of a pixel, which is
+    /// already a curve. So the grid is bounded by the plot rather than by the window: it is at most
+    /// one point every few pixels plus the readings themselves, however many readings there are.</summary>
+    private (double[] X, int[] At) DrawGrid(DateTime[] times, double[] nodes)
+    {
+        var grid = new List<double>(times.Length);
+        var at = new int[times.Length];
+        for (int index = 0; index < times.Length; index++)
+        {
+            at[index] = grid.Count;
+            grid.Add(nodes[index]);
+            if (index + 1 == times.Length) continue;
+            int parts = Subdivisions((times[index + 1] - times[index]).TotalSeconds, SpanSeconds, GapSeconds, PlotWidth);
+            double width = nodes[index + 1] - nodes[index];
+            for (int part = 1; part < parts; part++) grid.Add(nodes[index] + width * part / parts);
+        }
+        return (grid.ToArray(), at);
+    }
+
+    /// <summary>How many points the stretch between two readings a second apart is drawn in.
+    /// <paramref name="room"/> is how many pixels the plot has for the whole window, so the width of
+    /// the stretch is its share of that.</summary>
+    internal static int Subdivisions(double seconds, double span, double gapSeconds, double room) =>
+        seconds > gapSeconds || span <= 0 ? 1 : SmoothCurve.Subdivisions(room * seconds / span);
+
 
     /// <summary>Hands both axes what they draw with: the value domain, and the window as time
     /// before now. Both are set as a range, a step and a unit, and every position and every word
@@ -2386,7 +2692,15 @@ internal sealed class PerformanceChart : QWidget
         // that are upright, and every label that carries its own unit needs nothing explained. A
         // byte card is scaled into kilobytes or megabytes by what it holds, so the label says which
         // one it is; a card with no unit of its own — threads, handles — says nothing extra.
-        string value = ChartDomain.TickFormat(_domain.Step) + (_domain.Unit.Length > 0 ? " " + I18n.T(_domain.Unit) : "");
+        // A unit that is a word cannot ride this format string yet: the call marshals it as an ANSI
+        // format, so 核 arrives as "?" on every gridline label — measured, and it is this call and
+        // not the catalog, because the card's headline, its figures and its tooltip draw the same
+        // word correctly. Until the format string can carry one, the axis is left to the plain
+        // number and the card's title and headline are what name the unit, which is how the sibling
+        // cards — threads, handles — have always read.
+        string spelled = _domain.Unit.Length > 0 ? I18n.T(_domain.Unit) : "";
+        string unit = spelled.Length > 0 && spelled.All(character => character < 128) ? " " + spelled : "";
+        string value = ChartDomain.TickFormat(_domain.Step) + unit;
         _valueAxis.SetRange(_domain.Floor, _domain.Max);
         _valueAxis.SetTickType(QValueAxis.TickType.TicksFixed);
         _valueAxis.SetTickCount(_domain.GridLines + 1);
@@ -2499,11 +2813,11 @@ internal sealed class PerformanceChart : QWidget
         Plot();
     }
 
-    /// <summary>A series as the window shows it. A card is drawn against one moment — the moment
-    /// the page last observed anything — and the rows behind a series are read at whatever cadence
-    /// that series has: the four trend cards at the reader's rate, what the layers hold once a
-    /// second, what the process costs with every request. So a run of rows is cut to the window at
-    /// both ends rather than drawn where it happens to stop.
+    /// <summary>A series as the window shows it. A card is drawn against one moment — the moment the
+    /// page is drawn up to — and the rows behind a series are read at whatever cadence that series
+    /// has: the four trend cards at the reader's rate, what the layers hold once a second, what the
+    /// process costs with every request. So a run of rows is cut to the window rather than drawn
+    /// where it happens to stop.
     ///
     /// At the left, the segment crossing the edge is cut at the edge and the value there is
     /// interpolated between the two rows that straddle it. The alternative — moving the older row
@@ -2511,13 +2825,15 @@ internal sealed class PerformanceChart : QWidget
     /// time the row ages out, one sampling interval wide; the line is the same line either way,
     /// only cut at the right place.
     ///
-    /// At the right, a series whose last row is short of the window's end is carried to it, which
-    /// is what a level read once a second has to do to be drawn on a card redrawn ten times as
-    /// often: the value in force at the end is the last one observed, the same reading the tooltip
-    /// and the layer table answer with for a time between two readings.
+    /// At the right the series simply ends where its readings end. Nothing is drawn past the last
+    /// one however far the window reaches: a rate held over an interval that has not been measured,
+    /// and a level carried forward until the next reading contradicts it, are both a picture of
+    /// something the page was never told. It used to carry the last row's value out to the window's
+    /// edge, which is what made the right-hand end of a curve something of its own — it changed
+    /// shape at every sample, in the one place a reader watching a slow rate is looking.
     ///
-    /// Nothing is added before the first row: a page younger than its window has no earlier row to
-    /// draw from, and its line still begins where its own rows do.</summary>
+    /// Nothing is added before the first row either: a page younger than its window has no earlier
+    /// row to draw from, and its line still begins where its own rows do.</summary>
     internal static List<(DateTime Time, double Value)> Windowed(List<(DateTime Time, double Value)> samples,
         DateTime end, double span)
     {
@@ -2535,7 +2851,6 @@ internal sealed class PerformanceChart : QWidget
             double weight = gap > 0 ? (start - before.Time).TotalSeconds / gap : 0;
             drawn.Insert(0, (start, before.Value + (after.Value - before.Value) * weight));
         }
-        if (drawn[^1].Time < end) drawn.Add((end, drawn[^1].Value));
         return drawn;
     }
 
