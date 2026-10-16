@@ -352,14 +352,14 @@ internal sealed class TabWorkspace : QWidget
 
     private (Group? Group, Zone Zone, int Index) Target(int x, int y)
     {
-        using var global = new QPoint(x, y);
+        var global = new QPoint(x, y);
         foreach (var group in _groups.Where(g => g.Host != null).Concat(_groups.Where(g => g.Host == null)))
         {
             if (!group.IsVisible()) continue;
-            using var local = group.MapFromGlobal(global);
+            var local = group.MapFromGlobal(global);
             int px = local.X(), py = local.Y();
             if (px < 0 || py < 0 || px >= group.Width || py >= group.Height) continue;
-            using var barPos = group.TabBar().MapFromGlobal(global);
+            var barPos = group.TabBar().MapFromGlobal(global);
             if (barPos.Y() >= 0 && barPos.Y() < group.TabBar().Height)
                 return (group, Zone.Center, group.TabBar().TabAt(barPos));
             int edge = Math.Min(72, Math.Min(group.Width, group.Height) / 4);
@@ -375,8 +375,8 @@ internal sealed class TabWorkspace : QWidget
         var (group, zone, _) = Target(x, y);
         _visuals.Move(x, y, group == null);
         if (group == null) { _visuals.ClearTarget(); return; }
-        using var zero = new QPoint(0, 0);
-        using var origin = group.MapToGlobal(zero);
+        var zero = new QPoint(0, 0);
+        var origin = group.MapToGlobal(zero);
         int left = origin.X(), top = origin.Y(), width = group.Width, height = group.Height;
         if (zone is Zone.Left or Zone.Right) { width /= 2; if (zone == Zone.Right) left += width; }
         if (zone is Zone.Top or Zone.Bottom) { height /= 2; if (zone == Zone.Bottom) top += height; }
@@ -422,7 +422,7 @@ internal sealed class TabWorkspace : QWidget
             {
                 var mouse = QMouseEvent.FromHandle(e.Handle);
                 if (mouse.Button() != Qt.MouseButton.LeftButton) return false;
-                using var pos = mouse.Pos();
+                var pos = mouse.Pos();
                 var page = owner.PageAt(group, group.TabBar().TabAt(pos));
                 if (page == null) return false;
                 owner._pressed = page;
@@ -436,7 +436,7 @@ internal sealed class TabWorkspace : QWidget
                 if (!owner._dragging)
                 {
                     if (Math.Abs(mouse.GlobalX() - owner._pressX) + Math.Abs(mouse.GlobalY() - owner._pressY) < 12) return false;
-                    using var pos = mouse.Pos();
+                    var pos = mouse.Pos();
                     // Native QTabBar owns in-strip reordering, including its slide and settle animation.
                     if (pos.Y() >= -16 && pos.Y() < group.TabBar().Height + 16 && pos.X() >= -16 && pos.X() < group.TabBar().Width + 16)
                         return false;

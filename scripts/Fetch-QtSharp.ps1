@@ -19,12 +19,12 @@ $published = @{
     # carries Qt6Charts.dll, which the charts package links against). A machine whose NuGet
     # cache still holds an earlier build of the same version keeps those bytes until the cache
     # entry is cleared - `dotnet nuget locals global-packages --list` says where.
-    '0.1.0' = 'a7173247a5a765513db619ffa3419dd56c30dce0bf3ef43eb7f413ecf0cfee55'
+    '0.1.0' = '43e7eb9ac9ca3ab95def49acfdc7f14d2175c097d6ca1b2b3337bc3b641e4804'   # repackaged 2026-10-17 with the QPointF lifetime fix
 }
 
 # QtSharp.Charts is a separate release repository with its own checksums file.
 $chartsPublished = @{
-    '0.1.0' = 'c8211b94e6066e522fa90c057e3ef9df55489a7bac9de5fd689a5d3e0d0dbe40'   # repackaged 2026-10-16 with the legend and scene-item interfaces
+    '0.1.0' = '21ab9b03f16e2a82f96d0b5a43cd3ca331494f3415bbda542639165d6f32e507'   # repackaged 2026-10-17, beside the QPointF lifetime fix
 }
 
 function Get-PublishedHash([string]$version) {
@@ -33,7 +33,7 @@ function Get-PublishedHash([string]$version) {
     # curl.exe rather than Invoke-WebRequest: Schannel on this machine fails the revocation check
     # against these hosts, and -ssl-revoke-best-effort is the workaround (Build-Installer.ps1 reads
     # its own dependencies the same way).
-    & curl.exe --ssl-revoke-best-effort -fL --retry 3 --output $sums "$base/SHA256SUMS.txt"
+    & curl.exe -sS --ssl-revoke-best-effort -fL --retry 3 --output $sums "$base/SHA256SUMS.txt"
     if ($LASTEXITCODE -ne 0) { throw "Could not fetch $base/SHA256SUMS.txt" }
     $line = Select-String -LiteralPath $sums -Pattern "  QtSharp\.Api\.$([regex]::Escape($version))\.nupkg$" | Select-Object -First 1
     Remove-Item -LiteralPath $sums -Force
@@ -50,7 +50,7 @@ function Get-Package([string]$name, [string]$expected, [string]$url, [string]$fi
         }
         Write-Host "$name does not match the published checksum - fetching it again."
     }
-    & curl.exe --ssl-revoke-best-effort -fL --retry 3 --output $file $url
+    & curl.exe -sS --ssl-revoke-best-effort -fL --retry 3 --output $file $url
     if ($LASTEXITCODE -ne 0) { throw "Could not fetch $url" }
     $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {

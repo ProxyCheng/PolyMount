@@ -131,7 +131,7 @@ internal sealed class TabDragVisuals : QObject
             font.SetBold(true); p.SetFont(font);
             using var text = new QPen(new QColor(TrayTheme.Tokens.Text));
             p.SetPen(text);
-            using var titleRect = new QRect(50, 16, Width - 72, 28);
+            var titleRect = new QRect(50, 16, Width - 72, 28);
             using var metrics = new QFontMetrics(font);
             p.DrawText(titleRect, (int)(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter), metrics.ElidedText(_title, Qt.TextElideMode.ElideRight, Width - 72));
             if (_image != null)
@@ -142,7 +142,7 @@ internal sealed class TabDragVisuals : QObject
             }
             font.SetBold(false); font.SetPointSize(9); p.SetFont(font);
             using var muted = new QPen(new QColor(TrayTheme.Tokens.Icon)); p.SetPen(muted);
-            using var hintRect = new QRect(22, Height - 46, Width - 44, 24);
+            var hintRect = new QRect(22, Height - 46, Width - 44, 24);
             p.DrawText(hintRect, (int)(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter), Hint);
         }
     }
@@ -170,7 +170,7 @@ internal sealed class TabDragVisuals : QObject
             using var badge = new QBrush(new QColor(TrayTheme.Tokens.Primary)); p.SetBrush(badge); p.SetPen(edge);
             p.DrawRoundedRect((Width - badgeWidth) / 2, 20, badgeWidth, 34, 8, 8);
             using var text = new QPen(new QColor(TrayTheme.Tokens.Surface)); p.SetPen(text);
-            using var rect = new QRect((Width - badgeWidth) / 2, 20, badgeWidth, 34);
+            var rect = new QRect((Width - badgeWidth) / 2, 20, badgeWidth, 34);
             p.DrawText(rect, (int)Qt.Alignment.AlignCenter, metrics.ElidedText(Title, Qt.TextElideMode.ElideRight, badgeWidth - 16));
         }
     }
