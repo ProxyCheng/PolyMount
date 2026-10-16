@@ -633,6 +633,10 @@
       <translation>资源管理器右键菜单</translation>
     </message>
     <message>
+      <source>tray.shell.allusers</source>
+      <translation>资源管理器右键菜单（已为所有用户注册）</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>退出 PolyMount</translation>
     </message>

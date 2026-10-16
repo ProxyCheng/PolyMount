@@ -630,6 +630,10 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Explorer context menu</translation>
     </message>
     <message>
+      <source>tray.shell.allusers</source>
+      <translation>Explorer context menu (registered for all users)</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>Exit PolyMount</translation>
     </message>

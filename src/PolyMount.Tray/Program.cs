@@ -187,9 +187,14 @@ internal static class Program
         stopSvc.Triggered += _ => ServiceControl.Stop();
 
         var shell = menu.AddAction("");
-        I18n.Bind(shell.SetText, "tray.shell");
-        shell.SetCheckable(true);
+        // When the setup registered the entry for every user, this tray cannot take it away again
+        // (that is an HKLM write) and has nothing left to add, so it reports the fact instead of
+        // offering a switch that could not move.
+        bool shellForEveryone = ShellMenuInstaller.IsMachineWide();
+        I18n.Bind(shell.SetText, shellForEveryone ? "tray.shell.allusers" : "tray.shell");
+        shell.SetCheckable(!shellForEveryone);
         shell.SetChecked(ShellMenuInstaller.IsInstalled());
+        shell.SetEnabled(!shellForEveryone);
         shell.Triggered += _ =>
         {
             try
