@@ -43,7 +43,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     /// the sum of them is a number with no budget behind it.</summary>
     private readonly PerformanceChart _heldMemory, _heldDisk;
     private readonly QLabel _reconcile;
-    private DateTime _lastHeld = DateTime.MinValue;
     /// <summary>The moment every card is drawn up to: the newest observation of the window the page
     /// samples at the reader's rate. The other two histories are read at cadences of their own —
     /// what the layers hold once a second, what the process costs with every request — and a card
@@ -115,7 +114,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
+    /// <summary>What one request is carrying back. <c>At</c> is the moment it went out: the moment
+    /// the windows it covers end, and the moment an observation from it is stamped with.</summary>
+    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds, DateTime At)>? _pending;
     private bool _paused, _requested;
     /// <summary>Whether the workspace has put this page away. A page is parked when its tab is
     /// closed and kept, so that reopening that tab finds the same charts on it; that is the one
@@ -123,12 +124,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     /// is on screen. See <see cref="IParked"/>.</summary>
     private bool _parked;
     private int _epoch, _requestEpoch;
-    private DateTime _next;
-    /// <summary>When the last accepted sample was taken, which is what the next window starts
-    /// from, and when the 60-second access window was last fetched — it keeps its own once-a-second
-    /// schedule so that refreshing the charts faster does not multiply the expensive call.
-    /// <c>MinValue</c> means "no previous sample": the next window is the nominal interval.</summary>
-    private DateTime _lastSample = DateTime.MinValue, _lastAccess = DateTime.MinValue;
+    /// <summary>When the next sample is due, and when the next once-a-second reading — the access
+    /// window, what the layers hold, the process — is due. Both are moments on a lattice rather
+    /// than a countdown from the tick that happened to carry the last one; see <see cref="NextDue"/>.
+    /// <c>MinValue</c> means there is no schedule yet: a page starting, resuming, or following a rate
+    /// the reader just changed.</summary>
+    private DateTime _next, _nextSecond;
+    /// <summary>When the last accepted sample's request went out, which is what the next window
+    /// starts from. <c>MinValue</c> means "no previous sample": the next window is the nominal
+    /// interval.</summary>
+    private DateTime _lastSample = DateTime.MinValue;
     /// <summary>How often the charts are refreshed, in samples per second.</summary>
     private double _refreshHz = Remembered.RefreshHz, _rangeSeconds = Remembered.RangeSeconds;
     private static string T(string key) => I18n.T(key);
@@ -793,6 +798,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
         if (!PerformanceChart.SpanText(900).Contains("15", StringComparison.Ordinal) ||
             !PerformanceChart.SpanText(30).Contains("30", StringComparison.Ordinal))
             throw new InvalidOperationException("The axis caption does not name the span it is drawn over");
+        // A schedule is a lattice: the sample after a late tick is due when it always was, not one
+        // interval after the tick that happened to carry its predecessor. What that fixes is the
+        // cadence a reader sees — a hundred-millisecond poll quantized to 109 makes a page asked for
+        // one hertz sample at 0.92, and every vertex on a chart drifts left of the second it belongs
+        // to by a tenth of a second per second of age. A slot the page was not there for is skipped
+        // rather than caught up: a burst of samples covering tenths of a second would bill traffic
+        // to windows that never saw it.
+        DateTime slot = start.AddSeconds(7.5);
+        if (NextDue(DateTime.MinValue, start, 1) != start.AddSeconds(1) ||
+            NextDue(slot, start.AddSeconds(8.1), 1) != start.AddSeconds(8.5) ||
+            NextDue(slot, start.AddSeconds(8.6), 1) != start.AddSeconds(9.5) ||
+            NextDue(slot, start.AddSeconds(11.6), 4) != start.AddSeconds(15.5))
+            throw new InvalidOperationException(
+                "A schedule is counted from the tick that carried the last sample rather than from its own lattice");
     }
 
     /// <summary>A paint costs a line and a label per interval, so the vertical domain has to
@@ -1041,7 +1060,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
             try
             {
                 var sample = task.GetAwaiter().GetResult();
-                AcceptProcess(sample.Process, DateTime.UtcNow);
+                AcceptProcess(sample.Process, sample.At);
                 if (_requestEpoch == _epoch && watching)
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
@@ -1053,13 +1072,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
                         // the first status call after a mount comes back with, before the layers
                         // have opened their stores and have a footprint to report — and drawn, it
                         // put a point at nothing at the left end of both held cards and a vertical
-                        // jump from there to the first real level. The clock moves either way, so
-                        // a page that got one of these does not start asking every tick.
-                        _lastHeld = DateTime.UtcNow;
+                        // jump from there to the first real level. Nothing is recorded for one; the
+                        // schedule it rides is a lattice, so it is asked again at its own second
+                        // rather than on every tick either way.
                         if (held.Count > 0)
                         {
-                            _heldHistory.Add(new HeldSecond(DateTime.UtcNow, held));
-                            LayerSampler.Trim(_heldHistory, DateTime.UtcNow.AddSeconds(-_rangeSeconds),
+                            _heldHistory.Add(new HeldSecond(sample.At, held));
+                            LayerSampler.Trim(_heldHistory, sample.At.AddSeconds(-_rangeSeconds),
                                 row => row.Time, HeldBreakSeconds);
                         }
                     }
@@ -1079,7 +1098,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
                         // The table and legend show the recent average; the trend sample
                         // only feeds the chart history, where a gap would otherwise
                         // read as "every layer served nothing".
-                        Accept(trends, measured);
+                        Accept(trends, measured, sample.At);
                         _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds, DateTime.UtcNow));
                         DateTime horizon = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
                         while (_responseSamples.Count > 0 && _responseSamples.Peek().At < horizon) _responseSamples.Dequeue();
@@ -1106,10 +1125,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
             // The 60-second access window is the expensive half of a request and its readers are the
             // table and the pie, so it keeps a once-a-second schedule of its own instead of riding
             // the trend rate - which is also what keeps it at a second when the charts run slower.
-            bool accessDue = _accessMetrics.Count == 0 || (now - _lastAccess).TotalSeconds >= 1;
+            bool secondDue = _nextSecond == DateTime.MinValue || now >= _nextSecond;
+            bool accessDue = _accessMetrics.Count == 0 || secondDue;
             // What the layers hold is a status question, and status is the expensive one: it walks
             // every layer's storage. It rides the access schedule for the same reason.
-            bool heldDue = _heldHistory.Count == 0 || (now - _lastHeld).TotalSeconds >= 1;
+            bool heldDue = _heldHistory.Count == 0 || secondDue;
             if (trendsDue || accessDue || heldDue)
             {
                 // The window is the time since the previous sample, so consecutive windows tile
@@ -1119,7 +1139,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
                 double seconds = fresh ? RefreshSeconds : Math.Clamp((now - _lastSample).TotalSeconds, 0.1, 5);
                 _requested = false;
                 _requestEpoch = _epoch;
-                if (trendsDue) { _next = now.AddSeconds(RefreshSeconds); _lastSample = now; }
+                if (trendsDue) { _next = NextDue(_next, now, RefreshSeconds); _lastSample = now; }
+                // The once-a-second readings keep their own lattice, so refreshing the charts
+                // faster does not multiply them and a late tick does not move them.
+                if (secondDue) _nextSecond = NextDue(_nextSecond, now, 1);
                 _pending = Task.Run(() =>
                 {
                     var watch = Stopwatch.StartNew();
@@ -1131,7 +1154,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
                     var access = accessDue ? Window(AccessSeconds) : null;
                     var held = heldDue ? Held() : null;
                     watch.Stop();
-                    return (trends, access, held, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds);
+                    // The moment the request went out travels with the answer: it is the moment the
+                    // windows it covers end, and the moment the sample is stamped with, so a round
+                    // trip that varied from sample to sample never reaches the chart.
+                    return (trends, access, held, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds, now);
                 });
             }
         }
@@ -1371,21 +1397,25 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     {
         _accessMetrics = access;
         _latest = access;
-        _lastAccess = DateTime.UtcNow;
         var alive = access.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
     }
 
-    private void Accept(List<MountMetrics> trends, double seconds)
+    /// <summary>Records one observation of the trends. <paramref name="at"/> is the moment its
+    /// request went out rather than the moment the answer came back: the round trip is tens to
+    /// hundreds of milliseconds and it varies, so a stamp carrying it moves every vertex on the
+    /// chart by however long that answer happened to take. It is also the moment the window the
+    /// service answered for ends, and the same clock <paramref name="seconds"/> — the interval the
+    /// amounts are divided by — is measured from, so the picture and the rates agree.</summary>
+    private void Accept(List<MountMetrics> trends, double seconds, DateTime at)
     {
-        DateTime now = DateTime.UtcNow;
         var names = _latest.Select(m => m.Mount).ToArray();
         string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
         // One step per layer for the whole tick, shared with the combined sample: taking it
         // again for the combined view would find the counters already advanced and report zero.
-        var wasteSteps = WasteSteps(now, trends);
-        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }, wasteSteps, seconds));
-        Add("", CaptureLayers(now, trends, wasteSteps, seconds));
+        var wasteSteps = WasteSteps(at, trends);
+        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(at, new[] { mount }, wasteSteps, seconds));
+        Add("", CaptureLayers(at, trends, wasteSteps, seconds));
         if (_mount.Count != names.Length + 1 || names.Where((name, i) => _mount.ItemText(i + 1) != name).Any())
         {
             _mount.BlockSignals(true);
@@ -1429,6 +1459,31 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     /// figures beside the line are the window's own.</summary>
     private static List<T> Covered<T>(IEnumerable<T> rows, DateTime end, double span, Func<T, DateTime> at) =>
         rows.Where(row => at(row) >= end.AddSeconds(-span)).ToList();
+
+    /// <summary>When the sample after the one being taken now is due: the moment after
+    /// <paramref name="now"/> on the lattice that <paramref name="due"/> stands on, or one nominal
+    /// interval past <paramref name="now"/> when there is no lattice yet (<c>MinValue</c>).
+    ///
+    /// The page's poll is a coarse timer, and its ticks are quantized twice over: Qt lets a coarse
+    /// timer sit anywhere within five per cent of its interval, and a Win32 timer's messages arrive
+    /// on the system's own 15.6 ms tick, so a hundred-millisecond poll really fires every 109 ms.
+    /// A schedule of "one interval after the tick that happened to carry the last sample" inherits
+    /// both, and a page asked for one hertz then samples at 0.92 — which a reader sees as every
+    /// second on the time axis sitting a tenth of a second to the left of the sample that belongs
+    /// to it, the error growing across the window until the vertex nearest each gridline changes
+    /// and it closes up again (measured on the live page: the tray's once-a-second requests came
+    /// back every 1.06 to 1.15 s, mean 1.09).
+    ///
+    /// Counted from the lattice instead, a tick that arrives late is late by at most one tick, and
+    /// the sample after it is still due when it always was. Slots the page was not there for are
+    /// skipped rather than caught up: nobody watched through them, and a burst of samples each
+    /// covering a tenth of a second would bill traffic to windows that never saw it.</summary>
+    private static DateTime NextDue(DateTime due, DateTime now, double seconds)
+    {
+        DateTime next = due == DateTime.MinValue ? now : due;
+        do next = next.AddSeconds(seconds); while (next <= now);
+        return next;
+    }
 
     private void Render()
     {
