@@ -222,7 +222,7 @@
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节，外加各层持有的字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。灰色斜纹那一层是「操作系统说进程搬了、而各层没记账」的部分——请求日志、缓存库、这个窗口读的管道，以及本套记账没有建模的东西；它可以是负的：文件被解析到大小却没真读，各层记的就比进程搬的多。</translation>
+      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节，外加各层持有的字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。两张字节图**只画各层自己的账**；操作系统给进程的那本账在下面「进程 · 每实例」里单独一张卡，两者之差（有符号）在「字节账目」那节里作为数字给出——它们数的不是一回事，摞在一起会让表头和图形各说一个总量。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -1075,6 +1075,18 @@
       <translation>线程</translation>
     </message>
     <message>
+      <source>stats.process.moved</source>
+      <translation>进程移动字节 · 每秒</translation>
+    </message>
+    <message>
+      <source>stats.process.moved.read</source>
+      <translation>进程读取</translation>
+    </message>
+    <message>
+      <source>stats.process.moved.write</source>
+      <translation>进程写入</translation>
+    </message>
+    <message>
       <source>stats.process.handles</source>
       <translation>句柄</translation>
     </message>
@@ -1088,7 +1100,7 @@
     </message>
     <message>
       <source>stats.process.definition</source>
-      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。进程搬了多少字节不在这里：那部分落在下面两张字节图上，作为「没有层为它记账」的那一片。</translation>
+      <translation>直接读操作系统里该实例自己的进程——一个实例就是一个进程，所以这些数字是它一个人的，没有任何线程归因。没有进程的实例读作 0。内存为工作集，并列出其中私有的部分；CPU 是占用的核数，不是百分比。上面四张是**量级**（核数、工作集、线程、句柄），所以只报整窗的平均与峰值——量级按采样点相加得到的数会随刷新频率一起变大，没有意义。最后一行是进程自己搬动的字节，来自操作系统给这个进程的计数器：它数的是**这个进程动过的每一个字节**，不分是挂载还是别的（日志、缓存库、这个窗口读的管道），而它**看不到**源自己的抓取——那发生在 `svn.exe` 里，是另一个进程。读取与写入是两个方向，所以并排画、不叠加。</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1138,12 +1150,11 @@
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
     <message><source>stats.reconcile.wall</source><translation>墙钟 · 近 {0:0.#} 秒：请求共 {1:0.0} 毫秒，各层记到 {2:0.0} 毫秒 —— 未归因 {3:0.0} 毫秒。</translation></message>
-    <message><source>stats.layerUnknown</source><translation>未知 · 没有层为它记账</translation></message>
     <message><source>stats.layerHeld.memory</source><translation>层持有内存 · 每层</translation></message>
     <message><source>stats.layerHeld.disk</source><translation>层持有磁盘 · 每层</translation></message>
     <message><source>stats.layerHeld.definition</source><translation>每层当前占着的量：内存与磁盘字节，按层相加。进程的内存没法拆到层上——上面那组进程卡就是它的全部——但每层自己持有了多少是我们自己数的，是这个层自己的开销。</translation></message>
     <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，没有层记账的 {3}。</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>墙钟那一行，比的是文件系统边界上花掉的时间与各层为这些请求记到的时间：没有层答复的请求没人可记——应用去问它可能没有的文件所产生的负查询就落在那里，时间没按层记的路径也在那里。字节那一行，比的是各层答复的文件大小与操作系统看到的、本进程的读写量，差已经画进字节图里那一片「未知」，所以摞起来的总和与系统记录一致。两个差都不是错误；为了量它们，每个请求多花几十纳秒，仅在有人看的时候付。</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>墙钟那一行，比的是文件系统边界上花掉的时间与各层为这些请求记到的时间：没有层答复的请求没人可记——应用去问它可能没有的文件所产生的负查询就落在那里，时间没按层记的路径也在那里。字节那一行，比的是各层答复的文件大小与操作系统看到的、本进程的读写量——**这两个数不是一回事**：层记的是「解析到的文件大小」（解析那一刻记一次，不管你后来读了多少），系统记的是这个进程真正搬动的每一个字节（含日志、缓存库、这条管道，且看不到 `svn.exe` 里的抓取）。所以差可正可负，它只是两本账的缺口：**账各自成卡**（系统那本在「进程 · 每实例」里），这个差只在这里作为数字给出，不再摊进字节图。两个差都不是错误；为了量它们，每个请求多花几十纳秒，仅在有人看的时候付。</translation></message>
     <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
     <message><source>stats.process.io.read</source><translation>读</translation></message>
     <message><source>stats.process.io.write</source><translation>写</translation></message>

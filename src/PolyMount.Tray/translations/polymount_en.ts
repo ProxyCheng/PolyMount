@@ -222,7 +222,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>Charts show read requests, resolved read bytes, average read-resolution time and written bytes in the last second, plus what the layers hold. Every figure is the rate over the interval between two samples, so changing the refresh rate does not change what it reads. Resolved read bytes count the file sizes VFS resolved, not physical disk throughput. Layer contributions stack; latency is request-weighted; byte units scale automatically (1024 per unit). The grey hatched slice is what the operating system says the process moved beyond what the layers account for — the log, the cache database, the pipe this window reads, and what this account does not model. It can be negative: a file whose size was resolved but never read leaves the layers accounting for more than the process moved.</translation>
+      <translation>The charts are read requests per second, resolved read bytes per second, average read cost, and written bytes per second, plus what each layer holds. Every figure is a rate over the interval between two observations, so changing the refresh rate does not change the reading. Resolved read bytes count the sizes of the files VFS resolved, not physical disk throughput. Layers stack, latency is weighted by requests; byte units follow 1024. The two byte cards draw the layers' own account only: the account the operating system keeps for the process is a card of its own under the process's numbers, and the signed difference between them is a figure in the byte account below — they do not count the same thing, and stacked into one card they left the header stating one total and the picture another.</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -1075,6 +1075,18 @@ Close applications using mounted files first.</translation>
       <translation>Threads</translation>
     </message>
     <message>
+      <source>stats.process.moved</source>
+      <translation>Bytes the process moved · per second</translation>
+    </message>
+    <message>
+      <source>stats.process.moved.read</source>
+      <translation>process read</translation>
+    </message>
+    <message>
+      <source>stats.process.moved.write</source>
+      <translation>process write</translation>
+    </message>
+    <message>
       <source>stats.process.handles</source>
       <translation>Handles</translation>
     </message>
@@ -1088,7 +1100,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.process.definition</source>
-      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent. What the process moved is not here: it is drawn in the two byte charts, as the part of them no layer accounts for.</translation>
+      <translation>Read from the operating system for the instance's own process — one instance is one process, so these are that instance's numbers and no thread is attributed to a mount. An instance with no process of its own reads as zero. Memory is the working set, with the private part of it reported beside; CPU is in cores used, not percent. The four cards above are levels — cores, working set, threads, handles — so they report what the window averaged and peaked at and not what their samples add up to, a number that would grow with the refresh rate. The last row is what that process moved, from the counters the operating system keeps for it: every byte it moved, whether or not a mount asked for it (its logs, the cache database, the pipe this window reads), and blind to the source's own fetching, which happens in a process of its own. Reads and writes are two directions, so they are drawn beside each other rather than stacked.</translation>
     </message>
     <message>
       <source>stats.accelerated</source>
@@ -1138,12 +1150,11 @@ Close applications using mounted files first.</translation>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
     <message><source>stats.reconcile.wall</source><translation>Wall clock · {0:0.#} s: requests {1:0.0} ms, layers charged {2:0.0} ms \u2014 unattributed {3:0.0} ms.</translation></message>
-    <message><source>stats.layerUnknown</source><translation>Unknown · no layer accounts for it</translation></message>
     <message><source>stats.layerHeld.memory</source><translation>Bytes held in memory · Per layer</translation></message>
     <message><source>stats.layerHeld.disk</source><translation>Bytes held on disk · Per layer</translation></message>
     <message><source>stats.layerHeld.definition</source><translation>What each layer is holding: its memory and the bytes it takes on disk, summed per layer. A process's memory cannot be split between layers — the process cards above are the whole of it — but what a layer keeps is our own count and is that layer's own cost.</translation></message>
     <message><source>stats.reconcile.bytes</source><translation>Byte account · last {0} s: the process moved {1}, the layers resolved {2} — no layer accounts for {3}.</translation></message>
-    <message><source>stats.reconcile.definition</source><translation>The wall-clock row compares what the file system boundary took with what the layers were charged for it: a request no layer answered for is charged to nobody, which is where the negative lookups an application makes land, along with the paths whose time is not recorded per layer. The byte row compares the sizes of the files the layers answered with against what the operating system saw this process read and write; the difference is drawn into the byte charts as the unknown slice, so the stack adds up to what the system recorded. Neither difference is an error, and both are measured on every request, which is what costs the file system a few tens of nanoseconds per request while something is watching.</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>The wall-clock row compares what the file system boundary took with what the layers were charged for it: a request no layer answered for is charged to nobody, which is where the negative lookups an application makes land, along with the paths whose time is not recorded per layer. The byte row compares the sizes of the files the layers answered with against what the operating system saw this process read and write - and those two are not the same measurement: a layer counts the size of the file it resolved, once, at the moment it resolved it, however much of it was read afterwards, while the system counts every byte this process moved - its logs, the cache database, the pipe this window reads - and never the source's own fetching, which happens in svn.exe. The difference is therefore positive or negative according to which account ran ahead, and it is the gap between two accounts, each of which has a card of its own; it is given here as a figure rather than spread into a chart. Neither difference is an error, and both are measured on every request, which is what costs the file system a few tens of nanoseconds per request while something is watching.</translation></message>
     <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
     <message><source>stats.process.io.read</source><translation>Read</translation></message>
     <message><source>stats.process.io.write</source><translation>Written</translation></message>

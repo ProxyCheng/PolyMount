@@ -52,6 +52,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// A series whose own rows stop short of this is carried to it; see PerformanceChart.Windowed.</summary>
     private DateTime _clock = DateTime.UtcNow;
     private readonly PerformanceChart[] _processCharts;
+    /// <summary>What the instance's own process moved, read and written: the operating system's
+    /// account of it, which is what its counters are for. It shares the cards' unit and shape but
+    /// not their feed — the rates come from the counters rather than from a layer — and it is not
+    /// stacked, because reads and writes are two directions rather than two parts of a total.</summary>
+    private readonly PerformanceChart _processIo;
     private readonly QLabel _processFigures;
     /// <summary>The parts of the page under the charts, each folded away with a line of its own
     /// numbers left in the header. What the page is watched for is the charts; this is what a
@@ -219,8 +224,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // The next two cards for what the layers keep: the other four are what they did, these are
         // what they hold. Two of them, because memory and disk have budgets of their own and it is
         // worth seeing which one is filling — a single stack of both answers neither question.
-        _heldMemory = new PerformanceChart("stats.layerHeld.memory", "#7c3aed", "B", ChartSummary.Volume);
-        _heldDisk = new PerformanceChart("stats.layerHeld.disk", "#c026d3", "B", ChartSummary.Volume);
+        _heldMemory = new PerformanceChart("stats.layerHeld.memory", "#7c3aed", "B", ChartSummary.Gauge);
+        _heldDisk = new PerformanceChart("stats.layerHeld.disk", "#c026d3", "B", ChartSummary.Gauge);
         grid.AddWidget(_heldMemory, _charts.Length / 2, 0);
         grid.AddWidget(_heldDisk, _charts.Length / 2, 1);
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
@@ -267,16 +272,23 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var processBody = new QVBoxLayout(_processBody);
         processBody.SetContentsMargins(0, 0, 0, 0);
         processBody.SetSpacing(12);
+        // Levels, so their cards report what the window averaged and peaked at and not what its
+        // samples add up to: a level summed over a window is a number that grows with how often the
+        // page looked, which is the refresh rate.
         _processCharts = new[]
         {
-            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
-            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
-            new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
-            new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
+            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Gauge),
+            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Gauge),
+            new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Gauge),
+            new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Gauge)
         };
+        _processIo = new PerformanceChart("stats.process.moved", "#475569", "B", ChartSummary.Volume);
         var processGrid = new QGridLayout();
         processGrid.SetSpacing(16);
         for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
+        // Its own row, across both columns: it is the one card here that is a rate rather than a
+        // level, and the two directions need the width to be told apart.
+        processGrid.AddWidget(_processIo, _processCharts.Length / 2, 0, 1, 2);
         processBody.AddLayout(processGrid);
         _processFigures = new QLabel();
         _processFigures.SetObjectName("muted");
@@ -456,8 +468,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     internal void VerifyProcess()
     {
         if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
-        foreach (var chart in _processCharts)
+        foreach (var chart in _processCharts.Append(_processIo))
+        {
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
+            if (chart.Series.Count == 0) throw new InvalidOperationException($"{chart.TitleKey} is drawing nothing");
+        }
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
         // The history is bounded by time, so how many rows that is depends on the refresh rate:
         // what must hold is that it reaches back over the window its charts are drawn against, and
@@ -525,45 +540,42 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 $"The page is {_page.Height} pixels tall where its layout needs at least {needed.Height()}");
         // The cards are where a squeeze shows, on either axis: nothing can be laid out smaller than
         // its own minimum, so a card that is, is one the layout had no room for.
-        foreach (var chart in _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk))
+        foreach (var chart in _charts.Concat(_processCharts).Append(_processIo).Append(_heldMemory).Append(_heldDisk))
             if (chart.Height < chart.MinimumHeight || chart.Width < chart.MinimumWidth)
                 throw new InvalidOperationException(
                     $"{chart.TitleKey} is {chart.Width}x{chart.Height}, under its own " +
                     $"{chart.MinimumWidth}x{chart.MinimumHeight} minimum");
     }
-    /// <summary>The two byte cards draw an extra slice — whatever no layer accounts for — so that
-    /// their stack adds up to what the operating system says the process moved. That is an invariant
-    /// of the data rather than of the picture, so it is checked on the data: every period of every
-    /// series in the resolved-bytes and written-bytes cards, added up, has to be the process's own
-    /// rate for that period. It holds trivially when nothing moved, which is still the invariant.
+    /// <summary>The layers' account and the operating system's are two measurements of different
+    /// things — the sizes of the files the layers resolved, against every byte the process moved,
+    /// whichever part of it asked — so they are drawn on two cards rather than stacked into one.
+    /// Stacked, the card said one total in its header (the layers') and another in its picture (the
+    /// operating system's), and the difference was drawn as if it were a layer.
+    ///
+    /// What is checked here is that each card is one account: no byte card carries the other one,
+    /// and the card that carries the process's own numbers draws both directions of them, at their
+    /// own value rather than summed.
     /// </summary>
     internal void VerifyByteAccount()
     {
-        var reads = TransferRates(reads: true);
-        var writes = TransferRates(reads: false);
-        foreach (var (chart, rates) in new[] { (_charts[1], reads), (_charts[3], writes) })
-        {
-            var series = chart.Series;
-            if (series.Count == 0 || rates.Count == 0)
-                throw new InvalidOperationException("A byte card is not drawing the process's own transfer rate");
-            if (!series.Any(item => item.Name == T("stats.layerUnknown")))
-                throw new InvalidOperationException("A byte card is missing the slice no layer accounts for: " + string.Join(", ", series.Select(item => item.Name)));
-            // The slice is drawn above the stack, and the series are drawn back to front, so it is
-            // the first one. Under the stack it read as the layers' own base, which it is not: the
-            // layers' account begins at the zero line and this is what is left over it.
-            if (series[0].Name != T("stats.layerUnknown") || !series[0].Correction)
+        foreach (var chart in new[] { _charts[1], _charts[3] })
+            if (chart.Series.Any(item => item.Name == T("stats.layerUnknown")))
                 throw new InvalidOperationException(
-                    $"A byte card draws the unaccounted slice under {series[0].Name} rather than above the stack");
-            int points = series[0].Samples.Count;
-            for (int i = 0; i < points; i++)
-            {
-                DateTime at = series[0].Samples[i].Time;
-                double stacked = series.Sum(item => item.Samples[i].Value);
-                double moved = At(rates, at);
-                if (Math.Abs(stacked - moved) > Math.Max(1, moved * 0.001))
-                    throw new InvalidOperationException(
-                        $"The byte card under {chart.TitleKey} stacks to {stacked:0.#} where the process moved {moved:0.#} at {at:HH:mm:ss.fff}");
-            }
+                    $"The byte card under {chart.TitleKey} is mixing the process's own account into the layers' stack");
+        var io = _processIo.Series.ToArray();
+        if (io.Length != 2 || io[0].Name != T("stats.process.moved.read") || io[1].Name != T("stats.process.moved.write"))
+            throw new InvalidOperationException(
+                "The process's own bytes are not drawn as two directions: " + string.Join(", ", io.Select(item => item.Name)));
+        if (io.Any(item => item.Stacked))
+            throw new InvalidOperationException("The process's reads and writes are stacked, which adds them into a total neither of them is");
+        foreach (var (series, rates) in new[] { (io[0], TransferRates(reads: true)), (io[1], TransferRates(reads: false)) })
+        {
+            if (rates.Count == 0 || series.Samples.Count == 0)
+                throw new InvalidOperationException($"The card of the process's own bytes is not drawing {series.Name}");
+            double drawn = series.Samples[^1].Value, moved = rates[^1].Rate;
+            if (Math.Abs(drawn - moved) > Math.Max(1, moved * 0.001))
+                throw new InvalidOperationException(
+                    $"{series.Name} reads {drawn:0.#} where the process's counters last said {moved:0.#}");
         }
     }
 
@@ -736,15 +748,21 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     throw new InvalidOperationException(
                         $"Chart axis is not bounded for {unit} at {read}: {domain.GridLines} intervals, floor {domain.Floor}");
             }
-        // A correction is drawn between the stack and the total outside it, so its sign is not a
-        // depth the axis has to make room for: flagged as one, the same sample that would have
-        // taken the floor down leaves it at the line.
-        if (ChartDomain.Of(new List<ChartSeries>
+        // Two series drawn beside each other reach the taller of them, not their sum: scaled to
+        // the sum, the taller one would stop short of the top of the plot. So a shorter series
+        // drawn beside a taller one must leave the axis exactly as it was.
+        var taller = ChartDomain.Of(new List<ChartSeries>
         {
-            new("svn", "#64748B", new() { (time, 40960.0) }),
-            new("unknown", "#94a3b8", new() { (time, -40960.0) }) { Correction = true }
-        }, "B", 2.1).Floor != 0)
-            throw new InvalidOperationException("A correction below zero took the axis floor down with it");
+            new("read", "#059669", new() { (time, 40960.0) }) { Stacked = false }
+        }, "B", 2.1);
+        var overlaid = ChartDomain.Of(new List<ChartSeries>
+        {
+            new("read", "#059669", new() { (time, 40960.0) }) { Stacked = false },
+            new("write", "#0891b2", new() { (time, 20480.0) }) { Stacked = false }
+        }, "B", 2.1);
+        if (overlaid.Max != taller.Max || taller.Max <= 0)
+            throw new InvalidOperationException(
+                $"Two overlaid series scale the axis to {overlaid.Max} where the taller of them alone scales it to {taller.Max}");
     }
 
     /// <summary>Smoke check: the chart summaries describe their samples, the charts carry the
@@ -768,6 +786,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // Milliseconds are summed by nothing: a latency chart reports its tail, not a total.
         if (_charts.Length != 4 || _charts[2].Figures.Contains(ChartFigure.Total))
             throw new InvalidOperationException("Charts do not carry the figures their metric is described by");
+        // A level is not an amount either: cores in use, bytes held, threads and handles open are
+        // read once and read again, and added up they are a number that grows with the refresh rate.
+        foreach (var gauge in _processCharts.Append(_heldMemory).Append(_heldDisk))
+            if (gauge.Figures.Contains(ChartFigure.Total))
+                throw new InvalidOperationException($"{gauge.TitleKey} totals a level: a level summed over a window is not an amount of anything");
         // A card too narrow for every figure keeps the first ones instead of clipping one.
         if (PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 150) != 2 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
@@ -1047,13 +1070,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         }
     }
 
-    /// <summary>What the process moved per second, as a step function of the readings taken once a
-    /// second: a chart point between two readings is answered with the rate of the interval it is
-    /// in. A counter that went backwards is a worker that was replaced, and that interval has no
-    /// rate to report.</summary>
-    private List<(DateTime Time, double Rate)> TransferRates(bool reads)
+    /// <summary>What the process moved per second, one rate per interval between two readings of
+    /// its counters. Each carries the seconds it was measured over, because the window's total is
+    /// an amount rather than the sum of a column of rates. A counter that went backwards is a
+    /// worker that was replaced, and that interval has no rate to report.</summary>
+    private List<(DateTime Time, double Rate, double Seconds)> TransferRates(bool reads)
     {
-        var rates = new List<(DateTime, double)>();
+        var rates = new List<(DateTime, double, double)>();
         for (int i = 1; i < _processHistory.Count; i++)
         {
             var (previous, current) = (_processHistory[i - 1], _processHistory[i]);
@@ -1061,31 +1084,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             long now = reads ? current.ReadBytes : current.WriteBytes;
             long before = reads ? previous.ReadBytes : previous.WriteBytes;
             if (elapsed <= 0 || now < before) continue;
-            rates.Add((current.Time, (now - before) / elapsed));
+            rates.Add((current.Time, (now - before) / elapsed, elapsed));
         }
         return rates;
-    }
-
-    /// <summary>The rate in force at a moment: the last one measured at or before it.</summary>
-    /// <summary>The rate in effect at <paramref name="time"/>: the last one measured at or before it.
-    ///
-    /// A time older than every measurement takes the earliest measurement rather than zero. That
-    /// case is not rare at the end this matters: the rates come from the process readings, which
-    /// arrive ten times a second, while the chart's points come from the trend samples, which
-    /// arrive at the reader's rate — so the chart's oldest point is regularly older than the first
-    /// process reading by a little, and answering zero there drew one byte of "no layer accounts
-    /// for it" the size of everything the layers served, at the left end. That is the value
-    /// jumping to nothing and back as the window slides.</summary>
-    private static double At(List<(DateTime Time, double Rate)> rates, DateTime time)
-    {
-        if (rates.Count == 0) return 0;
-        double value = rates[0].Rate;
-        foreach (var (at, rate) in rates)
-        {
-            if (at > time) break;
-            value = rate;
-        }
-        return value;
     }
 
     /// <summary>The two counts that describe bytes, and the difference between them. The layers
@@ -1201,6 +1202,30 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _processCharts[i].SetSeries(series[i], end, ChartStatistics.Of(figures[i]));
             _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
+        // What the instance's own process moved, from the counters the operating system keeps for
+        // it — the account the layer cards above are not: every byte that process moved, whichever
+        // part asked (its logs, the cache database, the pipe this window reads), and blind to the
+        // source's own fetching, which happens in a process of its own. One rate per interval
+        // between two readings, both directions at their own value.
+        var reads = TransferRates(reads: true);
+        var writes = TransferRates(reads: false);
+        var totals = reads.Select(rate => (rate.Time, Read: rate.Rate, Write: 0.0, rate.Seconds))
+            .Concat(writes.Select(rate => (rate.Time, Read: 0.0, Write: rate.Rate, rate.Seconds)))
+            .GroupBy(point => point.Time)
+            .OrderBy(group => group.Key)
+            .Select(group => (Time: group.Key, Value: group.Sum(point => point.Read + point.Write),
+                Seconds: group.Max(point => point.Seconds)))
+            .ToList();
+        var coveredIo = Covered(totals, end, _rangeSeconds, point => point.Time);
+        _processIo.GapSeconds = BreakSeconds;
+        _processIo.SpanSeconds = _rangeSeconds;
+        _processIo.SetSeries(new List<ChartSeries>
+        {
+            new(T("stats.process.moved.read"), "#059669", reads.Select(rate => (rate.Time, rate.Rate)).ToList()) { Stacked = false },
+            new(T("stats.process.moved.write"), "#0891b2", writes.Select(rate => (rate.Time, rate.Rate)).ToList()) { Stacked = false }
+        }, end, ChartStatistics.Of(coveredIo.Select(point => point.Value).ToArray(),
+            coveredIo.Select(point => point.Seconds).ToArray()));
+        _processIo.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         if (_processHistory.Count == 0)
         {
             _processFigures.SetText(T("stats.process.waiting"));
@@ -1340,28 +1365,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     return (s.Time, -step / Rate(s));
                 }).ToList()) { Hatched = true });
             }
-            // The transfer counters are a third opinion on the same window, and the layer account
-            // is short of them by everything no layer answered for: the request log and the cache
-            // database, the pipe this window reads, and bytes this account does not model. That
-            // shortfall is drawn as a slice of its own, above the stack rather than under it, so
-            // the stack adds up to what the operating system recorded and the layers' own account
-            // still begins at the zero line: it is not a layer, and a reader measuring a layer's
-            // height reads it from the baseline. The series are drawn back to front, so the top of
-            // the stack is the first one in the list. It is signed — a file whose size was resolved
-            // but never read leaves the layers accounting for more than the process moved — and the
-            // band it is drawn as spans the two accounts, so a negative one covers the top of the
-            // layer account instead of falling below the zero line. See ChartSeries.Correction.
-            if (metric is 1 or 3 && drawn.Count > 0)
-            {
-                var transfer = TransferRates(reads: metric == 1);
-                if (transfer.Count > 0)
-                {
-                    var unknown = points.Select((point, i) =>
-                        (point.Time, At(transfer, point.Time) - drawn.Sum(series => series.Samples[i].Value))).ToList();
-                    drawn.Insert(0, new ChartSeries(T("stats.layerUnknown"), "#94a3b8", unknown)
-                    { Hatched = true, Correction = true });
-                }
-            }
+            // The counters the operating system keeps for the process are a second account of the
+            // same window, measuring something else: every byte the process moved, whichever part
+            // of it asked — and blind to the source's own fetching, which happens in a process of
+            // its own. That is not a layer, and stacking it here made the card state one total in
+            // its header and another in its picture. It is drawn on its own card, under the
+            // process's own numbers; what is short between the two accounts is a number, and the
+            // byte account below the charts prints it.
             _charts[chart].SpanSeconds = _rangeSeconds;
             // A gap is what the drawing cannot join: bucketed points are further apart than the
             // observations they were folded from, so the threshold follows the point spacing too.
@@ -1585,13 +1595,12 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
     /// series for one layer reads as that layer rather than as a different one.</summary>
     public bool Hatched { get; init; }
 
-    /// <summary>Not a quantity of its own but the difference between the stack under it and a total
-    /// from outside the chart — what no layer accounts for, against what the process itself moved.
-    /// Its band spans those two, so a correction that comes out negative covers the top of the
-    /// stack rather than hanging below the zero line, where a downward quantity goes: below the
-    /// line it would read as a second measurement rather than as the layer account being more than
-    /// the process moved. Both of its edges are outside it, so it never leaves the plot.</summary>
-    public bool Correction { get; init; }
+    /// <summary>Whether this series sits on what is under it. True by default, which is what a
+    /// layer's contribution is: the layers of one account tile the total and their bands add up.
+    /// False for series that are not parts of anything — the process's own reads against its own
+    /// writes — which each keep their own value and are drawn over one another: stacked, two
+    /// directions of traffic would be summed into a third number nobody asked for.</summary>
+    public bool Stacked { get; init; } = true;
 }
 
 /// <summary>What a chart's window adds up to, over the same samples the plot draws: an idle
@@ -1623,8 +1632,17 @@ internal readonly record struct ChartStatistics(double Current, double Average, 
 /// and the window's volume of; a latency is worth knowing its average and its tail.</summary>
 internal enum ChartSummary
 {
+    /// <summary>A rate or an amount over time: the window's sum is an amount of the same kind as
+    /// the samples, so the card reports it.</summary>
     Volume,
-    Latency
+
+    /// <summary>A duration: milliseconds add up to nothing a reader asked for.</summary>
+    Latency,
+
+    /// <summary>A level rather than an amount — cores in use, bytes held, threads and handles open.
+    /// What the window is worth is the average it sat at and the peak it reached; the samples added
+    /// up are a number that grows with how often the page sampled, which is the refresh rate.</summary>
+    Gauge
 }
 
 /// <summary>One secondary figure in a chart's header.</summary>
@@ -1646,13 +1664,21 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
         var samples = series.ToList();
         var times = samples.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = samples.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-        double peak = times.Select(time => values.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
-        // A correction is drawn inside the stack rather than below the line, so a negative one is
-        // not a depth the axis has to make room for: the room is the stack's own, and the label
-        // under it would say less than nothing about what is drawn there.
-        double trough = times
-            .Select(time => samples.Select((s, i) => s.Correction ? 0 : Math.Min(0, values[i].GetValueOrDefault(time))).Sum())
-            .DefaultIfEmpty(0).Min();
+        // What is stacked adds up, and what is drawn at its own value is only a candidate: two
+        // overlaid series reach the taller of them, not their sum, and scaling to the sum would
+        // leave the taller one short of the top of the plot.
+        double peak = times.Select(time =>
+        {
+            double stacked = 0, alone = 0;
+            for (int i = 0; i < samples.Count; i++)
+            {
+                double value = values[i].GetValueOrDefault(time);
+                if (samples[i].Stacked) stacked += Math.Max(0, value);
+                else alone = Math.Max(alone, Math.Max(0, value));
+            }
+            return Math.Max(stacked, alone);
+        }).DefaultIfEmpty(0).Max();
+        double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
         var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
         double max = Math.Max(unit is "ms" or "B" or "cores" ? 1 : 5, peak / axis.Scale * 1.15);
         double step = 0;
@@ -1714,9 +1740,12 @@ internal sealed class PerformanceChart : QWidget
         _titleKey = titleKey;
         _color = color;
         _unit = unit;
-        _figures = summary == ChartSummary.Latency
-            ? new[] { ChartFigure.Average, ChartFigure.P95, ChartFigure.Peak }
-            : new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total };
+        _figures = summary switch
+        {
+            ChartSummary.Latency => new[] { ChartFigure.Average, ChartFigure.P95, ChartFigure.Peak },
+            ChartSummary.Gauge => new[] { ChartFigure.Average, ChartFigure.Peak },
+            _ => new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total }
+        };
         SetMinimumSize(330, 210);
     }
     public override void ChangeEvent(QEvent e)
@@ -1972,12 +2001,12 @@ internal sealed class PerformanceChart : QWidget
             using var detailMetrics = new QFontMetrics(detailFont);
             var summaries = _series.Select(s => (s.Color, Text: s.Name + " " + FormatValue(s.Samples.LastOrDefault().Value))).ToArray();
             // The row is drawn as far as it fits rather than all of it or none of it. What is in it
-            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a byte
-            // card gains the hatched slice no layer accounts for — so a card within a few pixels of
-            // the edge used to lose the whole line on a busy sample, get it back on the next quiet
-            // one, and take the top of the plot with it: the plot starts 20 pixels lower when the
-            // row is not there. Nothing is lost by dropping the tail — the tooltip carries every
-            // series already, and the layer table below carries them at length.
+            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a legend
+            // that gains a layer when an instance is mounted — so a card within a few pixels of the
+            // edge used to lose the whole line on a busy sample, get it back on the next quiet one,
+            // and take the top of the plot with it: the plot starts 20 pixels lower when the row is
+            // not there. Nothing is lost by dropping the tail — the tooltip carries every series
+            // already, and the layer table below carries them at length.
             bool legend = summaries.Length > 0;
             if (legend)
             {
@@ -2057,10 +2086,9 @@ internal sealed class PerformanceChart : QWidget
             for (int layer = _series.Count - 1; layer >= 0; layer--)
             {
                 var series = _series[layer];
-                // A negative contribution hangs below the line instead of cutting into the stack
-                // — unless it is the correction between the stack and an outside total, whose band
-                // spans the two and so never leaves the area they bound.
-                var lower = times.Select((time, index) => !series.Correction && valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
+                // A contribution that is not part of a stack is drawn at its own value, from the
+                // zero line; a negative one hangs below the line either way.
+                var lower = times.Select((time, index) => !series.Stacked || valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
                 var upper = times.Select((time, index) => lower[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
                 int start = 0;
                 while (start < times.Length)
@@ -2094,8 +2122,9 @@ internal sealed class PerformanceChart : QWidget
                 p.DrawPath(line);
                 start = finish;
                 }
-                for (int index = 0; index < times.Length; index++)
-                    if (upper[index] > baseline[index]) baseline[index] = upper[index];
+                if (series.Stacked)
+                    for (int index = 0; index < times.Length; index++)
+                        if (upper[index] > baseline[index]) baseline[index] = upper[index];
             }
             if (times.Length == 0)
             {
