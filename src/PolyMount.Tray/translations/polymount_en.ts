@@ -218,7 +218,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>Resolved read bytes · Last second</translation>
+      <translation>Resolved read bytes · Per second</translation>
     </message>
     <message>
       <source>stats.series.count</source>
@@ -226,7 +226,7 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>Charts show read requests, resolved read bytes, average read-resolution time and written bytes in the last second. Resolved read bytes count file sizes resolved by VFS, not physical disk throughput. Layer contributions stack; latency is request-weighted. Byte units scale automatically (1024 per unit).</translation>
+      <translation>Charts show read requests per second, resolved read bytes per second, average read-resolution time and written bytes per second. Each figure is a rate over the interval between samples, so it reads the same at any refresh rate. Resolved read bytes count file sizes resolved by VFS, not physical disk throughput. Layer contributions stack; latency is request-weighted. Byte units scale automatically (1024 per unit).</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -850,7 +850,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>Sampled every second · Last 60 seconds · Per-mount view</translation>
+      <translation>Per-second rates · Last 60 seconds · Per-mount view</translation>
     </message>
     <message>
       <source>stats.all</source>
@@ -859,6 +859,10 @@ Close applications using mounted files first.</translation>
     <message>
       <source>stats.pause</source>
       <translation>Pause</translation>
+    </message>
+    <message>
+      <source>stats.refresh.hint</source>
+      <translation>How often the charts are refreshed. Every figure is a per-second rate, so the line reads the same at any rate; refreshing faster costs the instance's own process more.</translation>
     </message>
     <message>
       <source>stats.resume</source>
@@ -878,18 +882,18 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>Written bytes · Last second</translation>
+      <translation>Written bytes · Per second</translation>
     </message>
     <message>
       <source>stats.layer</source>
-      <translation>Layer performance · Last second</translation>
+      <translation>Layer performance · Last 60 seconds</translation>
     </message>
     <message><source>stats.accessors</source><translation>readers in the last 60 seconds:</translation></message>
     <message><source>stats.accessors.none</source><translation>no readers in the last 60 seconds.</translation></message>
     <message><source>process.unknown</source><translation>unknown process</translation></message>
     <message>
       <source>stats.live</source>
-      <translation>Live · Sampling every second</translation>
+      <translation>Live</translation>
     </message>
     <message>
       <source>stats.paused</source>
@@ -1049,7 +1053,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (two IPC requests per sample; excludes painting)</translation>
+      <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (one trend request per sample, plus the 60-second window once a second; excludes painting)</translation>
     </message>
     <message>
       <source>stats.process</source>
@@ -1130,6 +1134,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
+    <message><source>record.process</source><translation>Process {0} · CPU {1:0.0} s spent · working set {2} · private {3} · {4} threads · {5} handles</translation></message>
     <message><source>record.evidence.live</source><translation>ok</translation></message>
     <message><source>record.evidence.waiting</source><translation>waiting for the service</translation></message>
     <message><source>record.evidence.truncated</source><translation>at its ceiling</translation></message>

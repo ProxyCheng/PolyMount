@@ -101,8 +101,10 @@ public sealed class ControlRequest
     // Serialized AppConfig payload, used by "saveConfig".
     public string? Config { get; set; }
 
-    // Rolling-window size (seconds) for the "metrics" command; 0 => default.
-    public int WindowSeconds { get; set; }
+    // Rolling-window size (seconds) for the "metrics" command; 0 => default. A fraction is
+    // allowed: the performance window asks for the time since its previous sample, which is
+    // shorter than a second as soon as it refreshes faster than once a second.
+    public double WindowSeconds { get; set; }
 
     // Free-form label for a "recordingStart", kept in the session's name.
     public string? Label { get; set; }
@@ -329,7 +331,10 @@ public sealed class MountMetrics
     public string Mount { get; set; } = "";
     /// <summary>Name for the read-ahead waste series, localised by the core.</summary>
     public LocalizedText? PredictiveWasted { get; set; }
-    public int WindowSeconds { get; set; }
+    /// <summary>The window this sample was measured over, in seconds. It can be a fraction: a
+    /// reader that refreshes faster than once a second asks for a shorter one, and every count in
+    /// here is an amount over that time rather than a rate.</summary>
+    public double WindowSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }
     public double CacheHitPercent { get; set; }

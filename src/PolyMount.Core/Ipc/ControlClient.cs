@@ -78,7 +78,7 @@ public abstract class ControlClient
 
     /// <summary>Read analytics over a recent window. The supervisor spreads it over every instance
     /// unless one is named; a worker only ever has its own, so naming one there is redundant.</summary>
-    public ControlResponse Metrics(int windowSeconds = 300, string? name = null)
+    public ControlResponse Metrics(double windowSeconds = 300, string? name = null)
         => Send(new ControlRequest { Cmd = ControlCommands.Metrics, WindowSeconds = windowSeconds, Name = name });
 
     /// <summary>What an export can carry: each instance's request diagnostics, plus the log of the

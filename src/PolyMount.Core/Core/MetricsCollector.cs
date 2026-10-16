@@ -40,7 +40,7 @@ public sealed class MetricsCollector
             if (_samples.TryDequeue(out _)) Interlocked.Decrement(ref _count);
     }
 
-    public MountMetrics Snapshot(string mountName, int windowSeconds)
+    public MountMetrics Snapshot(string mountName, double windowSeconds)
     {
         if (windowSeconds <= 0) windowSeconds = 300;
         long cutoff = DateTime.UtcNow.AddSeconds(-windowSeconds).Ticks;

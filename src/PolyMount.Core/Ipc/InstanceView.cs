@@ -54,7 +54,7 @@ public static class InstanceView
     /// <summary>The read analytics of every instance, one entry per mount. Each instance's process
     /// reports its own window and there is no process that could report them all, so the "all
     /// instances" view is this: every one of them asked, and the answers put together.</summary>
-    public static List<MountMetrics> Metrics(int windowSeconds)
+    public static List<MountMetrics> Metrics(double windowSeconds)
     {
         var endpoints = InstanceDirectory.All();
         var collected = new ConcurrentBag<MountMetrics>();

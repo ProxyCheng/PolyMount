@@ -208,7 +208,7 @@ public sealed class MountInstance : IDisposable
         finally { if (remount) Mount(winFspBin); }
     }
 
-    public MountMetrics GetMetrics(int windowSeconds)
+    public MountMetrics GetMetrics(double windowSeconds)
     {
         var m = Metrics.Snapshot(Profile.Name, windowSeconds);
         // Include every active provider, even when it served no reads in this window.

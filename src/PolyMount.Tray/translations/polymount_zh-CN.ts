@@ -218,7 +218,7 @@
     </message>
     <message>
       <source>stats.layerBytes</source>
-      <translation>读取解析字节 · 最近 1 秒</translation>
+      <translation>读取解析字节 · 每秒</translation>
     </message>
     <message>
       <source>stats.series.count</source>
@@ -226,7 +226,7 @@
     </message>
     <message>
       <source>stats.layerBytes.definition</source>
-      <translation>图表依次为读取请求数、读取解析字节、平均读取解析耗时和写入字节。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。</translation>
+      <translation>图表依次为每秒读取请求数、每秒读取解析字节、平均读取解析耗时和每秒写入字节。每个数值都是相邻两次采样之间的区间速率，所以换刷新档位不会改变读数高低。读取解析字节统计 VFS 解析到的文件大小，不是物理磁盘吞吐。按层堆叠，延迟按请求数加权；字节单位自动换算，每级为 1024 倍。</translation>
     </message>
     <message>
       <source>brand.subtitle</source>
@@ -850,7 +850,7 @@
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>每秒采样 · 最近 60 秒趋势 · 按挂载实例查看</translation>
+      <translation>每秒速率 · 最近 60 秒趋势 · 按挂载实例查看</translation>
     </message>
     <message>
       <source>stats.all</source>
@@ -859,6 +859,10 @@
     <message>
       <source>stats.pause</source>
       <translation>暂停</translation>
+    </message>
+    <message>
+      <source>stats.refresh.hint</source>
+      <translation>图表刷新频率。所有数值都是每秒速率，换档不会改变曲线的高低；刷新越快，实例自身进程的开销越大。</translation>
     </message>
     <message>
       <source>stats.resume</source>
@@ -878,18 +882,18 @@
     </message>
     <message>
       <source>stats.bytes</source>
-      <translation>写入字节 · 最近 1 秒</translation>
+      <translation>写入字节 · 每秒</translation>
     </message>
     <message>
       <source>stats.layer</source>
-      <translation>逐层性能 · 最近 1 秒</translation>
+      <translation>逐层性能 · 最近 60 秒</translation>
     </message>
     <message><source>stats.accessors</source><translation>最近 60 秒的访问者：</translation></message>
     <message><source>stats.accessors.none</source><translation>最近 60 秒没有访问者。</translation></message>
     <message><source>process.unknown</source><translation>未知进程</translation></message>
     <message>
       <source>stats.live</source>
-      <translation>实时更新中 · 每秒采样</translation>
+      <translation>实时更新中</translation>
     </message>
     <message>
       <source>stats.paused</source>
@@ -1049,7 +1053,7 @@
     </message>
     <message>
       <source>stats.response.cost</source>
-      <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次含两个 IPC 请求，不含绘制）</translation>
+      <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次一个趋势请求，另有每秒钟一次的 60 秒窗口；不含绘制）</translation>
     </message>
     <message>
       <source>stats.process</source>
@@ -1130,6 +1134,7 @@
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
+    <message><source>record.process</source><translation>进程 {0} · CPU 累计 {1:0.0} 秒 · 工作集 {2} · 私有 {3} · 线程 {4} · 句柄 {5}</translation></message>
     <message><source>record.evidence.live</source><translation>正常</translation></message>
     <message><source>record.evidence.waiting</source><translation>等待服务</translation></message>
     <message><source>record.evidence.truncated</source><translation>已达上限</translation></message>

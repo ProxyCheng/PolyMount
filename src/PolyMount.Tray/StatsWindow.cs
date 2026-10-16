@@ -6,7 +6,8 @@ using System.Text.Json;
 
 namespace PolyMount.Tray;
 
-/// <summary>Task-manager style performance charts, sampled asynchronously once per second.</summary>
+/// <summary>Task-manager style performance charts. The page samples asynchronously at a rate the
+/// reader chooses; every figure on it is a rate, so the line reads the same at any of them.</summary>
 internal sealed class StatsWindow : QWidget, ICloseGuard
 {
     private readonly QComboBox _mount;
@@ -23,11 +24,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly LayerAccessPie _accessPie;
     private readonly QLabel _accessLegend;
     private readonly QLabel _responseCost;
-    private readonly Queue<(double Request, double Dispatch, double Ui)> _responseSamples = new();
+    private readonly Queue<(double Request, double Dispatch, double Ui, DateTime At)> _responseSamples = new();
+    private readonly QComboBox _refresh;
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
-    /// <summary>What the instance's own process cost, one row per sampled second. A process is not
+    /// <summary>What the instance's own process cost, one row per sample. A process is not
     /// a layer: there is nothing to break down, so these are drawn as plain series rather than as
     /// contributions that stack.</summary>
     private readonly List<ProcessSecond> _processHistory = new();
@@ -39,18 +41,30 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
     /// a rate, so a step only means something next to the interval it was measured over.</summary>
     private readonly Dictionary<string, LayerSampler.Counters> _wasteSteps = new();
-    /// <summary>Sampling runs once a second; a step spanning more than this is a pause in
-    /// observation rather than a rate.</summary>
+    /// <summary>A step spanning more than this is a pause in observation rather than a rate. A
+    /// floor: a page refreshing slower than once a second spaces its observations wider than this
+    /// by design, and the gap it tolerates has to follow the rate.</summary>
     private const double SamplingGapSeconds = 3;
     /// <summary>The window every chart, the sample history and the response overhead share.</summary>
     private const int HistorySeconds = 60;
+    /// <summary>The refresh rates a reader may choose between, in samples per second. The window
+    /// asks for the time that elapsed since its previous sample, so a faster rate is a shorter
+    /// window and not a denser reading of the same one.</summary>
+    private static readonly double[] RefreshRates = { 0.5, 1, 2, 4, 10 };
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(List<MountMetrics> Trends, List<MountMetrics> Access, ProcessReading Process, double RequestMs, long Completed)>? _pending;
+    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
+    /// <summary>When the last accepted sample was taken, which is what the next window starts
+    /// from, and when the 60-second access window was last fetched — it keeps its own once-a-second
+    /// schedule so that refreshing the charts faster does not multiply the expensive call.
+    /// <c>MinValue</c> means "no previous sample": the next window is the nominal interval.</summary>
+    private DateTime _lastSample = DateTime.MinValue, _lastAccess = DateTime.MinValue;
+    /// <summary>How often the charts are refreshed, in samples per second.</summary>
+    private double _refreshHz = LoadRefreshRate();
     private static string T(string key) => I18n.T(key);
 
     public StatsWindow(string? instanceName = null)
@@ -82,6 +96,23 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _mount.CurrentIndexChanged += _ => Render();
         header.AddWidget(_mount);
         _mount.SetVisible(instanceName == null);
+        // The refresh rate belongs to the reader, not to the mount: it is how closely the line is
+        // drawn, and every figure on it is a rate so the value does not change with it.
+        _refresh = ContinuousScrolling.Combo();
+        _refresh.SetMinimumWidth(96);
+        foreach (double rate in RefreshRates) _refresh.AddItem(FormatRate(rate));
+        _refresh.SetCurrentIndex(Array.IndexOf(RefreshRates, _refreshHz));
+        _refresh.SetToolTip(T("stats.refresh.hint"));
+        _refresh.CurrentIndexChanged += index =>
+        {
+            if (index < 0 || index >= RefreshRates.Length) return;
+            _refreshHz = RefreshRates[index];
+            SaveRefreshRate(_refreshHz);
+            // Take effect now rather than at the end of the interval that was already running.
+            _next = DateTime.MinValue;
+            _requested = true;
+        };
+        header.AddWidget(_refresh);
         _pause = new QPushButton();
         _pause.Clicked += _ => TogglePause();
         header.AddWidget(_pause);
@@ -182,6 +213,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         Show();
         Raise();
         ActivateWindow();
+        // Watching starts here: the first sample measures the nominal interval rather than the
+        // time the window spent closed, so a hidden window is not billed to the point after it.
+        _lastSample = DateTime.MinValue;
         _requested = true;
     }
 
@@ -189,7 +223,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     /// <summary>The process section on its own, for a smoke run: it sits below four charts that
     /// fill a 960 pixel window, so a capture of the window would not show it at all.</summary>
-    internal void CaptureProcess(string path) { using var image = _processSection.Grab(); image.Save(path); }
+    internal void CaptureProcess(string path) { using var image = _processFigures.Grab(); image.Save(path); }
 
     /// <summary>The recording's own checks, driven from here because the panel belongs to this
     /// window and a smoke run has no other handle on it.</summary>
@@ -241,8 +275,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         foreach (var chart in _processCharts)
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
-        if (_processHistory.Count > HistorySeconds)
-            throw new InvalidOperationException($"The process history kept {_processHistory.Count} seconds of a {HistorySeconds} second window");
+        // The history is bounded by time, so how many rows that is depends on the refresh rate:
+        // what must hold is that no row is older than the window.
+        if (_processHistory.Count > 1 && _processHistory[0].Time < _processHistory[^1].Time.AddSeconds(-HistorySeconds))
+            throw new InvalidOperationException(
+                $"The process history reaches back {(_processHistory[^1].Time - _processHistory[0].Time).TotalSeconds:0.#} seconds of a {HistorySeconds} second window");
         if (_process.Processes == 0) throw new InvalidOperationException("The instance reads as having no process behind it");
         var last = _processHistory[^1];
         if (last.WorkingSet <= 0 || last.Threads <= 0 || last.Handles <= 0)
@@ -277,11 +314,17 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             new() { Name = "idle" }
         } } };
         var now = DateTime.UtcNow;
-        var sample = CaptureLayers(now, mounts, WasteSteps(now, mounts));
+        var sample = CaptureLayers(now, mounts, WasteSteps(now, mounts), 1);
         if (sample.Layers.Count != 3 || sample.Layers.Values.Sum(l => l.Reads) != 5 ||
             sample.Layers.Values.Sum(l => l.Cost) != 16 || sample.Layers.Values.Sum(l => l.Bytes) != 3072 ||
             sample.Layers.Values.Sum(l => l.WriteBytes) != 4096)
             throw new InvalidOperationException("Layer chart contributions do not sum to the overall metrics");
+        // The same observation over a quarter of a second is four times the rate - and the same
+        // duration, because a cost is not divided by anything.
+        var quarter = CaptureLayers(now, mounts, WasteSteps(now, mounts), 0.25);
+        if (LayerSampler.ChartValue(quarter.Layers["test/a"], 0, 0.25) != 8 ||
+            LayerSampler.ChartValue(quarter.Layers["test/a"], 2, 0.25) != quarter.Layers["test/a"].Cost)
+            throw new InvalidOperationException("Chart values are not rates over the interval they were measured across");
         // A block cache reports lifetime byte totals, so its window figure is the step between
         // observations rather than the counters themselves.
         var ram = new MountMetrics { Mount = "m", Layers = new() { new() { Name = "ram", Accelerating = true } } };
@@ -290,10 +333,22 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             ram.Layers[0].AcceleratedBytes = served;
             ram.Layers[0].FetchedBytes = fetched;
-            history.Add(CaptureLayers(now, new[] { ram }, WasteSteps(now, new[] { ram })));
+            history.Add(CaptureLayers(now, new[] { ram }, WasteSteps(now, new[] { ram }), 1));
         }
         if (Accelerated(history, "m/ram") != (75.0, 6000.0))
             throw new InvalidOperationException("Accelerator bytes are not measured over the window");
+        // The same traffic observed four times as often, in windows a quarter as long: every
+        // amount is a quarter of the size and every interval is too, so the rate is the same
+        // figure. This is the whole point of the refresh-rate control.
+        var fine = new List<LayerSampler.Sample>();
+        foreach (var (served, fetched) in new[] { (0L, 0L), (750L, 250L), (1500L, 500L) })
+        {
+            ram.Layers[0].AcceleratedBytes = served;
+            ram.Layers[0].FetchedBytes = fetched;
+            fine.Add(CaptureLayers(now, new[] { ram }, WasteSteps(now, new[] { ram }), 0.25));
+        }
+        if (Accelerated(fine, "m/ram") != (75.0, 6000.0))
+            throw new InvalidOperationException("A rate changed with the refresh rate it was measured at");
         if (ByteUnits.Select(1023).Unit != "B" || ByteUnits.Select(1024).Unit != "KiB" ||
             ByteUnits.Select(1048576).Unit != "MiB" || ByteUnits.Select(1073741824).Unit != "GiB")
             throw new InvalidOperationException("Byte unit thresholds are incorrect");
@@ -330,6 +385,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException($"Chart statistics do not describe their samples: {stats}");
         if (ChartStatistics.Of(Array.Empty<double>()).Samples != 0)
             throw new InvalidOperationException("An empty window reported samples");
+        // A rate series weighs each observation by the interval it covered, so the total stays the
+        // amount the window counted: two quarter-second observations of 2/s are one request, not
+        // four, while the average and the peak stay the rates they are.
+        var quarter = ChartStatistics.Of(new[] { 2.0, 2.0 }, new[] { 0.25, 0.25 });
+        if (quarter.Total != 1 || quarter.Average != 2 || quarter.Peak != 2)
+            throw new InvalidOperationException($"Weighted chart statistics are not an amount over the window: {quarter}");
         if (ByteUnits.Split(1536) != ("1.5", "KiB"))
             throw new InvalidOperationException("Byte figures no longer split into a number and a unit");
         // Milliseconds are summed by nothing: a latency chart reports its tail, not a total.
@@ -440,7 +501,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _epoch++;
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
-        if (!_paused) { _requested = true; _next = DateTime.MinValue; }
+        if (!_paused) { _requested = true; _next = DateTime.MinValue; _lastSample = DateTime.MinValue; }
     }
 
     private void Tick()
@@ -459,15 +520,23 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
-                    _accessMetrics = sample.Access;
-                    // The table and legend show the recent average; the one-second sample
-                    // only feeds the per-second chart history, where a gap would otherwise
-                    // read as "every layer served nothing".
-                    Accept(sample.Trends, sample.Access);
+                    if (sample.Access is { } access) AcceptAccess(access);
+                    // Only a request that carried the trends is an observation of them: one that
+                    // went out for the access window alone leaves the history and the overhead
+                    // label untouched.
+                    if (sample.Trends is { } trends)
+                    {
+                        // The table and legend show the recent average; the trend sample
+                        // only feeds the chart history, where a gap would otherwise
+                        // read as "every layer served nothing".
+                        Accept(trends, sample.Seconds);
+                        _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds, DateTime.UtcNow));
+                        DateTime horizon = DateTime.UtcNow.AddSeconds(-HistorySeconds);
+                        while (_responseSamples.Count > 0 && _responseSamples.Peek().At < horizon) _responseSamples.Dequeue();
+                        RenderResponseCost();
+                    }
+                    else Render();
                     ui.Stop();
-                    _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds));
-                    while (_responseSamples.Count > HistorySeconds) _responseSamples.Dequeue();
-                    RenderResponseCost();
                 }
             }
             catch (Exception ex)
@@ -475,23 +544,41 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 if (!_paused && visible) _status.SetText(T("stats.gap") + " · " + ex.Message);
             }
         }
-        if (visible && !_paused && _pending == null && (_requested || !_wasVisible || DateTime.UtcNow >= _next))
+        if (visible && !_paused && _pending == null)
         {
-            _requested = false;
-            _requestEpoch = _epoch;
-            _next = DateTime.UtcNow.AddSeconds(1);
-            _pending = Task.Run(() =>
+            DateTime now = DateTime.UtcNow;
+            // Watching starts here, resumes here, or follows a rate the reader just changed: the
+            // next sample then measures the nominal interval rather than however long the window
+            // spent hidden, paused or on the old rate.
+            bool fresh = _requested || !_wasVisible || _lastSample == DateTime.MinValue;
+            bool trendsDue = fresh || now >= _next;
+            // The 60-second access window is the expensive half of a request and its readers are the
+            // table and the pie, so it keeps a once-a-second schedule of its own instead of riding
+            // the trend rate - which is also what keeps it at a second when the charts run slower.
+            bool accessDue = _accessMetrics.Count == 0 || (now - _lastAccess).TotalSeconds >= 1;
+            if (trendsDue || accessDue)
             {
-                var watch = Stopwatch.StartNew();
-                // The process is read here rather than on the thread that draws: it is the
-                // operating system being asked about a process, and it can be gone by the time the
-                // question is asked.
-                var process = _process.Read();
-                var trends = Window(1);
-                var access = Window(HistorySeconds);
-                watch.Stop();
-                return (trends, access, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp());
-            });
+                // The window is the time since the previous sample, so consecutive windows tile
+                // the timeline: a tick that ran late - only one request may be in flight, so they
+                // do run late - covers what it missed instead of leaving a hole or counting it
+                // twice. The clamp keeps a long gap from billing a minute of traffic to one point.
+                double seconds = fresh ? RefreshSeconds : Math.Clamp((now - _lastSample).TotalSeconds, 0.1, 5);
+                _requested = false;
+                _requestEpoch = _epoch;
+                if (trendsDue) { _next = now.AddSeconds(RefreshSeconds); _lastSample = now; }
+                _pending = Task.Run(() =>
+                {
+                    var watch = Stopwatch.StartNew();
+                    // The process is read here rather than on the thread that draws: it is the
+                    // operating system being asked about a process, and it can be gone by the time the
+                    // question is asked.
+                    var process = _process.Read();
+                    var trends = trendsDue ? Window(seconds) : null;
+                    var access = accessDue ? Window(HistorySeconds) : null;
+                    watch.Stop();
+                    return (trends, access, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds);
+                });
+            }
         }
         _wasVisible = visible;
     }
@@ -500,7 +587,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>One window of read analytics: the instance's own process answers for itself, and
     /// the "all instances" view — which no single process owns — is every one of them asked and put
     /// together.</summary>
-    private List<MountMetrics> Window(int windowSeconds) => _instanceName == null
+    private List<MountMetrics> Window(double windowSeconds) => _instanceName == null
         ? InstanceView.Metrics(windowSeconds)
         : _client.Metrics(windowSeconds, _instanceName).Metrics;
 
@@ -508,17 +595,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private static string Relative(string key, string mount) =>
         key.StartsWith(mount + "/", StringComparison.Ordinal) ? key[(mount.Length + 1)..] : key;
 
-    /// <summary>One second of what the instance's own process cost.</summary>
+    /// <summary>One sample of what the instance's own process cost. CPU is a cumulative reading
+    /// divided by the interval, so a row is that interval's share of a core.</summary>
     private readonly record struct ProcessSecond(DateTime Time, double Cores, long WorkingSet, long Private, int Threads, int Handles);
 
     /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
     /// nothing is running the instance is still a reading — zeroes say the process is not there,
     /// which is worth seeing rather than a gap the chart would draw as an absence of observation.
+    /// The history is bounded by time rather than by count, because the refresh rate decides how
+    /// many readings fall inside the window.
     /// </summary>
     private void AcceptProcess(ProcessReading reading, DateTime now)
     {
         _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes, reading.Threads, reading.Handles));
-        while (_processHistory.Count > HistorySeconds) _processHistory.RemoveAt(0);
+        while (_processHistory.Count > 1 && _processHistory[0].Time < now.AddSeconds(-HistorySeconds)) _processHistory.RemoveAt(0);
         RenderProcess();
     }
 
@@ -537,6 +627,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         };
         for (int i = 0; i < _processCharts.Length; i++)
         {
+            _processCharts[i].GapSeconds = BreakSeconds;
             _processCharts[i].SetSeries(series[i], end);
             _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
@@ -546,26 +637,34 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private), last.Threads, last.Handles));
     }
 
-    private void Accept(List<MountMetrics> trends, List<MountMetrics> metrics)
+    /// <summary>Takes a 60-second window: the table, the pie, the legend, and the layer list the
+    /// trend series are named and coloured from all read this rather than the trend sample.</summary>
+    private void AcceptAccess(List<MountMetrics> access)
     {
-        _latest = metrics;
-        DateTime now = DateTime.UtcNow;
-        var alive = metrics.Select(m => m.Mount).Append("").ToHashSet();
+        _accessMetrics = access;
+        _latest = access;
+        _lastAccess = DateTime.UtcNow;
+        var alive = access.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
+    }
+
+    private void Accept(List<MountMetrics> trends, double seconds)
+    {
+        DateTime now = DateTime.UtcNow;
+        var names = _latest.Select(m => m.Mount).ToArray();
+        string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
         // One step per layer for the whole tick, shared with the combined sample: taking it
         // again for the combined view would find the counters already advanced and report zero.
         var wasteSteps = WasteSteps(now, trends);
-        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }, wasteSteps));
-        Add("", CaptureLayers(now, trends, wasteSteps));
-        string selected = _mount.CurrentIndex <= 0 ? "" : _mount.CurrentText;
-        var names = metrics.Select(m => m.Mount).ToArray();
+        foreach (var mount in trends) Add(mount.Mount, CaptureLayers(now, new[] { mount }, wasteSteps, seconds));
+        Add("", CaptureLayers(now, trends, wasteSteps, seconds));
         if (_mount.Count != names.Length + 1 || names.Where((name, i) => _mount.ItemText(i + 1) != name).Any())
         {
             _mount.BlockSignals(true);
             _mount.Clear();
             _mount.AddItem(T("stats.all"));
             foreach (var name in names) _mount.AddItem(name);
-            int index = metrics.FindIndex(m => m.Mount == selected);
+            int index = _latest.FindIndex(m => m.Mount == selected);
             _mount.SetCurrentIndex(index < 0 ? 0 : index + 1);
             _mount.BlockSignals(false);
         }
@@ -574,12 +673,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     }
 
     /// <summary>Takes the step for this tick of every counter a layer reports as a lifetime
-    /// total, one entry per layer, through the rule the recording page shares.</summary>
+    /// total, one entry per layer, through the rule the recording page shares. The gap that counts
+    /// as a pause follows the refresh rate: at half a hertz two observations are two seconds
+    /// apart by design, and a fixed three-second rule would zero the waste series whenever one
+    /// of them ran late.</summary>
     private Dictionary<string, LayerSampler.WasteStep> WasteSteps(DateTime time, IEnumerable<MountMetrics> mounts) =>
-        LayerSampler.Steps(time, mounts, _wasteSteps, SamplingGapSeconds);
+        LayerSampler.Steps(time, mounts, _wasteSteps, Math.Max(SamplingGapSeconds, RefreshSeconds * 1.5));
 
     private LayerSampler.Sample CaptureLayers(DateTime time, IEnumerable<MountMetrics> mounts,
-        Dictionary<string, LayerSampler.WasteStep> wasteSteps) => LayerSampler.Capture(time, mounts, wasteSteps);
+        Dictionary<string, LayerSampler.WasteStep> wasteSteps, double seconds) =>
+        LayerSampler.Capture(time, mounts, wasteSteps, seconds);
 
     private void Add(string name, LayerSampler.Sample sample) =>
         LayerSampler.Add(_history, name, sample, HistorySeconds);
@@ -607,13 +710,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         for (int chart = 0; chart < _charts.Length; chart++)
         {
             int metric = chart;
+            // An observation is an amount over the interval it was measured across, and the reader
+            // chooses how long that is, so every count and byte is divided by its own interval
+            // here: the same mount reads the same on the same chart whatever rate is selected.
+            // Costs are durations and are left alone.
+            double Rate(LayerSampler.Sample s) => s.Seconds > 0 ? s.Seconds : 1;
             var drawn = rows.Select(row => new ChartSeries(
                 selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
                 string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
                 samples.Select(s =>
                 {
                     var layer = s.Layers.GetValueOrDefault(row.m.Mount + "/" + row.l.Name);
-                    return (s.Time, layer == null ? 0 : metric switch { 0 => layer.Reads, 1 => layer.Bytes, 2 => layer.Cost, _ => layer.WriteBytes });
+                    return (s.Time, layer == null ? 0 : LayerSampler.ChartValue(layer, metric, s.Seconds));
                 }).ToList())).ToList();
             // A guess that had to be evicted unread is drawn below the zero line, so a
             // read-ahead layer that is guessing badly pulls its own chart downward.
@@ -624,10 +732,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 {
                     var layer = s.Layers.GetValueOrDefault(predictiveKey!);
                     double step = layer == null ? 0 : metric == 0 ? layer.Wasted : layer.WastedBytes;
-                    return (s.Time, -step);
+                    return (s.Time, -step / Rate(s));
                 }).ToList()) { Hatched = true });
             }
-            _charts[chart].SetSeries(drawn, end);
+            // The interval each observation was measured over travels with it, so the card's
+            // window total stays the amount it counted rather than the sum of the rates.
+            _charts[chart].GapSeconds = BreakSeconds;
+            _charts[chart].SetSeries(drawn, end, samples.ToDictionary(s => s.Time, s => s.Seconds));
             _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
@@ -692,11 +803,52 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _pause.SetIcon(TrayIcons.Get(_paused ? "play" : "stop"));
         _recording?.Translate();
         _mount.SetItemText(0, T("stats.all"));
+        _refresh.SetToolTip(T("stats.refresh.hint"));
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
         RenderProcess();
         RenderResponseCost();
+    }
+
+    /// <summary>The interval between samples: what the reader chose, inverted.</summary>
+    private double RefreshSeconds => 1.0 / (_refreshHz > 0 ? _refreshHz : 1);
+
+    /// <summary>How far apart two observations may be and still be drawn as one curve. A rate
+    /// slower than one hertz spaces them wider on purpose, so this follows the rate rather than
+    /// sitting at a fixed two and a half seconds.</summary>
+    private double BreakSeconds => Math.Max(2.5, RefreshSeconds * 1.5);
+
+    /// <summary>A rate, as the control shows it. "Hz" is the same word in both languages, so only
+    /// the number is formatted for the reader's culture.</summary>
+    private static string FormatRate(double rate) => rate.ToString("0.##", I18n.Culture) + " Hz";
+
+    /// <summary>Where the chosen rate is remembered, beside the other preferences this tray keeps
+    /// for a reader. Best effort in both directions: a missing or unreadable file means the
+    /// default, and a rate that is not on the ladder is not one this build knows how to draw.</summary>
+    private static readonly string SettingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount", "stats.json");
+
+    private static double LoadRefreshRate()
+    {
+        try
+        {
+            using var json = JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            double rate = json.RootElement.GetProperty("RefreshHz").GetDouble();
+            return Array.Exists(RefreshRates, known => known == rate) ? rate : 1;
+        }
+        catch { return 1; }
+    }
+
+    private static void SaveRefreshRate(double rate)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new { RefreshHz = rate }));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
     private void RenderResponseCost()
     {
@@ -732,12 +884,19 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
 /// instance still reports the peak it reached earlier in the window.</summary>
 internal readonly record struct ChartStatistics(double Current, double Average, double Peak, double P95, double Total, int Samples)
 {
-    public static ChartStatistics Of(IEnumerable<double> values)
+    /// <summary><paramref name="weights"/> are the seconds each value was measured over, for the
+    /// charts whose line is a rate. The window's total is an amount rather than a rate, so it is
+    /// the sum of each value carried back over its own interval; every other figure is a property
+    /// of the rate series itself. Without weights — a gauge, or a fixture — each value counts once.</summary>
+    public static ChartStatistics Of(IEnumerable<double> values, IReadOnlyList<double>? weights = null)
     {
         var samples = values.ToArray();
         if (samples.Length == 0) return default;
         var sorted = samples.Order().ToArray();
-        return new(samples[^1], samples.Average(), sorted[^1], Percentile(sorted, 0.95), samples.Sum(), samples.Length);
+        double total = 0;
+        for (int i = 0; i < samples.Length; i++)
+            total += samples[i] * (weights == null || i >= weights.Count ? 1 : weights[i]);
+        return new(samples[^1], samples.Average(), sorted[^1], Percentile(sorted, 0.95), total, samples.Length);
     }
 
     /// <summary>Nearest-rank percentile: the value the given fraction of the sorted set falls
@@ -861,7 +1020,16 @@ internal sealed class PerformanceChart : QWidget
         SetToolTip(string.Join("\n", lines));
     }
 
-    public void SetSeries(List<ChartSeries> series, DateTime end)
+    /// <summary>How much time between two observations is still the same stretch of curve rather
+    /// than a gap in watching. The page that feeds this sets it from its refresh rate: half a
+    /// hertz spaces its observations two seconds apart on purpose, and the fixed threshold this
+    /// used to be would break the line between every pair of them.</summary>
+    public double GapSeconds { get; set; } = 2.5;
+
+    /// <summary><paramref name="seconds"/> carries the interval each observation was measured
+    /// over, keyed by its time, so the window's total stays the amount it was rather than the sum
+    /// of the per-second rates the line is drawn from. A gauge has none and passes none.</summary>
+    public void SetSeries(List<ChartSeries> series, DateTime end, IReadOnlyDictionary<DateTime, double>? seconds = null)
     {
         _series = series;
         _end = end;
@@ -869,7 +1037,8 @@ internal sealed class PerformanceChart : QWidget
         // of the series at each observation.
         var times = series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-        _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
+        _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))),
+            seconds == null ? null : times.Select(time => seconds.GetValueOrDefault(time, 1)).ToArray());
         RefreshToolTip();
         Update();
     }
@@ -1073,7 +1242,7 @@ internal sealed class PerformanceChart : QWidget
                 while (start < times.Length)
                 {
                 int finish = start + 1;
-                while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= 2.5) finish++;
+                while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
                 using var fill = new QPainterPath();
                 fill.MoveTo(X(times[start]), Y(lower[start]));
                 for (int index = start; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
