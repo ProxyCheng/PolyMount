@@ -58,8 +58,6 @@ internal sealed class FakeSourceLayer : ILayer
         };
     }
 
-    public bool IsDeleted(string rel) => false;
-
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
         entry = null!;

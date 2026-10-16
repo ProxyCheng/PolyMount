@@ -21,7 +21,7 @@ public sealed class MemoryCacheFlowTests
     {
         var source = new FakeSourceLayer();
         var memory = new MemoryCacheLayer(memoryCapacity, Block);
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         // Production passes the layer the hash of its whole lower chain, so a source change
         // reaches every cache above it.
         var disk = new LruCacheLayer(temp.Sub("store"), () => "v1-" + source.Generation, 4L * 1024 * 1024 * 1024);

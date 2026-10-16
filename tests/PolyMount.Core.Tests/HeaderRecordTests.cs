@@ -99,7 +99,7 @@ public sealed class HeaderRecordTests
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("dir/file", "payload");
         using var memory = new MemoryCacheLayer();
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { memory, overlay, source });
 
         Assert.IsTrue(vfs.TryLookup("dir/file", out _));

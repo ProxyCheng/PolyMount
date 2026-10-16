@@ -11,7 +11,7 @@ public sealed class ConcurrentObjectTests
     public void Parallel_handles_on_same_file_merge_disjoint_writes()
     {
         using var temp = new TempDir();
-        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state")) });
+        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay")) });
         using (var create = vfs.OpenWrite("shared", true, out _)) create.SetLength(32 * 4096);
         Parallel.For(0, 32, index =>
         {
@@ -28,7 +28,7 @@ public sealed class ConcurrentObjectTests
     public void Separate_read_handle_observes_unflushed_shared_write()
     {
         using var temp = new TempDir();
-        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state")) });
+        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay")) });
         using var writer = vfs.OpenWrite("file", true, out _);
         writer.Write("latest"u8);
         using var reader = vfs.OpenRead("file", out _);

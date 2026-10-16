@@ -57,7 +57,7 @@ public class ObjectNamespaceTests
         using var temp = new TempDir();
         var source = new FakeSourceLayer();
         source.AddFile("folder/file", "source");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         using var content = new MemoryStream(new byte[123]);
         overlay.TryApply(new[] { new ObjectChange("folder", new VirtualObject(new VfsEntry { Name = "folder", Size = 123 }), content) });
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
@@ -73,7 +73,7 @@ public class ObjectNamespaceTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("folder/file", "payload");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, cache, source });
         Assert.AreEqual("fake", vfs.Probe("folder").Single(p => p.Effective).Name);
@@ -103,7 +103,7 @@ public class ObjectNamespaceTests
     public void Unsupported_write_falls_through_but_storage_errors_do_not()
     {
         using var temp = new TempDir();
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var fallback = new VirtualFileSystem(new ILayer[] { new DecliningLayer(false), overlay });
         using (var write = fallback.OpenWrite("file", true, out _)) write.Write("data"u8);
         var failure = new VirtualFileSystem(new ILayer[] { new DecliningLayer(true), overlay });
@@ -115,10 +115,10 @@ public class ObjectNamespaceTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("folder/file", "source"); source.AddFile("other", "keep");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
         vfs.Delete("folder");
-        var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state")), source });
+        var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(temp.Sub("overlay")), source });
         Assert.IsFalse(reopened.TryLookup("folder/file", out _));
         Assert.ThrowsException<VfsNotFoundException>(() => reopened.OpenRead("folder/file", out _));
         CollectionAssert.AreEqual(new[] { "other" }, reopened.List("").Select(c => c.Name).ToArray());
@@ -131,7 +131,7 @@ public class ObjectNamespaceTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("lower", "lower");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         overlay.TryApply(new[] { new ObjectChange("", VirtualObject.Directory("", Array.Empty<VfsEntry>())) });
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
         Assert.AreEqual(0, vfs.List("").Count);
@@ -143,7 +143,7 @@ public class ObjectNamespaceTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("old/sub/file", "payload"); source.AddDir("target");
-        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state")), source });
+        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(temp.Sub("overlay")), source });
         vfs.Rename("old", "target/new", false);
         Assert.IsFalse(vfs.TryLookup("old/sub/file", out _));
         using var reader = new StreamReader(vfs.OpenRead("target/new/sub/file", out _));
@@ -167,7 +167,7 @@ public class ObjectNamespaceTests
     public void Case_only_rename_keeps_the_object()
     {
         using var temp = new TempDir();
-        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay"), temp.Sub("state")) });
+        var vfs = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay")) });
         using (var write = vfs.OpenWrite("name", true, out _)) write.Write("data"u8);
         vfs.Rename("name", "NAME", false);
         using var reader = new StreamReader(vfs.OpenRead("NAME", out _));

@@ -12,7 +12,7 @@ public sealed class LargeWritePreparationTests
     {
         using var temp = new TempDir();
         string root = temp.Sub("overlay");
-        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root, temp.Sub("state")) });
+        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root) });
         using (var file = vfs.OpenWrite("large", true, out _)) { file.SetLength(1048576); file.Flush(); }
         var before = Directory.GetFiles(Path.Combine(root, "objects-v2"), "*.blob");
         using (vfs.OpenWrite("large", false, out _)) { }
@@ -23,7 +23,7 @@ public sealed class LargeWritePreparationTests
     {
         using var temp = new TempDir();
         string root = temp.Sub("overlay");
-        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root, temp.Sub("state")) });
+        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root) });
         using (var file = vfs.OpenWrite("large", true, out _))
         {
             file.SetLength(2 * 1048576);
@@ -31,7 +31,7 @@ public sealed class LargeWritePreparationTests
             file.Write("payload"u8);
             file.Flush();
         }
-        var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root, temp.Sub("state")) });
+        var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root) });
         using var read = reopened.OpenRead("large", out _);
         Assert.AreEqual(2L * 1048576, read.Length);
         read.Position = 1048576;

@@ -995,14 +995,6 @@
       <translation>绿=生效 · 琥珀=被覆盖或目录清单不可见 · 灰=未命中</translation>
     </message>
     <message>
-      <source>probe.restore</source>
-      <translation>恢复本地墓碑</translation>
-    </message>
-    <message>
-      <source>probe.hide</source>
-      <translation>墓碑遮蔽</translation>
-    </message>
-    <message>
       <source>probe.drop</source>
       <translation>丢弃本地改动</translation>
     </message>
@@ -1021,10 +1013,6 @@
     <message>
       <source>probe.invisible</source>
       <translation>不可见（目录清单未包含或对象不存在）</translation>
-    </message>
-    <message>
-      <source>probe.deleted</source>
-      <translation>墓碑</translation>
     </message>
     <message>
       <source>probe.shadowed</source>

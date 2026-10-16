@@ -112,7 +112,7 @@ public sealed class NamespaceResidencyTests
         using var temp = new TempDir();
         var source = new FakeSourceLayer();
         source.AddFile("dir/file", "source");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1024 * 1024);
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, cache, source });
 

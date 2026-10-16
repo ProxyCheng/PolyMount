@@ -37,7 +37,7 @@ public sealed class MemoryDirectoryCacheTests
         using var temp = new TempDir();
         using var cache = new MemoryCacheLayer();
         var source = new DelayedSource();
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { cache, overlay, source });
         var read = Task.Run(() => vfs.List(""));
         try
@@ -76,7 +76,7 @@ public sealed class MemoryDirectoryCacheTests
         var source = new FakeSourceLayer();
         source.AddFile("dir/old", "one"); source.AddFile("other/file", "two");
         using var cache = new MemoryCacheLayer();
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { new NamedCacheLayer("ram", cache), overlay, source });
         vfs.List("dir"); vfs.List("other");
         vfs.CreateDirectory("dir/sub");

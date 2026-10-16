@@ -12,7 +12,7 @@ public class ProbeTests
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("file", "source");
-        var overlay = new OverlayLayer(temp.Sub("overlay"), temp.Sub("state"));
+        var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
         vfs.Delete("file");
         var probe = vfs.Probe("file");

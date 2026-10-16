@@ -6,7 +6,7 @@ namespace PolyMount.Layers;
 public sealed class OverlayLayer : ILayer, IObjectManagement, ILayerStorageUsage
 {
     private readonly ObjectDatabase _database;
-    public OverlayLayer(string root, string statePath, bool compression = false) => _database = new(root, compression);
+    public OverlayLayer(string root, bool compression = false) => _database = new(root, compression);
     public string Name => "overlay";
     public string Generation => "local";
     public bool Writable => true;

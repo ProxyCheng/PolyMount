@@ -142,7 +142,6 @@ public sealed class VirtualFileSystem
                 if (epoch == Interlocked.Read(ref _resolutionEpoch)) FillHeader(path, entry, index);
         return found;
     }
-    public bool IsDeleted(string path) => !Visible(VfsPath.Normalize(path));
     /// <summary>Read either payload kind through the same object-loading boundary.
     /// <paramref name="speculative"/> marks every layer the load reaches as read-ahead, so a
     /// source that serves both lanes can schedule them apart.</summary>

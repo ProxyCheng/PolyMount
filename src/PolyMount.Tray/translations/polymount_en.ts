@@ -995,14 +995,6 @@ Close applications using mounted files first.</translation>
       <translation>Green: effective · Amber: shadowed or excluded by directory listing · Gray: not found</translation>
     </message>
     <message>
-      <source>probe.restore</source>
-      <translation>Restore tombstone</translation>
-    </message>
-    <message>
-      <source>probe.hide</source>
-      <translation>Hide with tombstone</translation>
-    </message>
-    <message>
       <source>probe.drop</source>
       <translation>Discard local changes</translation>
     </message>
@@ -1021,10 +1013,6 @@ Close applications using mounted files first.</translation>
     <message>
       <source>probe.invisible</source>
       <translation>Not visible (excluded by directory listing or object missing)</translation>
-    </message>
-    <message>
-      <source>probe.deleted</source>
-      <translation>Tombstone</translation>
     </message>
     <message>
       <source>probe.shadowed</source>

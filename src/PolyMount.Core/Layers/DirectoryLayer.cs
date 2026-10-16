@@ -4,10 +4,10 @@ using System.IO.Enumeration;
 namespace PolyMount.Layers;
 
 /// <summary>
-/// A layer that maps straight onto an existing local directory. Unlike <see cref="OverlayLayer"/>
-/// it keeps no tombstones: it simply reflects whatever is on disk. It can act either as a
-/// read-only data source (the default, writes land in the overlay above it) or as a writable
-/// pass-through layer when <c>writable</c> is set.
+/// A layer that maps straight onto an existing local directory. It records nothing of its own:
+/// it simply reflects whatever is on disk. It can act either as a read-only data source (the
+/// default, writes land in the overlay above it) or as a writable pass-through layer when
+/// <c>writable</c> is set.
 /// </summary>
 public sealed class DirectoryLayer : ILayer, ILocalSource
 {
@@ -68,8 +68,6 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
     }
 
     public string LocalPath(string rel) => Path.Combine(_root, rel.Replace('/', '\\'));
-
-    public bool IsDeleted(string rel) => false;
 
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {

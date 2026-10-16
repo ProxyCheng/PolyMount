@@ -324,7 +324,7 @@ try
         string directory = Path.Combine(backend == "WinFsp" ? mounted! : root, "PolyMount-stress-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         VirtualFileSystem? vfs = backend == "ObjectVFS"
-            ? new(new[] { new OverlayLayer(Path.Combine(directory, "objects"), Path.Combine(directory, "state")) }) : null;
+            ? new(new[] { new OverlayLayer(Path.Combine(directory, "objects")) }) : null;
         Stream Write(string path, bool truncate) => vfs != null ? vfs.OpenWrite(path, truncate, out _)
             : new FileStream(Path.Combine(directory, path), truncate ? FileMode.Create : FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
         Stream Read(string path) => vfs != null ? vfs.OpenRead(path, out _) : new FileStream(Path.Combine(directory, path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

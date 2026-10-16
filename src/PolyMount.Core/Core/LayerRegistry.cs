@@ -9,7 +9,7 @@ public static class LayerRegistry
     private static readonly Dictionary<string, Registration> Registrations = new(StringComparer.OrdinalIgnoreCase);
     static LayerRegistry()
     {
-        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, ctx.State, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
+        Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
         RegisterCache("prediction-cache", (c, ctx) => new PredictionCacheLayer(PredictionCapacity(c), ctx.LowerGeneration,
             ReadPredictionProfiles.Resolve(Text(c, "Profile"), () => CustomPrediction(c)), Path.Combine(ctx.State, "prediction.json")),
             c => { if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },

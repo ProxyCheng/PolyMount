@@ -18,7 +18,7 @@ public class VirtualFileSystemTests
         public static Fixture Build()
         {
             var f = new Fixture();
-            f.Overlay = new OverlayLayer(f.Temp.Sub("overlay"), f.Temp.Sub("state", "tombstones"));
+            f.Overlay = new OverlayLayer(f.Temp.Sub("overlay"));
             f.Source = new FakeSourceLayer();
             f.Cache = new LruCacheLayer(f.Temp.Sub("cache"), () => f.Source.Generation, 1024 * 1024);
             f.Vfs = new VirtualFileSystem(new ILayer[] { f.Overlay, f.Cache, f.Source });
@@ -88,12 +88,12 @@ public class VirtualFileSystemTests
     }
 
     [TestMethod]
-    public void Tombstone_hides_lower_entry_from_list_and_lookup()
+    public void Deleting_an_inherited_entry_hides_it_from_list_and_lookup()
     {
         using var f = Fixture.Build();
         f.Source.AddFile("del.txt", "x");
 
-        // copy-up then delete so the overlay carries a tombstone shadowing the source.
+        // copy-up then delete, so the overlay's parent listing no longer names it.
         using (f.Vfs.OpenWrite("del.txt", truncate: false, out _)) { }
         f.Vfs.Delete("del.txt");
 
