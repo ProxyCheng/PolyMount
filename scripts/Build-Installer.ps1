@@ -10,6 +10,10 @@ if (-not $Compiler) {
     }
 }
 if (-not $Compiler) { throw 'Install Inno Setup 6 (winget install JRSoftware.InnoSetup) or pass -Compiler.' }
+# Staged from empty every time: this directory is reused across builds, and a payload that is only
+# added to ships whatever a previous build left behind -- a file dropped from the product would
+# still be in the installer.
+if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 foreach ($project in @('Service','Tray')) {
     $output = Join-Path $payload $project
