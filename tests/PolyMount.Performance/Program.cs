@@ -61,6 +61,22 @@ if (args.Contains("--metrics-cost"))
     for (int i = 0; i < count; i++) { collector.RecordRequest(elapsed); collector.RecordRead("cache", elapsed, 0, true); }
     watch.Stop();
     Console.WriteLine($"lookup (layer + request), watching: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call");
+    foreach (int threads in new[] { 4, 8 })
+    {
+        var per = count / threads;
+        var start = new ManualResetEventSlim();
+        var running = Enumerable.Range(0, threads).Select(_ => new Thread(() =>
+        {
+            start.Wait();
+            for (int i = 0; i < per; i++) collector.RecordRequest(elapsed);
+        })).ToList();
+        foreach (var thread in running) thread.Start();
+        var concurrent = System.Diagnostics.Stopwatch.StartNew();
+        start.Set();
+        foreach (var thread in running) thread.Join();
+        concurrent.Stop();
+        Console.WriteLine($"request x{threads,-2}    : {concurrent.Elapsed.TotalNanoseconds / (per * threads):0.0} ns/call  (aggregate, watching)");
+    }
     foreach (double window in new[] { 0.1, 1.0, 60.0 })
     {
         const int snapshots = 2000;

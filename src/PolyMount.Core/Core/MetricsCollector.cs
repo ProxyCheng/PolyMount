@@ -64,6 +64,43 @@ public sealed class MetricsCollector
         public readonly Cell[] Cells = new Cell[CellCount];
     }
 
+    /// <summary>What one thread has counted in the cell it is in. A record is a plain add here —
+    /// no atomic, no shared line — and the cells, which every thread shares, are written once per
+    /// cell per thread instead of once per record.
+    ///
+    /// That is the whole difference between being watched and not: a counter every thread adds to
+    /// is a cache line being handed around, and it is why libraries that count on hot paths stripe
+    /// their counters (Java's LongAdder exists for this; .NET's own event counters are per-thread)
+    /// instead of doing one atomic add per event. The same shape is already in this repository, in
+    /// <see cref="RecordingCounters"/>: "plain arithmetic on purpose: a shard belongs to one
+    /// thread, so there is nobody to be atomic against".
+    ///
+    /// A reader adds the shards that have not been flushed yet, so a count is visible the moment it
+    /// happens rather than at the next cell boundary.</summary>
+    private sealed class Shard
+    {
+        public long Slot = long.MinValue;
+        public string Layer = "";
+        public Counts? Current;
+        public readonly Dictionary<string, Counts> Layers = new(StringComparer.OrdinalIgnoreCase);
+        public readonly Counts Requests = new();
+    }
+
+    /// <summary>One layer's running counts on one thread. A class rather than a struct: the hot
+    /// path adds to it through a reference, and a struct in a dictionary would be copied in and
+    /// out of it on every record.</summary>
+    private sealed class Counts
+    {
+        public long Reads, Cached, Bytes, Writes, WriteBytes, CostNs, MaxNs;
+        /// <summary>The request ring's two, used by the shard's own request counts.</summary>
+        public long Requests, RequestNs;
+
+        public void Clear()
+        {
+            Reads = Cached = Bytes = Writes = WriteBytes = CostNs = MaxNs = Requests = RequestNs = 0;
+        }
+    }
+
     /// <summary>What one layer's cells add up to over a window.</summary>
     private readonly record struct Sums(long Reads, long Cached, long Bytes, long Writes, long WriteBytes, long CostNs, long MaxCostNs);
 
@@ -71,9 +108,17 @@ public sealed class MetricsCollector
     /// it existed, and saying so is what keeps a rate off a window the process never covered.</summary>
     private readonly long _startedSlot;
 
-    // One ring per layer. A layer's reads arrive on whichever thread WinFsp handed the request to,
-    // so this is the one shared structure on the write path; the counters inside a cell are atomic.
+    // One ring per layer. The cells are what a window is summed from; they are written once per
+    // cell per thread, by that thread's shard, so the atomic adds are rare rather than per record.
     private readonly ConcurrentDictionary<string, Ring> _layers = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Every thread's shard, so a reader can add what has not been flushed yet. Guarded by
+    /// its own lock: a thread registers once, and a reader copies it out and sums without holding
+    /// it.</summary>
+    private readonly List<Shard> _shards = new();
+    private readonly object _shardGate = new();
+
+    [ThreadStatic] private static MetricsCollector? _shardOwner;
+    [ThreadStatic] private static Shard? _ownShard;
     /// <summary>Every request, and how long it took, whatever answered it. The per-layer rings can
     /// only charge a request to a layer that served it, so a lookup no layer answered for — which is
     /// most of what an engine probing for files it may not have produces — would otherwise be time
@@ -141,9 +186,9 @@ public sealed class MetricsCollector
         long now = Environment.TickCount64;
         Volatile.Write(ref _lastActivityMs, now);
         if (now >= Volatile.Read(ref _watchedUntilMs)) return;
-        ref Cell cell = ref CellAt(_requests, _slot());
-        Interlocked.Increment(ref cell.Requests);
-        Interlocked.Add(ref cell.RequestNs, elapsed.Ticks * 100);
+        var counts = ShardFor(_slot()).Requests;
+        counts.Requests++;
+        counts.RequestNs += elapsed.Ticks * 100;
     }
 
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
@@ -158,31 +203,110 @@ public sealed class MetricsCollector
         // One comparison, on a clock reading that was already needed. Everything below this line -
         // the slot, the layer lookup, the atomic adds - is what nobody watching does not pay.
         if (now >= Volatile.Read(ref _watchedUntilMs)) return;
-        long slot = _slot();
-        ref Cell cell = ref CellAt(layer, slot);
+        Counts counts = LayerCounts(ShardFor(_slot()), layer);
         if (write)
         {
-            Interlocked.Increment(ref cell.Writes);
-            if (bytes > 0) Interlocked.Add(ref cell.WriteBytes, bytes);
+            counts.Writes++;
+            if (bytes > 0) counts.WriteBytes += bytes;
         }
         else
         {
-            Interlocked.Increment(ref cell.Reads);
-            if (cached) Interlocked.Increment(ref cell.Cached);
-            if (bytes > 0) Interlocked.Add(ref cell.Bytes, bytes);
+            counts.Reads++;
+            if (cached) counts.Cached++;
+            if (bytes > 0) counts.Bytes += bytes;
             // Ticks are hundreds of nanoseconds, so this is exact: no rounding, and nothing that
             // happened is dropped for being small.
             long cost = elapsed.Ticks * 100;
             if (cost > 0)
             {
-                Interlocked.Add(ref cell.CostNs, cost);
+                counts.CostNs += cost;
+                if (cost > counts.MaxNs) counts.MaxNs = cost;
+            }
+        }
+    }
+
+    /// <summary>This thread's shard for the cell it is in, flushing the previous one if the cell
+    /// has moved on. A thread that stops writing leaves its last shard unflushed on purpose: a
+    /// reader adds it, and flushing it would need somebody to run at a moment nobody is there.</summary>
+    private Shard ShardFor(long slot)
+    {
+        var shard = _ownShard;
+        if (shard == null || !ReferenceEquals(_shardOwner, this))
+        {
+            shard = new Shard { Slot = slot };
+            _shardOwner = this;
+            _ownShard = shard;
+            lock (_shardGate) _shards.Add(shard);
+            return shard;
+        }
+        if (shard.Slot != slot)
+        {
+            Flush(shard, shard.Slot);
+            shard.Slot = slot;
+        }
+        return shard;
+    }
+
+    /// <summary>The counts this thread is holding for the layer it last touched. Consecutive
+    /// records usually belong to the same layer, so the common case is three comparisons; the
+    /// dictionary is only reached when the layer changes.</summary>
+    private static Counts LayerCounts(Shard shard, string layer)
+    {
+        // The layer name is the same string instance every time it is recorded - the file system
+        // holds one per layer - so the common case is a reference check rather than a comparison.
+        if (ReferenceEquals(shard.Current, null) || !(ReferenceEquals(shard.Layer, layer) ||
+            string.Equals(shard.Layer, layer, StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!shard.Layers.TryGetValue(layer, out var counts)) shard.Layers[layer] = counts = new Counts();
+            shard.Layer = layer;
+            shard.Current = counts;
+        }
+        return shard.Current;
+    }
+
+    /// <summary>Moves a shard's counts into the cells of the slot they belong to. This is the only
+    /// place on the write path that is atomic, and it runs once per cell per thread — a hundred
+    /// times a second rather than fifteen thousand. The counts are cleared in place rather than
+    /// dropped, so the objects are reused and nothing is allocated here either.</summary>
+    private void Flush(Shard shard, long slot)
+    {
+        if (slot == long.MinValue) return;
+        foreach (var (layer, counts) in shard.Layers)
+        {
+            if (counts.Reads == 0 && counts.Cached == 0 && counts.Bytes == 0 && counts.Writes == 0 && counts.WriteBytes == 0 && counts.CostNs == 0)
+                continue;
+            ref Cell cell = ref CellAt(layer, slot);
+            if (counts.Reads > 0) Interlocked.Add(ref cell.Reads, counts.Reads);
+            if (counts.Cached > 0) Interlocked.Add(ref cell.Cached, counts.Cached);
+            if (counts.Bytes > 0) Interlocked.Add(ref cell.Bytes, counts.Bytes);
+            if (counts.Writes > 0) Interlocked.Add(ref cell.Writes, counts.Writes);
+            if (counts.WriteBytes > 0) Interlocked.Add(ref cell.WriteBytes, counts.WriteBytes);
+            if (counts.CostNs > 0) Interlocked.Add(ref cell.CostNs, counts.CostNs);
+            if (counts.MaxNs > 0)
+            {
                 long seen;
-                while (cost > (seen = Volatile.Read(ref cell.MaxCostNs)) &&
-                       Interlocked.CompareExchange(ref cell.MaxCostNs, cost, seen) != seen)
+                while (counts.MaxNs > (seen = Volatile.Read(ref cell.MaxCostNs)) &&
+                       Interlocked.CompareExchange(ref cell.MaxCostNs, counts.MaxNs, seen) != seen)
                 {
                 }
             }
+            counts.Clear();
         }
+        if (shard.Requests.Requests > 0)
+        {
+            ref Cell cell = ref CellAt(_requests, slot);
+            Interlocked.Add(ref cell.Requests, shard.Requests.Requests);
+            Interlocked.Add(ref cell.RequestNs, shard.Requests.RequestNs);
+            shard.Requests.Clear();
+        }
+    }
+
+    /// <summary>What the threads are holding but have not flushed yet, as of now. Summed by the
+    /// reader so a count is visible when it happens; the alternative - waiting for the next cell
+    /// boundary - would make the first sample of a window short by up to a cell.</summary>
+    private Shard[] PendingShards()
+    {
+        lock (_shardGate) return _shards.ToArray();
     }
 
     /// <summary>The cell for this layer and slot, reset if the ring has come round to a slot it
@@ -263,6 +387,16 @@ public sealed class MetricsCollector
         long oldest = Math.Max(0, now - slots + 1);
 
         long requests = 0, requestNs = 0;
+
+        // What the threads are still holding. A count is visible when it happens rather than at the
+        // next cell boundary - which keeps the first sample of a window honest, and keeps the two
+        // counts of one request in the same window. A shard whose cell is older than the window
+        // belongs to a thread that stopped writing before it, and to no window a reader asks about.
+        //
+        // A flush in flight at this instant can be counted twice - the cell it wrote and the shard
+        // it has not cleared yet - which is one thread's counts for at most one cell. Losing them
+        // instead would be just as wrong and no more useful, and neither moves a number anybody
+        // reads at this resolution.
         {
             var cells = _requests.Cells;
             int index = (int)(oldest % CellCount);
@@ -279,6 +413,30 @@ public sealed class MetricsCollector
 
         var totals = new Dictionary<string, Sums>(StringComparer.OrdinalIgnoreCase);
         long reads = 0, cached = 0, writes = 0, costNs = 0;
+
+        foreach (var shard in PendingShards())
+        {
+            if (shard.Slot < oldest) continue;
+            foreach (var (name, counts) in shard.Layers)
+            {
+                if (counts.Reads == 0 && counts.Writes == 0 && counts.Cached == 0 && counts.Bytes == 0 && counts.WriteBytes == 0) continue;
+                totals.TryGetValue(name, out var held);
+                totals[name] = new Sums(
+                    held.Reads + counts.Reads,
+                    held.Cached + counts.Cached,
+                    held.Bytes + counts.Bytes,
+                    held.Writes + counts.Writes,
+                    held.WriteBytes + counts.WriteBytes,
+                    held.CostNs + counts.CostNs,
+                    Math.Max(held.MaxCostNs, counts.MaxNs));
+                reads += counts.Reads;
+                cached += counts.Cached;
+                writes += counts.Writes;
+                costNs += counts.CostNs;
+            }
+            requests += shard.Requests.Requests;
+            requestNs += shard.Requests.RequestNs;
+        }
         foreach (var (name, ring) in _layers)
         {
             var cells = ring.Cells;
