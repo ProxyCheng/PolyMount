@@ -538,12 +538,32 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 $"The page is {_page.Height} pixels tall where its layout needs at least {needed.Height()}");
         // The cards are where a squeeze shows, on either axis: nothing can be laid out smaller than
         // its own minimum, so a card that is, is one the layout had no room for.
-        foreach (var chart in _charts.Concat(_processCharts).Append(_processIo).Append(_heldMemory).Append(_heldDisk))
+        foreach (var chart in Cards)
             if (chart.Height < chart.MinimumHeight || chart.Width < chart.MinimumWidth)
                 throw new InvalidOperationException(
                     $"{chart.TitleKey} is {chart.Width}x{chart.Height}, under its own " +
                     $"{chart.MinimumWidth}x{chart.MinimumHeight} minimum");
+        // And inside each card, what the chart did with the rectangle it was given: the plot is what
+        // is left of it after the two axes and the legend, and what is left can be nothing. Measured
+        // while the card drew its legend row by hand, one card's plot came out 286 by 30 pixels
+        // inside a card of 330 by 260 with every other check on this page passing. So both halves of
+        // that are checked: the share of the plot the data got, and whether the chart had to elide
+        // an axis label to fit — which turns a column of numbers into a column of dots, and is the
+        // one way a chart reports a plot too short for what it was asked to draw.
+        foreach (var chart in Cards)
+        {
+            var areas = chart.Areas;
+            if (areas.WidthShare < 0.7 || areas.HeightShare < 0.45)
+                throw new InvalidOperationException($"{chart.TitleKey} keeps only {areas} for its data");
+            if (chart.LabelsTruncated)
+                throw new InvalidOperationException(
+                    $"{chart.TitleKey} had to elide its value labels to fit its plot: {areas}");
+        }
     }
+
+    /// <summary>Every chart card on this page, in the order the page lays them out.</summary>
+    private IEnumerable<PerformanceChart> Cards =>
+        _charts.Concat(_processCharts).Append(_processIo).Append(_heldMemory).Append(_heldDisk);
     /// <summary>The layers' account and the operating system's are two measurements of different
     /// things — the sizes of the files the layers resolved, against every byte the process moved,
     /// whichever part of it asked — so they are drawn on two cards rather than stacked into one.
@@ -717,10 +737,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException(
                 "A series is not cut to its window: " + string.Join(", ", cut.Select(sample => $"{sample.Value:0.###} at {(sample.Time - start).TotalSeconds:0.###}s")));
         // The time axis has to name its span and its ticks in the unit each makes readable: a
-        // fifteen-minute range divided into a hundred-second steps would be unreadable, and a
-        // caption still saying "60 seconds ago" would be wrong.
-        if (PerformanceChart.TimeStep(900 / 8.0) != 120 || PerformanceChart.TimeTick(300, 120) != "5m" ||
-            PerformanceChart.TimeStep(12) != 15 || PerformanceChart.TimeTick(45, 15) != "45s")
+        // fifteen-minute range divided into hundred-second steps would be unreadable, and a step of
+        // a minute or more is a duration nobody counts in seconds. The step ladder and the unit are
+        // what the card decides; where a tick lands and where its label sits is the chart's own
+        // layout, from the range, the interval and the format it was handed.
+        if (PerformanceChart.TimeStep(900 / 8.0) != 120 || PerformanceChart.TimeStep(12) != 15 ||
+            PerformanceChart.TimeUnit(120) != (60, "%.0f m") || PerformanceChart.TimeUnit(15) != (1, "%.0f s"))
             throw new InvalidOperationException("The time axis does not name its ticks in the unit that fits them");
         if (!PerformanceChart.SpanText(900).Contains("15", StringComparison.Ordinal) ||
             !PerformanceChart.SpanText(30).Contains("30", StringComparison.Ordinal))
@@ -1692,7 +1714,8 @@ internal enum ChartFigure
 internal readonly record struct ChartDomain(double Scale, string Unit, double Floor, double Max, double Step, int GridLines)
 {
     /// <summary>Domain for a series set: the tallest stack above the line, and as far below it
-    /// as anything actually reached.</summary>
+    /// as anything actually reached. <paramref name="targetIntervals"/> is what the plot has room
+    /// to letter, which is a ceiling rather than a wish — see below.</summary>
     public static ChartDomain Of(IEnumerable<ChartSeries> series, string unit, double targetIntervals)
     {
         var samples = series.ToList();
@@ -1714,27 +1737,64 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
         }).DefaultIfEmpty(0).Max();
         double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
         var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
-        double max = Math.Max(unit is "ms" or "B" or "cores" ? 1 : 5, peak / axis.Scale * 1.15);
+        // The axis is scaled to what the window reached, and to nothing else. The floor this used
+        // to keep under that — five, for a rate — left the busiest second of a quiet instance drawn
+        // flat along the bottom of an axis nothing had filled, which is a picture of an idle card
+        // rather than of a quiet one. A window that reached nothing at all has no magnitude of its
+        // own to take a scale from, so it is given one: there is nothing to draw against it either
+        // way, and an axis of no height has no grid for the next reading to land on.
+        double max = Math.Max(peak / axis.Scale, 0) * 1.15;
+        if (max <= 0) max = 1;
         double step = 0;
         int intervals = 0;
         // D3 nice: round the domain outward, then recompute until the step stabilizes.
         for (int pass = 0; pass < 10; pass++)
         {
             double next = NiceStep(max / targetIntervals);
-            if (unit != "ms" && unit != "B") next = Math.Max(1, next);
+            // Counts and cores are read in whole numbers — a gridline every half a request, or
+            // every third of a core, is one nobody counts by. Durations and bytes have no grain.
+            if (unit is not ("ms" or "B" or "cores")) next = Math.Max(1, next);
             if (next == step) break;
             step = next;
-            intervals = (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
+            intervals = Intervals(max, step);
             max = TickValue(intervals, step);
         }
-        // The below-zero side is capped at the height of the positive side: every interval
-        // costs a line and a label, so an uncapped floor lets one sample decide how long a
-        // frame takes. Waste is the sample that can do it — a layer evicting its whole budget
-        // in a second, on a chart scaled to a few kilobytes, asked for six hundred million
-        // grid lines. What overflows the floor is drawn clipped to it.
-        double depth = step <= 0 ? 0 : Math.Ceiling(-trough / axis.Scale / step);
-        int below = (int)Math.Clamp(depth, 0, Math.Max(1, intervals));
+        // Rounding a step down is what leaves more intervals than were asked for, and a chart whose
+        // labels do not fit elides every one of them: measured, six labels in ninety-two pixels of
+        // plot came out as six rows of dots. So the step grows until what will be drawn is what the
+        // plot has room for — the ceiling is the caller's, and the caller measures it from the
+        // height the last draw left for the data.
+        int below = Below(trough, axis.Scale, step, intervals);
+        while (step > 0 && intervals + below > targetIntervals)
+        {
+            step = NextNiceStep(step);
+            intervals = Intervals(max, step);
+            max = TickValue(intervals, step);
+            below = Below(trough, axis.Scale, step, intervals);
+        }
         return new(axis.Scale, axis.Unit, -below * step, max, step, intervals + below);
+    }
+
+    /// <summary>How many intervals of that width the domain is divided into.</summary>
+    private static int Intervals(double max, double step) =>
+        step <= 0 ? 0 : (int)Math.Ceiling(step < 1 ? max * Math.Round(1 / step) : max / step);
+
+    /// <summary>The gridlines below the line: as far as what the window reached went below it, and
+    /// no further than the positive side is tall. Every interval costs a line and a label, so an
+    /// uncapped floor lets one sample decide how long a frame takes — waste is the sample that can
+    /// do it, a layer evicting its whole budget in a second against a chart scaled to a few
+    /// kilobytes, which once asked for six hundred million grid lines. What overflows the floor is
+    /// drawn clipped to it.</summary>
+    private static int Below(double trough, double scale, double step, int intervals) =>
+        step <= 0 ? 0 : (int)Math.Clamp(Math.Ceiling(-trough / scale / step), 0, Math.Max(1, intervals));
+
+    /// <summary>The next step of the 1/2/5 ladder above this one, for a domain that has to give up
+    /// intervals to fit.</summary>
+    private static double NextNiceStep(double step)
+    {
+        double magnitude = Math.Pow(10, Math.Floor(Math.Log10(step) + 1e-9));
+        double fraction = step / magnitude;
+        return magnitude * (fraction < 2 ? 2 : fraction < 5 ? 5 : 10);
     }
 
     /// <summary>D3 tickStep: nearest 1/2/5 decade, using geometric-mean thresholds.
@@ -1746,55 +1806,122 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
         return magnitude * (fraction < Math.Sqrt(2) ? 1 : fraction < Math.Sqrt(10) ? 2 : fraction < Math.Sqrt(50) ? 5 : 10);
     }
 
+    /// <summary>The number format for a value axis' labels: as many decimals as the step it chose
+    /// has, so a step of 0.5 does not letter itself "0" over and over.</summary>
+    internal static string TickFormat(double step) =>
+        "%." + Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15).ToString(I18n.Culture) + "f";
+
     internal static double TickValue(int index, double step) => step < 1 ? index / Math.Round(1 / step) : index * step;
 }
 
+/// <summary>What a card's layout came out as: the card, the rectangle the plot widget was given
+/// inside it, the area the chart kept of that for the data itself, and the height its legend
+/// claimed. The differences are what the axes and the legend take, which is the one thing about a
+/// chart a reader cannot see in the picture — and the only way to tell a plot that is too small
+/// from a card that is. The shares are against the plot widget, which is what the chart was given
+/// to work with.</summary>
+internal readonly record struct CardAreas(
+    double Width, double Height, double WidgetWidth, double WidgetHeight,
+    double PlotWidth, double PlotHeight, double LegendHeight)
+{
+    public double WidthShare => WidgetWidth <= 0 ? 0 : PlotWidth / WidgetWidth;
+    public double HeightShare => WidgetHeight <= 0 ? 0 : PlotHeight / WidgetHeight;
+    public override string ToString() =>
+        $"{Width,4:0}x{Height,-4:0} card, plot {PlotWidth,4:0}x{PlotHeight,-4:0} of the " +
+        $"{WidgetWidth,4:0}x{WidgetHeight,-4:0} given to the chart " +
+        $"({WidthShare * 100,3:0}% wide, {HeightShare * 100,3:0}% tall), legend {LegendHeight,3:0}";
+}
+
+/// <summary>One chart card: what an instance did over the window its reader chose.
+///
+/// The card owns what no chart can draw — its frame, its title, the headline and the window's
+/// figures — and hands everything inside the plot to Qt's chart: the grid, both axes with their
+/// labels and their units, the legend and the areas. So a tick and the gridline it belongs to, or
+/// a value and the line under it, cannot disagree: one transform decides all of them.
+///
+/// The chart is a child widget placed by this card's own layout, which is what makes the plot
+/// whatever is left after the header. What the chart spends inside that rectangle on its axes and
+/// its legend is the chart's own measurement, not a strip of pixels guessed at here: a chart uses
+/// the margins it is given as a floor and grows them for its labels, so a card that added its own
+/// room for them paid for the same labels twice.
+/// </summary>
 internal sealed class PerformanceChart : QWidget
 {
-    /// <summary>Text baselines in the card's header, shared by the headline, its figures and the
-    /// per-layer values so the three rows read as one column.</summary>
-    private const int HeadlineBaseline = 63, SeriesBaseline = 80;
-    /// <summary>Gap between the headline and the first figure, and between figures.</summary>
+    /// <summary>What the card keeps for its own furniture: the header above the plot, which holds
+    /// the title and the headline with its figures, and the frame's inset at the sides and under
+    /// the plot. Everything else is the chart's rectangle.</summary>
+    private const int PlotInset = 18, HeaderHeight = 76, FooterInset = 8;
+    /// <summary>The baselines the header's two rows of text share, so they read as two rows rather
+    /// than as four pieces of type that nearly line up.</summary>
+    private const int TitleBaseline = 29, HeadlineBaseline = 63;
+    /// <summary>Gap between two figures in the headline's row.</summary>
     private const int FigureGap = 20;
-    /// <summary>The room the card keeps outside the plot: at the sides, above it for the value
-    /// axis' unit, and under it for the time axis' ticks and the two captions.</summary>
-    private const int PlotInset = 18, UnitStrip = 14, CaptionStrip = 26;
+    /// <summary>What the chart keeps inside the plot widget before the data gets any of it: its own
+    /// corner padding and both axes' labels. Measured, a chart in a widget of this shape keeps
+    /// forty-eight pixels of it, and a label that needs more than this rule leaves it asks for one
+    /// interval fewer the next time the chart reports having elided one.</summary>
+    private const int AxisFurniture = 48;
+    /// <summary>How much of the plot one value label is read in. A chart elides every label rather
+    /// than crowding them, and it does it on its own idea of how tall a label is: measured, six
+    /// labels in ninety-two pixels of plot came out as six rows of dots where five were drawn whole,
+    /// and eight in a hundred and forty-five came out cut where seven were not. Twenty-eight pixels
+    /// is a label with the air it is read with at every height a card of these sizes reaches.</summary>
+    private const int LabelSpacing = 28;
     private readonly string _titleKey, _color, _unit;
     private readonly ChartFigure[] _figures;
     private DateTime _end;
     private List<ChartSeries> _series = new();
     /// <summary>The plot itself: a Qt chart the card hosts as a child widget. It owns the grid, the
-    /// axes, the areas and the lines, which is what keeps a value and the line under it from ending
-    /// up a pixel apart — one transform decides both. The card keeps its frame, its headline, its
-    /// figures and its own legend row, and letters the time axis itself from the positions the
-    /// chart maps its own ticks to.</summary>
-    private readonly QChart _chart;
+    /// axes, the areas and the lines — and its own layout, which is the rectangle the axes and the
+    /// legend leave it.</summary>
+    private readonly QChart _chart = new();
     private readonly QChartView _plot;
     private readonly QValueAxis _valueAxis = new();
     private readonly QValueAxis _timeAxis = new();
-    /// <summary>What the chart is holding, so a rebuild can take it back: the series it was given,
-    /// and the notes drawn into it (a recording's edges, which are not data).</summary>
+    /// <summary>What the last draw put into the chart, so the next one can take it back: an area
+    /// per run of every series, a hairline per recording edge, and the words beside those.</summary>
     private readonly List<QAreaSeries> _bands = new();
     private readonly List<QLineSeries> _edges = new();
     private readonly List<QGraphicsSimpleTextItem> _notes = new();
-
-    /// <summary>How many recording edges can be lettered at once: two rows of two, which is more
-    /// than one recording's pair and the one that has just left the window.</summary>
-    private const int NoteSlots = 4;
-    /// <summary>What the last plot was drawn against: the value domain the axis was set from, and
-    /// the step its ticks stand at. The card letters the axes from these, so its own words come
-    /// from the numbers the chart drew its grid with.</summary>
+    /// <summary>What the last draw was scaled to: the value domain both axes were given, and the
+    /// unit the time axis is read in (one second, or a minute once the span is long enough that a
+    /// tick a minute apart is what fits).</summary>
     private ChartDomain _domain;
-    private double _tickStep = 1;
+    private double _timeUnit = 1;
+    private ChartStatistics _stats;
 
-    /// <summary>What this card is drawing, for the smoke run's check that the byte cards add up to
-    /// what the operating system recorded.</summary>
+    /// <summary>A moment on the axis rather than a measurement of one — the edge of a recording.
+    /// It travels with the data and leaves the window the way a sample does.</summary>
+    internal readonly record struct ChartMarker(DateTime Time, string LabelKey, string Color);
+
+    private IReadOnlyList<ChartMarker> _markers = Array.Empty<ChartMarker>();
+
+    /// <summary>What this card is drawing, for the smoke run's checks.</summary>
     internal IReadOnlyList<ChartSeries> Series => _series;
 
     /// <summary>The moment this card was drawn up to, for the smoke run's check that every card is
     /// drawn up to the same one whatever cadence feeds it.</summary>
     internal DateTime End => _end;
-    private ChartStatistics _stats;
+
+    /// <summary>What the card's own layout came out as, for the render command and the smoke run:
+    /// the card, the plot widget's rectangle inside it, the area the chart kept of that for the
+    /// data, and what its legend took.</summary>
+    internal CardAreas Areas => new(Width, Height, _plot.Width, _plot.Height,
+        _chart.PlotArea.Width(), _chart.PlotArea.Height(),
+        _chart.Legend().IsVisible() ? _chart.Legend().Geometry.Height() : 0);
+
+    /// <summary>Whether the chart had to elide its value labels to fit the plot it was given. A
+    /// column of dots is a card nobody can read, and it is what a plot too short for the ticks it
+    /// was asked for looks like — silently, because a chart answers by cutting the words.</summary>
+    internal bool LabelsTruncated => _valueAxis.LabelsTruncated;
+
+    /// <summary>What the card is showing, for the export and its own smoke checks.</summary>
+    internal string TitleKey => _titleKey;
+    internal string Unit => _unit;
+    internal IReadOnlyList<ChartFigure> Figures => _figures;
+    internal ChartStatistics Statistics => _stats;
+    internal ChartDomain Domain => _domain;
+
     public PerformanceChart(string titleKey, string color, string unit, ChartSummary summary)
     {
         _titleKey = titleKey;
@@ -1806,34 +1933,44 @@ internal sealed class PerformanceChart : QWidget
             ChartSummary.Gauge => new[] { ChartFigure.Average, ChartFigure.Peak },
             _ => new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total }
         };
-        SetMinimumSize(330, 260);
-        // The card's own furniture is painted by the card; everything inside the plot comes from
-        // the chart — its grid, its axes, the areas and the lines — so the two cannot disagree
-        // about where a value or a moment is.
-        _chart = new QChart();
+        // The minimum is what the chart needs inside plus what the card keeps: the header, the
+        // legend's own row, and both axes' labels — measured at this width, a chart spends 89 of its
+        // pixels on the legend, the value labels and Qt's own corner padding, and what is left has
+        // to be a plot a reader can read a curve off. A window too short for the page scrolls it,
+        // which is what the scroll area is for.
+        SetMinimumSize(330, 280);
         _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
         _chart.SetBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor("#ffffff")));
-        // The chart keeps no legend: the card draws the row of series itself, above the plot, so
-        // the plot's height does not depend on how many layers there are or on how wide the card
-        // is. Left to the chart, the row reserves its own height inside the plot — and, at the
-        // width these cards are laid out at, the height of several rows, because it wraps: measured
-        // on a card at its minimum, the plot area came out 286x30 with it and the whole strip
-        // without. The series still carry their names into the chart, which is where the card's row
-        // reads them.
-        _chart.Legend().DetachFromChart();
-        _chart.SetMargins(new QMargins(0, 0, 0, 0));
         _chart.SetLocalizeNumbers(false);
+        // What the chart keeps around its plot is its own business: it makes room for its axis
+        // labels and grows the margins it is given where they are not enough. Its default is twenty
+        // pixels on every side, and measured, that is exactly what a card was paying for nothing —
+        // the same chart in the same rectangle drew a plot 40 pixels wider and 40 taller with this
+        // set to nothing, which is a fifth of the card's height handed to no one.
+        _chart.SetMargins(new QMargins(0, 0, 0, 0));
+        // The legend is the chart's own, under the plot where Qt puts it: one row of the series'
+        // names, wrapped and cut off by the chart. It costs the plot the height of that row, and
+        // nothing else does — drawing that row here as well meant three things had to agree about
+        // one strip of the card, and the row's own contents changed width as the values in it did.
+        _chart.Legend().SetAlignment(Qt.Alignment.AlignBottom);
+        _chart.Legend().SetBackgroundVisible(false);
+        _chart.Legend().SetLabelColor(new QColor("#334155"));
+        _chart.Legend().SetFont(new QFont("Segoe UI", 8));
+        // Both axes carry their own labels: dark enough to read, over a faint grid, with no axis
+        // line of their own — the plot's white background is what the areas are read against. The
+        // value axis carries its unit once, beside the numbers, because the numbers are scaled into
+        // whatever unit the window's magnitudes are read in (bytes, cores, milliseconds).
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
         _valueAxis.SetLabelsColor(new QColor("#718096"));
+        _valueAxis.SetTitleFont(new QFont("Segoe UI", 8));
+        _valueAxis.SetTitleBrush(new QBrush(new QColor("#718096")));
         _valueAxis.SetGridLineColor(new QColor("#e7edf5"));
         _valueAxis.SetLineVisible(false);
         _valueAxis.SetMinorTickCount(0);
-        // The time axis keeps its gridlines and gives up its labels: the card letters them, because
-        // what they say is a span and a unit the reader chose ("-30s" at thirty seconds, "5m" at
-        // five minutes), which is a sentence rather than a number format.
-        _timeAxis.SetLabelsVisible(false);
+        _timeAxis.SetLabelsFont(new QFont("Segoe UI", 8));
+        _timeAxis.SetLabelsColor(new QColor("#718096"));
         _timeAxis.SetGridLineColor(new QColor("#e7edf5"));
         _timeAxis.SetLineVisible(false);
         _timeAxis.SetMinorTickCount(0);
@@ -1841,17 +1978,19 @@ internal sealed class PerformanceChart : QWidget
         _chart.AddAxis(_valueAxis, Qt.Alignment.AlignLeft);
         _plot = new QChartView(_chart, this);
         _plot.SetRenderHint(QPainter.RenderHint.Antialiasing);
-        // The card is white behind the plot: the view's own viewport is otherwise the platform's
+        // The card is white behind the plot: a view's own viewport is otherwise the platform's
         // window colour, which shows through wherever the chart draws nothing.
         _plot.SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
+        // The plot is placed by this layout rather than by hand: a graphics view that is never told
+        // what size it is lays itself out against a rectangle of its own making, which is how a
+        // chart's legend ends up below the bottom edge of the widget the reader is looking at.
+        var layout = new QVBoxLayout(this);
+        layout.SetContentsMargins(PlotInset, HeaderHeight, PlotInset, FooterInset);
+        layout.AddWidget(_plot);
     }
+
     public override void ChangeEvent(QEvent e)
     { base.ChangeEvent(e); if (e.type() == QEvent.Type.LanguageChange) Update(); }
-    /// <summary>A moment on the axis rather than a measurement of one — the edge of a recording.
-    /// It travels with the data and leaves the window the way a sample does.</summary>
-    internal readonly record struct ChartMarker(DateTime Time, string LabelKey, string Color);
-
-    private IReadOnlyList<ChartMarker> _markers = Array.Empty<ChartMarker>();
 
     /// <summary>Marks the axis at those moments. They are annotation rather than data: drawn over
     /// the fills, in the recording's own colour, and never part of the stack or its statistics.</summary>
@@ -1860,13 +1999,14 @@ internal sealed class PerformanceChart : QWidget
         _markers = markers;
         // A recording's edges arrive between samples — the moment one is opened or closed — so they
         // are drawn into the chart as they come rather than waiting for the window to move.
-        PlotNotes(_domain);
+        PlotNotes();
         RefreshToolTip();
         Update();
     }
 
     /// <summary>What the card says on hover: the layers, the window's figures, and when a recording
-    /// this window covers began or ended.</summary>
+    /// this window covers began or ended. The plot says which layer is which, and what each one is
+    /// at now is the one figure a picture of a stack cannot carry.</summary>
     private void RefreshToolTip()
     {
         var lines = _series.Select(s => s.Name + ": " + FormatValue(s.Samples.LastOrDefault().Value)).ToList();
@@ -1891,11 +2031,12 @@ internal sealed class PerformanceChart : QWidget
         return TimeSteps[^1];
     }
 
-    /// <summary>A time tick, in the unit its step makes readable. The unit is a symbol like the
-    /// value axis's "ms" and "B" rather than a translated word, so it stays out of the catalog.</summary>
-    internal static string TimeTick(double seconds, double step) => step >= 60
-        ? (seconds / 60).ToString(seconds % 60 == 0 ? "0" : "0.#", I18n.Culture) + "m"
-        : seconds.ToString("0", I18n.Culture) + "s";
+    /// <summary>The unit a time axis is read in, and the format its labels are lettered with, from
+    /// the step its ticks stand at: a step of a minute or more is a duration nobody counts out in
+    /// seconds. The unit is a symbol like the value axis' own, and the format is one string the
+    /// chart letters every tick from.</summary>
+    internal static (double Unit, string Format) TimeUnit(double step) =>
+        step >= 60 ? (60, "%.0f m") : (1, "%.0f s");
 
     /// <summary>How much time the chart shows, as a reader reads it: the number is formatted for
     /// their culture and the unit is a catalog entry, because "min" is a word.</summary>
@@ -1909,9 +2050,6 @@ internal sealed class PerformanceChart : QWidget
     /// used to be would break the line between every pair of them.</summary>
     public double GapSeconds { get; set; } = 2.5;
 
-    /// <summary><paramref name="seconds"/> carries the interval each observation was measured
-    /// over, keyed by its time, so the window's total stays the amount it was rather than the sum
-    /// of the per-second rates the line is drawn from. A gauge has none and passes none.</summary>
     /// <summary><paramref name="figures"/> are the chart's window figures, computed by the page
     /// over every observation it holds. Drawing folds observations into fewer points when a range
     /// is long, and the numbers beside the line must not follow the drawing; without them, the
@@ -1931,15 +2069,26 @@ internal sealed class PerformanceChart : QWidget
             _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
         }
         _series = series.Select(item => item with { Samples = Windowed(item.Samples, end, SpanSeconds) }).ToList();
-        PlacePlot();
         Plot();
         RefreshToolTip();
         Update();
     }
 
-    /// <summary>Hands the window to the chart: an area per run of every series, the two axes, and a
-    /// note per recording edge. Runs are split the way the drawing always split them — a gap wider
-    /// than <see cref="GapSeconds"/> is a pause, and a series is not one line across it.
+    /// <summary>Where a moment sits on the time axis: how long ago it was, in the unit that axis is
+    /// reading in. Nought is the moment the card is drawn up to, which every card shares, and the
+    /// window's other end is its own span before that.</summary>
+    private double Along(DateTime time) => -(_end - time).TotalSeconds / _timeUnit;
+
+    /// <summary>How much of the plot widget the data gets: what is left of it after the chart's own
+    /// corner padding, the two axes' labels and the legend. The widget's own height is what this is
+    /// counted from rather than the plot area the chart reports, because a chart reports where its
+    /// plot ended up only after it has laid one out — a card's first picture would be scaled to a
+    /// plot that does not exist yet — while the height it has been given is known immediately.</summary>
+    private double PlotRoom() =>
+        Math.Max(40, _plot.Height - AxisFurniture - (_chart.Legend().IsVisible() ? _chart.Legend().Geometry.Height() : 0));
+
+    /// <summary>Hands the window to the chart: both axes, an area per run of every series, and a
+    /// hairline per recording edge.
     ///
     /// The series are added back to front, so the first one in the list is drawn last and reads as
     /// the top of the stack; what is not stacked is drawn over what came before it instead.</summary>
@@ -1949,14 +2098,11 @@ internal sealed class PerformanceChart : QWidget
         foreach (var edge in _edges) { _chart.RemoveSeries(edge); edge.Dispose(); }
         _bands.Clear();
         _edges.Clear();
+        // A note is not an object the binding owns, so it is taken out of the scene rather than disposed.
+        foreach (var note in _notes) _plot.Scene()?.RemoveItem(note);
+        _notes.Clear();
 
-        var domain = ChartDomain.Of(_series, _unit, Math.Max(2, _plot.Height / 42.0));
-        _domain = domain;
-        _valueAxis.SetRange(domain.Floor, domain.Max);
-        _valueAxis.SetTickCount(domain.GridLines + 1);
-        _valueAxis.SetLabelFormat(TickFormat(domain.Step));
-        _timeAxis.SetRange(0, SpanSeconds);
-
+        ConfigureAxes();
         var times = _series.SelectMany(item => item.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         var baseline = new double[times.Length];
@@ -1968,20 +2114,20 @@ internal sealed class PerformanceChart : QWidget
             int start = 0;
             while (start < times.Length)
             {
+                // A gap wider than the page's own sampling is a pause rather than a stretch of
+                // curve: the run ends there and the next one begins where the readings resume.
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
                 var top = new QLineSeries();
                 var bottom = new QLineSeries();
                 for (int index = start; index < finish; index++)
                 {
-                    double x = SpanSeconds - (_end - times[index]).TotalSeconds;
-                    top.Append(x, upper[index]);
-                    bottom.Append(x, lower[index]);
+                    top.Append(Along(times[index]), upper[index]);
+                    bottom.Append(Along(times[index]), lower[index]);
                 }
                 var area = new QAreaSeries(top, bottom);
-                // The legend names the series, which is all Qt's legend carries: the value every
-                // series is at is in the headline above and in the tooltip, and the layer is what
-                // a reader is looking for when they read the row.
+                // The legend names the series, which is all a legend carries: what every series is
+                // at is in the headline above, in the tooltip, and in each area's own edge.
                 area.SetName(item.Name);
                 using var fill = new QColor(item.Color);
                 fill.SetAlpha(155);
@@ -2007,59 +2153,77 @@ internal sealed class PerformanceChart : QWidget
                 for (int index = 0; index < times.Length; index++)
                     if (upper[index] > baseline[index]) baseline[index] = upper[index];
         }
-        // A detached legend is still a widget in the scene, drawn at the chart's origin: hiding
-        // its markers is what leaves nothing of it on the canvas. What lists the series is the
-        // card's own row, above the plot.
-        foreach (var marker in _chart.Legend().Markers()) marker.SetVisible(false);
-        PlotNotes(domain);
-        PlaceChart();
+        PlotNotes();
     }
 
-    /// <summary>The number format for the value axis' labels: as many decimals as the step the
-    /// domain chose has, so a step of 0.5 does not letter itself "0" over and over.</summary>
-    private static string TickFormat(double step) =>
-        "%." + Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15).ToString(I18n.Culture) + "f";
-
-    /// <summary>How long ago each tick of the time axis is, from the oldest end of the window to
-    /// now: the card letters the axis from this, so the words under the gridlines and the gridlines
-    /// themselves come from one list.</summary>
-    internal double[] Ticks()
+    /// <summary>Hands both axes what they draw with: the value domain, and the window as time
+    /// before now. Both are set as a range, a step and a unit, and every position and every word
+    /// after that is the chart's own — which is what keeps a label under the gridline it belongs
+    /// to and a line inside the box the reader sees.
+    ///
+    /// How many intervals the value axis can carry is a question about the plot's height, and the
+    /// plot's height is a question about how wide the labels are — so the domain is settled in two
+    /// passes rather than guessed at in one: the second asks the chart again, having given it the
+    /// first domain's labels to make room for.</summary>
+    private void ConfigureAxes()
     {
-        int width = Math.Max(240, _plot.Width);
-        double labelWidth = width / 8.0;
-        _tickStep = TimeStep(SpanSeconds / Math.Max(2, width / Math.Max(70, labelWidth)));
-        var ticks = new List<double>();
-        for (double at = 0; at <= SpanSeconds + _tickStep / 1000; at += _tickStep) ticks.Add(at);
-        return ticks.ToArray();
+        // How many intervals the value axis can carry is a question about how much of the plot the
+        // data actually gets, and a chart elides a label that does not fit rather than crowding it:
+        // asked for too many, it answers with a column of dots. So the domain is given a ceiling
+        // taken from the plot, and a card whose last draw came out cut gives up one interval for
+        // this one — which covers the first draw, where the chart has not reported its legend yet,
+        // and any label that turns out wider than this card assumed.
+        double room = PlotRoom() / (double)LabelSpacing;
+        if (_valueAxis.LabelsTruncated) room -= 1;
+        _domain = ChartDomain.Of(_series, _unit, Math.Max(2, room));
+        _valueAxis.SetRange(_domain.Floor, _domain.Max);
+        _valueAxis.SetTickType(QValueAxis.TickType.TicksFixed);
+        _valueAxis.SetTickCount(_domain.GridLines + 1);
+        _valueAxis.SetLabelFormat(ChartDomain.TickFormat(_domain.Step));
+        // The unit the numbers are in, said once beside them: a byte card is scaled into kilobytes
+        // or megabytes by what it holds, and a bare column of numbers would not say which one it is.
+        _valueAxis.SetTitleVisible(_domain.Unit.Length > 0);
+        _valueAxis.SetTitleText(_domain.Unit);
+        // The time axis reads as time before now: the moment the card is drawn up to is nought at
+        // the right-hand end, and the span the reader chose runs back from it to the left. A long
+        // span is read in minutes — the step decides, the way a clock does — and the unit goes into
+        // the label format, which is one string rather than a tick table kept in step by hand.
+        double step = TimeStep(SpanSeconds / Math.Max(2, Math.Max(240, _plot.Width) / 80));
+        (_timeUnit, string format) = TimeUnit(step);
+        _timeAxis.SetRange(-SpanSeconds / _timeUnit, 0);
+        _timeAxis.SetTickType(QValueAxis.TickType.TicksDynamic);
+        _timeAxis.SetTickAnchor(0);
+        _timeAxis.SetTickInterval(step / _timeUnit);
+        _timeAxis.SetLabelFormat(format);
     }
-
-    /// <summary>What the time axis says at one of its ticks: how long ago that moment was, in the
-    /// unit the step is readable in — seconds up to a minute, minutes past it.</summary>
-    private string TickText(double tick) =>
-        SpanSeconds - tick <= 0.0001 ? "0" : "−" + TimeTick(SpanSeconds - tick, _tickStep);
 
     /// <summary>A recording's edges, drawn into the chart as annotation rather than as data: a
     /// hairline dashed in the recording's own colour, dashed so it never reads as the boundary of a
-    /// fill, and faint enough that the series it crosses stay the subject. Each carries its words
-    /// beside it, on the side with room; two edges close together drop to a second row rather than
-    /// overprint each other. Both fade over the last stretch of the window, so a mark leaves the
-    /// way it arrived instead of being cut off at the edge.</summary>
-    private void PlotNotes(ChartDomain domain)
+    /// fill, with its words beside it. Both fade over the last stretch of the window, so a mark
+    /// leaves the way it arrived instead of being cut off at the edge. An edge carries no reading,
+    /// so it is left out of the legend: a marker with nothing behind it is a row spent on nothing.
+    ///
+    /// A recording's two edges can be seconds apart and their words wider than that: a note that
+    /// would land on one already placed drops to a second row, and one with no room in either is
+    /// left out rather than overprinted — its hairline is still on the axis, which is where the
+    /// moment is read from anyway.
+    /// </summary>
+    private void PlotNotes()
     {
         if (_plot.Scene() is not { } scene) return;
         using var labelFont = new QFont("Segoe UI", 8);
+        double left = -SpanSeconds / _timeUnit, fade = left * 0.12;
         var placed = new List<(double Left, double Right, int Row)>();
-        int slot = 0;
         foreach (var marker in _markers.OrderBy(mark => mark.Time))
         {
             if (marker.Time < _end.AddSeconds(-SpanSeconds) || marker.Time > _end) continue;
-            double x = SpanSeconds - (_end - marker.Time).TotalSeconds;
-            double fade = x >= SpanSeconds * 0.12 ? 1 : Math.Clamp(x / (SpanSeconds * 0.12), 0, 1);
+            double x = Along(marker.Time);
+            double alpha = x >= fade ? 1 : Math.Clamp((x - left) / (fade - left), 0, 1);
             var line = new QLineSeries();
-            line.Append(x, domain.Floor);
-            line.Append(x, domain.Max);
+            line.Append(x, _domain.Floor);
+            line.Append(x, _domain.Max);
             using var hairline = new QColor(marker.Color);
-            hairline.SetAlpha((int)Math.Min(fade, 0.45) * 255);
+            hairline.SetAlpha((int)(Math.Min(alpha, 0.45) * 255));
             using var pen = new QPen(hairline);
             pen.SetStyle(Qt.PenStyle.DashLine);
             pen.SetWidthF(1.2);
@@ -2068,99 +2232,41 @@ internal sealed class PerformanceChart : QWidget
             _chart.SetAxisX(_timeAxis, line);
             _chart.SetAxisY(_valueAxis, line);
             _edges.Add(line);
+            foreach (var legend in _chart.Legend().Markers(line)) legend.SetVisible(false);
 
-            if (slot >= NoteSlots) break;
-            while (_notes.Count <= slot)
-            {
-                var fresh = new QGraphicsSimpleTextItem();
-                fresh.SetFont(labelFont);
-                scene.AddItem(fresh);
-                _notes.Add(fresh);
-            }
-            var item = _notes[slot++];
+            var item = new QGraphicsSimpleTextItem();
+            item.SetFont(labelFont);
+            scene.AddItem(item);
             item.SetText(I18n.T(marker.LabelKey));
             using var ink = new QColor(marker.Color);
-            ink.SetAlpha((int)(fade * 255));
+            ink.SetAlpha((int)(alpha * 255));
             item.SetBrush(new QBrush(ink));
-            var at = _chart.MapToPosition(new QPointF(x, domain.Max));
+            // Beside its hairline, on whichever side has room for it, and never outside the plot.
+            var at = _chart.MapToPosition(new QPointF(x, _domain.Max));
             double width = item.BoundingRect().Width();
             double beside = at.X() + 5 + width <= _plot.Width ? at.X() + 5 : at.X() - 5 - width;
-            double left = Math.Clamp(beside, 0, Math.Max(0, _plot.Width - width));
-            int row = placed.Any(other => other.Row == 0 && left < other.Right + 6 && left + width > other.Left - 6) ? 1 : 0;
-            if (row > 0 && placed.Any(other => other.Row == 1 && left < other.Right + 6 && left + width > other.Left - 6)) { slot--; continue; }
-            placed.Add((left, left + width, row));
-            item.SetPos(left, at.Y() + 3 + row * 16);
-            item.SetVisible(true);
+            double noteLeft = Math.Clamp(beside, 0, Math.Max(0, _plot.Width - width));
+            bool Clashes(int row) => placed.Any(other => other.Row == row &&
+                noteLeft < other.Right + 6 && noteLeft + width > other.Left - 6);
+            int stack = Clashes(0) ? 1 : 0;
+            if (stack == 1 && Clashes(1))
+            {
+                scene.RemoveItem(item);
+                continue;
+            }
+            placed.Add((noteLeft, noteLeft + width, stack));
+            item.SetPos(noteLeft, at.Y() + 3 + stack * 16);
+            _notes.Add(item);
         }
-        // The rest of the slots belong to edges that have left the window since.
-        for (int rest = slot; rest < _notes.Count; rest++) _notes[rest].SetVisible(false);
-    }
-
-    /// <summary>What the card keeps above the plot for its own furniture: the title, the headline
-    /// and the row of series. It is a fixed strip, which is what the plot's own top edge used to
-    /// be, so a card does not move its plot when the legend row comes or goes.
-    /// </summary>
-    private int HeaderHeight => _series.Count > 0 ? 92 : 74;
-
-    /// <summary>Gives the chart everything the card does not keep: the header above the plot, and
-    /// the strip below it where the time axis' ticks are lettered and the two captions sit. The
-    /// chart is a child widget, so what the card paints is only visible outside this rectangle.
-    /// </summary>
-    private void PlacePlot()
-    {
-        int width = Math.Max(1, Width - 2 * PlotInset);
-        int height = Math.Max(1, Height - HeaderHeight - CaptionStrip);
-        var plot = _plot.Geometry;
-        if (plot.X() != PlotInset || plot.Y() != HeaderHeight || plot.Width() != width || plot.Height() != height)
-            _plot.SetGeometry(PlotInset, HeaderHeight, width, height);
-        // The chart is a graphics widget, and it is laid out against its own rectangle: left to
-        // the scene, that rectangle is the one the scene grew to, which is taller than the widget
-        // the reader is looking at and puts the legend below the top of it with nothing above.
-        _plot.SetSceneRect(new QRectF(0, 0, width, height));
-        _chart.SetGeometry(0, 0, width, height);
-        PlaceChart();
-    }
-
-    /// <summary>What the chart keeps around its plot area, measured rather than guessed: the
-    /// widest label the value axis is about to print, one row of the legend above the plot, and a
-    /// little at the right. The chart draws its legend inside these margins and clips an axis whose
-    /// labels have none, so a card at its minimum and a card filling a maximised window both need
-    /// the numbers the same card would hold — which is why they are taken from the fonts here
-    /// instead of being fixed.</summary>
-    private void PlaceChart()
-    {
-        using var labelFont = new QFont("Segoe UI", 8);
-        using var metrics = new QFontMetrics(labelFont);
-        int widest = 0;
-        for (int index = 0; index <= _domain.GridLines; index++)
-            widest = Math.Max(widest, metrics.HorizontalAdvance(
-                TickText(_domain.Floor + ChartDomain.TickValue(index, _domain.Step), _domain.Step)));
-        _chart.SetMargins(new QMargins(widest + 22, 6, 12, 0));
     }
 
     public override void ResizeEvent(QResizeEvent e)
     {
         base.ResizeEvent(e);
-        PlacePlot();
-        PlaceChart();
+        // Both axes are scaled from the rectangle they turned out to have: how many intervals a
+        // value axis carries is a question about the plot's height, and which clock step the time
+        // axis can afford is one about its width. A resize is rare; a redraw is not.
         Plot();
-    }
-
-    /// <summary>Where a moment of the window sits inside the card, in the card's own coordinates:
-    /// the chart maps it into the scene, and the scene is the view's viewport.</summary>
-    private QPointF At(double seconds, double value)
-    {
-        var mapped = _chart.MapToPosition(new QPointF(seconds, value));
-        var plot = _plot.Geometry;
-        return new QPointF(plot.X() + mapped.X(), plot.Y() + mapped.Y());
-    }
-
-    /// <summary>The plot's rectangle inside the card.</summary>
-    private QRectF PlotInCard()
-    {
-        var area = _chart.PlotArea;
-        var plot = _plot.Geometry;
-        return new QRectF(plot.X() + area.X(), plot.Y() + area.Y(), area.Width(), area.Height());
     }
 
     /// <summary>A series as the window shows it. A card is drawn against one moment — the moment
@@ -2202,6 +2308,7 @@ internal sealed class PerformanceChart : QWidget
         if (drawn[^1].Time < end) drawn.Add((end, drawn[^1].Value));
         return drawn;
     }
+
     private string FormatValue(double value) => _unit switch
     {
         "B" => ByteUnits.Format(value),
@@ -2283,12 +2390,6 @@ internal sealed class PerformanceChart : QWidget
         }
     }
 
-    private static string TickText(double value, double step)
-    {
-        int decimals = Math.Clamp(-(int)Math.Floor(Math.Log10(step)), 0, 15);
-        return value.ToString("F" + decimals, I18n.Culture);
-    }
-
     /// <summary>How many summary figures fit in the room left of the headline, counted from the
     /// most important. The group is right-aligned, so a card too narrow to hold them all keeps the
     /// first ones rather than clipping a value. <paramref name="ends"/> is each figure's width
@@ -2299,12 +2400,6 @@ internal sealed class PerformanceChart : QWidget
             if (ends[count] <= room) return count;
         return 0;
     }
-
-    /// <summary>What the card is showing, for the export and its own smoke check.</summary>
-    internal string TitleKey => _titleKey;
-    internal string Unit => _unit;
-    internal IReadOnlyList<ChartFigure> Figures => _figures;
-    internal ChartStatistics Statistics => _stats;
 
     public override void PaintEvent(QPaintEvent e)
     {
@@ -2320,81 +2415,19 @@ internal sealed class PerformanceChart : QWidget
             titleFont.SetBold(true);
             p.SetFont(titleFont);
             p.SetPen(new QPen(new QColor("#334155")));
-            p.DrawText(18, 29, I18n.T(_titleKey));
-            var times = _series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
-            var valuesBySeries = _series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-            DrawHeadline(p, width, times.Length > 0);
-
-            // The plot itself is the chart's: it drew its grid, its axes, the areas and the lines
-            // as this event was reached. What is left for the card is the lettering around it —
-            // every position below comes from the chart's own mapping, so a caption sits under the
-            // gridline it names rather than near it.
-            using var detailFont = new QFont("Segoe UI", 8);
-            using var detailMetrics = new QFontMetrics(detailFont);
-            var summaries = _series.Select(item => (item.Color, Text: item.Name + " " + FormatValue(item.Samples.LastOrDefault().Value))).ToArray();
-            // The row is drawn as far as it fits rather than all of it or none of it. What is in it
-            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a legend
-            // that gains a layer when an instance is mounted — and the one that will not fit is cut
-            // to the room left, so the tail of the row never moves in and out of the picture as the
-            // values change length.
-            if (summaries.Length > 0)
+            p.DrawText(18, TitleBaseline, I18n.T(_titleKey));
+            bool hasData = _series.Any(item => item.Samples.Count > 0);
+            DrawHeadline(p, width, hasData);
+            // The plot itself is the chart's: it drew its grid, its axes, its labels and its
+            // legend as this event was reached, and what is drawn here is only what a chart has no
+            // way to draw.
+            if (!hasData)
             {
-                p.SetFont(detailFont);
-                int x = 18, room = width - 18;
-                foreach (var summary in summaries)
-                {
-                    int advance = detailMetrics.HorizontalAdvance(summary.Text);
-                    int available = room - (x + 14);
-                    if (available < 30) break;
-                    bool clipped = advance > available;
-                    string text = clipped
-                        ? detailMetrics.ElidedText(summary.Text, Qt.TextElideMode.ElideRight, available)
-                        : summary.Text;
-                    p.SetPen(new QPen(Qt.PenStyle.NoPen));
-                    p.SetBrush(new QBrush(new QColor(summary.Color)));
-                    p.DrawEllipse(x + 1, SeriesBaseline - 6, 6, 6);
-                    p.SetPen(new QPen(new QColor("#334155")));
-                    p.DrawText(x + 14, SeriesBaseline, text);
-                    if (clipped) break;
-                    x += advance + 28;
-                }
-            }
-
-            var area = PlotInCard();
-            if (area.Width() <= 0 || area.Height() <= 0) return;
-            using var smallFont = new QFont("Segoe UI", 8);
-            using var fontMetrics = new QFontMetrics(smallFont);
-            p.SetFont(smallFont);
-            p.SetPen(new QPen(new QColor("#718096")));
-            var view = _plot.Geometry;
-            // The unit the value axis is scaled in, over the top right corner of the plot: the one
-            // place a reader looks for it, and the one the chart itself does not use.
-            if (_unit.Length > 0 && _series.Count > 0)
-            {
-                string top = TickText(_domain.Max, _domain.Step) + " " + _domain.Unit;
-                p.DrawText((int)(area.Right() - fontMetrics.HorizontalAdvance(top)), view.Y() - 4, top);
-            }
-            // The ticks are lettered under the plot rather than by the chart, because what they say
-            // is a span and a unit the reader chose ("-30s" at thirty seconds, "5m" at five
-            // minutes). Where they go is not this card's guess: each sits under the gridline the
-            // chart drew for it.
-            int ticksY = view.Y() + view.Height() + 12;
-            foreach (double tick in Ticks())
-            {
-                string text = TickText(tick);
-                int at = (int)Math.Round(At(tick, _domain.Floor).X());
-                int room = fontMetrics.HorizontalAdvance(text);
-                int x = Math.Clamp(at - room / 2, PlotInset, Math.Max(PlotInset, PlotInset + view.Width() - room));
-                p.DrawText(x, ticksY, text);
-            }
-            int caption = Math.Min(Height - 6, ticksY + 15);
-            p.DrawText(PlotInset, caption, I18n.F("stats.history", SpanText(SpanSeconds)));
-            string now = I18n.T("stats.now");
-            p.DrawText(PlotInset + view.Width() - fontMetrics.HorizontalAdvance(now), caption, now);
-            if (_series.Count == 0)
-            {
+                var view = _plot.Geometry;
+                using var noteFont = new QFont("Segoe UI", 8);
+                p.SetFont(noteFont);
                 p.SetPen(new QPen(new QColor("#94a3b8")));
-                p.DrawText((int)area.Left() + 12, (int)area.Top() + 30, I18n.T("stats.noData"));
+                p.DrawText(view.X() + 12, view.Y() + 30, I18n.T("stats.noData"));
             }
         }
         finally { p.End(); }

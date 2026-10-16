@@ -28,6 +28,9 @@ internal static class Program
         using var record = new QCommandLineOption("record", "Record an instance for --seconds and write the bundle, without a page.", "mount");
         using var secondsOption = new QCommandLineOption("seconds", "How long --record collects for.", "seconds", "20");
         using var outputOption = new QCommandLineOption("output", "Where --record writes the bundle.", "directory");
+        using var render = new QCommandLineOption("render", "Draw the performance cards from a fixture into an existing directory, with no service.", "directory");
+        using var sizeOption = new QCommandLineOption("size", "Card size for --render, as WxH.", "size", "418x280");
+        using var languageOption = new QCommandLineOption("lang", "Language for --render: en or zh-CN.", "language");
         options.AddOption(install);
         options.AddOption(smoke);
         options.AddOption(captureOption);
@@ -35,6 +38,9 @@ internal static class Program
         options.AddOption(record);
         options.AddOption(secondsOption);
         options.AddOption(outputOption);
+        options.AddOption(render);
+        options.AddOption(sizeOption);
+        options.AddOption(languageOption);
         options.AddPositionalArgument("paths", "Additional objects to manage with --manage-cache.", "[paths...]");
         if (!options.Parse(QCoreApplication.Arguments()))
         {
@@ -44,11 +50,12 @@ internal static class Program
         if (options.IsSet(help)) { Console.WriteLine(options.HelpText()); return 0; }
         if (options.IsSet(captureOption) && !options.IsSet(smoke) ||
             (options.IsSet(secondsOption) || options.IsSet(outputOption)) && !options.IsSet(record) ||
+            (options.IsSet(sizeOption) || options.IsSet(languageOption)) && !options.IsSet(render) ||
             options.PositionalArguments().Length > 0 && !options.IsSet(manage) ||
-            new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage), options.IsSet(record) }.Count(set => set) > 1)
+            new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage), options.IsSet(record), options.IsSet(render) }.Count(set => set) > 1)
         {
             Console.Error.WriteLine("Choose one mode; --capture requires --ui-smoke, --seconds/--output require --record, "
-                + "and object paths require --manage-cache.");
+                + "--size and --lang require --render, and object paths require --manage-cache.");
             return 2;
         }
 
@@ -62,6 +69,19 @@ internal static class Program
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
         if (options.IsSet(smoke))
             return RunUiSmoke(options.IsSet(captureOption) ? options.Value(captureOption) : null);
+
+        // The performance cards drawn from a fixture: looking at how a card is laid out is looking
+        // at a picture, and a picture of a chart does not need an instance behind it.
+        if (options.IsSet(render))
+        {
+            if (!CardSize(options.Value(sizeOption), out int width, out int height))
+            {
+                Console.Error.WriteLine($"--size takes WxH of at least 240x200, not '{options.Value(sizeOption)}'");
+                return 2;
+            }
+            return ChartPreview.Run(options.Value(render), width, height,
+                options.IsSet(languageOption) ? options.Value(languageOption) : null);
+        }
 
         // A recording driven from the command line: the page is how this is meant to be used, but
         // a bundle has to be producible where nobody can click, both for checking the feature and
@@ -199,6 +219,17 @@ internal static class Program
     {
         try { return SupervisorClient.Default.Status().Mounts.FirstOrDefault(mount => mount.Enabled && mount.Mounted)?.Name; }
         catch { return null; }
+    }
+
+    /// <summary>The size a render draws its cards at, as WxH. A size that is not one is refused
+    /// rather than defaulted: a render is looked at, and a picture drawn at a size nobody asked for
+    /// is read as a layout that is wrong.</summary>
+    private static bool CardSize(string size, out int width, out int height)
+    {
+        var parts = size.Split('x', 'X');
+        width = height = 0;
+        return parts.Length == 2 && int.TryParse(parts[0], out width) && int.TryParse(parts[1], out height)
+            && width >= 240 && height >= 200;
     }
 
     /// <summary>Records one instance for a fixed time and writes the bundle, with no page and no
