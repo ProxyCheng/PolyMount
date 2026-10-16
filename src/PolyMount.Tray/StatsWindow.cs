@@ -101,6 +101,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// reason to draw a frame and the size of the step: a sample that moves the curve less than
     /// this does not need anything drawn between it and the last one.</summary>
     private const double AnimationPixels = 2;
+    /// <summary>Draws every card on the page whether or not it is on screen, for the checks and the
+    /// pictures: what they are about is the cards, not what the reader happens to have scrolled to.
+    /// </summary>
+    internal void DrawEverything()
+    {
+        foreach (var card in _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk).Append(_processIo))
+            card.DrawAnyway();
+        Render();
+    }
+
     /// <summary>Where the two choices below are remembered, beside the other preferences this tray
     /// keeps for a reader. Declared before them: a static initializer runs in the order it is
     /// written, and one that read this after it was set up would find it empty.</summary>
@@ -495,7 +505,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     internal void VerifyProcess()
     {
         if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
-        foreach (var chart in _processCharts.Append(_processIo))
+        // Only the cards being drawn: one outside the viewport or inside a folded section is not
+        // rebuilt at all, on purpose, and "drawing nothing" is what that looks like from here.
+        foreach (var chart in _processCharts.Append(_processIo).Where(chart => chart.InSight))
         {
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
             if (chart.Series.Count == 0) throw new InvalidOperationException($"{chart.TitleKey} is drawing nothing");
@@ -912,7 +924,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // against its own newest row put the same moment at a different place on each of them, and
         // the two fed once a second (the layers' holdings, the process's cost) drifted against the
         // four fed at the reader's rate as their cadences drifted.
+        // The cards that have to agree about now are the ones being drawn: a card out of sight or in
+        // a folded section is not rebuilt at all, so it holds the moment it was last built at.
         var ends = _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk)
+            .Where(chart => chart.InSight)
             .Select(chart => chart.End).Distinct().ToArray();
         if (ends.Length > 1)
             throw new InvalidOperationException(
@@ -1342,8 +1357,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 .Sum(layer => which == 0 ? layer.Memory : layer.Disk)).ToArray();
             cards[card].SpanSeconds = _rangeSeconds;
             cards[card].GapSeconds = HeldBreakSeconds;
-            cards[card].SetSeries(drawn[card], end, ChartStatistics.Of(totals));
-            cards[card].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+            if (cards[card].InSight) cards[card].SetSeries(drawn[card], end, ChartStatistics.Of(totals));
+            if (cards[card].InSight) cards[card].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
     }
 
@@ -1476,8 +1491,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             _processCharts[i].GapSeconds = BreakSeconds;
             _processCharts[i].SpanSeconds = _rangeSeconds;
-            _processCharts[i].SetSeries(series[i], end, ChartStatistics.Of(figures[i]));
-            _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+            if (_processCharts[i].InSight) _processCharts[i].SetSeries(series[i], end, ChartStatistics.Of(figures[i]));
+            if (_processCharts[i].InSight) _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         // What the instance's own process moved, from the counters the operating system keeps for
         // it — the account the layer cards above are not: every byte that process moved, whichever
@@ -1497,13 +1512,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var coveredIo = Covered(totals, end, _rangeSeconds, point => point.Time);
         _processIo.GapSeconds = BreakSeconds;
         _processIo.SpanSeconds = _rangeSeconds;
-        _processIo.SetSeries(new List<ChartSeries>
+        if (_processIo.InSight) _processIo.SetSeries(new List<ChartSeries>
         {
             new(T("stats.process.moved.read"), "#059669", reads.Select(rate => (rate.Time, rate.Rate)).ToList()) { Stacked = false },
             new(T("stats.process.moved.write"), "#0891b2", writes.Select(rate => (rate.Time, rate.Rate)).ToList()) { Stacked = false }
         }, end, ChartStatistics.Of(coveredIo.Select(point => point.Value).ToArray(),
             coveredIo.Select(point => point.Seconds).ToArray()));
-        _processIo.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+        if (_processIo.InSight) _processIo.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         if (_processHistory.Count == 0)
         {
             _processFigures.SetText(T("stats.process.waiting"));
@@ -1683,8 +1698,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // A gap is what the drawing cannot join: bucketed points are further apart than the
             // observations they were folded from, so the threshold follows the point spacing too.
             _charts[chart].GapSeconds = Math.Max(BreakSeconds, spacing * 1.5);
-            _charts[chart].SetSeries(drawn, end, Figures(covered, rows, metric, predictiveKey));
-            _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+            if (_charts[chart].InSight) _charts[chart].SetSeries(drawn, end, Figures(covered, rows, metric, predictiveKey));
+            if (_charts[chart].InSight) _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
@@ -2173,6 +2188,7 @@ internal sealed class PerformanceChart : QWidget
     /// unit the time axis is read in (one second, or a minute once the span is long enough that a
     /// tick a minute apart is what fits).</summary>
     private ChartDomain _domain;
+    private bool _forced;
     private double _timeUnit = 1;
     private ChartStatistics _stats;
 
@@ -2188,6 +2204,21 @@ internal sealed class PerformanceChart : QWidget
     /// <summary>The moment this card was drawn up to, for the smoke run's check that every card is
     /// drawn up to the same one whatever cadence feeds it.</summary>
     internal DateTime End => _end;
+
+    /// <summary>Whether any part of this card is inside the window the reader is looking at. The page
+    /// is a scroll area some two thousand pixels tall seen through a viewport of eight hundred, and a
+    /// card inside a folded section is not on screen either — in both cases Qt's visible region is
+    /// empty, which is the one question worth asking before rebuilding a chart nobody can see.
+    ///
+    /// Skipping a draw is not a card left behind: the card is drawn again on the very next sample,
+    /// because that is when it is asked for, and a card that has just come back into sight is asked
+    /// for exactly like the others.</summary>
+    internal bool InSight => _forced || !VisibleRegion().IsEmpty();
+
+    /// <summary>Draws this card even though nobody can see it. The checks look at the cards
+    /// themselves, and a page that is deliberately not drawing the ones off screen would answer them
+    /// about half a page — so a check, or a photograph, asks for the whole of it.</summary>
+    internal void DrawAnyway() => _forced = true;
 
     /// <summary>What the card's own layout came out as, for the render command and the smoke run:
     /// the card, the plot widget's rectangle inside it, the area the chart kept of that for the

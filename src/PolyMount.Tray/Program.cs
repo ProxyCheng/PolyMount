@@ -340,6 +340,10 @@ internal static class Program
                 // opened — and the expanded window *before* the expanded page, deliberately: the
                 // page capture lays the whole page out, which is a thing the live window never
                 // does for itself, so taking it first would hide exactly what this shot is for.
+                // The whole page is drawn for the checks and the pictures that follow: a card
+                // outside the viewport is not drawn on purpose, and it would be verified and
+                // photographed half empty.
+                stats.DrawEverything();
                 stats.CapturePage(Path.Combine(capture, "stats-page.png"));
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.ExpandAll();
@@ -429,6 +433,10 @@ internal static class Program
                 {
                     VerifyInstanceDirectory();
                     VerifyInstanceStatus();
+                // The whole page is drawn for the checks and the pictures that follow: a card
+                // outside the viewport is not drawn on purpose, and it would be verified and
+                // photographed half empty.
+                stats.DrawEverything();
                     stats.VerifyResponseSampling();
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
