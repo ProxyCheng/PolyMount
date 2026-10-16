@@ -548,6 +548,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 throw new InvalidOperationException("A byte card is not drawing the process's own transfer rate");
             if (!series.Any(item => item.Name == T("stats.layerUnknown")))
                 throw new InvalidOperationException("A byte card is missing the slice no layer accounts for: " + string.Join(", ", series.Select(item => item.Name)));
+            // The slice is drawn above the stack, and the series are drawn back to front, so it is
+            // the first one. Under the stack it read as the layers' own base, which it is not: the
+            // layers' account begins at the zero line and this is what is left over it.
+            if (series[0].Name != T("stats.layerUnknown") || !series[0].Correction)
+                throw new InvalidOperationException(
+                    $"A byte card draws the unaccounted slice under {series[0].Name} rather than above the stack");
             int points = series[0].Samples.Count;
             for (int i = 0; i < points; i++)
             {
@@ -730,6 +736,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     throw new InvalidOperationException(
                         $"Chart axis is not bounded for {unit} at {read}: {domain.GridLines} intervals, floor {domain.Floor}");
             }
+        // A correction is drawn between the stack and the total outside it, so its sign is not a
+        // depth the axis has to make room for: flagged as one, the same sample that would have
+        // taken the floor down leaves it at the line.
+        if (ChartDomain.Of(new List<ChartSeries>
+        {
+            new("svn", "#64748B", new() { (time, 40960.0) }),
+            new("unknown", "#94a3b8", new() { (time, -40960.0) }) { Correction = true }
+        }, "B", 2.1).Floor != 0)
+            throw new InvalidOperationException("A correction below zero took the axis floor down with it");
     }
 
     /// <summary>Smoke check: the chart summaries describe their samples, the charts carry the
@@ -1328,10 +1343,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // The transfer counters are a third opinion on the same window, and the layer account
             // is short of them by everything no layer answered for: the request log and the cache
             // database, the pipe this window reads, and bytes this account does not model. That
-            // shortfall is drawn as a layer of its own, so the stack adds up to what the operating
-            // system recorded. It is signed: a file whose size was resolved but never read leaves
-            // the layers accounting for more than the process moved, and then the slice is the
-            // correction rather than an addition.
+            // shortfall is drawn as a slice of its own, above the stack rather than under it, so
+            // the stack adds up to what the operating system recorded and the layers' own account
+            // still begins at the zero line: it is not a layer, and a reader measuring a layer's
+            // height reads it from the baseline. The series are drawn back to front, so the top of
+            // the stack is the first one in the list. It is signed — a file whose size was resolved
+            // but never read leaves the layers accounting for more than the process moved — and the
+            // band it is drawn as spans the two accounts, so a negative one covers the top of the
+            // layer account instead of falling below the zero line. See ChartSeries.Correction.
             if (metric is 1 or 3 && drawn.Count > 0)
             {
                 var transfer = TransferRates(reads: metric == 1);
@@ -1339,7 +1358,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 {
                     var unknown = points.Select((point, i) =>
                         (point.Time, At(transfer, point.Time) - drawn.Sum(series => series.Samples[i].Value))).ToList();
-                    drawn.Add(new ChartSeries(T("stats.layerUnknown"), "#94a3b8", unknown) { Hatched = true });
+                    drawn.Insert(0, new ChartSeries(T("stats.layerUnknown"), "#94a3b8", unknown)
+                    { Hatched = true, Correction = true });
                 }
             }
             _charts[chart].SpanSeconds = _rangeSeconds;
@@ -1564,6 +1584,14 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
     /// <summary>Same colour as the layer, drawn as a hatched and dashed variation so a second
     /// series for one layer reads as that layer rather than as a different one.</summary>
     public bool Hatched { get; init; }
+
+    /// <summary>Not a quantity of its own but the difference between the stack under it and a total
+    /// from outside the chart — what no layer accounts for, against what the process itself moved.
+    /// Its band spans those two, so a correction that comes out negative covers the top of the
+    /// stack rather than hanging below the zero line, where a downward quantity goes: below the
+    /// line it would read as a second measurement rather than as the layer account being more than
+    /// the process moved. Both of its edges are outside it, so it never leaves the plot.</summary>
+    public bool Correction { get; init; }
 }
 
 /// <summary>What a chart's window adds up to, over the same samples the plot draws: an idle
@@ -1619,7 +1647,12 @@ internal readonly record struct ChartDomain(double Scale, string Unit, double Fl
         var times = samples.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = samples.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         double peak = times.Select(time => values.Sum(s => Math.Max(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Max();
-        double trough = times.Select(time => values.Sum(s => Math.Min(0, s.GetValueOrDefault(time)))).DefaultIfEmpty(0).Min();
+        // A correction is drawn inside the stack rather than below the line, so a negative one is
+        // not a depth the axis has to make room for: the room is the stack's own, and the label
+        // under it would say less than nothing about what is drawn there.
+        double trough = times
+            .Select(time => samples.Select((s, i) => s.Correction ? 0 : Math.Min(0, values[i].GetValueOrDefault(time))).Sum())
+            .DefaultIfEmpty(0).Min();
         var axis = unit == "B" ? ByteUnits.Select(peak) : (Scale: 1.0, Unit: unit);
         double max = Math.Max(unit is "ms" or "B" or "cores" ? 1 : 5, peak / axis.Scale * 1.15);
         double step = 0;
@@ -2024,8 +2057,10 @@ internal sealed class PerformanceChart : QWidget
             for (int layer = _series.Count - 1; layer >= 0; layer--)
             {
                 var series = _series[layer];
-                // A negative contribution hangs below the line instead of cutting into the stack.
-                var lower = times.Select((time, index) => valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
+                // A negative contribution hangs below the line instead of cutting into the stack
+                // — unless it is the correction between the stack and an outside total, whose band
+                // spans the two and so never leaves the area they bound.
+                var lower = times.Select((time, index) => !series.Correction && valuesBySeries[layer].GetValueOrDefault(time) < 0 ? 0 : baseline[index]).ToArray();
                 var upper = times.Select((time, index) => lower[index] + valuesBySeries[layer].GetValueOrDefault(time)).ToArray();
                 int start = 0;
                 while (start < times.Length)
