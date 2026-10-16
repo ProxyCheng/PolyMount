@@ -1973,6 +1973,10 @@ internal sealed class PerformanceChart : QWidget
         // nothing else does — drawing that row here as well meant three things had to agree about
         // one strip of the card, and the row's own contents changed width as the values in it did.
         _chart.Legend().SetAlignment(Qt.Alignment.AlignBottom);
+        // The series are added bottom of the stack first, so the chart's own legend would list them
+        // bottom up while the eyes read the stack top down. Reversed, the row reads the way the
+        // picture does, and in the order the page's layer table lists the same layers.
+        _chart.Legend().SetReverseMarkers(true);
         _chart.Legend().SetBackgroundVisible(false);
         _chart.Legend().SetLabelColor(new QColor("#334155"));
         _chart.Legend().SetFont(new QFont("Segoe UI", 8));
