@@ -54,8 +54,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly PerformanceChart[] _processCharts;
     /// <summary>What the instance's own process moved, read and written: the operating system's
     /// account of it, which is what its counters are for. It shares the cards' unit and shape but
-    /// not their feed — the rates come from the counters rather than from a layer — and it is not
-    /// stacked, because reads and writes are two directions rather than two parts of a total.</summary>
+    /// not their feed — the rates come from the counters rather than from a layer — and its two
+    /// directions overlap rather than stack: each is drawn from the zero line, so where both are
+    /// present the reader sees the two colours mixed, and nothing is added into a total that is
+    /// neither of them.</summary>
     private readonly PerformanceChart _processIo;
     private readonly QLabel _processFigures;
     /// <summary>The parts of the page under the charts, each folded away with a line of its own
@@ -287,7 +289,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         processGrid.SetSpacing(16);
         for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
         // Its own row, across both columns: it is the one card here that is a rate rather than a
-        // level, and the two directions need the width to be told apart.
+        // level, and two overlapping areas need the width to be told apart.
         processGrid.AddWidget(_processIo, _processCharts.Length / 2, 0, 1, 2);
         processBody.AddLayout(processGrid);
         _processFigures = new QLabel();
@@ -1206,7 +1208,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // it — the account the layer cards above are not: every byte that process moved, whichever
         // part asked (its logs, the cache database, the pipe this window reads), and blind to the
         // source's own fetching, which happens in a process of its own. One rate per interval
-        // between two readings, both directions at their own value.
+        // between two readings, the two directions drawn from the zero line so that they overlap
+        // and the overlap reads as the two colours mixed.
         var reads = TransferRates(reads: true);
         var writes = TransferRates(reads: false);
         var totals = reads.Select(rate => (rate.Time, Read: rate.Rate, Write: 0.0, rate.Seconds))
@@ -1598,8 +1601,9 @@ internal sealed record ChartSeries(string Name, string Color, List<(DateTime Tim
     /// <summary>Whether this series sits on what is under it. True by default, which is what a
     /// layer's contribution is: the layers of one account tile the total and their bands add up.
     /// False for series that are not parts of anything — the process's own reads against its own
-    /// writes — which each keep their own value and are drawn over one another: stacked, two
-    /// directions of traffic would be summed into a third number nobody asked for.</summary>
+    /// writes — which are each drawn from the zero line instead, so the two areas overlap and the
+    /// overlap is the two colours mixed. Stacked, two directions of traffic would be summed into a
+    /// third number that is neither of them.</summary>
     public bool Stacked { get; init; } = true;
 }
 
