@@ -305,6 +305,35 @@ public sealed class LayerMetric
     public long FetchedBytes { get; set; }
 }
 
+/// <summary>One process's share of an instance's traffic within a recent window. The layers say
+/// what answered; this says who asked, which is the question an instance being hammered by one
+/// tool raises and the layer table cannot answer.</summary>
+public sealed class ProcessMetric
+{
+    /// <summary>Which process it was, 0 for the folded bucket. The name is what a reader sees; the
+    /// id is what names a process whose name could not be read at all.</summary>
+    public int Pid { get; set; }
+    /// <summary>Its name, or empty when it could not be read — a service cannot name another
+    /// user's process. A process that has ended keeps the name it was last seen under, because the
+    /// window it was counted in is a minute wide and the reader is owed the name of who did it.
+    /// </summary>
+    public string Name { get; set; } = "";
+    /// <summary>A stable colour for the name, from the same palette the layers use, so one
+    /// process keeps one colour from sample to sample and from run to run.</summary>
+    public string Color { get; set; } = "";
+    /// <summary>Requests this process made of the mount — the reads it opened and read, and the
+    /// writes it opened and wrote — not the layers those requests were served by.</summary>
+    public long Reads { get; set; }
+    public long Writes { get; set; }
+    /// <summary>What moved across its reads and its writes, for a reader that wants the volume
+    /// rather than the call count. Free to collect where the transfer already knows its length.</summary>
+    public long ReadBytes { get; set; }
+    public long WriteBytes { get; set; }
+    /// <summary>The bucket the processes past the named ones were folded into, so a pie of them can
+    /// still add up to everything that happened.</summary>
+    public bool Other { get; set; }
+}
+
 /// <summary>One priority class's share of a source that serves several. Low is urgent: the
 /// reader is class 0 and holds nearly the whole source, read-ahead is a class with a floor of
 /// one and a small ceiling.</summary>
@@ -356,6 +385,10 @@ public sealed class MountMetrics
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();
+    /// <summary>Who asked, over the same window: one entry per process that touched the mount,
+    /// the busiest first, with everything past the first few folded into one bucket. A process that
+    /// has since exited keeps the name it was last seen under.</summary>
+    public List<ProcessMetric> Processes { get; set; } = new();
 }
 
 // Action names accepted by the "layerAction" command.

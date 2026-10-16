@@ -51,6 +51,19 @@ public sealed class WinFspMount : FileSystemBase
         return RequestDiagnostics.Begin(operation, path, _vfs.Diagnostics, processId != 0 ? processId : fallbackProcessId);
     }
 
+    /// <summary>Charges one request to the process that made it, for the performance page's pies.
+    /// The id comes from the scope the callback already opened, which is where WinFsp's own answer
+    /// for a Create, an Open and a Rename is kept, and where the id the mount saved on the handle
+    /// stands in for the callbacks that cannot ask — so this adds no interop call to the request
+    /// path, and when nobody is watching the whole thing is one comparison (see
+    /// <see cref="MetricsCollector.RecordProcessAccess"/>). Zero means nobody to name: what the
+    /// service fetches for its own read-ahead is work done for a guess, not for a caller.
+    ///
+    /// It is charged at the request rather than where the layers are, because who is using the mount
+    /// is a question about the caller — the layers only know what answered them.</summary>
+    private void Charge(int processId, bool write, long bytes = 0) =>
+        _vfs.Metrics?.RecordProcessAccess(processId, write, bytes);
+
     public WinFspMount(VirtualFileSystem vfs, string logPath)
     {
         _vfs = vfs;
@@ -65,6 +78,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int GetSecurityByName(string fileName, out uint fileAttributes, ref byte[] securityDescriptor)
     {
         using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
+        Charge(request?.ProcessId ?? 0, write: false);
         fileAttributes = 0;
         securityDescriptor = null;
         if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
@@ -77,6 +91,12 @@ public sealed class WinFspMount : FileSystemBase
     {
         using var request = BeginRequest("WinFsp.Open", fileName);
         request?.Stage($"access=0x{grantedAccess:X} options=0x{createOptions:X}");
+        // An open is an access in its own right whatever it is for, and its direction is what it
+        // asked for: everything else this mount does for that handle is that process' doing too.
+        bool openedForWriting =
+            (grantedAccess & (Win32.GENERIC_WRITE | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA)) != 0 ||
+            (grantedAccess & Win32.DELETE) != 0;
+        Charge(request?.ProcessId ?? 0, write: openedForWriting);
         fileNode = null;
         fileDesc = null;
         fileInfo = default;
@@ -111,9 +131,7 @@ public sealed class WinFspMount : FileSystemBase
                 return NtStatus.Success;
             }
 
-            bool write =
-                (grantedAccess & (Win32.GENERIC_WRITE | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA)) != 0 ||
-                (grantedAccess & Win32.DELETE) != 0;
+            bool write = openedForWriting;
 
             Stream stream = write ? _vfs.OpenWrite(rel, false, out entry) : _vfs.OpenRead(rel, out entry);
 
@@ -132,6 +150,7 @@ public sealed class WinFspMount : FileSystemBase
         out object fileNode, out object fileDesc, out FspFileInfo fileInfo, out string normalizedName)
     {
         using var request = BeginRequest("WinFsp.Create", fileName);
+        Charge(request?.ProcessId ?? 0, write: true);
         fileNode = null;
         fileDesc = null;
         fileInfo = default;
@@ -166,6 +185,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int Overwrite(object fileNode, object fileDesc, uint fileAttributes, bool replaceFileAttributes,
         ulong allocationSize, out FspFileInfo fileInfo)
     {
+        Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
         fileInfo = default;
         var h = fileDesc as FsHandle;
         if (h?.Stream == null) return NtStatus.InvalidParameter;
@@ -181,6 +201,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int GetFileInfo(object fileNode, object fileDesc, out FspFileInfo fileInfo)
     {
         using var request = BeginRequest("WinFsp.GetFileInfo", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+        Charge(request?.ProcessId ?? 0, write: false);
         fileInfo = default;
         var node = fileNode as FsNode;
         if (node == null) return NtStatus.InvalidParameter;
@@ -219,6 +240,7 @@ public sealed class WinFspMount : FileSystemBase
             // Read directly into it instead of allocating and copying each request.
             int read = stream.Read(new Span<byte>(buffer.ToPointer(), checked((int)length)));
             bytesTransferred = (uint)read;
+            Charge(request?.ProcessId ?? 0, write: false, read);
             return read == 0 && length > 0 ? NtStatus.EndOfFile : NtStatus.Success;
         }
         catch (Exception ex) { Log("Read", ex); return NtStatus.UnexpectedIoError; }
@@ -244,6 +266,7 @@ public sealed class WinFspMount : FileSystemBase
             Marshal.Copy(buffer, temp, 0, (int)length);
             stream.Write(temp, 0, (int)length);
             bytesTransferred = length;
+            Charge(request?.ProcessId ?? 0, write: true, length);
 
             fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", stream);
             return NtStatus.Success;
@@ -254,6 +277,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int SetFileSize(object fileNode, object fileDesc, ulong newSize, bool setAllocationSize,
         out FspFileInfo fileInfo)
     {
+        Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
         fileInfo = default;
         var h = fileDesc as FsHandle;
         if (h?.Stream == null || !h.Writable) return NtStatus.AccessDenied;
@@ -269,6 +293,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int SetBasicInfo(object fileNode, object fileDesc, uint fileAttributes, ulong creationTime,
         ulong lastAccessTime, ulong lastWriteTime, ulong changeTime, out FspFileInfo fileInfo)
     {
+        Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
         fileInfo = default;
         var node = fileNode as FsNode;
         if (node == null) return NtStatus.InvalidParameter;
@@ -288,6 +313,7 @@ public sealed class WinFspMount : FileSystemBase
     public override int SetDelete(object fileNode, object fileDesc, string fileName, bool deleteFile)
     {
         if (!deleteFile) return NtStatus.Success;
+        Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
         try
         {
             var rel = VfsPath.Normalize(fileName);
@@ -302,6 +328,8 @@ public sealed class WinFspMount : FileSystemBase
 
     public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists)
     {
+        int renaming = GetOperationProcessId();
+        Charge(renaming != 0 ? renaming : (fileNode as FsNode)?.ProcessId ?? 0, write: true);
         try
         {
             var from = VfsPath.Normalize(fileName);
@@ -332,6 +360,9 @@ public sealed class WinFspMount : FileSystemBase
         {
             if (context is not DirCursor cursor)
             {
+                // The query, not the thousands of entries it hands back: a cursor's continuations
+                // are the same caller being served what was already resolved.
+                Charge(request?.ProcessId ?? node.ProcessId, write: false);
                 List<VfsEntry> items;
                 bool exactName = !string.IsNullOrEmpty(pattern) && pattern.IndexOfAny(new[] { '*', '?', '<', '>', '"' }) < 0;
                 request?.Stage($"pattern='{pattern}' marker='{marker}' resolving query");
@@ -396,6 +427,7 @@ public sealed class WinFspMount : FileSystemBase
         try
         {
             using var request = BeginRequest("WinFsp.GetDirInfoByName", VfsPath.Child(node.Rel, fileName), node.ProcessId);
+        Charge(request?.ProcessId ?? 0, write: false);
             if (!_vfs.TryLookup(VfsPath.Child(node.Rel, fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
             normalizedName = entry.Name;
             fileInfo = BuildEntryInfo(entry, VfsPath.Child(node.Rel, entry.Name));

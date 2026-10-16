@@ -36,6 +36,19 @@ public sealed class MetricsCollector
     /// report says which part of it was actually measured.</summary>
     internal const int CellCount = 6000;
 
+    /// <summary>How finely the processes that used the mount are kept: a second, not the tenth of
+    /// one the layers get. What reads this dimension is two pies whose subject is a process's share
+    /// of a minute, so a second is resolution enough — and it has to be coarser, because a ring at
+    /// the layers' granularity costs half a megabyte per key, which is affordable for the handful of
+    /// layers a chain is configured with and not for a key space of whoever happens to be reading.
+    /// The cells, the per-thread shards and the watch gate are the ones already here: only the
+    /// stride differs.</summary>
+    internal const int ProcessCellMilliseconds = 1000;
+
+    /// <summary>Two minutes of them: the longest window anything asks for is the access window's
+    /// sixty seconds, and a query may land between cells.</summary>
+    internal const int ProcessCellCount = 120;
+
     private struct Cell
     {
         /// <summary>Which slot this cell holds, so a cell whose time has passed is recognised
@@ -64,6 +77,36 @@ public sealed class MetricsCollector
         public readonly Cell[] Cells = new Cell[CellCount];
     }
 
+    /// <summary>What one second holds for the processes that were using the mount in it. A
+    /// dictionary rather than the fixed fields a layer's cell has, because processes are a key
+    /// space nothing bounds: whoever happens to be reading is in it, and they come and go.</summary>
+    private sealed class ProcessCell
+    {
+        /// <summary>Which second this cell holds, so a cell whose time has passed is recognised
+        /// rather than summed; the writer that finds it stale resets it.</summary>
+        public long Slot;
+        public readonly Dictionary<int, ProcessCounts> Pids = new();
+    }
+
+    private sealed class ProcessRing
+    {
+        public readonly ProcessCell[] Cells = new ProcessCell[ProcessCellCount];
+        public ProcessRing()
+        {
+            for (int i = 0; i < Cells.Length; i++) Cells[i] = new ProcessCell();
+        }
+    }
+
+    /// <summary>What one process has done on one thread, in the second the thread is in. Nothing
+    /// here is cleared by a reader: it is flushed into the ring's current second and cleared in
+    /// place, the way a layer's counts are, so the objects are reused and a record allocates
+    /// nothing.</summary>
+    private sealed class ProcessCounts
+    {
+        public long Reads, ReadBytes, Writes, WriteBytes;
+        public void Clear() => Reads = ReadBytes = Writes = WriteBytes = 0;
+    }
+
     /// <summary>What one thread has counted in the cell it is in. A record is a plain add here —
     /// no atomic, no shared line — and the cells, which every thread shares, are written once per
     /// cell per thread instead of once per record.
@@ -84,6 +127,15 @@ public sealed class MetricsCollector
         public Counts? Current;
         public readonly Dictionary<string, Counts> Layers = new(StringComparer.OrdinalIgnoreCase);
         public readonly Counts Requests = new();
+        /// <summary>What each process that this thread has been asked for has done, in the second
+        /// this shard is in. Emptied into the process ring on the second, not the cell: the two
+        /// dimensions have their own strides.</summary>
+        public readonly Dictionary<int, ProcessCounts> Processes = new();
+        public long ProcessSlot = long.MinValue;
+        /// <summary>The process this thread last recorded, so the common case — one thread serving
+        /// one reader — is a comparison rather than a dictionary lookup.</summary>
+        public int LastProcessId = -1;
+        public ProcessCounts? LastProcess;
     }
 
     /// <summary>One layer's running counts on one thread. A class rather than a struct: the hot
@@ -124,6 +176,12 @@ public sealed class MetricsCollector
     /// most of what an engine probing for files it may not have produces — would otherwise be time
     /// nobody counted.</summary>
     private readonly Ring _requests = new();
+
+    /// <summary>Who made the requests: one cell per second, each holding what every process that
+    /// used the mount in that second did. One ring for all of them rather than one per process —
+    /// the pids are the keys inside a cell, so the ring's size is the history's size and not
+    /// something a busy day of short-lived tools can grow.</summary>
+    private readonly ProcessRing _processes = new();
     private long _lastActivityMs;
 
     /// <summary>Until when reads and writes are counted, on the coarse clock. Nobody watching means
@@ -191,6 +249,45 @@ public sealed class MetricsCollector
         counts.RequestNs += elapsed.Ticks * 100;
     }
 
+    /// <summary>One process's request, at the boundary it came from, counted beside the layer that
+    /// answered it. Who asked is a question the layers cannot answer: a layer's counts say what
+    /// served the traffic, not which tool caused it.
+    ///
+    /// The id is the caller the file system saw, which WinFsp can only name while it is handling a
+    /// Create, an Open or a Rename — the mount adapter keeps it on the handle for the callbacks that
+    /// ask later (see <c>WinFspMount</c>), and passes 0 when there is nobody to name, which is what
+    /// the service's own read-ahead is: work done for a guess rather than for a caller.
+    ///
+    /// <paramref name="bytes"/> is what actually moved, which only the read and the write callbacks
+    /// know; the metadata calls pass nothing.</summary>
+    public void RecordProcessAccess(int processId, bool write, long bytes = 0)
+    {
+        if (processId <= 0) return;
+        long now = Environment.TickCount64;
+        Volatile.Write(ref _lastActivityMs, now);
+        if (now >= Volatile.Read(ref _watchedUntilMs)) return;
+        var shard = ShardFor(_slot());
+        ProcessCounts counts;
+        if (shard.LastProcessId == processId && shard.LastProcess != null) counts = shard.LastProcess;
+        else
+        {
+            if (!shard.Processes.TryGetValue(processId, out counts!))
+                shard.Processes[processId] = counts = new ProcessCounts();
+            shard.LastProcessId = processId;
+            shard.LastProcess = counts;
+        }
+        if (write)
+        {
+            counts.Writes++;
+            if (bytes > 0) counts.WriteBytes += bytes;
+        }
+        else
+        {
+            counts.Reads++;
+            if (bytes > 0) counts.ReadBytes += bytes;
+        }
+    }
+
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
     {
         // The activity stamp moves whether or not anyone is watching: the warm-up reads IdleFor to
@@ -233,7 +330,9 @@ public sealed class MetricsCollector
         var shard = _ownShard;
         if (shard == null || !ReferenceEquals(_shardOwner, this))
         {
-            shard = new Shard { Slot = slot };
+            // Both strides are stamped here: a shard that has just been made holds its first cell
+            // and its first second, and a reader that found either unset would skip what it holds.
+            shard = new Shard { Slot = slot, ProcessSlot = slot / ProcessCellsPerCell };
             _shardOwner = this;
             _ownShard = shard;
             lock (_shardGate) _shards.Add(shard);
@@ -244,8 +343,19 @@ public sealed class MetricsCollector
             Flush(shard, shard.Slot);
             shard.Slot = slot;
         }
+        // The processes have their own stride: a second, not the tenth of one the layers are kept
+        // at, because that is the resolution the pies that read them are drawn at.
+        long processSlot = slot / ProcessCellsPerCell;
+        if (shard.ProcessSlot != processSlot)
+        {
+            FlushProcesses(shard, shard.ProcessSlot);
+            shard.ProcessSlot = processSlot;
+        }
         return shard;
     }
+
+    /// <summary>How many of the ring's cells one process cell spans.</summary>
+    private static readonly long ProcessCellsPerCell = Math.Max(1, ProcessCellMilliseconds / CellMilliseconds);
 
     /// <summary>The counts this thread is holding for the layer it last touched. Consecutive
     /// records usually belong to the same layer, so the common case is three comparisons; the
@@ -299,6 +409,35 @@ public sealed class MetricsCollector
             Interlocked.Add(ref cell.RequestNs, shard.Requests.RequestNs);
             shard.Requests.Clear();
         }
+    }
+
+    /// <summary>Moves a shard's per-process counts into the cell of the second they belong to. The
+    /// cells are shared by every thread, so the merge happens under the cell's own lock — which is
+    /// paid once per process per second per thread rather than once per request, the same bargain
+    /// the layer cells make with their atomics. The counts are cleared in place and the dictionary
+    /// keeps its entries, so a thread serving the same few processes allocates nothing here either.
+    /// </summary>
+    private void FlushProcesses(Shard shard, long processSlot)
+    {
+        if (processSlot == long.MinValue || shard.Processes.Count == 0) return;
+        var cell = _processes.Cells[processSlot % ProcessCellCount];
+        lock (cell)
+        {
+            if (cell.Slot < processSlot)
+            {
+                cell.Pids.Clear();
+                cell.Slot = processSlot;
+            }
+            foreach (var (processId, counts) in shard.Processes)
+            {
+                if (!cell.Pids.TryGetValue(processId, out var target)) cell.Pids[processId] = target = new ProcessCounts();
+                target.Reads += counts.Reads;
+                target.ReadBytes += counts.ReadBytes;
+                target.Writes += counts.Writes;
+                target.WriteBytes += counts.WriteBytes;
+            }
+        }
+        foreach (var counts in shard.Processes.Values) counts.Clear();
     }
 
     /// <summary>What the threads are holding but have not flushed yet, as of now. Summed by the
@@ -414,7 +553,8 @@ public sealed class MetricsCollector
         var totals = new Dictionary<string, Sums>(StringComparer.OrdinalIgnoreCase);
         long reads = 0, cached = 0, writes = 0, costNs = 0;
 
-        foreach (var shard in PendingShards())
+        var shards = PendingShards();
+        foreach (var shard in shards)
         {
             if (shard.Slot < oldest) continue;
             foreach (var (name, counts) in shard.Layers)
@@ -470,6 +610,39 @@ public sealed class MetricsCollector
             }
         }
 
+        // Who asked, over the same window and at the second the process cells are kept at. A cell
+        // the ring has come back round to holds a newer second and is not summed, and what the
+        // threads are still holding is added the way the layers' counts are, so the newest second
+        // of a window is not short.
+        long nowProcess = now / ProcessCellsPerCell;
+        long processSlots = Math.Min(Math.Max(1, (long)Math.Round(windowSeconds * 1000 / ProcessCellMilliseconds)), ProcessCellCount);
+        long oldestProcess = Math.Max(0, nowProcess - processSlots + 1);
+        var callersById = new Dictionary<int, ProcessCounts>();
+        void AddCaller(int processId, long callerReads, long callerReadBytes, long callerWrites, long callerWriteBytes)
+        {
+            if (!callersById.TryGetValue(processId, out var sum)) callersById[processId] = sum = new ProcessCounts();
+            sum.Reads += callerReads;
+            sum.ReadBytes += callerReadBytes;
+            sum.Writes += callerWrites;
+            sum.WriteBytes += callerWriteBytes;
+        }
+        for (long slot = oldestProcess; slot <= nowProcess; slot++)
+        {
+            var cell = _processes.Cells[slot % ProcessCellCount];
+            lock (cell)
+            {
+                if (cell.Slot != slot) continue;
+                foreach (var (processId, counts) in cell.Pids)
+                    AddCaller(processId, counts.Reads, counts.ReadBytes, counts.Writes, counts.WriteBytes);
+            }
+        }
+        foreach (var shard in shards)
+        {
+            if (shard.ProcessSlot < oldestProcess) continue;
+            foreach (var (processId, counts) in shard.Processes)
+                AddCaller(processId, counts.Reads, counts.ReadBytes, counts.Writes, counts.WriteBytes);
+        }
+
         // What was watched, as opposed to what was asked for: the window, the ring's depth, and
         // how long this collector has existed, whichever is smallest. An idle mount has been
         // watched as long as the window says - its zeroes are measurements - while a process a
@@ -506,6 +679,32 @@ public sealed class MetricsCollector
             });
         }
         result.Layers = result.Layers.OrderByDescending(l => l.Hits).ToList();
+
+        // Who asked, busiest first, with the tail folded — a window is a minute wide and a busy
+        // mount sees more processes than a circle can draw. Names are resolved here and nowhere
+        // else: the request path records an id and nothing more, because reading a process' name
+        // opens it, and that is not a thing to do per request.
+        var callers = new List<ProcessMetric>();
+        foreach (var (processId, counts) in callersById)
+        {
+            if (counts.Reads == 0 && counts.Writes == 0) continue;
+            string? name = ProcessNames.Of(processId);
+            callers.Add(new ProcessMetric
+            {
+                Pid = processId,
+                Name = name ?? "",
+                // The same palette the layers use, keyed on the application rather than the id so a
+                // process keeps one colour across restarts — and prefixed, because a process that
+                // happens to be called "cache" would otherwise be handed the cache layer's colour.
+                Color = LayerColors.Auto(name == null ? "app:pid:" + processId : "app:" + name.ToUpperInvariant()),
+                Reads = counts.Reads,
+                Writes = counts.Writes,
+                ReadBytes = counts.ReadBytes,
+                WriteBytes = counts.WriteBytes
+            });
+        }
+        result.Processes = ProcessFold.Top(callers);
+        foreach (var row in result.Processes) if (row.Other) row.Color = "#94A3B8";
         return result;
     }
 }

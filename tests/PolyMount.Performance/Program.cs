@@ -64,6 +64,35 @@ if (args.Contains("--metrics-cost"))
         if (watching) requestWatching = per; else requestIdle = per;
         Console.WriteLine($"request, {(watching ? "watching" : "nobody watching"),-15}: {per:0.0} ns/call");
     }
+    // Who asked. Two shapes, because the second one is why the per-thread shard remembers the last
+    // process it saw: one reader on a thread is a comparison, and a thread serving several pays a
+    // short scan. The id is already in hand at every call site, so what is measured is the counter.
+    double callerIdle = 0, callerOne = 0, callerMany = 0, allocatedCallers = 0;
+    {
+        collector = new MetricsCollector();
+        for (int i = 0; i < 200_000; i++) collector.RecordProcessAccess(4321, false, 4096);
+        watch.Restart();
+        for (int i = 0; i < count; i++) collector.RecordProcessAccess(4321, false, 4096);
+        watch.Stop();
+        callerIdle = watch.Elapsed.TotalNanoseconds / count;
+        collector.Watch();
+        for (int i = 0; i < 200_000; i++) collector.RecordProcessAccess(4321, false, 4096);
+        watch.Restart();
+        for (int i = 0; i < count; i++) collector.RecordProcessAccess(4321, false, 4096);
+        watch.Stop();
+        callerOne = watch.Elapsed.TotalNanoseconds / count;
+        int[] pids = { 100, 200, 300, 400, 500, 600, 700, 800 };
+        for (int i = 0; i < 200_000; i++) collector.RecordProcessAccess(pids[i & 7], false, 4096);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        watch.Restart();
+        for (int i = 0; i < count; i++) collector.RecordProcessAccess(pids[i & 7], false, 4096);
+        watch.Stop();
+        allocatedCallers = GC.GetAllocatedBytesForCurrentThread() - before;
+        callerMany = watch.Elapsed.TotalNanoseconds / count;
+        Console.WriteLine($"caller, nobody watching : {callerIdle:0.0} ns/call  ({count:N0} calls, one thread)");
+        Console.WriteLine($"caller, watching, 1 pid : {callerOne:0.0} ns/call  ({count:N0} calls, one thread)");
+        Console.WriteLine($"caller, watching, 8 pids: {callerMany:0.0} ns/call  ({count:N0} calls, one thread)");
+    }
     if (args.Contains("--assert"))
     {
         // A gate, not a benchmark: the budgets are loose enough for a busy machine and tight
@@ -83,6 +112,14 @@ if (args.Contains("--metrics-cost"))
         // recompiling the loop, while an allocation on the path is megabytes by then.
         if (allocatedIdle > count / 1000) failures.Add($"record, nobody watching allocated {allocatedIdle} bytes over {count:N0} calls");
         if (allocatedWatching > count / 1000) failures.Add($"record, watching allocated {allocatedWatching} bytes over {count:N0} calls");
+        // What one request costs to attribute to its caller. The budgets are what this dimension
+        // may add to a request: the id is already in hand where it is recorded, so the counter is
+        // the whole of it. The allocation is one object per (thread, process, second) rather than
+        // one per call, which is what the allowance here says.
+        Within("caller, nobody watching", callerIdle, 40);
+        Within("caller, one pid", callerOne, 60);
+        Within("caller, eight pids", callerMany, 90);
+        if (allocatedCallers > count / 1000) failures.Add($"caller record allocated {allocatedCallers} bytes over {count:N0} calls");
         if (failures.Count == 0)
             Console.WriteLine($"assert: within budget (record {recordIdle:0.#}/{recordWatching:0.#} ns, request {requestIdle:0.#}/{requestWatching:0.#} ns, no allocation)");
         else
