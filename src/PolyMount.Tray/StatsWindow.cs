@@ -177,9 +177,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _rangeSeconds = RangeLadder[index];
             SaveStats();
             // A shorter span stops showing what it no longer covers, and the axis is redrawn from
-            // what is left rather than from a sample that has not been taken yet.
+            // what is left rather than from a sample that has not been taken yet. The one the
+            // shorter window's left edge falls inside stays, as it does when a sample ages out:
+            // that is what the series is drawn from to reach the edge.
             DateTime cutoff = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
-            foreach (var samples in _history.Values) samples.RemoveAll(s => s.Time < cutoff);
+            foreach (var samples in _history.Values) LayerSampler.Trim(samples, cutoff, kept => kept.Time, BreakSeconds);
             _next = DateTime.MinValue;
         };
         header.AddWidget(_range);
@@ -415,10 +417,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // breaks for gaps, so sparse data would leave the marks over an empty plot and prove
             // nothing. A very long span is sampled a little wider than that, as a smoke run does
             // not have fifteen minutes to wait for real samples.
+            //
+            // Started one sampling interval outside the window rather than on its edge, which is
+            // where a history that has watched for longer than a window begins: it keeps the one
+            // observation the window's left edge falls inside, and the series is drawn from it to
+            // reach the edge. Started on the edge the capture would show the shortcut, not the
+            // rule.
             var cache = new List<(DateTime Time, double Value)>();
             var svn = new List<(DateTime Time, double Value)>();
             double step = Math.Max(1, span / 600);
-            for (double back = span; back >= 0; back -= step)
+            for (double back = span + step; back >= 0; back -= step)
             {
                 double wave = Math.Sin(back / 7.0);
                 cache.Add((end.AddSeconds(-back), 6.0 + wave * 3.0));
@@ -445,16 +453,38 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             if (chart.Figures.Count == 0) throw new InvalidOperationException("A process card carries no figures");
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
         // The history is bounded by time, so how many rows that is depends on the refresh rate:
-        // what must hold is that no row is older than the window.
-        if (_processHistory.Count > 1 && _processHistory[0].Time < _processHistory[^1].Time.AddSeconds(-_rangeSeconds))
-            throw new InvalidOperationException(
-                $"The process history reaches back {(_processHistory[^1].Time - _processHistory[0].Time).TotalSeconds:0.#} seconds of a {_rangeSeconds:0.#} second window");
+        // what must hold is that it reaches back over the window its charts are drawn against, and
+        // that the only row outside it is the one the window's left edge falls inside.
+        VerifyHistory("The process history", _processHistory, second => second.Time);
         if (_process.Processes == 0) throw new InvalidOperationException("The instance reads as having no process behind it");
         var last = _processHistory[^1];
         if (last.WorkingSet <= 0 || last.Threads <= 0 || last.Handles <= 0)
             throw new InvalidOperationException($"A process reading came back empty: {last}");
         if (!_processFigures.Text.Contains(last.Threads.ToString(I18n.Culture), StringComparison.Ordinal))
             throw new InvalidOperationException("The process figures do not report what was just read");
+    }
+
+    /// <summary>Self-check for the rule every chart's history follows: a window's left edge falls
+    /// inside the segment between two rows, so the history keeps the older of them and the series
+    /// is drawn from it to reach the edge. One row outside the window, never more; a page that has
+    /// not watched for a whole window yet has none, and its series begin where its rows do.
+    ///
+    /// The histories the page is running on are only as old as the page, so a smoke run's own are
+    /// almost always the second case. That the rule holds when a history *is* long enough is
+    /// checked on a built one, in VerifyResponseSampling.</summary>
+    private void VerifyHistory<T>(string name, IReadOnlyList<T> rows, Func<T, DateTime> at)
+    {
+        if (rows.Count == 0) return;
+        int outside = rows.Count(row => at(row) < at(rows[^1]).AddSeconds(-_rangeSeconds));
+        if (outside > 1)
+            throw new InvalidOperationException(
+                $"{name} carries {outside} rows older than its {_rangeSeconds:0.#} second window, where the series is drawn from one");
+    }
+
+    internal void VerifyHistories()
+    {
+        foreach (var (name, samples) in _history) VerifyHistory("The history of " + name, samples, sample => sample.Time);
+        VerifyHistory("The held history", _heldHistory, row => row.Time);
     }
 
     /// <summary>The page has to be given at least the room its own layout asks for.
@@ -611,6 +641,43 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException("Folding observations lost the interval or the amounts they covered");
         if (Window(folded) != Window(held))
             throw new InvalidOperationException($"A folded window reads {Window(folded)} where the window it was folded from reads {Window(held)}");
+        // A history older than its window keeps the window's own observations and, where the
+        // window's left edge falls between two of them, the one before the edge as well: the series
+        // is drawn from it, so the line enters the edge instead of beginning a sampling interval
+        // inside it. What is counted is unchanged — the window's own observations are the ones the
+        // trim kept before this rule, so no figure moves with the sampling.
+        var ledger = new Dictionary<string, List<LayerSampler.Sample>>();
+        for (int step = 0; step < 12; step++)
+            LayerSampler.Add(ledger, "m/a", new LayerSampler.Sample(start.AddSeconds(step * 7), 7,
+                new() { ["m/a"] = new LayerSampler.LayerSample(2, 4, 1024, 0) }), 30, 7);
+        var aged = ledger["m/a"];                              // stamped every 7 s to +77, window [47, 77]
+        if (aged.Count != 6 || aged[0].Time != start.AddSeconds(42))
+            throw new InvalidOperationException(
+                $"A 30 second window kept {aged.Count} observations spanning {(aged[^1].Time - aged[0].Time).TotalSeconds:0.#} seconds");
+        var counted = Covered(aged, aged[^1].Time, 30, sample => sample.Time);
+        if (counted.Count != 5 || counted[0].Time != start.AddSeconds(49))
+            throw new InvalidOperationException(
+                $"A 30 second window counts {counted.Count} observations, from {counted[0].Time - start} seconds in");
+        // A page that has watched for less than a window keeps every observation it took: there is
+        // nothing before the edge to draw from, and drawing one from the edge would assert a value
+        // over a stretch nothing was measured across.
+        var young = new Dictionary<string, List<LayerSampler.Sample>>();
+        for (int step = 0; step < 4; step++)
+            LayerSampler.Add(young, "m/a", new LayerSampler.Sample(start.AddSeconds(step * 7), 7,
+                new() { ["m/a"] = new LayerSampler.LayerSample(2, 4, 1024, 0) }), 30, 7);
+        if (young["m/a"].Count != 4 || Covered(young["m/a"], start.AddSeconds(21), 30, sample => sample.Time).Count != 4)
+            throw new InvalidOperationException("A window younger than its span lost observations of it");
+        // And an observation the drawing would break the line at — a page that was hidden for
+        // longer than a window holds nothing from the far side of the pause — is not kept either:
+        // no segment is drawn from it, and one stale level sitting at the edge is what the axis
+        // would be scaled to.
+        var paused = new Dictionary<string, List<LayerSampler.Sample>>();
+        foreach (double at in new[] { 0.0, 40.0, 47.0 })
+            LayerSampler.Add(paused, "m/a", new LayerSampler.Sample(start.AddSeconds(at), 7,
+                new() { ["m/a"] = new LayerSampler.LayerSample(2, 4, 1024, 0) }), 30, 7);
+        if (paused["m/a"][0].Time != start.AddSeconds(40))
+            throw new InvalidOperationException(
+                $"A history kept a reading {paused["m/a"][0].Time - start} seconds old in a 30 second window");
         // The time axis has to name its span and its ticks in the unit each makes readable: a
         // fifteen-minute range divided into a hundred-second steps would be unreadable, and a
         // caption still saying "60 seconds ago" would be wrong.
@@ -801,8 +868,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                         if (held.Count > 0)
                         {
                             _heldHistory.Add(new HeldSecond(DateTime.UtcNow, held));
-                            while (_heldHistory.Count > 1 && _heldHistory[0].Time < DateTime.UtcNow.AddSeconds(-_rangeSeconds))
-                                _heldHistory.RemoveAt(0);
+                            LayerSampler.Trim(_heldHistory, DateTime.UtcNow.AddSeconds(-_rangeSeconds),
+                                row => row.Time, HeldBreakSeconds);
                         }
                     }
                     // Only a request that carried the trends is an observation of them: one that
@@ -904,7 +971,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private void RenderHeld(string selected)
     {
         DateTime end = _heldHistory.Count == 0 ? DateTime.UtcNow : _heldHistory[^1].Time;
-        var rows = _heldHistory.Where(row => row.Time >= end.AddSeconds(-_rangeSeconds)).ToList();
+        // Drawn from the whole history, the reading the window's left edge falls inside included,
+        // so the fill starts on the edge; counted over the window's own readings only.
+        var rows = _heldHistory;
+        var covered = Covered(rows, end, _rangeSeconds, row => row.Time);
         var drawn = new[] { new List<ChartSeries>(), new List<ChartSeries>() };
         if (_heldHistory.Count > 0)
             foreach (var (key, name, color, _, _) in _heldHistory[^1].Layers)
@@ -921,11 +991,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         for (int card = 0; card < cards.Length; card++)
         {
             int which = card;
-            double[] totals = rows.Select(row => (double)row.Layers
+            double[] totals = covered.Select(row => (double)row.Layers
                 .Where(layer => selected.Length == 0 || layer.Key.StartsWith(selected + "/", StringComparison.Ordinal))
                 .Sum(layer => which == 0 ? layer.Memory : layer.Disk)).ToArray();
             cards[card].SpanSeconds = _rangeSeconds;
-            cards[card].GapSeconds = Math.Max(BreakSeconds, 3);
+            cards[card].GapSeconds = HeldBreakSeconds;
             cards[card].SetSeries(drawn[card], end, ChartStatistics.Of(totals));
             cards[card].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
@@ -1050,16 +1120,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes,
             reading.Threads, reading.Handles, reading.ReadBytes, reading.WriteBytes));
-        while (_processHistory.Count > 1 && _processHistory[0].Time < now.AddSeconds(-_rangeSeconds)) _processHistory.RemoveAt(0);
+        LayerSampler.Trim(_processHistory, now.AddSeconds(-_rangeSeconds), second => second.Time, BreakSeconds);
         RenderProcess();
     }
 
     /// <summary>The four process cards: the CPU the instance's process used, the memory it holds,
-    /// and the threads and handles it has open. Their figures come from the same rows the charts are
-    /// drawn from, so the header and the line under it cannot disagree.</summary>
+    /// and the threads and handles it has open. Their figures are the window's readings — the one
+    /// the window's left edge falls inside is drawn, so that the line starts on the edge, but it is
+    /// not counted, which is what keeps the header describing the window the line is drawn over.</summary>
     private void RenderProcess()
     {
         DateTime end = _processHistory.Count == 0 ? DateTime.UtcNow : _processHistory[^1].Time;
+        var covered = Covered(_processHistory, end, _rangeSeconds, second => second.Time);
         var series = new List<ChartSeries>[]
         {
             new() { new(T("stats.process.cpu"), "#0f766e", _processHistory.Select(second => (second.Time, second.Cores)).ToList()) },
@@ -1067,11 +1139,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             new() { new(T("stats.process.threads"), "#475569", _processHistory.Select(second => (second.Time, (double)second.Threads)).ToList()) },
             new() { new(T("stats.process.handles"), "#64748b", _processHistory.Select(second => (second.Time, (double)second.Handles)).ToList()) }
         };
+        double[][] figures =
+        {
+            covered.Select(second => second.Cores).ToArray(),
+            covered.Select(second => (double)second.WorkingSet).ToArray(),
+            covered.Select(second => (double)second.Threads).ToArray(),
+            covered.Select(second => (double)second.Handles).ToArray()
+        };
         for (int i = 0; i < _processCharts.Length; i++)
         {
             _processCharts[i].GapSeconds = BreakSeconds;
             _processCharts[i].SpanSeconds = _rangeSeconds;
-            _processCharts[i].SetSeries(series[i], end);
+            _processCharts[i].SetSeries(series[i], end, ChartStatistics.Of(figures[i]));
             _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         if (_processHistory.Count == 0)
@@ -1138,19 +1217,34 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         LayerSampler.Capture(time, mounts, wasteSteps, seconds);
 
     private void Add(string name, LayerSampler.Sample sample) =>
-        LayerSampler.Add(_history, name, sample, _rangeSeconds);
+        LayerSampler.Add(_history, name, sample, _rangeSeconds, BreakSeconds);
 
     /// <summary>What an accelerating layer kept out of the streams underneath over the window.</summary>
     private static (double Percent, double Bytes) Accelerated(IEnumerable<LayerSampler.Sample> samples, string key) =>
         LayerSampler.Accelerated(samples, key);
 
+    /// <summary>The rows a window covers, which is what anything counted per window counts.
+    ///
+    /// A history may keep one row older than the window — the one its left edge falls inside,
+    /// which is where the drawn series enters the edge (see <see cref="LayerSampler.Trim"/>). That
+    /// row is not part of the window: it covers an interval that ended before the window began,
+    /// and after a pause it can cover seconds of it, so a total that included it would be a total
+    /// that changed with the sampling rather than with the traffic. The line is drawn from it; the
+    /// figures beside the line are the window's own.</summary>
+    private static List<T> Covered<T>(IEnumerable<T> rows, DateTime end, double span, Func<T, DateTime> at) =>
+        rows.Where(row => at(row) >= end.AddSeconds(-span)).ToList();
+
     private void Render()
     {
         string selected = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText);
         var samples = _history.GetValueOrDefault(selected) ?? new();
-        RenderHeld(selected);
-        RenderReconcile(samples, selected);
         DateTime end = samples.LastOrDefault()?.Time ?? DateTime.UtcNow;
+        // What the figures, the table and the reconciliation count, against what the charts draw:
+        // the history carries one observation more than the window covers, and it is the one the
+        // charts need to reach the window's left edge. See Covered.
+        var covered = Covered(samples, end, _rangeSeconds, sample => sample.Time);
+        RenderHeld(selected);
+        RenderReconcile(covered, selected);
         var mounts = _latest.Where(m => selected == "" || m.Mount == selected).ToList();
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();
         var predictive = rows.FirstOrDefault(row => row.l.Predictive);
@@ -1217,7 +1311,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // A gap is what the drawing cannot join: bucketed points are further apart than the
             // observations they were folded from, so the threshold follows the point spacing too.
             _charts[chart].GapSeconds = Math.Max(BreakSeconds, spacing * 1.5);
-            _charts[chart].SetSeries(drawn, end, Figures(samples, rows, metric, predictiveKey));
+            _charts[chart].SetSeries(drawn, end, Figures(covered, rows, metric, predictiveKey));
             _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
@@ -1245,7 +1339,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             string accelerated = "";
             if (layer.Accelerating)
             {
-                var (percent, bytes) = Accelerated(samples, mount.Mount + "/" + layer.Name);
+                var (percent, bytes) = Accelerated(covered, mount.Mount + "/" + layer.Name);
                 accelerated = I18n.F("stats.accelerated.cell", percent, ByteUnits.Format(bytes));
             }
             string[] values = { mount.Mount, string.IsNullOrEmpty(layer.DisplayName) ? layer.Name : layer.DisplayName, layer.Hits.ToString("N0", I18n.Culture), layer.SharePercent.ToString("0.#", I18n.Culture),
@@ -1326,6 +1420,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// slower than one hertz spaces them wider on purpose, so this follows the rate rather than
     /// sitting at a fixed two and a half seconds.</summary>
     private double BreakSeconds => Math.Max(2.5, RefreshSeconds * 1.5);
+
+    /// <summary>The same for the held cards, which no rate spaces: what the layers hold is a status
+    /// question, asked once a second whatever the charts are set to, so their threshold takes the
+    /// slower of the two rather than following a rate they do not have.</summary>
+    private double HeldBreakSeconds => Math.Max(BreakSeconds, 3);
 
     /// <summary>A rate, as the control shows it. "Hz" is the same word in both languages, so only
     /// the number is formatted for the reader's culture.</summary>

@@ -376,6 +376,7 @@ internal static class Program
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
                     stats.VerifyCharts();
+                    stats.VerifyHistories();
                     stats.VerifyProcess();
                     stats.VerifyByteAccount();
                     stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));

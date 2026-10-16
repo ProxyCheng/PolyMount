@@ -104,13 +104,43 @@ internal static class LayerSampler
     }
 
     /// <summary>Appends one observation, dropping whatever fell out of the horizon. A horizon of
-    /// zero keeps the whole recording, which is what the recording page is for.</summary>
-    internal static List<Sample> Add(IDictionary<string, List<Sample>> history, string name, Sample sample, double horizonSeconds)
+    /// zero keeps the whole recording, which is what the recording page is for.
+    /// <paramref name="joinSeconds"/> is how far apart two observations may be and still be drawn
+    /// as one curve; see <see cref="Trim"/>.</summary>
+    internal static List<Sample> Add(IDictionary<string, List<Sample>> history, string name, Sample sample,
+        double horizonSeconds, double joinSeconds)
     {
         if (!history.TryGetValue(name, out var samples)) history[name] = samples = new();
         samples.Add(sample);
-        if (horizonSeconds > 0) samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-horizonSeconds));
+        if (horizonSeconds > 0) Trim(samples, sample.Time.AddSeconds(-horizonSeconds), kept => kept.Time, joinSeconds);
         return samples;
+    }
+
+    /// <summary>Drops the oldest rows of a history until what is left is the window's own rows and,
+    /// when the window's left edge falls between two of them, the one before the edge as well.
+    /// <paramref name="at"/> stamps a row, and the rule is generic over the row because the page
+    /// keeps two histories of its own that are not made of observations — what the layers hold and
+    /// what the instance's process costs — and they are drawn the same way.
+    ///
+    /// The one before the edge is kept because the window's left edge falls inside the segment from
+    /// it to the row after it, and a chart draws a series from the rows it is handed: without it
+    /// every series began a sampling interval short of the edge, a gap that widened and narrowed as
+    /// rows aged and that nothing ever filled, since the trim takes the window's worth and no more.
+    ///
+    /// It goes with the rest when it is further than <paramref name="joinSeconds"/> from the row
+    /// after it — the gap a chart breaks the line at. No segment is drawn from it then, so all it
+    /// would do is scale the axis, and a reading from before a pause sitting at the edge of the
+    /// window would flatten everything measured since.
+    ///
+    /// Nothing is dropped at all when every row is newer than the edge, which is a page that has
+    /// not watched for a whole window yet: there the series really does begin where its own rows
+    /// do, and drawing it from the edge would assert a value over a stretch nothing was measured
+    /// across. What a window counts is the rows it covers — see StatsWindow.Covered.</summary>
+    internal static void Trim<T>(List<T> rows, DateTime edge, Func<T, DateTime> at, double joinSeconds)
+    {
+        while (rows.Count > 1 && at(rows[1]) <= edge) rows.RemoveAt(0);
+        if (rows.Count > 1 && at(rows[0]) <= edge && (at(rows[1]) - at(rows[0])).TotalSeconds > joinSeconds)
+            rows.RemoveAt(0);
     }
 
     /// <summary>The observations as a chart draws them: at most <paramref name="maxPoints"/> of
