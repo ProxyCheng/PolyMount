@@ -62,6 +62,9 @@ public sealed class MountInstance : IDisposable
             Channel = new RecordingChannel(Path.Combine(state, "recording"))
         };
         foreach (var cache in _providers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
+        // Publish this instance to whatever is listening from outside (dotnet-counters). Nothing is
+        // published until something asks, so this costs a mount with nobody watching nothing.
+        PolyMountEventSource.Log.Register(this);
         for (int i = 0; i < configs.Count; i++)
             if (_providers[configs[i].Id] is PredictionCacheLayer prediction)
                 prediction.Attach(new VirtualFileSystem(layers.Skip(i + 1)) { Diagnostics = Vfs.Diagnostics });
@@ -380,6 +383,7 @@ public sealed class MountInstance : IDisposable
 
     public void Dispose()
     {
+        PolyMountEventSource.Log.Unregister();
         StopWarmup();
         Vfs.Prediction?.Dispose();
         try { Unmount(); }

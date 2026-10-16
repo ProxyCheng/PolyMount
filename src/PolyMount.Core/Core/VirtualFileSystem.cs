@@ -30,8 +30,39 @@ public sealed class VirtualFileSystem
     public MetricsCollector? Metrics { get; set; }
     public RequestDiagnostics? Diagnostics { get; set; }
     public ReadPrediction? Prediction { get; set; }
-    public string Generation => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-        System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
+    /// <summary>The chain's generation, which every cache key is built from. It is a key rather
+    /// than a checksum anyone reads: what matters is that it changes when what it covers changes,
+    /// and the chain itself is fixed once this is built - so the only thing that can move
+    /// underneath is the bottom layer's own generation, the source's revision.
+    ///
+    /// Kept rather than recomputed, and that is the whole point: it used to be a SHA256 of the
+    /// joined chain, computed on every access, and it is on the path of every content open, every
+    /// probe and every cache lookup. The sampling profiler put it at 3% of the process's samples
+    /// with the mount otherwise idle. The key is the bottom layer's generation, which a source
+    /// memoises in turn, so the common case is a reference comparison.
+    ///
+    /// Two threads that race here compute the same string, so no lock is needed: the last writer
+    /// wins and both callers get the answer that was asked for.</summary>
+    public string Generation
+    {
+        get
+        {
+            string key = _layers[^1].Generation;
+            string? kept = Volatile.Read(ref _generation);
+            if (kept != null && (ReferenceEquals(key, _generationKey) || string.Equals(key, _generationKey, StringComparison.Ordinal)))
+                return kept;
+            string computed = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
+            _generationKey = key;
+            Volatile.Write(ref _generation, computed);
+            return computed;
+        }
+    }
+
+    /// <summary>The generation last handed out, and the bottom layer's generation it was computed
+    /// from.</summary>
+    private string? _generation;
+    private string? _generationKey;
 
     private bool Resolve(string path, out VirtualObject value, out int index, bool fill = true)
     {

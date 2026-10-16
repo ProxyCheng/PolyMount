@@ -1,3 +1,4 @@
+using System.Globalization;
 using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
@@ -223,7 +224,26 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         }
     }
 
-    public string Generation => Revision.ToString();
+    /// <summary>The revision as a string, kept: this is consulted for every cache lookup the layers
+    /// above make, and `Revision.ToString()` allocates one string each time. The revision moves at
+    /// most four times a second (see <see cref="Revision"/>), so the kept value is the same string
+    /// instance almost always.</summary>
+    public string Generation
+    {
+        get
+        {
+            long revision = Revision;
+            string? kept = Volatile.Read(ref _generation);
+            if (kept != null && Volatile.Read(ref _generationRevision) == revision) return kept;
+            string computed = revision.ToString(CultureInfo.InvariantCulture);
+            Volatile.Write(ref _generationRevision, revision);
+            Volatile.Write(ref _generation, computed);
+            return computed;
+        }
+    }
+
+    private string? _generation;
+    private long _generationRevision = -1;
 
 
     public bool TryGetEntry(string rel, out VfsEntry entry)
