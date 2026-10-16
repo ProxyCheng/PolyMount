@@ -42,6 +42,15 @@ public sealed class SupervisorClient : ControlClient
     public ControlResponse Unmount(string? name)
         => Send(new ControlRequest { Cmd = ControlCommands.Unmount, Name = name });
 
+    /// <summary>Turns the named instance on or off in the configuration.
+    ///
+    /// On means it is part of what the service runs and gets a process of its own; off means it
+    /// stops and stays stopped across a restart of the service, which is what tells this apart
+    /// from <see cref="Unmount"/> — that one stops the instance now, and it comes back the next
+    /// time the service starts, because nothing was written down about it.</summary>
+    public ControlResponse SetEnabled(string name, bool enabled)
+        => Send(new ControlRequest { Cmd = ControlCommands.SetEnabled, Name = name, Enabled = enabled });
+
     /// <summary>Stops the service: every instance is unmounted and the process exits.</summary>
     public ControlResponse Shutdown()
         => Send(new ControlRequest { Cmd = ControlCommands.Shutdown });

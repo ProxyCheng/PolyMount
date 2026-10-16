@@ -15,8 +15,12 @@ internal sealed class Dashboard : QWidget
     private readonly QLabel _listCount, _empty, _feedback, _updated;
     private readonly QLabel _detailName, _detailState, _mountPath, _layers, _warmup, _detailError;
     private readonly QWidget _detailBody;
+    /// <summary>The panel the selected instance's details are in, kept because a smoke run
+    /// photographs it: it is the part of the workspace a reader acts on, and in a workspace it is
+    /// usually covered by whichever tab was opened over it.</summary>
+    private readonly QWidget _detailPanel;
     private readonly QPushButton _refresh, _start, _stop, _create;
-    private readonly QPushButton _toggleMount, _open, _edit, _performance, _inspect;
+    private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect;
     private readonly QTimer _timer;
     private readonly List<MountStatus> _mounts = new();
     private List<MountStatus> _visible = new();
@@ -154,7 +158,8 @@ internal sealed class Dashboard : QWidget
         list.AddWidget(Label("mount.list.hint", "muted"));
         workspace.AddWidget(listPanel);
 
-        var details = Panel("surface");
+        _detailPanel = Panel("surface");
+        var details = _detailPanel;
         details.SetMinimumWidth(306);
         details.SetMaximumWidth(390);
         var detail = new QVBoxLayout(details);
@@ -172,12 +177,33 @@ internal sealed class Dashboard : QWidget
         var body = new QVBoxLayout(_detailBody);
         body.SetContentsMargins(0, 8, 2, 0);
         body.SetSpacing(10);
-        var actions = new QHBoxLayout();
+        // The instance's own switch comes first, because switching it is what a reader comes to
+        // this panel to do. One button covers the three states it has — switched off in the
+        // configuration, enabled but not running, and mounted — because "this instance is off" is
+        // one idea to a reader. It used to take two controls in two windows to say it, and neither
+        // of them could reach the state the other one set.
+        //
+        // One to a row, not two: the panel is as narrow as 306 pixels, and a button's label is the
+        // one thing here that cannot be shortened for it — in English the longest of these runs to
+        // "Clear instance cache", which with a second button beside it does not fit.
         _toggleMount = Button("mount", ToggleSelected, "primary", "play");
+        body.AddWidget(_toggleMount);
         _open = Button("open.folder", OpenSelected, icon: "folder");
-        actions.AddWidget(_toggleMount, 1);
-        actions.AddWidget(_open, 1);
-        body.AddLayout(actions);
+        body.AddWidget(_open);
+        _performance = Button("mount.performance", OpenPerformance, icon: "chart");
+        body.AddWidget(_performance);
+        _edit = Button("mount.manage", () => OpenEditor(Selected?.Name), icon: "settings");
+        body.AddWidget(_edit);
+        _inspect = Button("layers.inspect", () => { if (Selected is { } m) LayerVisualizer.Open(m.MountPoint); }, icon: "layers");
+        body.AddWidget(_inspect);
+        // Last, and after the entries above rather than beside the switch: these two are the
+        // deliberate ones. Stopping the instance now is not the same as stopping it coming back,
+        // so the one that writes the configuration has a button of its own and says which it is.
+        _disable = Button("disable", ToggleEnabled, icon: "stop");
+        body.AddWidget(_disable);
+        _clearCache = Button("cache.clear", ClearSelectedCache, icon: "disk-cache");
+        body.AddWidget(_clearCache);
+
         _mountPath = DetailField(body, "mount.location");
         // The service publishes this sentence in both languages, the same way provider
         // details are published, so it needs no catalog entry of its own.
@@ -186,12 +212,6 @@ internal sealed class Dashboard : QWidget
         body.AddWidget(Label("layers.heading", "eyebrow"));
         _layers = PlainLabel("", "layerChain");
         body.AddWidget(_layers);
-        _inspect = Button("layers.inspect", () => { if (Selected is { } m) LayerVisualizer.Open(m.MountPoint); }, icon: "layers");
-        body.AddWidget(_inspect);
-        _edit = Button("mount.manage", () => OpenEditor(Selected?.Name), icon: "settings");
-        body.InsertWidget(1, _edit);
-        _performance = Button("mount.performance", OpenPerformance, icon: "chart");
-        body.InsertWidget(2, _performance);
         _detailError = PlainLabel("", "errorBox");
         body.AddWidget(_detailError);
         body.AddStretch(1);
@@ -228,6 +248,17 @@ internal sealed class Dashboard : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>The instance detail panel on its own. The window shot cannot show it: the panel
+    /// lives in the workspace, and by the time a smoke run has opened the windows it is testing,
+    /// the tabs it opened are lying over it.</summary>
+    internal void CaptureDetail(string directory)
+    {
+        _detailPanel.Layout()?.Activate();
+        QCoreApplication.ProcessEvents();
+        using var panel = _detailPanel.Grab();
+        panel.Save(Path.Combine(directory, "detail.png"));
+    }
 
     internal void SmokeSilentUpdate()
     {
@@ -435,14 +466,26 @@ internal sealed class Dashboard : QWidget
         _start.SetEnabled(idle && !_connected);
         _stop.SetEnabled(idle && _connected);
         _create.SetEnabled(idle && _connected);
-        _toggleMount.SetEnabled(ready && (m!.Mounted || m.Enabled));
-        string toggleText = T(m?.Mounted == true ? "unmount" : "mount");
+        // One button over the instance's three states. The disabled one is the case that used to be
+        // out of reach from here: an instance switched off in the configuration has no process, so
+        // there was nothing to mount, and the button was greyed out with a tooltip telling the
+        // reader to go and find the checkbox in the editor.
+        bool disabled = m?.Enabled == false;
+        _toggleMount.SetEnabled(ready);
+        string toggleText = T(m == null ? "mount" : disabled ? "enabled" : m.Mounted ? "unmount" : "mount");
         if (_toggleMount.Text != toggleText)
         {
             _toggleMount.SetText(toggleText);
-            _toggleMount.SetIcon(TrayIcons.Get(m?.Mounted == true ? "stop" : "play", "#ffffff"));
+            _toggleMount.SetIcon(TrayIcons.Get(m is { Mounted: true, Enabled: true } ? "stop" : "play", "#ffffff"));
         }
-        _toggleMount.SetToolTip(T(m?.Enabled == false ? "disabled.tip" : "selected.tip"));
+        _toggleMount.SetToolTip(T(disabled ? "enable.tip" : "selected.tip"));
+        // Offered only while there is something to switch off. An instance that is already off has
+        // the button above it for turning back on, and showing both would read as two ways to do
+        // one thing.
+        _disable.SetVisible(m?.Enabled == true);
+        _disable.SetEnabled(ready);
+        _disable.SetToolTip(T("disable.tip"));
+        _clearCache.SetEnabled(ready && m!.Mounted);
         _open.SetEnabled(ready && m!.Mounted);
         _edit.SetEnabled(ready);
         _performance.SetEnabled(ready);
@@ -462,12 +505,49 @@ internal sealed class Dashboard : QWidget
         // Mounting and unmounting are the supervisor's: it is the one that runs an instance's
         // process. They are also what changes which instances have one, so the addresses the front
         // end holds are asked for again afterwards rather than waited out.
+        if (!m.Enabled)
+        {
+            // There is no process to start, so the first thing to do is put the instance back in
+            // the configuration — which starts it in the same step, and is what the button the
+            // reader just pressed said it would do. Nothing to confirm: this is the way back.
+            Run(() => Lifecycle(SupervisorClient.Default.SetEnabled(m.Name, true)), "mount.done");
+            return;
+        }
         if (m.Mounted)
         {
             if (!Confirm("unmount", I18n.F("confirm.unmount", m.Name, m.MountPoint))) return;
             Run(() => Lifecycle(SupervisorClient.Default.Unmount(m.Name)), "unmount.done");
         }
         else Run(() => Lifecycle(SupervisorClient.Default.Mount(m.Name)), "mount.done");
+    }
+
+    /// <summary>Switches the instance off in the configuration rather than stopping it. What it
+    /// stops is the service starting it again, which is the whole difference between this and the
+    /// unmount button beside it: that one stops the instance now and leaves the configuration
+    /// saying it should run.
+    ///
+    /// It is confirmed because the effect outlives the session. An instance switched off stays off
+    /// across a restart of the service, and nobody watching a mount go away expects that of it
+    /// unless they were told.</summary>
+    private void ToggleEnabled()
+    {
+        if (Selected is not { Enabled: true } m) return;
+        if (!Confirm("disable", I18n.F("confirm.disable", m.Name))) return;
+        Run(() => Lifecycle(SupervisorClient.Default.SetEnabled(m.Name, false)), "disable.done");
+    }
+
+    /// <summary>Drops what the instance's cacheable layers hold, so the next read goes back to the
+    /// source. The same call, the same confirmation and the same name inside it as the
+    /// configuration editor's button: what is cleared is the instance that is running, wherever the
+    /// reader asked for it from.</summary>
+    private void ClearSelectedCache()
+    {
+        if (Selected is not { Mounted: true } m || _pending != null) return;
+        long bytes = m.Providers.Where(p => p.StorageUsage is { CacheCapacity: > 0 })
+            .Sum(p => p.StorageUsage!.CacheBytes);
+        if (!Confirm("cache", I18n.F("confirm.cache", m.Name, FormatBytes(bytes)))) return;
+        var client = InstanceDirectory.ClientFor(m.Name);
+        Run(() => client.ClearCache(), "cache.done");
     }
 
     /// <summary>An instance's process is the supervisor's to start and to stop, and doing either

@@ -56,6 +56,27 @@ public sealed class AppConfig
 
     public string ToJson() => JsonSerializer.Serialize(this, Options);
 
+    /// <summary>Turns one instance on or off, by name, and reports whether that changed anything.
+    ///
+    /// The lookup is by name because that is what the protocol uses everywhere; it is not case
+    /// sensitive, for the same reason <see cref="Validate"/> refuses two names that differ only in
+    /// case. A name that matches nothing is an error rather than a no-op: a front-end that switched
+    /// an instance and then named one that is not configured has a stale view, and answering "done"
+    /// would leave it believing a change it never made.
+    ///
+    /// Whether the value changed is worth having because the caller writes the whole file and
+    /// reloads it either way: a request that asked for what is already so should not restart a
+    /// worker to arrive where it started.</summary>
+    public bool SetEnabled(string name, bool enabled)
+    {
+        var profile = Mounts.FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("no such instance: " + name);
+        if (profile.Enabled == enabled) return false;
+        profile.Enabled = enabled;
+        Validate();
+        return true;
+    }
+
     public static AppConfig FromJson(string json) =>
         JsonSerializer.Deserialize<AppConfig>(json) ?? throw new ArgumentException("invalid config json");
 

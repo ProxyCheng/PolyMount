@@ -20,6 +20,11 @@ public sealed class MountManager : IControlHost, IDisposable
     private readonly WorkerPool _workers;
     private FileSystemWatcher? _watcher;
     private DateTime _suppressReloadUntil = DateTime.MinValue;
+    /// <summary>Serialises the configuration's read-modify-write paths. "saveConfig" replaces the
+    /// whole object while "setEnabled" changes one field of the one that is already there, so
+    /// without this a write from one could land between the read and the write of the other and
+    /// take the change back. Re-entrant, because both of them write the file and then reload it.</summary>
+    private readonly object _configGate = new();
 
     private readonly ILogger<MountManager> _logger;
     public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
@@ -103,11 +108,35 @@ public sealed class MountManager : IControlHost, IDisposable
     /// instance: editing one mount no longer interrupts another's cache or its warm-up.</summary>
     public void Reload()
     {
-        var next = AppConfig.LoadOrCreate(ConfigPath);
-        LoadPlugins(next);
-        next.Validate();
-        Config = next;
-        _workers.Apply(next);
+        lock (_configGate)
+        {
+            var next = AppConfig.LoadOrCreate(ConfigPath);
+            LoadPlugins(next);
+            next.Validate();
+            Config = next;
+            _workers.Apply(next);
+        }
+    }
+
+    /// <summary>Turns one instance on or off: the configuration is changed, written, and applied.
+    ///
+    /// The same write-then-reload "saveConfig" does, for the one field a front-end can reach
+    /// without holding the whole configuration — which is why the read, the change and the write
+    /// are one step under <see cref="_configGate"/> rather than a get and a save from the caller.
+    /// A request that asked for what is already so writes nothing at all: the answer would be the
+    /// same and a worker would have been restarted to arrive where it started.
+    ///
+    /// Applying restarts only what differs, so switching one instance off leaves every other
+    /// instance's mount, its cache and its warm-up alone.</summary>
+    private void SetEnabled(string name, bool enabled)
+    {
+        lock (_configGate)
+        {
+            if (!Config.SetEnabled(name, enabled)) return;
+            _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
+            AppConfig.Save(ConfigPath, Config);
+            Reload();
+        }
     }
 
     private void StartConfigWatcher()
@@ -166,14 +195,27 @@ public sealed class MountManager : IControlHost, IDisposable
                     if (string.IsNullOrWhiteSpace(request.Config))
                         throw new InvalidOperationException("saveConfig requires a Config payload");
                     var parsed = AppConfig.FromJson(request.Config);
-                    LoadPlugins(parsed);
-                    parsed.Validate();
-                    _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
-                    AppConfig.Save(ConfigPath, parsed);
-                    Reload();
+                    lock (_configGate)
+                    {
+                        LoadPlugins(parsed);
+                        parsed.Validate();
+                        _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
+                        AppConfig.Save(ConfigPath, parsed);
+                        Reload();
+                    }
                     response.Config = Config.ToJson();
                     break;
                 }
+                case ControlCommands.SetEnabled:
+                    // Named instance, named value: neither is guessed. A request that said neither
+                    // is a caller with a bug, and answering it about whichever instance happened to
+                    // be first is how a mount gets switched off by a malformed message.
+                    if (string.IsNullOrWhiteSpace(request.Name))
+                        throw new InvalidOperationException("setEnabled needs the instance it is about");
+                    if (request.Enabled is not { } enabled)
+                        throw new InvalidOperationException("setEnabled needs the value to set");
+                    SetEnabled(request.Name, enabled);
+                    break;
                 case ControlCommands.Reload:
                     Reload();
                     break;

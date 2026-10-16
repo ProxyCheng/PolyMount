@@ -103,10 +103,6 @@
       <translation>Choose color…</translation>
     </message>
     <message>
-      <source>cache.layer.clear</source>
-      <translation>Clear this layer’s cache</translation>
-    </message>
-    <message>
       <source>confirm.layer.cache</source>
       <translation>Clear this layer’s runtime cache? Local modifications are kept.</translation>
     </message>
@@ -369,28 +365,8 @@ Durable changes {1} · {2:N0} objects (not subject to eviction)</translation>
       <translation>Inspect root layers</translation>
     </message>
     <message>
-      <source>cache.space</source>
-      <translation>CACHE SPACE</translation>
-    </message>
-    <message>
       <source>cache.clear</source>
       <translation>Clear instance cache</translation>
-    </message>
-    <message>
-      <source>revision.head</source>
-      <translation>Update to SVN HEAD</translation>
-    </message>
-    <message>
-      <source>revision.placeholder</source>
-      <translation>Revision number</translation>
-    </message>
-    <message>
-      <source>revision.pin</source>
-      <translation>Pin revision</translation>
-    </message>
-    <message>
-      <source>mount.edit</source>
-      <translation>Edit instance</translation>
     </message>
     <message>
       <source>dashboard.footer</source>
@@ -548,12 +524,28 @@ Try another search or select All states.</translation>
       <translation>Instance error</translation>
     </message>
     <message>
-      <source>disabled.tip</source>
-      <translation>Enable this instance in configuration first</translation>
+      <source>disable</source>
+      <translation>Disable instance</translation>
+    </message>
+    <message>
+      <source>disable.done</source>
+      <translation>Instance disabled</translation>
+    </message>
+    <message>
+      <source>disable.tip</source>
+      <translation>Switch this instance off in the configuration: it will not start again when the service restarts</translation>
+    </message>
+    <message>
+      <source>enable.tip</source>
+      <translation>Start this instance, and keep it enabled in the configuration</translation>
     </message>
     <message>
       <source>selected.tip</source>
       <translation>Applies only to the selected instance</translation>
+    </message>
+    <message>
+      <source>confirm.disable</source>
+      <translation>Turn off “{0}”? It stops now, and will not start again when the service restarts. What it has stored is kept.</translation>
     </message>
     <message>
       <source>confirm.unmount</source>
@@ -568,11 +560,6 @@ Local changes are kept. Files will reload from the source.</translation>
     <message>
       <source>confirm.head</source>
       <translation>Update “{0}” to SVN HEAD?
-The remote view changes. Local modifications are kept.</translation>
-    </message>
-    <message>
-      <source>confirm.pin</source>
-      <translation>Switch “{0}” to r{1}?
 The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
@@ -896,10 +883,6 @@ Close applications using mounted files first.</translation>
       <source>stats.bytes</source>
       <translation>Written bytes · Per second</translation>
     </message>
-    <message>
-      <source>stats.layer</source>
-      <translation>Layer performance · Last 60 seconds</translation>
-    </message>
     <message><source>stats.accessors</source><translation>readers in the last 60 seconds:</translation></message>
     <message><source>stats.accessors.none</source><translation>no readers in the last 60 seconds.</translation></message>
     <message><source>process.unknown</source><translation>unknown process</translation></message>
@@ -1066,6 +1049,26 @@ Close applications using mounted files first.</translation>
     <message>
       <source>stats.response.cost</source>
       <translation>Response overhead · Request avg {0:0.00} ms / P95 {1:0.00} ms · UI dispatch {2:0.00} ms · UI update {3:0.00} ms · {4} samples (one trend request per sample, plus the 60-second window once a second; excludes painting)</translation>
+    </message>
+    <message>
+      <source>stats.section.account</source>
+      <translation>Byte account · Response overhead</translation>
+    </message>
+    <message>
+      <source>stats.section.account.summary</source>
+      <translation>Request avg {0} ms · P95 {1} ms</translation>
+    </message>
+    <message>
+      <source>stats.section.layers</source>
+      <translation>Layer detail · Last 60 seconds</translation>
+    </message>
+    <message>
+      <source>stats.section.layers.summary</source>
+      <translation>{0} layers · {1} requests served</translation>
+    </message>
+    <message>
+      <source>stats.section.process.summary</source>
+      <translation>{0} processes · {1} cores · {2}</translation>
     </message>
     <message>
       <source>stats.process</source>

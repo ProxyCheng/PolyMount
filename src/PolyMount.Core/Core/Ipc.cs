@@ -101,6 +101,11 @@ public sealed class ControlRequest
     // Serialized AppConfig payload, used by "saveConfig".
     public string? Config { get; set; }
 
+    // Used by "setEnabled": whether the named instance should be part of what runs. Nullable
+    // rather than defaulted, so a request that never said is refused instead of read as "off" —
+    // which would stop an instance on the strength of a missing field.
+    public bool? Enabled { get; set; }
+
     // Rolling-window size (seconds) for the "metrics" command; 0 => default. A fraction is
     // allowed: the performance window asks for the time since its previous sample, which is
     // shorter than a second as soon as it refreshes faster than once a second.
@@ -212,6 +217,16 @@ public static class ControlCommands
     public const string ClearLocalChanges = "clearLocalChanges";
     public const string Mount = "mount";
     public const string Unmount = "unmount";
+    /// <summary>Turns one instance on or off: the configuration field that decides whether the
+    /// supervisor runs it at all, as opposed to "unmount", which stops the process it is running
+    /// now without changing what the configuration says.
+    ///
+    /// It exists because the two are not the same question and a front-end should not have to
+    /// answer the narrow one by handing over the whole configuration: a getConfig/saveConfig pair
+    /// round trip would let a window that is holding a draft overwrite whatever else changed in
+    /// between. Here the supervisor reads, changes and writes its own copy, so there is nothing
+    /// to overwrite.</summary>
+    public const string SetEnabled = "setEnabled";
     public const string Probe = "probe";
     public const string LayerAction = "layerAction";
     public const string ReleaseAbove = "releaseAbove";

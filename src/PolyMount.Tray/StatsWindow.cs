@@ -10,6 +10,7 @@ namespace PolyMount.Tray;
 /// reader chooses; every figure on it is a rate, so the line reads the same at any of them.</summary>
 internal sealed class StatsWindow : QWidget, ICloseGuard
 {
+    private readonly QWidget _page;
     private readonly QComboBox _mount;
     private readonly string? _instanceName;
     /// <summary>The instance this window charts. A window opened on one instance holds the process
@@ -20,7 +21,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly QPushButton _pause;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
-    private readonly QLabel _layerLegend;
     private readonly LayerAccessPie _accessPie;
     private readonly QLabel _accessLegend;
     private readonly QLabel _responseCost;
@@ -41,8 +41,21 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly QLabel _reconcile;
     private DateTime _lastHeld = DateTime.MinValue;
     private readonly PerformanceChart[] _processCharts;
-    private readonly QWidget _processSection;
     private readonly QLabel _processFigures;
+    /// <summary>The parts of the page under the charts, each folded away with a line of its own
+    /// numbers left in the header. What the page is watched for is the charts; this is what a
+    /// chart sends a reader looking for, and reading it is a thing one does deliberately.
+    ///
+    /// The division is the one a monitoring surface is drawn along: what tells you something is
+    /// wrong stays visible, and what tells you why is one click away. It is deliberately not a
+    /// matter of hiding things that matter — a folded section keeps the few numbers that would
+    /// make a reader open it, so folding something away does not also hide whether it is worth
+    /// opening.</summary>
+    private readonly CollapsibleSection _layersSection, _processSection, _accountSection;
+    /// <summary>The bodies those sections fold. They are held apart from the sections themselves
+    /// because a smoke run photographs them, and a widget that is not on screen has nothing to
+    /// photograph; opening the section is how the run gets one back.</summary>
+    private readonly QWidget _layerBody, _processBody, _accountBody;
     private readonly InstanceProcess _process;
     private readonly Dictionary<string, List<LayerSampler.Sample>> _history = new();
     /// <summary>Last-seen waste counter per layer, with the time it was read: the charts plot
@@ -73,9 +86,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>The spans a reader may choose between, in seconds: how much time the charts show.
     /// The page only has what it watched, so a long span starts empty and fills.</summary>
     private static readonly double[] RangeLadder = { 30, 60, 120, 300, 900 };
-    /// <summary>The two choices this page remembers, read once at startup and validated against
-    /// the ladders above whichever they name.</summary>
-    private static readonly (double RefreshHz, double RangeSeconds) Remembered = LoadStats();
+    /// <summary>The choices this page remembers, read once at startup and validated against the
+    /// ladders above whichever they name.</summary>
+    private static readonly (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections) Remembered = LoadStats();
+    /// <summary>Which of the sections under the charts the reader left open, by the key each is
+    /// remembered under. Folded is where a section starts: a reader who has never touched one is
+    /// shown the charts and three lines saying what is under them, which is the page's subject and
+    /// nothing else.</summary>
+    private readonly Dictionary<string, bool> _sections = new(Remembered.Sections);
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
@@ -102,7 +120,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         SetWindowIcon(TrayIcons.App);
         I18n.Bind(SetWindowTitle, "stats.title");
         Resize(1180, 960);
-        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900, 900));
+        // The page itself, kept because it is what a capture of the whole page is taken of: the
+        // window shows the part of it that fits, and the scroll area is what shows the rest.
+        _page = WindowScrollArea.Create(this, 900, 900);
+        var root = new QVBoxLayout(_page);
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);
         var header = new QHBoxLayout();
@@ -132,7 +153,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             if (index < 0 || index >= RefreshRates.Length) return;
             _refreshHz = RefreshRates[index];
-            SaveStats(_refreshHz, _rangeSeconds);
+            SaveStats();
             // Take effect now rather than at the end of the interval that was already running.
             _next = DateTime.MinValue;
             _requested = true;
@@ -150,7 +171,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             if (index < 0 || index >= RangeLadder.Length) return;
             _rangeSeconds = RangeLadder[index];
-            SaveStats(_refreshHz, _rangeSeconds);
+            SaveStats();
             // A shorter span stops showing what it no longer covers, and the axis is redrawn from
             // what is left rather than from a sample that has not been taken yet.
             DateTime cutoff = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
@@ -183,53 +204,21 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
         // A fifth card for what the layers keep: the other four are what they did, this is what they
-        // hold. It belongs beside them because it is their own number, not the process's.
+        // hold. It belongs beside them because it is their own number, not the process's, and it
+        // takes the whole of the last row: a fifth card in a two-column grid would otherwise leave
+        // the column beside it empty, and a chart is the one thing here that reads better wide.
         _heldChart = new PerformanceChart("stats.layerHeld", "#7c3aed", "B", ChartSummary.Volume);
-        grid.AddWidget(_heldChart, _charts.Length / 2, _charts.Length % 2);
+        grid.AddWidget(_heldChart, _charts.Length / 2, 0, 1, 2);
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
         if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
 
-        // The machine's own account of the instance, next to VFS's account of it. The unit of these
-        // is the process: one instance is one process, so nothing has to be attributed to a mount
-        // for them to be per instance.
-        _processSection = new QWidget();
-        var section = new QVBoxLayout(_processSection);
-        section.SetContentsMargins(0, 0, 0, 0);
-        section.SetSpacing(12);
-        section.AddWidget(Label("stats.process", "sectionTitle"));
-        _processCharts = new[]
-        {
-            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
-            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
-            new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
-            new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
-        };
-        var processGrid = new QGridLayout();
-        processGrid.SetSpacing(16);
-        for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
-        section.AddLayout(processGrid);
-        _processFigures = new QLabel();
-        _processFigures.SetObjectName("muted");
-        _processFigures.SetWordWrap(true);
-        _processFigures.SetTextFormat(Qt.TextFormat.PlainText);
-        section.AddWidget(_processFigures);
-        section.AddWidget(Label("stats.process.definition", "muted"));
-        root.AddWidget(_processSection);
-        _layerLegend = new QLabel();
-        _layerLegend.SetWordWrap(true);
-        _layerLegend.SetTextFormat(Qt.TextFormat.RichText);
-        _layerLegend.SetObjectName("muted");
-        root.AddWidget(_layerLegend);
-        root.AddWidget(Label("stats.layerBytes.definition", "muted"));
-        // What the layers served and what the process moved are two different counts, and the
-        // difference is the part nobody has attributed yet: this is that arithmetic, said out loud.
-        _reconcile = new QLabel();
-        _reconcile.SetObjectName("muted");
-        _reconcile.SetWordWrap(true);
-        _reconcile.SetTextFormat(Qt.TextFormat.PlainText);
-        root.AddWidget(_reconcile);
-        root.AddWidget(Label("stats.reconcile.definition", "muted"));
+        // What the layers did, and what they hold, one section: the table and the pie are the same
+        // 60-second window read two ways, and they answer one question between them.
+        _layerBody = new QWidget();
+        var layerBody = new QVBoxLayout(_layerBody);
+        layerBody.SetContentsMargins(0, 0, 0, 0);
+        layerBody.SetSpacing(14);
         var access = new QHBoxLayout();
         _accessPie = new LayerAccessPie();
         access.AddWidget(_accessPie);
@@ -237,8 +226,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _accessLegend.SetTextFormat(Qt.TextFormat.RichText);
         _accessLegend.SetWordWrap(true);
         access.AddWidget(_accessLegend, 1);
-        root.AddLayout(access);
-        root.AddWidget(Label("stats.layer", "sectionTitle"));
+        layerBody.AddLayout(access);
         _table = ContinuousScrolling.Table();
         _table.SetColumnCount(8);
         _table.SetEditTriggers(QAbstractItemView.EditTriggers.NoEditTriggers);
@@ -250,15 +238,63 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // The layer list is shown whole: the window's own scroll area is what scrolls, so a list
         // of layers is never hidden behind a second scrollbar.
         _table.SetVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);
-        root.AddWidget(_table);
+        layerBody.AddWidget(_table);
+        layerBody.AddWidget(Label("stats.layerBytes.definition", "muted"));
+
+        // The machine's own account of the instance, next to VFS's account of it. The unit of these
+        // is the process: one instance is one process, so nothing has to be attributed to a mount
+        // for them to be per instance.
+        _processBody = new QWidget();
+        var processBody = new QVBoxLayout(_processBody);
+        processBody.SetContentsMargins(0, 0, 0, 0);
+        processBody.SetSpacing(12);
+        _processCharts = new[]
+        {
+            new PerformanceChart("stats.process.cpu", "#0f766e", "cores", ChartSummary.Volume),
+            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Volume),
+            new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Volume)
+        };
+        var processGrid = new QGridLayout();
+        processGrid.SetSpacing(16);
+        for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
+        processBody.AddLayout(processGrid);
+        _processFigures = new QLabel();
+        _processFigures.SetObjectName("muted");
+        _processFigures.SetWordWrap(true);
+        _processFigures.SetTextFormat(Qt.TextFormat.PlainText);
+        processBody.AddWidget(_processFigures);
+        processBody.AddWidget(Label("stats.process.definition", "muted"));
+
+        // What the layers served and what the process moved are two different counts, and the
+        // difference is the part nobody has attributed yet: this is that arithmetic, said out loud.
+        // The overhead of answering this page belongs beside it because it is spent in the same
+        // place — talking to the instance — and it is what the other numbers here are worth.
+        _accountBody = new QWidget();
+        var accountBody = new QVBoxLayout(_accountBody);
+        accountBody.SetContentsMargins(0, 0, 0, 0);
+        accountBody.SetSpacing(10);
+        _reconcile = new QLabel();
+        _reconcile.SetObjectName("muted");
+        _reconcile.SetWordWrap(true);
+        _reconcile.SetTextFormat(Qt.TextFormat.PlainText);
+        accountBody.AddWidget(_reconcile);
+        accountBody.AddWidget(Label("stats.reconcile.definition", "muted"));
+        _responseCost = new QLabel();
+        _responseCost.SetObjectName("muted");
+        _responseCost.SetWordWrap(true);
+        accountBody.AddWidget(_responseCost);
+
+        _layersSection = Section("layers", "stats.section.layers", _layerBody);
+        _processSection = Section("process", "stats.process", _processBody);
+        _accountSection = Section("account", "stats.section.account", _accountBody);
+        root.AddWidget(_layersSection);
+        root.AddWidget(_processSection);
+        root.AddWidget(_accountSection);
         _status = new QLabel();
         _status.SetObjectName("muted");
         _status.SetTextFormat(Qt.TextFormat.PlainText);
         root.AddWidget(_status);
-        _responseCost = new QLabel();
-        _responseCost.SetObjectName("muted");
-        _responseCost.SetWordWrap(true);
-        root.AddWidget(_responseCost);
         _timer = new QTimer(this);
         _timer.Timeout += Tick;
         _timer.Start(100);
@@ -278,18 +314,49 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
-    /// <summary>The process section on its own, for a smoke run: it sits below four charts that fill
-    /// a 960 pixel window, so a capture of the window would not show it at all.</summary>
+    /// <summary>The whole page rather than the part of it that fits. The window shot is what a
+    /// reader has on screen; this is everything on the page, laid out at its own height, which is
+    /// the only way one picture can show a page that scrolls — the sections under the charts
+    /// included.</summary>
+    internal void CapturePage(string path)
+    {
+        // A grab draws the layout as it stands, so a page that was just rearranged — sections
+        // opened, say — has to be laid out before it is drawn, or the picture is the old geometry
+        // with the new widgets on top of it. Activating runs the layout now; the events are for
+        // whatever it queued behind that.
+        _page.Layout()?.Activate();
+        QCoreApplication.ProcessEvents();
+        using var image = _page.Grab();
+        image.Save(path);
+    }
+
+    /// <summary>Opens every section, through the section itself rather than through its toggle, so
+    /// that a smoke run arranging the page to photograph it does not also write that arrangement
+    /// down: the reader's own page would come back rearranged. Everything below the charts is
+    /// folded by default, so a run that means to photograph it has to open it first — a widget that
+    /// is not on screen has nothing to photograph.</summary>
+    internal void ExpandAll()
+    {
+        _layersSection.SetExpanded(true);
+        _processSection.SetExpanded(true);
+        _accountSection.SetExpanded(true);
+    }
+
+    /// <summary>The process section on its own, for a smoke run: it starts folded, and once it is
+    /// open the window is taller than a 960 pixel screen, so a capture of the window would not show
+    /// it at all.</summary>
     internal void CaptureProcess(string directory)
     {
-        using var section = _processSection.Grab();
+        _processSection.SetExpanded(true);
+        using var section = _processBody.Grab();
         section.Save(Path.Combine(directory, "process.png"));
     }
 
-    /// <summary>The held-bytes card and the byte account under it, for a smoke run: they sit below
-    /// the fold of a 960 pixel window, the same way the process section does.</summary>
+    /// <summary>The held-bytes card and the byte account, for a smoke run: they sit below the fold
+    /// of a 960 pixel window, the same way the process section does.</summary>
     internal void CaptureHeld(string directory)
     {
+        _accountSection.SetExpanded(true);
         using var card = _heldChart.Grab();
         card.Save(Path.Combine(directory, "layer-held.png"));
         using var line = _reconcile.Grab();
@@ -422,7 +489,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     /// <summary>The layer table on its own: the window capture stops above it, and one row per
     /// layer is the whole point of that table.</summary>
-    internal void CaptureTable(string path) { using var image = _table.Grab(); image.Save(path); }
+    internal void CaptureTable(string path)
+    {
+        _layersSection.SetExpanded(true);
+        using var image = _table.Grab();
+        image.Save(path);
+    }
     internal void VerifyResponseSampling()
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
@@ -917,11 +989,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _processCharts[i].SetSeries(series[i], end);
             _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
-        if (_processHistory.Count == 0) { _processFigures.SetText(T("stats.process.waiting")); return; }
+        if (_processHistory.Count == 0)
+        {
+            _processFigures.SetText(T("stats.process.waiting"));
+            _processSection.SetSummary(T("stats.process.waiting"));
+            return;
+        }
         var last = _processHistory[^1];
         _processFigures.SetText(I18n.F("stats.process.figures",
             _process.Processes, last.Cores, ByteUnits.Format(last.WorkingSet), ByteUnits.Format(last.Private),
             last.Threads, last.Handles));
+        // What the folded section says of itself: the processes behind the instance and what the
+        // one reading in hand cost. The sentence above names more than a header has room for.
+        _processSection.SetSummary(I18n.F("stats.section.process.summary",
+            _process.Processes, last.Cores.ToString("0.00", I18n.Culture), ByteUnits.Format(last.WorkingSet)));
     }
 
     /// <summary>Takes a 60-second window: the table, the pie, the legend, and the layer list the
@@ -1065,11 +1146,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             $"<span style='color:{s.Color}'>●</span> " + System.Net.WebUtility.HtmlEncode(s.Name) + " · " +
             I18n.F("stats.access.counts", s.Reads, s.Writes, total == 0 ? 0 : 100.0 * (s.Reads + s.Writes) / total)));
         if (_accessLegend.Text != accessLegend) _accessLegend.SetText(accessLegend);
-        string legend = string.Join(" &nbsp; · &nbsp; ", rows.Select(row =>
-            $"<span style='color:{(string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color)}'>●</span> " +
-            System.Net.WebUtility.HtmlEncode(selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName) +
-            " " + ByteUnits.Format(row.l.Bytes)));
-        if (_layerLegend.Text != legend) _layerLegend.SetText(legend);
+        // The line the layer section keeps while it is folded: how many layers there are and what
+        // they served between them, which is enough to tell an instance that is working from one
+        // that is not, without opening anything. The chart cards carry their own legend — the same
+        // names, in the chart's own unit — so the line that used to repeat them here is gone.
+        _layersSection.SetSummary(I18n.F("stats.section.layers.summary",
+            rows.Count, total.ToString("N0", I18n.Culture)));
         bool structureChanged = _table.RowCount != rows.Count;
         if (structureChanged) { _table.SetUpdatesEnabled(false); _table.SetRowCount(rows.Count); }
         for (int row = 0; row < rows.Count; row++)
@@ -1139,6 +1221,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _pause.SetIcon(TrayIcons.Get(_paused ? "play" : "stop"));
         _recording?.Translate();
+        _layersSection.Translate();
+        _processSection.Translate();
+        _accountSection.Translate();
         _mount.SetItemText(0, T("stats.all"));
         _refresh.SetToolTip(T("stats.refresh.hint"));
         _range.SetToolTip(T("stats.range.hint"));
@@ -1161,11 +1246,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// the number is formatted for the reader's culture.</summary>
     private static string FormatRate(double rate) => rate.ToString("0.##", I18n.Culture) + " Hz";
 
-    /// <summary>The two choices this page remembers. Read once, and validated against the ladders:
-    /// a rate or a span this build does not offer is not one it knows how to draw. Best effort in
-    /// both directions, like the other preferences this tray keeps - a missing or unreadable file
-    /// means the defaults, and a failed write is not worth telling the reader about.</summary>
-    private static (double RefreshHz, double RangeSeconds) LoadStats()
+    /// <summary>The choices this page remembers: the two on the toolbar, and which of the sections
+    /// under the charts the reader left open. Read once, and validated against the ladders: a rate
+    /// or a span this build does not offer is not one it knows how to draw. Best effort in both
+    /// directions, like the other preferences this tray keeps - a missing or unreadable file means
+    /// the defaults, and a failed write is not worth telling the reader about.</summary>
+    private static (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections) LoadStats()
     {
         try
         {
@@ -1175,28 +1261,69 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             using var json = JsonDocument.Parse(File.ReadAllText(SettingsPath).TrimStart('﻿'));
             double rate = json.RootElement.GetProperty("RefreshHz").GetDouble();
             double span = json.RootElement.GetProperty("RangeSeconds").GetDouble();
+            var sections = new Dictionary<string, bool>();
+            // Missing from a file written before the sections folded, and missing is the right
+            // answer then too: nothing open. A key this build does not have a section for is kept
+            // rather than dropped, so a page that gains one back does not find its choice gone.
+            if (json.RootElement.TryGetProperty("Sections", out var stored) && stored.ValueKind == JsonValueKind.Object)
+                foreach (var entry in stored.EnumerateObject())
+                    if (entry.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        sections[entry.Name] = entry.Value.GetBoolean();
             return (Array.Exists(RefreshRates, known => known == rate) ? rate : 1,
-                Array.Exists(RangeLadder, known => known == span) ? span : 60);
+                Array.Exists(RangeLadder, known => known == span) ? span : 60, sections);
         }
-        catch { return (1, 60); }
+        catch { return (1, 60, new Dictionary<string, bool>()); }
     }
 
-    private static void SaveStats(double rate, double range)
+    /// <summary>Writes everything this page remembers. Called from whichever choice changed, and
+    /// writes all of them, because they share one file and a partial write would drop the rest.</summary>
+    private void SaveStats()
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new { RefreshHz = rate, RangeSeconds = range }));
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new
+            {
+                RefreshHz = _refreshHz,
+                RangeSeconds = _rangeSeconds,
+                Sections = _sections
+            }));
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
     }
+
+    /// <summary>One folded part of the page: the widget that holds it, the key it is remembered
+    /// under, and the header line that stands in for it while it is folded. Built here rather than
+    /// in a helper because the body's own widgets are fields of this window, and a field of the
+    /// readonly kind can only be given a value in the constructor it belongs to.</summary>
+    private CollapsibleSection Section(string key, string titleKey, QWidget body)
+    {
+        var section = new CollapsibleSection(key, titleKey, body, _sections.GetValueOrDefault(key));
+        section.Toggled += changed =>
+        {
+            _sections[changed.Key] = changed.Expanded;
+            SaveStats();
+        };
+        return section;
+    }
     private void RenderResponseCost()
     {
-        if (_responseSamples.Count == 0) { _responseCost.SetText(T("stats.response.waiting")); return; }
+        if (_responseSamples.Count == 0)
+        {
+            _responseCost.SetText(T("stats.response.waiting"));
+            _accountSection.SetSummary(T("stats.response.waiting"));
+            return;
+        }
         var requests = _responseSamples.Select(s => s.Request).Order().ToArray();
-        _responseCost.SetText(I18n.F("stats.response.cost", requests.Average(), ChartStatistics.Percentile(requests, 0.95),
+        double average = requests.Average();
+        double p95 = ChartStatistics.Percentile(requests, 0.95);
+        _responseCost.SetText(I18n.F("stats.response.cost", average, p95,
             _responseSamples.Average(s => s.Dispatch), _responseSamples.Average(s => s.Ui), _responseSamples.Count));
+        // What the folded section says of itself: what it costs to answer this page, which is the
+        // one figure here that a reader can act on without opening anything.
+        _accountSection.SetSummary(I18n.F("stats.section.account.summary",
+            average.ToString("0.00", I18n.Culture), p95.ToString("0.00", I18n.Culture)));
     }
     public override void ChangeEvent(QEvent e)
     {

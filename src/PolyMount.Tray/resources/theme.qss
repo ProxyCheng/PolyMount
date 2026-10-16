@@ -17,6 +17,10 @@ QWidget { font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px; color:
         QLabel#serviceBadge { font-weight: 600; padding: 6px 0; }
         QLabel#pageTitle { color: #17243b; font-size: 26px; font-weight: 700; }
         QLabel#sectionTitle { font-size: 16px; font-weight: 600; }
+        QPushButton#sectionToggle { background: transparent; border: none; text-align: left; padding: 2px 0; font-size: 16px; font-weight: 600; color: #17243b; }
+        QPushButton#sectionToggle:hover { color: #2563eb; }
+        QPushButton#sectionToggle:pressed { color: #1d4ed8; }
+        QPushButton#sectionToggle:focus { border: none; color: #2563eb; }
         QLabel#detailTitle { font-size: 21px; font-weight: 700; color: #17243b; }
         QLabel#muted, QLabel#metricHint { color: #718096; font-size: 12px; }
         QLabel#metricValue { font-size: 28px; font-weight: 700; color: #17243b; }

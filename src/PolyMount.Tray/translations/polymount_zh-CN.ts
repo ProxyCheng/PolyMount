@@ -103,10 +103,6 @@
       <translation>选择颜色…</translation>
     </message>
     <message>
-      <source>cache.layer.clear</source>
-      <translation>清空此层缓存</translation>
-    </message>
-    <message>
       <source>confirm.layer.cache</source>
       <translation>清空此层的运行时缓存？本地修改会保留。</translation>
     </message>
@@ -369,28 +365,8 @@
       <translation>查看根目录分层</translation>
     </message>
     <message>
-      <source>cache.space</source>
-      <translation>缓存空间</translation>
-    </message>
-    <message>
       <source>cache.clear</source>
       <translation>清空此实例缓存</translation>
-    </message>
-    <message>
-      <source>revision.head</source>
-      <translation>更新到 SVN HEAD</translation>
-    </message>
-    <message>
-      <source>revision.placeholder</source>
-      <translation>指定 revision</translation>
-    </message>
-    <message>
-      <source>revision.pin</source>
-      <translation>固定版本</translation>
-    </message>
-    <message>
-      <source>mount.edit</source>
-      <translation>编辑此实例</translation>
     </message>
     <message>
       <source>dashboard.footer</source>
@@ -548,12 +524,28 @@
       <translation>实例错误</translation>
     </message>
     <message>
-      <source>disabled.tip</source>
-      <translation>此实例已禁用，请在配置中启用</translation>
+      <source>disable</source>
+      <translation>停用实例</translation>
+    </message>
+    <message>
+      <source>disable.done</source>
+      <translation>实例已停用</translation>
+    </message>
+    <message>
+      <source>disable.tip</source>
+      <translation>在配置里关掉这个实例：服务重启后不会再启动</translation>
+    </message>
+    <message>
+      <source>enable.tip</source>
+      <translation>启动这个实例，并在配置里保持启用</translation>
     </message>
     <message>
       <source>selected.tip</source>
       <translation>仅操作当前选中的实例</translation>
+    </message>
+    <message>
+      <source>confirm.disable</source>
+      <translation>关掉「{0}」？它会立即停止，且服务重启后不再启动。已保存的数据会保留。</translation>
     </message>
     <message>
       <source>confirm.unmount</source>
@@ -568,11 +560,6 @@
     <message>
       <source>confirm.head</source>
       <translation>将「{0}」更新到 SVN 最新版本？
-远端文件视图将改变，本地修改会保留。</translation>
-    </message>
-    <message>
-      <source>confirm.pin</source>
-      <translation>将「{0}」切换到 r{1}？
 远端文件视图将改变，本地修改会保留。</translation>
     </message>
     <message>
@@ -896,10 +883,6 @@
       <source>stats.bytes</source>
       <translation>写入字节 · 每秒</translation>
     </message>
-    <message>
-      <source>stats.layer</source>
-      <translation>逐层性能 · 最近 60 秒</translation>
-    </message>
     <message><source>stats.accessors</source><translation>最近 60 秒的访问者：</translation></message>
     <message><source>stats.accessors.none</source><translation>最近 60 秒没有访问者。</translation></message>
     <message><source>process.unknown</source><translation>未知进程</translation></message>
@@ -1066,6 +1049,26 @@
     <message>
       <source>stats.response.cost</source>
       <translation>响应开销 · 请求平均 {0:0.00} ms / P95 {1:0.00} ms · 主线程调度 {2:0.00} ms · 界面更新 {3:0.00} ms · {4} 次采样（每次一个趋势请求，另有每秒钟一次的 60 秒窗口；不含绘制）</translation>
+    </message>
+    <message>
+      <source>stats.section.account</source>
+      <translation>字节账目 · 响应开销</translation>
+    </message>
+    <message>
+      <source>stats.section.account.summary</source>
+      <translation>请求平均 {0} ms · P95 {1} ms</translation>
+    </message>
+    <message>
+      <source>stats.section.layers</source>
+      <translation>逐层明细 · 最近 60 秒</translation>
+    </message>
+    <message>
+      <source>stats.section.layers.summary</source>
+      <translation>{0} 层 · 共 {1} 次请求</translation>
+    </message>
+    <message>
+      <source>stats.section.process.summary</source>
+      <translation>{0} 个进程 · {1} 核 · {2}</translation>
     </message>
     <message>
       <source>stats.process</source>

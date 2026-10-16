@@ -294,8 +294,15 @@ internal static class Program
             if (ticks == 18 && capture != null)
             {
                 dashboard.Capture(Path.Combine(capture, "dashboard.png"));
+                dashboard.CaptureDetail(capture);
                 editor.Capture(Path.Combine(capture, "layers.png"));
                 stats.Capture(Path.Combine(capture, "stats.png"));
+                // The window above is the part of the page that fits on screen. These two are the
+                // whole of it: as a reader gets it, and with every section opened, which is the
+                // only way one picture can show a page taller than the window.
+                stats.CapturePage(Path.Combine(capture, "stats-page.png"));
+                stats.ExpandAll();
+                stats.CapturePage(Path.Combine(capture, "stats-page-expanded.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
                 stats.CaptureCharts(capture);
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
@@ -331,7 +338,10 @@ internal static class Program
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.process.definition",
                     "stats.layerUnknown", "stats.layerHeld", "stats.layerHeld.definition",
-                    "stats.reconcile.bytes", "stats.reconcile.definition", "record.process" })
+                    "stats.reconcile.bytes", "stats.reconcile.definition", "record.process",
+                    "disable", "disable.done", "disable.tip", "enable.tip", "confirm.disable",
+                    "stats.section.layers", "stats.section.layers.summary",
+                    "stats.section.process.summary", "stats.section.account", "stats.section.account.summary" })
                     if (I18n.T(key) == key) failure = "Qt resource translation lookup failed: " + key;
                 I18n.SetLanguage(original);
             }

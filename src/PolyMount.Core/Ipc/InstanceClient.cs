@@ -23,11 +23,6 @@ public sealed class InstanceClient : ControlClient
         return request;
     }
 
-    /// <summary>Pins the source to a revision. A pinned instance keeps answering from that
-    /// revision until it is refreshed, whatever the repository does.</summary>
-    public ControlResponse SetPin(long revision, string? layer = null)
-        => Send(new ControlRequest { Cmd = ControlCommands.SetPin, Rev = revision, Layer = layer });
-
     /// <summary>Pins the source to whatever its head is now.</summary>
     public ControlResponse RefreshHead(string? layer = null)
         => Send(new ControlRequest { Cmd = ControlCommands.RefreshHead, Layer = layer });
