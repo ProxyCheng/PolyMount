@@ -13,7 +13,7 @@ internal sealed record ServiceChannelState(string SessionId, RecordingCounts? Co
 internal sealed class RecordingSubmission
 {
     public RecordingSubmission(string mount, string workingDirectory, string logs, RecordingTail requests,
-        RecordingTail serviceLog, ServiceChannelState channel, DateTime startedUtc, DateTime endedUtc,
+        RecordingTail serviceLog, RecordingTail instanceLog, ServiceChannelState channel, DateTime startedUtc, DateTime endedUtc,
         string state, string? note, IReadOnlyList<LayerTotalRecord> totals, IReadOnlyList<SecondRecord> seconds,
         IReadOnlyList<double> reads, IReadOnlyList<double> bytes, IReadOnlyList<double> cost,
         IReadOnlyList<double> writes, IReadOnlyList<double> overhead, long sampleRows)
@@ -25,8 +25,10 @@ internal sealed class RecordingSubmission
         RequestLines = requests.Lines;
         ServiceLogBytes = serviceLog.Bytes;
         ServiceLogLines = serviceLog.Lines;
-        Sources = requests.Sources.Concat(serviceLog.Sources).ToList();
-        Gaps = requests.Gaps.Concat(serviceLog.Gaps).ToList();
+        InstanceLogBytes = instanceLog.Bytes;
+        InstanceLogLines = instanceLog.Lines;
+        Sources = requests.Sources.Concat(instanceLog.Sources).Concat(serviceLog.Sources).ToList();
+        Gaps = requests.Gaps.Concat(instanceLog.Gaps).Concat(serviceLog.Gaps).ToList();
         Channel = channel;
         StartedUtc = startedUtc;
         EndedUtc = endedUtc;
@@ -51,6 +53,10 @@ internal sealed class RecordingSubmission
     public long RequestLines { get; }
     public long ServiceLogBytes { get; }
     public long ServiceLogLines { get; }
+    /// <summary>What the instance's own process log contributed: its story of the same window, as
+    /// opposed to the service's story of it, which the next two are.</summary>
+    public long InstanceLogBytes { get; }
+    public long InstanceLogLines { get; }
     public IReadOnlyList<TailedSource> Sources { get; }
     public IReadOnlyList<TailGap> Gaps { get; }
     public ServiceChannelState Channel { get; }

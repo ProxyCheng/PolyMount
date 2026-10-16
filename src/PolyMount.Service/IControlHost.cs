@@ -37,12 +37,15 @@ internal static class LogInventory
         catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
     }
 
-    public static LogFile Describe(string path, string group)
+    /// <summary>Describes one file. <paramref name="name"/> renames it inside a bundle, which is
+    /// how a worker's log stops carrying its instance's identity in its own file name — the folder
+    /// it lands in already says whose it is.</summary>
+    public static LogFile Describe(string path, string group, string? name = null)
     {
         long bytes = 0;
         try { bytes = new FileInfo(path).Length; }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
-        return new LogFile { Name = group + "/" + Path.GetFileName(path), Source = path, Bytes = bytes };
+        return new LogFile { Name = group + "/" + (name ?? Path.GetFileName(path)), Source = path, Bytes = bytes };
     }
 }

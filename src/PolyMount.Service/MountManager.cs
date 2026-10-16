@@ -50,12 +50,33 @@ public sealed class MountManager : IControlHost, IDisposable
         // Read off the configuration rather than collected from the workers: an instance whose
         // worker is down still has the log of what it did, and that is exactly when it is wanted.
         foreach (var profile in Config.Mounts)
+        {
             foreach (string file in LogInventory.Family(StateDirectory(profile), "requests.log"))
                 logs.Add(LogInventory.Describe(file, profile.Name));
+            // What that instance's own process wrote, under the instance rather than under the
+            // service: a recording of one instance carries its own process's log and no other
+            // instance's, and the worker's file name does not have to say whose it is twice.
+            foreach (string file in LogInventory.Family(AppContext.BaseDirectory, WorkerLogName(profile.Id)))
+                logs.Add(LogInventory.Describe(file, profile.Name, WorkerLogFile(file, profile)));
+        }
+        // This process's own log: the same name shape, without the instance identity a worker's
+        // has. Without the filter, every worker's log would be listed here as well.
         foreach (string file in LogInventory.Family(AppContext.BaseDirectory, ServiceLogName))
-            logs.Add(LogInventory.Describe(file, "service"));
+            if (!Path.GetFileName(file).StartsWith(WorkerLogPrefix, StringComparison.OrdinalIgnoreCase))
+                logs.Add(LogInventory.Describe(file, "service"));
         return logs;
     }
+
+    /// <summary>A worker's log file, as the worker named it: the service log's name with the
+    /// instance's identity appended, so two workers never write into one file.</summary>
+    private const string WorkerLogPrefix = "polymount-service-";
+
+    internal static string WorkerLogName(string instanceId) => WorkerLogPrefix + instanceId + ".log";
+
+    /// <summary>What a worker's log is called inside a bundle, with the identity taken back out:
+    /// the folder it is copied into is the instance's.</summary>
+    private static string WorkerLogFile(string path, MountProfile profile) =>
+        Path.GetFileName(path).Replace("-" + profile.Id, "");
 
     private static string StateDirectory(MountProfile profile) => Path.Combine(profile.GetStoreRoot(), "state");
 

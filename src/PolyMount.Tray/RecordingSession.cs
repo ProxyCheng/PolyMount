@@ -70,7 +70,7 @@ internal sealed class RecordingSession
     /// <summary>The directory this instance's sampled log lives in, which is what the recording's
     /// per-request detail is copied from. The directory rather than the file: Serilog rolls them
     /// every few megabytes under load, so the segments are matched again on each pass.</summary>
-    private string _detailDirectory = "", _serviceLogPattern = "", _serviceSessionId = "";
+    private string _detailDirectory = "", _serviceLogPattern = "", _instanceLogPattern = "", _serviceSessionId = "";
     private RecordingCounts? _counts;
     /// <summary>The process serving this instance. Every instance has one of its own, so the cost
     /// the recording collects is that process's cost and no thread has to be attributed to a mount.
@@ -96,6 +96,14 @@ internal sealed class RecordingSession
         {
             Group = "service", Prefix = "polymount-service", StartAtEnd = true
         };
+        // The instance's own process, which is where a mount failing, a layer reporting something
+        // odd or a warm-up finishing lands. Unlike the service's log this one belongs to a process
+        // that exists for this instance alone, so it is copied from the beginning: the few hundred
+        // bytes that came before the recording describe how this instance got here.
+        InstanceLog = new RecordingTail(Path.Combine(Logs, group))
+        {
+            Group = group, Prefix = "polymount-service"
+        };
         Directory.CreateDirectory(Requests.Directory);
         Directory.CreateDirectory(ServiceLog.Directory);
         File.WriteAllText(Path.Combine(workingDirectory, "samples.csv"), StatsExport.SamplesCsvHeader, new UTF8Encoding(false));
@@ -108,6 +116,9 @@ internal sealed class RecordingSession
     public string Logs { get; }
     public RecordingTail Requests { get; }
     public RecordingTail ServiceLog { get; }
+    /// <summary>The log of the process serving this instance, copied beside its request diagnostics
+    /// so a bundle of one instance carries that instance's own story and no other's.</summary>
+    public RecordingTail InstanceLog { get; }
     public RecordingState State { get; private set; } = RecordingState.Recording;
     public string? Note { get { lock (_gate) return _note; } }
     public string? ServiceSessionId { get { lock (_gate) return _serviceSessionId; } }
@@ -133,10 +144,17 @@ internal sealed class RecordingSession
         {
             foreach (var log in SupervisorClient.Default.Logs().Logs)
             {
-                if (log.Name.StartsWith(mount + "/", StringComparison.Ordinal))
-                    session._detailDirectory = Path.GetDirectoryName(log.Source) ?? "";
-                else if (log.Name.StartsWith("service/", StringComparison.Ordinal))
+                if (log.Name.StartsWith("service/", StringComparison.Ordinal))
+                {
+                    // The service's own log: where a worker being restarted, or failing to start,
+                    // is described.
                     session._serviceLogPattern = log.Source;
+                    continue;
+                }
+                if (!log.Name.StartsWith(mount + "/", StringComparison.Ordinal)) continue;
+                // This instance's request diagnostics, and this instance's own process log.
+                if (IsInstanceLog(log.Name)) session._instanceLogPattern = log.Source;
+                else session._detailDirectory = Path.GetDirectoryName(log.Source) ?? "";
             }
         }
         catch (Exception ex) { session._error = ex.Message; }
@@ -266,18 +284,21 @@ internal sealed class RecordingSession
     /// paths the service itself named, matched as a family because Serilog rolls them.</summary>
     private void Drain(DateTime utcNow)
     {
-        string detail, pattern;
+        string detail, pattern, instance;
         lock (_gate)
         {
             detail = _detailDirectory;
             pattern = _serviceLogPattern;
+            instance = _instanceLogPattern;
         }
         // Read from the beginning of what is there rather than the end: a tray that adopts a
         // recording someone else started recovers the part it missed, and the digest filters the
         // bundle's copies by the recording's own window either way.
         if (detail.Length > 0) Requests.Drain(Family(detail, "requests"), utcNow);
         if (pattern.Length > 0)
-            ServiceLog.Drain(Family(Path.GetDirectoryName(pattern) ?? "", Path.GetFileNameWithoutExtension(pattern)), utcNow);
+            ServiceLog.Drain(Family(Path.GetDirectoryName(pattern) ?? "", Path.GetFileNameWithoutExtension(pattern), "polymount-service-"), utcNow);
+        if (instance.Length > 0)
+            InstanceLog.Drain(Family(Path.GetDirectoryName(instance) ?? "", Path.GetFileNameWithoutExtension(instance)), utcNow);
         if (Requests.Truncated)
             lock (_gate)
             {
@@ -286,10 +307,24 @@ internal sealed class RecordingSession
             }
     }
 
-    /// <summary>Every segment of a rolled log, oldest first.</summary>
-    private static string[] Family(string directory, string prefix)
+    /// <summary>Whether a log the inventory attributed to this instance is its own process's log
+    /// rather than its request diagnostics. The inventory names the process log the way a worker
+    /// does; everything else under the instance is the request family.</summary>
+    private static bool IsInstanceLog(string name) =>
+        Path.GetFileName(name).StartsWith("polymount-service", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Every segment of a rolled log, oldest first. <paramref name="exclude"/> keeps a
+    /// family whose files are named after the same stem apart — the service's own log and the one
+    /// every worker writes both begin with <c>polymount-service</c>, and a recording of an instance
+    /// must not put the other instances' workers into the service's copy.</summary>
+    private static string[] Family(string directory, string prefix, string? exclude = null)
     {
-        try { return Directory.GetFiles(directory, prefix + "*.log").Order(StringComparer.Ordinal).ToArray(); }
+        try
+        {
+            return Directory.GetFiles(directory, prefix + "*.log")
+                .Where(file => exclude == null || !Path.GetFileName(file).StartsWith(exclude, StringComparison.OrdinalIgnoreCase))
+                .Order(StringComparer.Ordinal).ToArray();
+        }
         catch (DirectoryNotFoundException) { return Array.Empty<string>(); }
         catch (IOException) { return Array.Empty<string>(); }
     }
@@ -377,7 +412,7 @@ internal sealed class RecordingSession
         {
             State = RecordingState.Stopped;
             _note = "saved";
-            return new RecordingSubmission(Mount, WorkingDirectory, Logs, Requests, ServiceLog,
+            return new RecordingSubmission(Mount, WorkingDirectory, Logs, Requests, ServiceLog, InstanceLog,
                 new ServiceChannelState(_serviceSessionId, _counts, _restarts),
                 StartedUtc, utcNow, State.ToString(), _note,
                 Totals(), _seconds.ToList(), _readsSeries.ToList(), _bytesSeries.ToList(),

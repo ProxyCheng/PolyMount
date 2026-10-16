@@ -19,7 +19,7 @@ if (instanceIndex >= 0 && instanceIndex + 1 < args.Length)
     string instanceId = args[instanceIndex + 1];
     // Its own log beside the service's, named for the instance so two workers never write into
     // one file, and matched by the same family the log inventory reports.
-    using var workerLog = AsyncFileLog.Create(Path.Combine(AppContext.BaseDirectory, "polymount-service-" + instanceId + ".log"));
+    using var workerLog = AsyncFileLog.Create(Path.Combine(AppContext.BaseDirectory, MountManager.WorkerLogName(instanceId)));
     using var workerLogger = LoggerFactory.Create(builder => builder.AddSerilog(workerLog, dispose: false));
     return await InstanceHost.Run(configPath, instanceId, workerLogger.CreateLogger<InstanceHost>());
 }
