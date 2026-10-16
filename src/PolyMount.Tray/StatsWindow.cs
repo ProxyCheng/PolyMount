@@ -1977,13 +1977,9 @@ internal sealed class PerformanceChart : QWidget
         _chart.Legend().SetLabelColor(new QColor("#334155"));
         _chart.Legend().SetFont(new QFont("Segoe UI", 8));
         // Both axes carry their own labels: dark enough to read, over a faint grid, with no axis
-        // line of their own — the plot's white background is what the areas are read against. The
-        // value axis carries its unit once, beside the numbers, because the numbers are scaled into
-        // whatever unit the window's magnitudes are read in (bytes, cores, milliseconds).
+        // line of their own — the plot's white background is what the areas are read against.
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
         _valueAxis.SetLabelsColor(new QColor("#718096"));
-        _valueAxis.SetTitleFont(new QFont("Segoe UI", 8));
-        _valueAxis.SetTitleBrush(new QBrush(new QColor("#718096")));
         _valueAxis.SetGridLineColor(new QColor("#e7edf5"));
         _valueAxis.SetLineVisible(false);
         _valueAxis.SetMinorTickCount(0);
@@ -2270,14 +2266,16 @@ internal sealed class PerformanceChart : QWidget
         double room = PlotRoom() / (double)LabelSpacing;
         if (_valueAxis.LabelsTruncated) room -= 1;
         _domain = ChartDomain.Of(_series, _unit, Math.Max(2, room));
+        // The unit the numbers are in is written after each of them rather than beside them: an
+        // axis title is drawn rotated, which reads as a word standing on its end next to numbers
+        // that are upright, and every label that carries its own unit needs nothing explained. A
+        // byte card is scaled into kilobytes or megabytes by what it holds, so the label says which
+        // one it is; a card with no unit of its own — threads, handles — says nothing extra.
+        string value = ChartDomain.TickFormat(_domain.Step) + (_domain.Unit.Length > 0 ? " " + _domain.Unit : "");
         _valueAxis.SetRange(_domain.Floor, _domain.Max);
         _valueAxis.SetTickType(QValueAxis.TickType.TicksFixed);
         _valueAxis.SetTickCount(_domain.GridLines + 1);
-        _valueAxis.SetLabelFormat(ChartDomain.TickFormat(_domain.Step));
-        // The unit the numbers are in, said once beside them: a byte card is scaled into kilobytes
-        // or megabytes by what it holds, and a bare column of numbers would not say which one it is.
-        _valueAxis.SetTitleVisible(_domain.Unit.Length > 0);
-        _valueAxis.SetTitleText(_domain.Unit);
+        _valueAxis.SetLabelFormat(value);
         // The time axis reads as time before now: the moment the card is drawn up to is nought at
         // the right-hand end, and the span the reader chose runs back from it to the left. A long
         // span is read in minutes — the step decides, the way a clock does — and the unit goes into
