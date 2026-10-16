@@ -322,6 +322,10 @@ internal static class Program
             if (ticks == 2)
             {
                 try { dashboard.SmokeTabs(instance); } catch (Exception ex) { failure = ex.ToString(); }
+                // Those interactions close the performance tab and open it again, and a closed tab
+                // takes its page with it: what the rest of this run drives — its captures, its
+                // checks — is the page that came back rather than the one that was closed.
+                stats = dashboard.OpenPerformance(instance);
             }
             if (ticks == 18 && capture != null)
             {

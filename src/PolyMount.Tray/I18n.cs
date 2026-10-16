@@ -50,6 +50,16 @@ internal static class I18n
     }
     // For non-widget objects (tray actions), Qt's application LanguageChange drives updates.
     public static event Action? Changed;
+
+    /// <summary>Subscribes a handler for the life of <paramref name="owner"/>: a language change
+    /// reaches every window the reader has open, and a window that has been closed in the meantime is
+    /// a deleted object for a handler that outlived it. A page is destroyed when its tab is closed,
+    /// so anything on a page subscribes here rather than to the raw event.</summary>
+    public static void OnChanged(Action handler, QObject owner)
+    {
+        Changed += handler;
+        owner.Destroyed += _ => Changed -= handler;
+    }
     public static void SetLanguage(string language)
     {
         language = language == "en" ? "en" : "zh-CN";

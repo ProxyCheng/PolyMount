@@ -9,7 +9,7 @@ namespace PolyMount.Tray;
 
 /// <summary>Task-manager style performance charts. The page samples asynchronously at a rate the
 /// reader chooses; every figure on it is a rate, so the line reads the same at any of them.</summary>
-internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
+internal sealed class StatsWindow : QWidget, ICloseGuard
 {
     private readonly QWidget _page;
     private readonly QComboBox _mount;
@@ -118,11 +118,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
     /// the windows it covers end, and the moment an observation from it is stamped with.</summary>
     private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds, DateTime At)>? _pending;
     private bool _paused, _requested;
-    /// <summary>Whether the workspace has put this page away. A page is parked when its tab is
-    /// closed and kept, so that reopening that tab finds the same charts on it; that is the one
-    /// thing that stops it watching, and it is told rather than left to work it out from whether it
-    /// is on screen. See <see cref="IParked"/>.</summary>
-    private bool _parked;
     private int _epoch, _requestEpoch;
     /// <summary>When the next sample is due, and when the next once-a-second reading — the access
     /// window, what the layers hold, the process — is due. Both are moments on a lattice rather
@@ -158,7 +153,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
         var titles = new QVBoxLayout();
         var heading = new QLabel();
         heading.SetObjectName("pageTitle");
-        I18n.Changed += () => heading.SetText(instanceName == null ? T("stats.heading") : I18n.F("stats.instance", instanceName));
+        I18n.OnChanged(() => heading.SetText(instanceName == null ? T("stats.heading") : I18n.F("stats.instance", instanceName)), this);
         heading.SetText(instanceName == null ? T("stats.heading") : I18n.F("stats.instance", instanceName));
         titles.AddWidget(heading);
         titles.AddWidget(Label("stats.subtitle", "muted"));
@@ -345,39 +340,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
         Show();
         Raise();
         ActivateWindow();
-        // The page has been watching throughout, so what is on screen is the last minute of it and
-        // there is no gap to make up for: this only asks for what is happening now rather than
-        // waiting out the interval that is already running.
+        // A page that was already open has been watching throughout — what is on screen is the last
+        // minute of it — so there is no gap to make up for and this only asks for what is happening
+        // now rather than waiting out the interval that is already running.
         _requested = true;
     }
 
-    /// <summary>The page is on screen again. Qt shows a page whenever its tab is selected, so this
-    /// also fires on a reader stepping back to it — where there is nothing to do — and only a page
-    /// that had been put away starts watching again here.
-    /// </summary>
-    public override void ShowEvent(QShowEvent e)
-    {
-        base.ShowEvent(e);
-        if (!_parked) return;
-        _parked = false;
-        _timer.Start(100);
-        _requested = true;
-    }
-
-    /// <summary>Put away: the tab was closed and the workspace keeps this page for reopening it.
-    /// What stops is the watching — nothing asks the instance anything while nobody has the page
-    /// open — and what is kept is everything already watched, so the tab comes back to the charts it
-    /// had rather than to a card that starts from now.</summary>
-    void IParked.Parked()
-    {
-        _parked = true;
-        _timer.Stop();
-    }
-
-    /// <summary>Whether this page is watching its instance: not paused, not put away, and its timer
-    /// running. For the smoke run, which parks and re-opens a page inside one turn of the event loop
-    /// and has no second to wait for a sample it could count instead.</summary>
-    internal bool Watching => !_parked && !_paused && _timer.IsActive();
+    /// <summary>Whether this page is watching its instance: not paused, and its timer running. For
+    /// the smoke run, which closes and opens a tab inside one turn of the event loop and has no
+    /// second to wait for a sample it could count instead.</summary>
+    internal bool Watching => !_paused && _timer.IsActive();
 
     /// <summary>Self-check: a page that is not on screen keeps watching. The smoke run steps to
     /// another tab, waits a couple of seconds and steps back; a page that pauses when it is not on
@@ -1048,11 +1020,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
 
     private void Tick()
     {
-        // What a page samples for is the tab it is on, not the picture it is showing: a reader who
-        // steps to another tab for a moment and comes back must not find a hole in the line, so a
-        // page that is merely not on show keeps watching. Only being put away stops it (see
-        // IParked), which is what closing its tab does — and its timer is stopped with it.
-        bool watching = !_parked && !_paused;
+        // A page watches for as long as it exists: what it samples for is the tab it is on, not the
+        // picture it is showing, so stepping to another tab for a moment and coming back leaves no
+        // hole in the line — and closing that tab takes the page, and with it this timer, away.
+        bool watching = !_paused;
         if (_pending is { IsCompleted: true })
         {
             var task = _pending;

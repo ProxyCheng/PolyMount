@@ -25,8 +25,9 @@ internal sealed class LayerAccessPie : QWidget
         row.SetSpacing(16);
         row.AddWidget(_reads);
         row.AddWidget(_writes);
-        // A language change re-reads both titles and both legends from the catalog.
-        I18n.Changed += () => SetSlices(_slices);
+        // A language change re-reads both titles and both legends from the catalog, for as long as
+        // this pie is on a page: the page goes when its tab is closed.
+        I18n.OnChanged(() => SetSlices(_slices), this);
     }
 
     /// <summary>What each layer answered over the window the page is reading. Both cards are given

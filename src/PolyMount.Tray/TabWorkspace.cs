@@ -9,14 +9,6 @@ internal interface ICloseGuard
     void RequestClose(Action proceed);
 }
 
-/// <summary>A page the workspace puts away rather than destroys when its tab is closed: it is kept
-/// so that reopening the tab finds the same page, with the same state on it, and it is told, because
-/// a page that watches something has to know when to stop watching it.</summary>
-internal interface IParked
-{
-    void Parked();
-}
-
 /// <summary>Native tab groups and splitter trees; moving a page always reparents the same widget.</summary>
 internal sealed class TabWorkspace : QWidget
 {
@@ -168,14 +160,16 @@ internal sealed class TabWorkspace : QWidget
         if (_pressed == page) CancelDrag();
         var group = page.Group;
         Remove(page);
+        // Closing a tab takes the page with it: the workspace keeps no page back to be reopened, so
+        // what was on it is gone and opening that tab again builds a new one. That is what makes the
+        // life of a page the whole of what being open means for it — a performance page watches its
+        // instance for as long as it exists and no longer, without having to ask whether it is the
+        // tab on show. (The one page that is never closed is the pinned home page, which has no
+        // close button to press.)
         page.Widget.SetParent(_parking);
         page.Widget.Hide();
-        if (page.Widget is IParked parked) parked.Parked();
-        if (page.Widget is ConfigEditor)
-        {
-            _pages.Remove(page.Key);
-            page.Widget.DeleteLater();
-        }
+        _pages.Remove(page.Key);
+        page.Widget.DeleteLater();
         Prune(group);
     }
     private static string PageTitle(Page page) => page.Widget is ConfigEditor ? page.Widget.WindowTitle : page.Title();
@@ -424,7 +418,7 @@ internal sealed class TabWorkspace : QWidget
         }
     }
 
-    internal void SmokeInteractions(string editorKey, string statsKey)
+    internal void SmokeInteractions(string editorKey, string statsKey, Func<QWidget> newStats)
     {
         var editor = _pages[editorKey];
         var stats = _pages[statsKey];
@@ -451,15 +445,17 @@ internal sealed class TabWorkspace : QWidget
             throw new InvalidOperationException("Moving a tab recreated its page");
         ClosePage(stats);
         if (stats.Group != null) throw new InvalidOperationException("Tab close button did not close its page");
-        // A closed tab is a page put away, and a page that watches something stops watching when it
-        // is: the widgets are kept so that reopening finds them, and a kept widget that goes on
-        // asking the instance for readings nobody will look at is a page that never closes.
-        if (stats.Widget is StatsWindow closed && closed.Watching)
-            throw new InvalidOperationException("A closed performance tab went on watching its instance");
-        Open(statsKey, () => throw new InvalidOperationException("Closed performance page was lost"), stats.Title);
-        if (stats.Widget.Handle != originalStats) throw new InvalidOperationException("Closing a performance tab lost its widget");
-        if (stats.Widget is StatsWindow reopened && !reopened.Watching)
-            throw new InvalidOperationException("A reopened performance tab did not start watching again");
+        // A closed tab is destroyed, so the page that was watching an instance goes with it — a page
+        // that kept existing would go on asking the instance for readings nobody is looking at — and
+        // opening the tab again is a new page, watching from now rather than remembering.
+        if (_pages.ContainsKey(statsKey))
+            throw new InvalidOperationException("A closed performance tab was kept rather than destroyed");
+        var reopened = Open(statsKey, newStats, stats.Title);
+        if (reopened.Handle == originalStats)
+            throw new InvalidOperationException("A reopened performance tab was the page that was closed");
+        if (reopened is not StatsWindow fresh || !fresh.Watching)
+            throw new InvalidOperationException("A reopened performance tab did not start watching");
+        stats = _pages[statsKey];
         MovePage(editor, home.Group!, Zone.Right);
         MovePage(stats, editor.Group!, Zone.Bottom);
         Translate();
