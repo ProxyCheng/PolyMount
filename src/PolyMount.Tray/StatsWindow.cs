@@ -1758,7 +1758,7 @@ internal sealed class PerformanceChart : QWidget
     private const int FigureGap = 20;
     /// <summary>The room the card keeps outside the plot: at the sides, above it for the value
     /// axis' unit, and under it for the time axis' ticks and the two captions.</summary>
-    private const int PlotInset = 18, UnitStrip = 14, CaptionStrip = 34;
+    private const int PlotInset = 18, UnitStrip = 14, CaptionStrip = 26;
     private readonly string _titleKey, _color, _unit;
     private readonly ChartFigure[] _figures;
     private DateTime _end;
@@ -1806,7 +1806,7 @@ internal sealed class PerformanceChart : QWidget
             ChartSummary.Gauge => new[] { ChartFigure.Average, ChartFigure.Peak },
             _ => new[] { ChartFigure.Average, ChartFigure.Peak, ChartFigure.Total }
         };
-        SetMinimumSize(330, 210);
+        SetMinimumSize(330, 260);
         // The card's own furniture is painted by the card; everything inside the plot comes from
         // the chart — its grid, its axes, the areas and the lines — so the two cannot disagree
         // about where a value or a moment is.
@@ -1815,14 +1815,14 @@ internal sealed class PerformanceChart : QWidget
         _chart.SetBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundBrush(new QBrush(new QColor("#ffffff")));
-        // The chart's own legend, which is the card's row of series: each series carries its name
-        // and its current value, and the legend is laid out above the plot the way the row it
-        // replaces was. Qt decides where it fits, which is the point of using it.
-        _chart.Legend().SetAlignment(Qt.Alignment.AlignTop);
-        _chart.Legend().SetBackgroundVisible(false);
-        _chart.Legend().SetLabelColor(new QColor("#334155"));
-        _chart.Legend().SetFont(new QFont("Segoe UI", 8));
-        _chart.Legend().SetMarkerShape(QLegend.MarkerShape.MarkerShapeCircle);
+        // The chart keeps no legend: the card draws the row of series itself, above the plot, so
+        // the plot's height does not depend on how many layers there are or on how wide the card
+        // is. Left to the chart, the row reserves its own height inside the plot — and, at the
+        // width these cards are laid out at, the height of several rows, because it wraps: measured
+        // on a card at its minimum, the plot area came out 286x30 with it and the whole strip
+        // without. The series still carry their names into the chart, which is where the card's row
+        // reads them.
+        _chart.Legend().DetachFromChart();
         _chart.SetMargins(new QMargins(0, 0, 0, 0));
         _chart.SetLocalizeNumbers(false);
         _valueAxis.SetLabelsFont(new QFont("Segoe UI", 8));
@@ -2007,6 +2007,10 @@ internal sealed class PerformanceChart : QWidget
                 for (int index = 0; index < times.Length; index++)
                     if (upper[index] > baseline[index]) baseline[index] = upper[index];
         }
+        // A detached legend is still a widget in the scene, drawn at the chart's origin: hiding
+        // its markers is what leaves nothing of it on the canvas. What lists the series is the
+        // card's own row, above the plot.
+        foreach (var marker in _chart.Legend().Markers()) marker.SetVisible(false);
         PlotNotes(domain);
         PlaceChart();
     }
@@ -2096,7 +2100,7 @@ internal sealed class PerformanceChart : QWidget
     /// and the row of series. It is a fixed strip, which is what the plot's own top edge used to
     /// be, so a card does not move its plot when the legend row comes or goes.
     /// </summary>
-    private const int HeaderHeight = 88;
+    private int HeaderHeight => _series.Count > 0 ? 92 : 74;
 
     /// <summary>Gives the chart everything the card does not keep: the header above the plot, and
     /// the strip below it where the time axis' ticks are lettered and the two captions sit. The
@@ -2109,6 +2113,11 @@ internal sealed class PerformanceChart : QWidget
         var plot = _plot.Geometry;
         if (plot.X() != PlotInset || plot.Y() != HeaderHeight || plot.Width() != width || plot.Height() != height)
             _plot.SetGeometry(PlotInset, HeaderHeight, width, height);
+        // The chart is a graphics widget, and it is laid out against its own rectangle: left to
+        // the scene, that rectangle is the one the scene grew to, which is taller than the widget
+        // the reader is looking at and puts the legend below the top of it with nothing above.
+        _plot.SetSceneRect(new QRectF(0, 0, width, height));
+        _chart.SetGeometry(0, 0, width, height);
         PlaceChart();
     }
 
@@ -2126,8 +2135,7 @@ internal sealed class PerformanceChart : QWidget
         for (int index = 0; index <= _domain.GridLines; index++)
             widest = Math.Max(widest, metrics.HorizontalAdvance(
                 TickText(_domain.Floor + ChartDomain.TickValue(index, _domain.Step), _domain.Step)));
-        int legend = _chart.Legend().IsVisible() ? metrics.Height() + 6 : 0;
-        _chart.SetMargins(new QMargins(widest + 12, legend + 6, 10, 0));
+        _chart.SetMargins(new QMargins(widest + 22, 6, 12, 0));
     }
 
     public override void ResizeEvent(QResizeEvent e)
@@ -2321,6 +2329,37 @@ internal sealed class PerformanceChart : QWidget
             // as this event was reached. What is left for the card is the lettering around it —
             // every position below comes from the chart's own mapping, so a caption sits under the
             // gridline it names rather than near it.
+            using var detailFont = new QFont("Segoe UI", 8);
+            using var detailMetrics = new QFontMetrics(detailFont);
+            var summaries = _series.Select(item => (item.Color, Text: item.Name + " " + FormatValue(item.Samples.LastOrDefault().Value))).ToArray();
+            // The row is drawn as far as it fits rather than all of it or none of it. What is in it
+            // changes length from one sample to the next — "0 B" beside "465.64 MiB", and a legend
+            // that gains a layer when an instance is mounted — and the one that will not fit is cut
+            // to the room left, so the tail of the row never moves in and out of the picture as the
+            // values change length.
+            if (summaries.Length > 0)
+            {
+                p.SetFont(detailFont);
+                int x = 18, room = width - 18;
+                foreach (var summary in summaries)
+                {
+                    int advance = detailMetrics.HorizontalAdvance(summary.Text);
+                    int available = room - (x + 14);
+                    if (available < 30) break;
+                    bool clipped = advance > available;
+                    string text = clipped
+                        ? detailMetrics.ElidedText(summary.Text, Qt.TextElideMode.ElideRight, available)
+                        : summary.Text;
+                    p.SetPen(new QPen(Qt.PenStyle.NoPen));
+                    p.SetBrush(new QBrush(new QColor(summary.Color)));
+                    p.DrawEllipse(x + 1, SeriesBaseline - 6, 6, 6);
+                    p.SetPen(new QPen(new QColor("#334155")));
+                    p.DrawText(x + 14, SeriesBaseline, text);
+                    if (clipped) break;
+                    x += advance + 28;
+                }
+            }
+
             var area = PlotInCard();
             if (area.Width() <= 0 || area.Height() <= 0) return;
             using var smallFont = new QFont("Segoe UI", 8);

@@ -18,7 +18,7 @@ internal sealed class LayerAccessPie : QChartView
 
     public LayerAccessPie()
     {
-        SetFixedSize(300, 260);
+        SetFixedSize(240, 196);
         SetChart(_chart);
         SetRenderHint(QPainter.RenderHint.Antialiasing);
         // The pie sits on the page's white, not on the platform's window colour: the chart itself
@@ -54,6 +54,10 @@ internal sealed class LayerAccessPie : QChartView
             _chart.SetTitleFont(heading);
             _chart.SetTitleBrush(new QBrush(new QColor("#334155")));
         }
+        // The scene is the widget: a chart otherwise lays itself out against a rectangle of its own
+        // making, which leaves its legend below the top of what the reader sees.
+        SetSceneRect(new QRectF(0, 0, Width, Height));
+        _chart.SetGeometry(0, 0, Width, Height);
         _series.Clear();
         long total = slices.Sum(slice => slice.Reads + slice.Writes);
         if (total == 0)
