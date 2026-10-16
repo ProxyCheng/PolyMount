@@ -863,6 +863,21 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (ends.Length > 1)
             throw new InvalidOperationException(
                 $"The cards are drawn up to {ends.Length} different moments: {string.Join(", ", ends.Select(at => at.ToString("HH:mm:ss.fff")))}");
+        // What each card's chart was handed fits the axis it was handed with it: a fill is drawn
+        // between its points and the floor, against that axis, so a point above it is an area over
+        // the top of the plot and a point far below it is an area nobody can see. The axis is scaled
+        // from the same readings, so the tallest of them belongs between a half and all of it.
+        foreach (var card in Cards)
+        {
+            var (peak, axis) = card.Drawn;
+            if (peak <= 0 || axis <= 0) continue;
+            if (peak > axis * 1.001)
+                throw new InvalidOperationException(
+                    $"{card.TitleKey} draws up to {peak:0.###} against an axis that ends at {axis:0.###}");
+            if (peak < axis * 0.5)
+                throw new InvalidOperationException(
+                    $"{card.TitleKey} draws up to {peak:0.###} against an axis of {axis:0.###}, which is nowhere near its own scale");
+        }
         // The layer table carries every layer: no second scrollbar and no row outside the widget.
         if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
             _table.VerticalScrollBarPolicy != Qt.ScrollBarPolicy.ScrollBarAlwaysOff))
@@ -1920,6 +1935,16 @@ internal sealed class PerformanceChart : QWidget
         _chart.PlotArea.Width(), _chart.PlotArea.Height(),
         _chart.Legend().IsVisible() ? _chart.Legend().Geometry.Height() : 0);
 
+    /// <summary>What the chart was handed against what its axis was scaled to: the tallest point
+    /// among the areas it is drawing, and the top of the value axis it is drawing them against. A
+    /// point above that axis is an area painted over the top of the plot whatever the card's own
+    /// numbers say — which is what a series handed in bytes beside an axis in megabytes looks like:
+    /// measured on a card holding 15.94 MiB against an axis of 20 MiB, the fill reached the top.
+    /// </summary>
+    internal (double Peak, double AxisMax) Drawn =>
+        (_bands.Count == 0 ? 0 : _bands.Max(band => Enumerable.Range(0, band.Top.Count()).Max(i => band.Top.At(i).Y())),
+         _domain.Max);
+
     /// <summary>Whether the chart had to elide its value labels to fit the plot it was given. A
     /// column of dots is a card nobody can read, and it is what a plot too short for the ticks it
     /// was asked for looks like — silently, because a chart answers by cutting the words.</summary>
@@ -2214,12 +2239,19 @@ internal sealed class PerformanceChart : QWidget
     }
 
     /// <summary>The window as the runs the chart draws: one per series, split wherever the readings
-    /// pause for longer than a gap, back to front — the last one is the bottom of the stack.</summary>
+    /// pause for longer than a gap, back to front — the last one is the bottom of the stack.
+    ///
+    /// What is drawn is in the unit the axis is scaled to rather than in the unit the readings were
+    /// taken in: a byte card's values are bytes and its axis is in whatever unit its tallest reading
+    /// is read in (kilobytes, megabytes), which is what makes the axis readable and what makes a
+    /// series drawn at its raw byte count an area that fills the plot whatever it holds — measured
+    /// on a card holding 15.94 MiB against an axis of 20 MiB, the fill reached the top of it.</summary>
     private List<(string Name, string Color, bool Hatched, QPointF[] Top, QPointF[] Bottom)> Runs()
     {
         var times = _series.SelectMany(item => item.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         var baseline = new double[times.Length];
+        double scale = _domain.Scale;
         var runs = new List<(string, string, bool, QPointF[], QPointF[])>();
         for (int layer = _series.Count - 1; layer >= 0; layer--)
         {
@@ -2237,8 +2269,8 @@ internal sealed class PerformanceChart : QWidget
                 var bottom = new QPointF[finish - start];
                 for (int index = start; index < finish; index++)
                 {
-                    top[index - start] = new QPointF(Along(times[index]), upper[index]);
-                    bottom[index - start] = new QPointF(Along(times[index]), lower[index]);
+                    top[index - start] = new QPointF(Along(times[index]), upper[index] / scale);
+                    bottom[index - start] = new QPointF(Along(times[index]), lower[index] / scale);
                 }
                 runs.Add((item.Name, item.Color, item.Hatched, top, bottom));
                 start = finish;
