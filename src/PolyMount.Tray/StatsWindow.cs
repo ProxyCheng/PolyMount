@@ -670,9 +670,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
         // A line whose oldest observation sits inside the window still starts at the window's
-        // edge, and a run that begins after a gap still starts where its own observations do.
-        if (PerformanceChart.StartX(40, 96, startsSeries: true) != 40 ||
-            PerformanceChart.StartX(40, 96, startsSeries: false) != 96)
+        // edge, and a line whose window was never covered starts where its observations do.
+        if (PerformanceChart.StartX(40, 96, coversWindow: true) != 40 ||
+            PerformanceChart.StartX(40, 96, coversWindow: false) != 96)
             throw new InvalidOperationException("Chart lines no longer begin at the window's left edge");
         // The layer table carries every layer: no second scrollbar and no row outside the widget.
         if (_table.RowCount > 0 && (_table.Height < _table.HorizontalHeader().Height + _table.RowCount * TableRowHeight ||
@@ -1729,14 +1729,19 @@ internal sealed class PerformanceChart : QWidget
 
     /// <summary>Where a run of observations begins on the x axis.
     ///
-    /// The run that starts the series is drawn from the window's left edge, whatever x its oldest
-    /// observation works out to. The history holds the window's worth of observations and no more,
-    /// so the oldest is always between nothing and one sampling interval *inside* the edge: drawn
-    /// where it really is, the line began short of the edge by a gap that widened and narrowed
-    /// every time an observation aged out — at two seconds a sample, a twentieth of the chart, and
-    /// moving. A run that starts after a gap keeps its own x: it has no earlier observation that
-    /// could have been what the edge was showing.</summary>
-    internal static double StartX(double left, double actual, bool startsSeries) => startsSeries ? left : actual;
+    /// <paramref name="coversWindow"/> says whether this run's oldest observation is close enough to
+    /// the window's left edge that the difference is the sampling rather than an absence of data.
+    /// When it is, the run is drawn from the edge: the history holds the window's worth of
+    /// observations and no more, so its oldest is always between nothing and one sampling interval
+    /// *inside* the edge, and a line drawn from where it really is began short of the edge by a gap
+    /// that widened and narrowed every time an observation aged out — at two seconds a sample, a
+    /// twentieth of the chart, and moving.
+    ///
+    /// When it is not, the run keeps its own x. That observation is a minute inside the edge because
+    /// nothing was measured before it — a page that has just opened, a window that was paused, a
+    /// sample that never came — and drawing from the edge would be a flat line across a width
+    /// nothing was ever measured over.</summary>
+    internal static double StartX(double left, double actual, bool coversWindow) => coversWindow ? left : actual;
 
     /// <summary>What the card is showing, for the export and its own smoke check.</summary>
     internal string TitleKey => _titleKey;
@@ -1860,8 +1865,11 @@ internal sealed class PerformanceChart : QWidget
                 {
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
-                // Only the first run is moved to the edge; see StartX.
-                double edge = StartX(left, X(times[start]), start == 0);
+                // Only the run that starts the series, and only when its oldest observation is
+                // inside the edge by no more than the gap the drawing already joins across; see
+                // StartX for why both halves of that are needed.
+                bool coversWindow = start == 0 && (_end - times[start]).TotalSeconds >= SpanSeconds - GapSeconds;
+                double edge = StartX(left, X(times[start]), coversWindow);
                 using var fill = new QPainterPath();
                 fill.MoveTo(edge, Y(lower[start]));
                 for (int index = start + 1; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
