@@ -1849,11 +1849,19 @@ internal sealed class PerformanceChart : QWidget
 {
     /// <summary>What the card keeps for its own furniture: the header above the plot, which holds
     /// the title and the headline with its figures, and the frame's inset at the sides and under
-    /// the plot. Everything else is the chart's rectangle.</summary>
-    private const int PlotInset = 18, HeaderHeight = 76, FooterInset = 8;
+    /// the plot. Everything else is the chart's rectangle.
+    ///
+    /// The inset is as small as the frame allows: the chart is a square rectangle of its own white
+    /// and the card's border is drawn round it, so the chart has to stop before the border's corners
+    /// curve, which is a few pixels in. What the chart then keeps inside that for its axes and its
+    /// legend is its own, and it keeps twenty pixels a side whatever it is asked for — that padding
+    /// is most of what a reader sees between the plot and the card, and it is not the card's to take
+    /// away. The text keeps an inset of its own, which is what the value labels beside it line up
+    /// with.</summary>
+    private const int PlotInset = 4, HeaderHeight = 72, FooterInset = 4;
     /// <summary>The baselines the header's two rows of text share, so they read as two rows rather
     /// than as four pieces of type that nearly line up.</summary>
-    private const int TitleBaseline = 29, HeadlineBaseline = 63;
+    private const int TitleBaseline = 26, HeadlineBaseline = 58;
     /// <summary>Gap between two figures in the headline's row.</summary>
     private const int FigureGap = 20;
     /// <summary>What the chart keeps inside the plot widget before the data gets any of it: its own
