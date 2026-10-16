@@ -1,0 +1,93 @@
+PolyMount — third-party notices
+===============================
+
+PolyMount is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. See the LICENSE file, or
+<https://www.gnu.org/licenses/gpl-3.0.html>.
+
+The components listed below are not covered by that licence. They are either bundled in this
+installation or installed alongside it by the setup program.
+
+
+Qt Charts — read this before distributing a build
+-------------------------------------------------
+
+PolyMount draws every chart with Qt Charts. **Qt Charts is licensed under the GPL v3 or a
+commercial Qt licence** — unlike qtbase, which is LGPL v3. The two are separate licences because
+Qt Charts is deliberately *not* covered by the LGPL that covers the rest of Qt.
+
+The consequence is direct: a build of PolyMount links Qt Charts, so **distributing that build
+means distributing Qt Charts**, and the GPL v3 governs that distribution unless you hold a
+commercial Qt licence from The Qt Company. This is the same line PyQt6-Charts and PySide6-Addons
+draw, and the same reason they too ship separately from their base packages.
+
+If that is not the licence you want for your distribution, the options are a commercial Qt
+licence, or dropping the chart pages from the build.
+
+Nothing here is legal advice. Read the Qt licensing terms for your own distribution:
+<https://www.qt.io/licensing>
+
+
+Bundled with this installation
+------------------------------
+
+Qt 6.11.0 — QtCore, QtGui, QtWidgets, QtNetwork, QtXml, QtOpenGL, QtOpenGLWidgets,
+QtPrintSupport, QtSvg, QtSvgWidgets
+    The Qt Company Ltd. and contributors — LGPL v3, or a commercial Qt licence
+    <https://www.qt.io/licensing/open-source-lgpl-obligations>
+    These are the unmodified official binaries, as published by The Qt Company and redistributed
+    in the QtSharp.Api package. The LGPL requires that a recipient be able to replace them: they
+    are ordinary DLLs beside the executable, so replacing them is a file copy, and the complete
+    corresponding source is available from <https://download.qt.io/>.
+
+Qt Charts 6.11.0 (Qt6Charts.dll)
+    The Qt Company Ltd. and contributors — GPL v3, or a commercial Qt licence
+    (See the section above.)
+
+QtSharp.Api 0.1.0 and QtSharp.Charts 0.1.0 (managed bindings and their native glue)
+    ProxyCheng and contributors — MIT
+    <https://github.com/ProxyCheng/QtSharp>, <https://github.com/ProxyCheng/QtSharp.Charts>
+
+.NET 10 runtime (published self-contained; the whole framework is in this directory)
+    .NET Foundation and contributors — MIT
+    <https://github.com/dotnet/runtime/blob/main/LICENSE.TXT>
+
+Serilog, Serilog.Sinks.File, Serilog.Sinks.Async, Serilog.Extensions.Hosting
+    Serilog Contributors — Apache-2.0
+    <https://github.com/serilog/serilog/blob/dev/LICENSE>
+
+Microsoft.Data.Sqlite, Microsoft.Extensions.Hosting and the other Microsoft.Extensions.* assemblies
+    Microsoft Corporation — MIT
+    <https://github.com/dotnet/efcore/blob/main/LICENSE.txt>
+
+SQLitePCLRaw.* — Apache-2.0
+    <https://github.com/ericsink/SQLitePCL.raw/blob/master/LICENSE.TXT>
+
+SQLite (e_sqlite3.dll, behind SQLitePCLRaw)
+    Public domain — <https://sqlite.org/copyright.html>
+
+Microsoft Visual C++ runtime (vc_redist.x64.exe, run by the setup)
+    Microsoft Corporation — distributed under Microsoft's own redistributable terms
+    <https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist>
+
+WinFsp is *not* bundled. The setup fetches and runs the vendor's own signed installer.
+
+
+Installed separately, unmodified, from the vendor's official download
+--------------------------------------------------------------------
+
+WinFsp 2.1.25156
+    Bill Zissimopoulos and contributors — GPL v3 with an additional exception
+    <https://github.com/winfsp/winfsp/blob/master/License.txt>
+    Downloaded from <https://github.com/winfsp/winfsp/releases> and verified by its Authenticode
+    signature before the setup runs it. It is not modified, repackaged or relinked in any way.
+
+
+What a distributor still has to do
+----------------------------------
+
+The full text of the LGPL v3 and the Apache-2.0 licence is *not* reproduced above or in this
+installation, and both require that it travel with the binaries. A distribution of PolyMount
+should ship those texts alongside this file. The GPL v3 text is in LICENSE, which covers
+PolyMount itself as well.
