@@ -273,6 +273,7 @@ internal static class Program
                 editor.Capture(Path.Combine(capture, "layers.png"));
                 stats.Capture(Path.Combine(capture, "stats.png"));
                 stats.CaptureTable(Path.Combine(capture, "stats-table.png"));
+                stats.CaptureCharts(capture);
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
                 stats.CaptureProcess(capture);
                 editor.CaptureCacheAction(Path.Combine(capture, "cache-action.png"));

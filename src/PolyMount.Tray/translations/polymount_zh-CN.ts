@@ -850,7 +850,19 @@
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>每秒速率 · 最近 60 秒趋势 · 按挂载实例查看</translation>
+      <translation>每秒速率 · 实时视图 · 按挂载实例查看</translation>
+    </message>
+    <message>
+      <source>stats.unit.seconds</source>
+      <translation>{0} 秒</translation>
+    </message>
+    <message>
+      <source>stats.unit.minutes</source>
+      <translation>{0} 分钟</translation>
+    </message>
+    <message>
+      <source>stats.range.hint</source>
+      <translation>图表显示多长的时间范围。曲线只画本窗口自己采到的样本，所以长档位一开始是空的、看着才填满；表格与饼图仍保留各自的 60 秒窗口。</translation>
     </message>
     <message>
       <source>stats.all</source>
@@ -909,7 +921,7 @@
     </message>
     <message>
       <source>stats.history</source>
-      <translation>60 秒前</translation>
+      <translation>{0}前</translation>
     </message>
     <message>
       <source>stats.now</source>
@@ -1105,7 +1117,7 @@
     <message><source>record.discard.keep</source><translation>返回保存</translation></message>
     <message><source>record.state.stopping</source><translation>正在结束</translation></message>
     <message><source>record.ending</source><translation>已停止采集，正在写出证据包…</translation></message>
-    <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。趋势图仍是最近 60 秒，全程数据在证据包里。</translation></message>
+    <message><source>record.hint</source><translation>录制期间不做抽样过滤：每个请求事件（含层探测）都会写入录制通道，因此条目量远高于 requests.log（实测大遍历约 8 MB/s）；到达上限会自动停止并说明原因。全程数据都在证据包里；趋势图显示的是工具栏里选的自己的时间范围。</translation></message>
     <message><source>record.start</source><translation>开始录制</translation></message>
     <message><source>record.restart</source><translation>重新开始</translation></message>
     <message><source>record.save</source><translation>结束并保存</translation></message>
@@ -1120,7 +1132,7 @@
     <message><source>record.state.elsewhere</source><translation>服务端已有录制</translation></message>
     <message><source>record.evidence.line</source><translation>状态 {0} · 请求明细（抽样日志）{1} / {2} 行 · 每秒 {3} 行 · 精确计数 {4} 次请求 / {5} 种操作</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>服务端这一段录制由别处发起，本面板只显示它的规模。</translation></message>
-    <message><source>mount.performance.tip</source><translation>这个实例的实时性能（最近 60 秒的趋势、逐层命中与访问开销）</translation></message>
+    <message><source>mount.performance.tip</source><translation>这个实例的实时性能（工具栏所选时间范围的趋势、逐层命中与访问开销）</translation></message>
     <message><source>mount.performance.recording</source><translation>性能 · 录制中</translation></message>
     <message><source>record.adopt</source><translation>接管录制</translation></message>
     <message><source>record.elsewhere.figures</source><translation>已录 {0}（本面板没有它的计数）</translation></message>

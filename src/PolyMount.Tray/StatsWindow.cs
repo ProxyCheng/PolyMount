@@ -25,7 +25,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly QLabel _accessLegend;
     private readonly QLabel _responseCost;
     private readonly Queue<(double Request, double Dispatch, double Ui, DateTime At)> _responseSamples = new();
-    private readonly QComboBox _refresh;
+    private readonly QComboBox _refresh, _range;
     private List<MountMetrics> _accessMetrics = new();
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
@@ -45,12 +45,30 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// floor: a page refreshing slower than once a second spaces its observations wider than this
     /// by design, and the gap it tolerates has to follow the rate.</summary>
     private const double SamplingGapSeconds = 3;
-    /// <summary>The window every chart, the sample history and the response overhead share.</summary>
-    private const int HistorySeconds = 60;
+    /// <summary>The window the instance is asked about for the table, the pie and the legend. It is
+    /// not the reader's time range: the charts draw this page's own samples, whatever span they
+    /// cover, while a windowed question is a query over the instance's own record of recent reads
+    /// and that record is finite.</summary>
+    private const int AccessSeconds = 60;
+    /// <summary>How many points one series is drawn with. A long range holds more observations
+    /// than a screen can show, and past this the drawing folds them into buckets - the figures
+    /// still come from every observation.</summary>
+    private const int MaxPoints = 1200;
+    /// <summary>Where the two choices below are remembered, beside the other preferences this tray
+    /// keeps for a reader. Declared before them: a static initializer runs in the order it is
+    /// written, and one that read this after it was set up would find it empty.</summary>
+    private static readonly string SettingsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount", "stats.json");
     /// <summary>The refresh rates a reader may choose between, in samples per second. The window
     /// asks for the time that elapsed since its previous sample, so a faster rate is a shorter
     /// window and not a denser reading of the same one.</summary>
     private static readonly double[] RefreshRates = { 0.5, 1, 2, 4, 10 };
+    /// <summary>The spans a reader may choose between, in seconds: how much time the charts show.
+    /// The page only has what it watched, so a long span starts empty and fills.</summary>
+    private static readonly double[] RangeLadder = { 30, 60, 120, 300, 900 };
+    /// <summary>The two choices this page remembers, read once at startup and validated against
+    /// the ladders above whichever they name.</summary>
+    private static readonly (double RefreshHz, double RangeSeconds) Remembered = LoadStats();
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
@@ -64,7 +82,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <c>MinValue</c> means "no previous sample": the next window is the nominal interval.</summary>
     private DateTime _lastSample = DateTime.MinValue, _lastAccess = DateTime.MinValue;
     /// <summary>How often the charts are refreshed, in samples per second.</summary>
-    private double _refreshHz = LoadRefreshRate();
+    private double _refreshHz = Remembered.RefreshHz, _rangeSeconds = Remembered.RangeSeconds;
     private static string T(string key) => I18n.T(key);
 
     public StatsWindow(string? instanceName = null)
@@ -107,12 +125,32 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         {
             if (index < 0 || index >= RefreshRates.Length) return;
             _refreshHz = RefreshRates[index];
-            SaveRefreshRate(_refreshHz);
+            SaveStats(_refreshHz, _rangeSeconds);
             // Take effect now rather than at the end of the interval that was already running.
             _next = DateTime.MinValue;
             _requested = true;
         };
         header.AddWidget(_refresh);
+        // The range is the reader's too, and it is only this page's: the charts draw the samples
+        // this window collected, so a longer span is more of its own history and nothing is asked
+        // of the instance that was not asked before.
+        _range = ContinuousScrolling.Combo();
+        _range.SetMinimumWidth(96);
+        foreach (double span in RangeLadder) _range.AddItem(PerformanceChart.SpanText(span));
+        _range.SetCurrentIndex(Array.IndexOf(RangeLadder, _rangeSeconds));
+        _range.SetToolTip(T("stats.range.hint"));
+        _range.CurrentIndexChanged += index =>
+        {
+            if (index < 0 || index >= RangeLadder.Length) return;
+            _rangeSeconds = RangeLadder[index];
+            SaveStats(_refreshHz, _rangeSeconds);
+            // A shorter span stops showing what it no longer covers, and the axis is redrawn from
+            // what is left rather than from a sample that has not been taken yet.
+            DateTime cutoff = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
+            foreach (var samples in _history.Values) samples.RemoveAll(s => s.Time < cutoff);
+            _next = DateTime.MinValue;
+        };
+        header.AddWidget(_range);
         _pause = new QPushButton();
         _pause.Clicked += _ => TogglePause();
         header.AddWidget(_pause);
@@ -241,6 +279,19 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         figures.Save(Path.Combine(directory, "process-figures.png"));
     }
 
+    /// <summary>The trend charts on their own, for the same reason the process cards are grabbed
+    /// separately: a window shot on a small screen stops above the time axis, and the axis is where
+    /// the range the reader chose is written.</summary>
+    internal void CaptureCharts(string directory)
+    {
+        string[] files = { "chart-reads.png", "chart-bytes.png", "chart-latency.png", "chart-writes.png" };
+        for (int i = 0; i < _charts.Length; i++)
+        {
+            using var chart = _charts[i].Grab();
+            chart.Save(Path.Combine(directory, files[i]));
+        }
+    }
+
     /// <summary>The recording's own checks, driven from here because the panel belongs to this
     /// window and a smoke run has no other handle on it.</summary>
     internal void VerifyRecording(string? capture = null)
@@ -250,26 +301,33 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // running: this forces one with both edges on the axis.
         if (_recording == null) return;
         var end = DateTime.UtcNow;
+        // Placed as fractions of the span rather than at fixed seconds: the marks that matter are
+        // the ones just inside the axis, the one on its way out that must fade rather than be cut
+        // off, and the one that has already left and must not be drawn at all. At a fixed -90 the
+        // last of those would sit inside a fifteen-minute axis and quietly stop testing anything.
+        double span = _rangeSeconds;
         foreach (var chart in _charts)
         {
+            chart.SpanSeconds = span;
             chart.SetMarkers(new[]
             {
-                new PerformanceChart.ChartMarker(end.AddSeconds(-20), "record.marker.start", "#dc2626"),
+                new PerformanceChart.ChartMarker(end.AddSeconds(-span * 0.33), "record.marker.start", "#dc2626"),
                 new PerformanceChart.ChartMarker(end.AddSeconds(-3), "record.marker.stop", "#64748b"),
-                // One on its way out, which must fade rather than be cut off, and one that has
-                // already left the window, which must simply not be drawn.
-                new PerformanceChart.ChartMarker(end.AddSeconds(-57), "record.marker.start", "#dc2626"),
-                new PerformanceChart.ChartMarker(end.AddSeconds(-90), "record.marker.start", "#dc2626")
+                new PerformanceChart.ChartMarker(end.AddSeconds(-span * 0.95), "record.marker.start", "#dc2626"),
+                new PerformanceChart.ChartMarker(end.AddSeconds(-span * 1.5), "record.marker.start", "#dc2626")
             });
-            // A second apart, the way real samples arrive: a chart draws breaks for gaps, so
-            // sparse data would leave the marks over an empty plot and prove nothing.
+            // A second apart where the span allows it, the way real samples arrive: a chart draws
+            // breaks for gaps, so sparse data would leave the marks over an empty plot and prove
+            // nothing. A very long span is sampled a little wider than that, as a smoke run does
+            // not have fifteen minutes to wait for real samples.
             var cache = new List<(DateTime Time, double Value)>();
             var svn = new List<(DateTime Time, double Value)>();
-            for (int second = 59; second >= 0; second--)
+            double step = Math.Max(1, span / 600);
+            for (double back = span; back >= 0; back -= step)
             {
-                double wave = Math.Sin(second / 7.0);
-                cache.Add((end.AddSeconds(-second), 6.0 + wave * 3.0));
-                svn.Add((end.AddSeconds(-second), 2.0 + Math.Cos(second / 5.0) * 1.5));
+                double wave = Math.Sin(back / 7.0);
+                cache.Add((end.AddSeconds(-back), 6.0 + wave * 3.0));
+                svn.Add((end.AddSeconds(-back), 2.0 + Math.Cos(back / 5.0) * 1.5));
             }
             chart.SetSeries(new List<ChartSeries>
             {
@@ -293,9 +351,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (_processHistory.Count == 0) throw new InvalidOperationException("No process reading was taken");
         // The history is bounded by time, so how many rows that is depends on the refresh rate:
         // what must hold is that no row is older than the window.
-        if (_processHistory.Count > 1 && _processHistory[0].Time < _processHistory[^1].Time.AddSeconds(-HistorySeconds))
+        if (_processHistory.Count > 1 && _processHistory[0].Time < _processHistory[^1].Time.AddSeconds(-_rangeSeconds))
             throw new InvalidOperationException(
-                $"The process history reaches back {(_processHistory[^1].Time - _processHistory[0].Time).TotalSeconds:0.#} seconds of a {HistorySeconds} second window");
+                $"The process history reaches back {(_processHistory[^1].Time - _processHistory[0].Time).TotalSeconds:0.#} seconds of a {_rangeSeconds:0.#} second window");
         if (_process.Processes == 0) throw new InvalidOperationException("The instance reads as having no process behind it");
         var last = _processHistory[^1];
         if (last.WorkingSet <= 0 || last.Threads <= 0 || last.Handles <= 0)
@@ -368,6 +426,33 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (ByteUnits.Select(1023).Unit != "B" || ByteUnits.Select(1024).Unit != "KiB" ||
             ByteUnits.Select(1048576).Unit != "MiB" || ByteUnits.Select(1073741824).Unit != "GiB")
             throw new InvalidOperationException("Byte unit thresholds are incorrect");
+        // A range long enough holds more observations than a screen can show, so the line is drawn
+        // from fewer points than there were. A bucket carries the sum of what it folded, and the
+        // window's total is an amount, so the two must add up to the same figure - that is the whole
+        // reason the drawing may thin and the numbers may not.
+        var held = new List<LayerSampler.Sample>();
+        var start = DateTime.UtcNow;
+        for (int second = 0; second < 300; second++)
+            held.Add(new LayerSampler.Sample(start.AddSeconds(second), 1,
+                new() { ["m/a"] = new LayerSampler.LayerSample(2, 4, 1024, 0) }));
+        var folded = LayerSampler.Bucket(held, 60);
+        if (folded.Count is < 2 or > 60)
+            throw new InvalidOperationException($"Folding 300 observations into at most 60 points produced {folded.Count}");
+        double Window(List<LayerSampler.Sample> samples) => ChartStatistics
+            .Of(samples.Select(s => s.Layers["m/a"].Reads / s.Seconds), samples.Select(s => s.Seconds).ToArray()).Total;
+        if (folded.Sum(s => s.Seconds) != 300 || folded.Sum(s => s.Layers["m/a"].Reads) != 600)
+            throw new InvalidOperationException("Folding observations lost the interval or the amounts they covered");
+        if (Window(folded) != Window(held))
+            throw new InvalidOperationException($"A folded window reads {Window(folded)} where the window it was folded from reads {Window(held)}");
+        // The time axis has to name its span and its ticks in the unit each makes readable: a
+        // fifteen-minute range divided into a hundred-second steps would be unreadable, and a
+        // caption still saying "60 seconds ago" would be wrong.
+        if (PerformanceChart.TimeStep(900 / 8.0) != 120 || PerformanceChart.TimeTick(300, 120) != "5m" ||
+            PerformanceChart.TimeStep(12) != 15 || PerformanceChart.TimeTick(45, 15) != "45s")
+            throw new InvalidOperationException("The time axis does not name its ticks in the unit that fits them");
+        if (!PerformanceChart.SpanText(900).Contains("15", StringComparison.Ordinal) ||
+            !PerformanceChart.SpanText(30).Contains("30", StringComparison.Ordinal))
+            throw new InvalidOperationException("The axis caption does not name the span it is drawn over");
     }
 
     /// <summary>A paint costs a line and a label per interval, so the vertical domain has to
@@ -547,7 +632,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                         // read as "every layer served nothing".
                         Accept(trends, sample.Seconds);
                         _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds, DateTime.UtcNow));
-                        DateTime horizon = DateTime.UtcNow.AddSeconds(-HistorySeconds);
+                        DateTime horizon = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
                         while (_responseSamples.Count > 0 && _responseSamples.Peek().At < horizon) _responseSamples.Dequeue();
                         RenderResponseCost();
                     }
@@ -590,7 +675,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     // question is asked.
                     var process = _process.Read();
                     var trends = trendsDue ? Window(seconds) : null;
-                    var access = accessDue ? Window(HistorySeconds) : null;
+                    var access = accessDue ? Window(AccessSeconds) : null;
                     watch.Stop();
                     return (trends, access, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds);
                 });
@@ -626,7 +711,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes,
             reading.Threads, reading.Handles, reading.ReadBytes, reading.WriteBytes));
-        while (_processHistory.Count > 1 && _processHistory[0].Time < now.AddSeconds(-HistorySeconds)) _processHistory.RemoveAt(0);
+        while (_processHistory.Count > 1 && _processHistory[0].Time < now.AddSeconds(-_rangeSeconds)) _processHistory.RemoveAt(0);
         RenderProcess();
     }
 
@@ -660,6 +745,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         for (int i = 0; i < _processCharts.Length; i++)
         {
             _processCharts[i].GapSeconds = BreakSeconds;
+            _processCharts[i].SpanSeconds = _rangeSeconds;
             _processCharts[i].SetSeries(series[i], end);
             _processCharts[i].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
@@ -718,7 +804,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         LayerSampler.Capture(time, mounts, wasteSteps, seconds);
 
     private void Add(string name, LayerSampler.Sample sample) =>
-        LayerSampler.Add(_history, name, sample, HistorySeconds);
+        LayerSampler.Add(_history, name, sample, _rangeSeconds);
 
     /// <summary>What an accelerating layer kept out of the streams underneath over the window.</summary>
     private static (double Percent, double Bytes) Accelerated(IEnumerable<LayerSampler.Sample> samples, string key) =>
@@ -740,6 +826,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             : ((predictive.m.PredictiveWasted?.Resolve(I18n.Language) ?? "") + " · " +
                (string.IsNullOrEmpty(predictive.l.DisplayName) ? predictive.l.Name : predictive.l.DisplayName),
                string.IsNullOrEmpty(predictive.l.Color) ? "#64748B" : predictive.l.Color);
+        // The line is drawn from at most MaxPoints observations: a long range holds more than a
+        // screen can show, and past that the older ones are folded into buckets. Each point is
+        // still an amount over the interval it covers, so the shape it draws is the same one, and
+        // the figures below are taken from every observation rather than from these points.
+        var points = LayerSampler.Bucket(samples, MaxPoints);
+        double spacing = points.Count > 1 ? (points[^1].Time - points[0].Time).TotalSeconds / (points.Count - 1) : RefreshSeconds;
         for (int chart = 0; chart < _charts.Length; chart++)
         {
             int metric = chart;
@@ -751,7 +843,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             var drawn = rows.Select(row => new ChartSeries(
                 selected == "" ? row.m.Mount + "/" + row.l.Name : string.IsNullOrEmpty(row.l.DisplayName) ? row.l.Name : row.l.DisplayName,
                 string.IsNullOrEmpty(row.l.Color) ? "#64748B" : row.l.Color,
-                samples.Select(s =>
+                points.Select(s =>
                 {
                     var layer = s.Layers.GetValueOrDefault(row.m.Mount + "/" + row.l.Name);
                     return (s.Time, layer == null ? 0 : LayerSampler.ChartValue(layer, metric, s.Seconds));
@@ -761,17 +853,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             if (metric <= 1 && outcomes != null)
             {
                 var (name, color) = outcomes.Value;
-                drawn.Add(new ChartSeries(name, color, samples.Select(s =>
+                drawn.Add(new ChartSeries(name, color, points.Select(s =>
                 {
                     var layer = s.Layers.GetValueOrDefault(predictiveKey!);
                     double step = layer == null ? 0 : metric == 0 ? layer.Wasted : layer.WastedBytes;
                     return (s.Time, -step / Rate(s));
                 }).ToList()) { Hatched = true });
             }
-            // The interval each observation was measured over travels with it, so the card's
-            // window total stays the amount it counted rather than the sum of the rates.
-            _charts[chart].GapSeconds = BreakSeconds;
-            _charts[chart].SetSeries(drawn, end, samples.ToDictionary(s => s.Time, s => s.Seconds));
+            _charts[chart].SpanSeconds = _rangeSeconds;
+            // A gap is what the drawing cannot join: bucketed points are further apart than the
+            // observations they were folded from, so the threshold follows the point spacing too.
+            _charts[chart].GapSeconds = Math.Max(BreakSeconds, spacing * 1.5);
+            _charts[chart].SetSeries(drawn, end, Figures(samples, rows, metric, predictiveKey));
             _charts[chart].SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
         }
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
@@ -821,6 +914,30 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         FitTable();
     }
 
+    /// <summary>What one chart's window adds up to, taken over every observation the page holds
+    /// rather than over the points its line was drawn from: a long range folds observations into
+    /// fewer points, and the figures beside the line must not follow the drawing. The stack is
+    /// summed the way the series are built, so the two cannot disagree.</summary>
+    private static ChartStatistics Figures(IReadOnlyList<LayerSampler.Sample> samples,
+        IReadOnlyList<(MountMetrics M, LayerMetric L)> rows, int metric, string? predictiveKey)
+    {
+        var totals = new double[samples.Count];
+        var seconds = new double[samples.Count];
+        for (int i = 0; i < samples.Count; i++)
+        {
+            var sample = samples[i];
+            double value = 0;
+            foreach (var row in rows)
+                if (sample.Layers.TryGetValue(row.M.Mount + "/" + row.L.Name, out var layer))
+                    value += LayerSampler.ChartValue(layer, metric, sample.Seconds);
+            if (metric <= 1 && predictiveKey != null && sample.Layers.TryGetValue(predictiveKey, out var waste))
+                value -= (metric == 0 ? waste.Wasted : waste.WastedBytes) / (sample.Seconds > 0 ? sample.Seconds : 1);
+            totals[i] = value;
+            seconds[i] = sample.Seconds;
+        }
+        return ChartStatistics.Of(totals, seconds);
+    }
+
     /// <summary>Gives the table exactly the height of its rows and header. Its rows are all the
     /// layers there are, so a fixed height is what makes the list readable at a glance; the
     /// scrollbar is off, so a miscalculation would clip rather than hide a row.</summary>
@@ -837,6 +954,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _recording?.Translate();
         _mount.SetItemText(0, T("stats.all"));
         _refresh.SetToolTip(T("stats.refresh.hint"));
+        _range.SetToolTip(T("stats.range.hint"));
         _table.SetHorizontalHeaderLabels(new[] { T("mount.instances"), T("layer"), T("hits"), T("share"), T("avg"), T("max"), T("bytes"), T("stats.accelerated") });
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
         Render();
@@ -856,29 +974,32 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// the number is formatted for the reader's culture.</summary>
     private static string FormatRate(double rate) => rate.ToString("0.##", I18n.Culture) + " Hz";
 
-    /// <summary>Where the chosen rate is remembered, beside the other preferences this tray keeps
-    /// for a reader. Best effort in both directions: a missing or unreadable file means the
-    /// default, and a rate that is not on the ladder is not one this build knows how to draw.</summary>
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount", "stats.json");
-
-    private static double LoadRefreshRate()
+    /// <summary>The two choices this page remembers. Read once, and validated against the ladders:
+    /// a rate or a span this build does not offer is not one it knows how to draw. Best effort in
+    /// both directions, like the other preferences this tray keeps - a missing or unreadable file
+    /// means the defaults, and a failed write is not worth telling the reader about.</summary>
+    private static (double RefreshHz, double RangeSeconds) LoadStats()
     {
         try
         {
-            using var json = JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            // A file written by an editor that marks its encoding starts with a byte-order mark,
+            // and JSON does not: without dropping it the whole file would read as invalid and the
+            // reader's choices would silently not stick.
+            using var json = JsonDocument.Parse(File.ReadAllText(SettingsPath).TrimStart('﻿'));
             double rate = json.RootElement.GetProperty("RefreshHz").GetDouble();
-            return Array.Exists(RefreshRates, known => known == rate) ? rate : 1;
+            double span = json.RootElement.GetProperty("RangeSeconds").GetDouble();
+            return (Array.Exists(RefreshRates, known => known == rate) ? rate : 1,
+                Array.Exists(RangeLadder, known => known == span) ? span : 60);
         }
-        catch { return 1; }
+        catch { return (1, 60); }
     }
 
-    private static void SaveRefreshRate(double rate)
+    private static void SaveStats(double rate, double range)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new { RefreshHz = rate }));
+            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(new { RefreshHz = rate, RangeSeconds = range }));
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
@@ -1053,6 +1174,33 @@ internal sealed class PerformanceChart : QWidget
         SetToolTip(string.Join("\n", lines));
     }
 
+    /// <summary>How much time the axis spans, set by the page from the range its reader chose.</summary>
+    public double SpanSeconds { get; set; } = 60;
+
+    /// <summary>The stretches a time axis is divided into: a clock's own steps rather than the
+    /// 1/2/5 ladder a value axis uses, which would divide a minute into 100 seconds.</summary>
+    private static readonly double[] TimeSteps = { 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600 };
+
+    /// <summary>The smallest clock step at least as wide as the one asked for.</summary>
+    internal static double TimeStep(double target)
+    {
+        foreach (double step in TimeSteps)
+            if (step >= target) return step;
+        return TimeSteps[^1];
+    }
+
+    /// <summary>A time tick, in the unit its step makes readable. The unit is a symbol like the
+    /// value axis's "ms" and "B" rather than a translated word, so it stays out of the catalog.</summary>
+    internal static string TimeTick(double seconds, double step) => step >= 60
+        ? (seconds / 60).ToString(seconds % 60 == 0 ? "0" : "0.#", I18n.Culture) + "m"
+        : seconds.ToString("0", I18n.Culture) + "s";
+
+    /// <summary>How much time the chart shows, as a reader reads it: the number is formatted for
+    /// their culture and the unit is a catalog entry, because "min" is a word.</summary>
+    internal static string SpanText(double seconds) => seconds >= 60
+        ? I18n.F("stats.unit.minutes", (seconds / 60).ToString("0.#", I18n.Culture))
+        : I18n.F("stats.unit.seconds", seconds.ToString("0", I18n.Culture));
+
     /// <summary>How much time between two observations is still the same stretch of curve rather
     /// than a gap in watching. The page that feeds this sets it from its refresh rate: half a
     /// hertz spaces its observations two seconds apart on purpose, and the fixed threshold this
@@ -1062,16 +1210,23 @@ internal sealed class PerformanceChart : QWidget
     /// <summary><paramref name="seconds"/> carries the interval each observation was measured
     /// over, keyed by its time, so the window's total stays the amount it was rather than the sum
     /// of the per-second rates the line is drawn from. A gauge has none and passes none.</summary>
-    public void SetSeries(List<ChartSeries> series, DateTime end, IReadOnlyDictionary<DateTime, double>? seconds = null)
+    /// <summary><paramref name="figures"/> are the chart's window figures, computed by the page
+    /// over every observation it holds. Drawing folds observations into fewer points when a range
+    /// is long, and the numbers beside the line must not follow the drawing; without them, the
+    /// series are all there is and they are described as they are.</summary>
+    public void SetSeries(List<ChartSeries> series, DateTime end, ChartStatistics? figures = null)
     {
         _series = series;
         _end = end;
-        // Every series is built from the same sample list, so the window's totals are the sum
-        // of the series at each observation.
-        var times = series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
-        var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
-        _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))),
-            seconds == null ? null : times.Select(time => seconds.GetValueOrDefault(time, 1)).ToArray());
+        if (figures is { } given) _stats = given;
+        else
+        {
+            // Every series is built from the same sample list, so the window's totals are the sum
+            // of the series at each observation.
+            var times = series.SelectMany(s => s.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
+            var values = series.Select(s => s.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
+            _stats = ChartStatistics.Of(times.Select(time => values.Sum(s => s.GetValueOrDefault(time))));
+        }
         RefreshToolTip();
         Update();
     }
@@ -1229,12 +1384,12 @@ internal sealed class PerformanceChart : QWidget
             int labelWidth = Enumerable.Range(0, gridLines + 1)
                 .Max(i => fontMetrics.HorizontalAdvance(TickText(floor + ChartDomain.TickValue(i, valueStep), valueStep)));
             int left = 18 + labelWidth + 10;
-            int timeLabelWidth = fontMetrics.HorizontalAdvance("−60s") + 24;
-            double timeStep = Math.Max(1, ChartDomain.NiceStep(60 / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth))));
+            int timeLabelWidth = fontMetrics.HorizontalAdvance("−" + TimeTick(SpanSeconds, SpanSeconds)) + 24;
+            double timeStep = TimeStep(SpanSeconds / Math.Max(2, (right - left) / (double)Math.Max(70, timeLabelWidth)));
             p.SetPen(new QPen(new QColor("#718096")));
             string maxLabel = TickText(max, valueStep) + " " + domain.Unit;
             p.DrawText(right - fontMetrics.HorizontalAdvance(maxLabel), top - 8, maxLabel);
-            p.DrawText(left, height - 10, I18n.T("stats.history"));
+            p.DrawText(left, height - 10, I18n.F("stats.history", SpanText(SpanSeconds)));
             p.DrawText(right - fontMetrics.HorizontalAdvance(I18n.T("stats.now")), height - 10, I18n.T("stats.now"));
             using var gridPen = new QPen(new QColor("#e7edf5"));
             using var labelPen = new QPen(new QColor("#718096"));
@@ -1247,19 +1402,18 @@ internal sealed class PerformanceChart : QWidget
                 p.SetPen(labelPen);
                 p.DrawText(left - 10 - fontMetrics.HorizontalAdvance(label), y + 4, label);
             }
-            for (int i = 0; i <= (int)Math.Floor(60 / timeStep); i++)
+            for (double seconds = 0; seconds <= SpanSeconds; seconds += timeStep)
             {
-                double seconds = ChartDomain.TickValue(i, timeStep);
-                int x = right - (int)Math.Round((right - left) * seconds / 60);
+                int x = right - (int)Math.Round((right - left) * seconds / SpanSeconds);
                 p.SetPen(gridPen);
                 p.DrawLine(x, top, x, bottom);
-                string label = (seconds == 0 ? "0" : "−" + TickText(seconds, timeStep)) + "s";
+                string label = seconds == 0 ? "0" : "−" + TimeTick(seconds, timeStep);
                 int textWidth = fontMetrics.HorizontalAdvance(label);
                 p.SetPen(labelPen);
                 p.DrawText(Math.Clamp(x - textWidth / 2, left, right - textWidth), bottom + 17, label);
             }
 
-            double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / 60, 0, 1) * (right - left);
+            double X(DateTime time) => left + Math.Clamp(1 - (_end - time).TotalSeconds / SpanSeconds, 0, 1) * (right - left);
             // Clamped to the domain, so a sample reaching past the floor rests on it rather
             // than somewhere off the canvas.
             double Y(double number) => bottom - (Math.Clamp(number / domain.Scale, floor, max) - floor) / (max - floor) * (bottom - top);
@@ -1332,8 +1486,8 @@ internal sealed class PerformanceChart : QWidget
         var placed = new List<(int Left, int Right, int Row)>();
         foreach (var marker in _markers.OrderBy(mark => mark.Time))
         {
-            if (marker.Time < _end.AddSeconds(-60) || marker.Time > _end) continue;
-            int x = (int)Math.Round(left + Math.Clamp(1 - (_end - marker.Time).TotalSeconds / 60, 0, 1) * (right - left));
+            if (marker.Time < _end.AddSeconds(-SpanSeconds) || marker.Time > _end) continue;
+            int x = (int)Math.Round(left + Math.Clamp(1 - (_end - marker.Time).TotalSeconds / SpanSeconds, 0, 1) * (right - left));
             int alpha = x >= fadeFrom ? 255 : (int)Math.Clamp(255.0 * (x - left) / (fadeFrom - left), 0, 255);
             using var color = new QColor(marker.Color);
             using var hairline = new QColor(marker.Color);

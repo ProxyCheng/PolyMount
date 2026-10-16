@@ -850,7 +850,19 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.subtitle</source>
-      <translation>Per-second rates · Last 60 seconds · Per-mount view</translation>
+      <translation>Per-second rates · Live view · Per-mount view</translation>
+    </message>
+    <message>
+      <source>stats.unit.seconds</source>
+      <translation>{0} s</translation>
+    </message>
+    <message>
+      <source>stats.unit.minutes</source>
+      <translation>{0} min</translation>
+    </message>
+    <message>
+      <source>stats.range.hint</source>
+      <translation>How much time the charts show. Only this window's own samples are drawn, so a long span starts empty and fills as it is watched; the table and the pie keep their own 60-second window.</translation>
     </message>
     <message>
       <source>stats.all</source>
@@ -909,7 +921,7 @@ Close applications using mounted files first.</translation>
     </message>
     <message>
       <source>stats.history</source>
-      <translation>60 seconds ago</translation>
+      <translation>{0} ago</translation>
     </message>
     <message>
       <source>stats.now</source>
@@ -1105,7 +1117,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.discard.keep</source><translation>Choose a folder</translation></message>
     <message><source>record.state.stopping</source><translation>Ending</translation></message>
     <message><source>record.ending</source><translation>Collecting has stopped; writing the bundle…</translation></message>
-    <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The charts stay the last 60 seconds; the whole recording is in the bundle.</translation></message>
+    <message><source>record.hint</source><translation>No sampling filter is applied while recording: every request event, layer probes included, goes into the recording channel, so it holds far more than requests.log (about 8 MB/s under a heavy traversal). It stops itself, and says why, at its ceiling. The recording is kept in the bundle; the charts show their own span, which the toolbar sets.</translation></message>
     <message><source>record.start</source><translation>Start recording</translation></message>
     <message><source>record.restart</source><translation>Start again</translation></message>
     <message><source>record.save</source><translation>End and save</translation></message>
@@ -1120,7 +1132,7 @@ Close applications using mounted files first.</translation>
     <message><source>record.state.elsewhere</source><translation>The service is recording</translation></message>
     <message><source>record.evidence.line</source><translation>state {0} · sampled detail {1} / {2} lines · {3} per-second rows · counted {4} requests / {5} operations</translation></message>
     <message><source>record.evidence.elsewhere</source><translation>Another front-end started this recording, so this panel reports only its size.</translation></message>
-    <message><source>mount.performance.tip</source><translation>This instance's live performance: the last 60 seconds by layer, their share and their access cost</translation></message>
+    <message><source>mount.performance.tip</source><translation>This instance's live performance: its trend over the span the toolbar sets, by layer, with their share and their access cost</translation></message>
     <message><source>mount.performance.recording</source><translation>Performance · recording</translation></message>
     <message><source>record.adopt</source><translation>Take it over</translation></message>
     <message><source>record.elsewhere.figures</source><translation>recording for {0} (this panel has no counts for it)</translation></message>

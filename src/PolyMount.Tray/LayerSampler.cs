@@ -105,12 +105,72 @@ internal static class LayerSampler
 
     /// <summary>Appends one observation, dropping whatever fell out of the horizon. A horizon of
     /// zero keeps the whole recording, which is what the recording page is for.</summary>
-    internal static List<Sample> Add(IDictionary<string, List<Sample>> history, string name, Sample sample, int horizonSeconds)
+    internal static List<Sample> Add(IDictionary<string, List<Sample>> history, string name, Sample sample, double horizonSeconds)
     {
         if (!history.TryGetValue(name, out var samples)) history[name] = samples = new();
         samples.Add(sample);
         if (horizonSeconds > 0) samples.RemoveAll(s => s.Time < sample.Time.AddSeconds(-horizonSeconds));
         return samples;
+    }
+
+    /// <summary>The observations as a chart draws them: at most <paramref name="maxPoints"/> of
+    /// them, with the older ones folded into buckets of equal span. A bucket carries the sum of
+    /// what its samples carried, so a rate over it is still sum(amount)/sum(interval) - the same
+    /// figure drawn with fewer points, which is all a long range needs and all a screen can show.
+    /// A bucket is stamped with the last observation in it, the way a single observation is
+    /// stamped with the end of the window it covers.</summary>
+    internal static List<Sample> Bucket(IReadOnlyList<Sample> samples, int maxPoints)
+    {
+        if (maxPoints < 2 || samples.Count <= maxPoints) return samples.ToList();
+        double widest = 0;
+        foreach (var sample in samples) widest = Math.Max(widest, sample.Seconds);
+        double span = (samples[^1].Time - samples[0].Time).TotalSeconds;
+        // A bucket is never narrower than the widest observation in it, or observations that do
+        // not overlap would be handed to the chart as one point.
+        double width = Math.Max(span / maxPoints, widest);
+
+        var buckets = new List<Sample>();
+        var layers = new Dictionary<string, LayerSample>();
+        double seconds = 0;
+        DateTime openedAt = samples[0].Time, last = samples[0].Time;
+        foreach (var sample in samples)
+        {
+            if (seconds > 0 && (sample.Time - openedAt).TotalSeconds >= width)
+            {
+                buckets.Add(new Sample(last, seconds, layers));
+                layers = new Dictionary<string, LayerSample>();
+                seconds = 0;
+                openedAt = sample.Time;
+            }
+            foreach (var (key, layer) in sample.Layers) layers[key] = Fold(layers.GetValueOrDefault(key), layer);
+            seconds += sample.Seconds;
+            last = sample.Time;
+        }
+        if (seconds > 0) buckets.Add(new Sample(last, seconds, layers));
+        return buckets;
+    }
+
+    /// <summary>Folds one observation into a bucket's running total. Amounts add; a duration is
+    /// weighted by the reads it was measured over, so a bucket's cost is what its reads cost
+    /// rather than the mean of its observations; the peak is kept rather than averaged away.</summary>
+    private static LayerSample Fold(LayerSample? total, LayerSample layer)
+    {
+        if (total is not { } sum) return layer;
+        double reads = sum.Reads + layer.Reads;
+        double Over(double mine, double theirs) => reads <= 0 ? 0 : (mine * sum.Reads + theirs * layer.Reads) / reads;
+        return sum with
+        {
+            Reads = reads,
+            Cost = Over(sum.Cost, layer.Cost),
+            Bytes = sum.Bytes + layer.Bytes,
+            WriteBytes = sum.WriteBytes + layer.WriteBytes,
+            Wasted = sum.Wasted + layer.Wasted,
+            WastedBytes = sum.WastedBytes + layer.WastedBytes,
+            Accelerated = sum.Accelerated + layer.Accelerated,
+            Fetched = sum.Fetched + layer.Fetched,
+            AvgCost = Over(sum.AvgCost, layer.AvgCost),
+            MaxCost = Math.Max(sum.MaxCost, layer.MaxCost)
+        };
     }
 
     /// <summary>What an accelerating layer kept out of the streams underneath over the window,
