@@ -202,7 +202,18 @@ try {
         Write-Host '[1/2] Stopping the tray (the service keeps running)...'
         Stop-Tray
         Write-Host '[2/2] Publishing the tray...'
-        Publish-Project $trayProject $trayDir
+        try {
+            Publish-Project $trayProject $trayDir
+        }
+        catch {
+            # A publish that fails leaves the tray stopped, and what it failed on is usually somebody
+            # else's half-written work in a tree two people share: the reader is left with no tray at
+            # all and no way to see what the error was about. The build already in the folder is a
+            # working tray, so it goes back in the air before the error is let through.
+            Write-Warning "Publishing failed. Starting the tray again from the build already in $trayDir."
+            if (Test-Path -LiteralPath $trayExe) { Start-Tray }
+            throw
+        }
         if (-not (Test-Path -LiteralPath $trayExe)) { throw 'Published tray executable was not found.' }
         Start-Tray
         Set-DeployedState $trayDir ("{0} {1}" -f $Configuration, (Get-SourceState $trayRoots))
