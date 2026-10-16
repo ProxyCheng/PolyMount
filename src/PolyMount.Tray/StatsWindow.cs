@@ -269,14 +269,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// grabbed or drawn on screen, which is the case a smoke run can rely on.</summary>
     internal void CaptureProcess(string directory)
     {
-        string[] files = { "process-cpu.png", "process-memory.png", "process-io.png", "process-threads.png", "process-handles.png" };
-        for (int i = 0; i < _processCharts.Length; i++)
-        {
-            using var chart = _processCharts[i].Grab();
-            chart.Save(Path.Combine(directory, files[i]));
-        }
-        using var figures = _processFigures.Grab();
-        figures.Save(Path.Combine(directory, "process-figures.png"));
+        using var section = _processSection.Grab();
+        section.Save(Path.Combine(directory, "process.png"));
     }
 
     /// <summary>The trend charts on their own, for the same reason the process cards are grabbed
@@ -627,10 +621,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     // label untouched.
                     if (sample.Trends is { } trends)
                     {
+                        // How much time the instance really watched, rather than the time the
+                        // request asked about: a rate divided by a window the instance never saw
+                        // is an invented number, and a process a second old does not have a
+                        // minute of history to average over. The shortest of them, because the
+                        // "all instances" view answers several mounts from one request and no
+                        // amount may be divided by a longer span than it covers.
+                        double measured = trends.Where(m => m.MeasuredSeconds > 0)
+                            .Select(m => m.MeasuredSeconds).DefaultIfEmpty(sample.Seconds).Min();
                         // The table and legend show the recent average; the trend sample
                         // only feeds the chart history, where a gap would otherwise
                         // read as "every layer served nothing".
-                        Accept(trends, sample.Seconds);
+                        Accept(trends, measured);
                         _responseSamples.Enqueue((sample.RequestMs, dispatch, ui.Elapsed.TotalMilliseconds, DateTime.UtcNow));
                         DateTime horizon = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
                         while (_responseSamples.Count > 0 && _responseSamples.Peek().At < horizon) _responseSamples.Dequeue();

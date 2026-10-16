@@ -157,6 +157,9 @@ public sealed class MountManager : IControlHost, IDisposable
                     break;
                 case ControlCommands.GetConfig:
                     response.Config = Config.ToJson();
+                    // The one answer that is asked for once, when an editor opens, and the only
+                    // place these belong: everything else here is polled.
+                    ControlEnvelope.WithRegistry(response);
                     break;
                 case ControlCommands.SaveConfig:
                 {

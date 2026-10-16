@@ -17,12 +17,23 @@ public interface IControlHost
 /// know about.</summary>
 internal static class ControlEnvelope
 {
-    public static ControlResponse New() => new()
+    /// <summary>An answer with nothing in it yet. What a reply carries beyond the command's own
+    /// result is attached deliberately, because these replies are polled: the performance window
+    /// asks for a window up to ten times a second, and a dashboard once a second. The layer
+    /// descriptors and presets are a couple of dozen kilobytes of text in two languages, only ever
+    /// read by the configuration editor, and attaching them to every answer made a one-window poll
+    /// cost what a whole configuration load costs.</summary>
+    public static ControlResponse New() => new();
+
+    /// <summary>The registries a front end needs in order to edit a configuration: which layer
+    /// types exist, what each one's fields are, and the presets it can offer. Attached to the
+    /// configuration answers, which are asked for once when the editor opens.</summary>
+    public static void WithRegistry(ControlResponse response)
     {
-        SourceTypes = SourceRegistry.Types.ToList(),
-        LayerDescriptors = LayerRegistry.Descriptors.ToList(),
-        Presets = LayerPresetRegistry.All.ToList()
-    };
+        response.SourceTypes = SourceRegistry.Types.ToList();
+        response.LayerDescriptors = LayerRegistry.Descriptors.ToList();
+        response.Presets = LayerPresetRegistry.All.ToList();
+    }
 }
 
 /// <summary>The diagnostics an export can carry from one process: a rolled log's whole family

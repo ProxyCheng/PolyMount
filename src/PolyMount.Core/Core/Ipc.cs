@@ -290,17 +290,6 @@ public sealed class LayerMetric
     public long FetchedBytes { get; set; }
 }
 
-/// <summary>One process's share of a window: who is reading and writing the mount, and how much
-/// of it. The process is identified by the id WinFsp reports for the request, which the front end
-/// turns into a name — the service never asks the operating system about another process.</summary>
-public sealed class ProcessMetric
-{
-    public int Pid { get; set; }
-    public long Reads { get; set; }
-    public long Writes { get; set; }
-    public long Bytes { get; set; }
-}
-
 /// <summary>One priority class's share of a source that serves several. Low is urgent: the
 /// reader is class 0 and holds nearly the whole source, read-ahead is a class with a floor of
 /// one and a small ceiling.</summary>
@@ -335,14 +324,17 @@ public sealed class MountMetrics
     /// reader that refreshes faster than once a second asks for a shorter one, and every count in
     /// here is an amount over that time rather than a rate.</summary>
     public double WindowSeconds { get; set; }
+    /// <summary>How much of that window was really measured, in seconds: an instance that has only
+    /// been up for three seconds has three seconds of data, and a reader turning these amounts into
+    /// rates must divide by this rather than by what it asked for. Zero means nothing was observed
+    /// in the window at all. Rounded to the collection's own resolution, never larger than the
+    /// ring.</summary>
+    public double MeasuredSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();
-    /// <summary>Who has been using this mount in the window, ranked by requests. Empty when the
-    /// window holds nothing, or when the callers are not WinFsp requests (id 0).</summary>
-    public List<ProcessMetric> Processes { get; set; } = new();
 }
 
 // Action names accepted by the "layerAction" command.

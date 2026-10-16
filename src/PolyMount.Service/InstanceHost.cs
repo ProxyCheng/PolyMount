@@ -120,9 +120,21 @@ public sealed class InstanceHost : IControlHost
             response.Error = ex.Message;
         }
 
-        var status = Instance.GetStatus();
-        status.Error ??= _error;
-        response.Mounts = new List<MountStatus> { status };
+        // A metrics answer carries metrics. The status is a per-layer survey - a provider entry
+        // each, a storage enumeration, the read-lane counters - and it costs more than everything
+        // else in this reply put together, while every caller of `metrics` reads only what it
+        // asked for: the window it wanted. Whoever needs the state of the instance asks `status`,
+        // which is what the Dashboard, the editor and an export all do.
+        if (!string.Equals(request.Cmd, ControlCommands.Metrics, StringComparison.Ordinal))
+        {
+            var status = Instance.GetStatus();
+            status.Error ??= _error;
+            response.Mounts = new List<MountStatus> { status };
+        }
+        // The layer registries go to the commands that open a window on a path - a probe is a
+        // click - and not to the ones that poll. They are the largest thing this service can say,
+        // and a window asking for a metrics window ten times a second has no use for them.
+        if (InstanceCommands.ByPath(request.Cmd)) ControlEnvelope.WithRegistry(response);
         return response;
     }
 

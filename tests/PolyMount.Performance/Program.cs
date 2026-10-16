@@ -7,6 +7,47 @@ using PolyMount.Core;
 using PolyMount.Layers;
 
 string Option(string name, string fallback) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault() ?? fallback;
+if (args.Contains("--metrics-cost"))
+{
+    // What recording a read costs the thread doing it, and what answering a window costs the
+    // process. This is the whole point of the collector's shape: a write is a slot calculation and
+    // an atomic add, and a window is a walk over the cells it covers rather than over the traffic.
+    var collector = new MetricsCollector();
+    var elapsed = TimeSpan.FromMicroseconds(120);
+    const int count = 2_000_000;
+    for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+    var watch = System.Diagnostics.Stopwatch.StartNew();
+    for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
+    watch.Stop();
+    Console.WriteLine($"record        : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
+    foreach (int threads in new[] { 1, 4, 8 })
+    {
+        var per = count / threads;
+        var start = new ManualResetEventSlim();
+        var threadsRun = Enumerable.Range(0, threads).Select(_ => new Thread(() =>
+        {
+            start.Wait();
+            for (int i = 0; i < per; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
+        })).ToList();
+        foreach (var thread in threadsRun) thread.Start();
+        var concurrent = System.Diagnostics.Stopwatch.StartNew();
+        start.Set();
+        foreach (var thread in threadsRun) thread.Join();
+        concurrent.Stop();
+        Console.WriteLine($"record x{threads,-2}    : {concurrent.Elapsed.TotalNanoseconds / (per * threads):0.0} ns/call  (aggregate)");
+    }
+    foreach (double window in new[] { 0.1, 1.0, 60.0 })
+    {
+        const int snapshots = 2000;
+        var begin = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < snapshots; i++) collector.Snapshot("m", window);
+        begin.Stop();
+        Console.WriteLine($"snapshot {window,5:0.#}s : {begin.Elapsed.TotalMicroseconds / snapshots:0.0} us/call");
+    }
+    var measured = collector.Snapshot("m", 60);
+    Console.WriteLine($"window says  : asked 60s, measured {measured.MeasuredSeconds:0.##}s, {measured.TotalReads:N0} reads over {measured.Layers.Count} layer(s)");
+    return 0;
+}
 if (args.Contains("--warm-probe"))
 {
     WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "TX4Package"),
