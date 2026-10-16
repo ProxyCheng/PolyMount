@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
 
@@ -15,6 +16,7 @@ internal static class Program
     {
         // Qt argv includes the executable name; Main(args) omits it.
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
+        InstallCrashTracer();
         I18n.Initialize();
         using var options = new QCommandLineParser();
         options.SetApplicationDescription("PolyMount tray and object layer management.");
@@ -117,6 +119,28 @@ internal static class Program
 
         ShowDashboard();
         return _app.Exec();
+    }
+
+    private delegate void CrashTracerInstall();
+
+    /// <summary>A native crash inside the Qt binding prints nothing by itself — no managed stack, no
+    /// symbols, just a faulting offset in a module. Set <c>POLYMOUNT_CRASH_TRACER</c> to the path of
+    /// the QtSharp crash tracer (<c>D:\QtSharp\build_crashtracer.bat</c> builds it) and this process
+    /// installs it at startup: it walks the stack on an access violation and writes every frame as
+    /// module + offset + symbol to <c>D:\QtSharp\crash_stack.txt</c>. Nothing is loaded unless the
+    /// variable names a file that is there.</summary>
+    private static void InstallCrashTracer()
+    {
+        string? tracer = Environment.GetEnvironmentVariable("POLYMOUNT_CRASH_TRACER");
+        if (string.IsNullOrEmpty(tracer) || !File.Exists(tracer)) return;
+        try
+        {
+            var library = NativeLibrary.Load(tracer);
+            var install = (CrashTracerInstall)Marshal.GetDelegateForFunctionPointer(
+                NativeLibrary.GetExport(library, "InstallCrashTracer"), typeof(CrashTracerInstall));
+            install();
+        }
+        catch (Exception ex) { Console.Error.WriteLine("crash tracer not installed: " + ex.Message); }
     }
 
     private static QMenu BuildMenu()

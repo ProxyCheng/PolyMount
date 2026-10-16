@@ -260,22 +260,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
 
-    /// <summary>The process cards and the line under them, for a smoke run: they sit below four
-    /// charts that fill a 960 pixel window, so a capture of the window would not show them at all.
-    ///
-    /// They are captured one at a time rather than as the section that holds them: grabbing that
-    /// container crashes inside the Qt binding layer, because its children paint themselves through
-    /// a painter of their own. Each of these is a widget that paints the same way whether it is
-    /// grabbed or drawn on screen, which is the case a smoke run can rely on.</summary>
+    /// <summary>The process section on its own, for a smoke run: it sits below four charts that fill
+    /// a 960 pixel window, so a capture of the window would not show it at all.</summary>
     internal void CaptureProcess(string directory)
     {
         using var section = _processSection.Grab();
         section.Save(Path.Combine(directory, "process.png"));
     }
 
-    /// <summary>The trend charts on their own, for the same reason the process cards are grabbed
-    /// separately: a window shot on a small screen stops above the time axis, and the axis is where
-    /// the range the reader chose is written.</summary>
+    /// <summary>The trend charts on their own: a window shot on a small screen stops above the time
+    /// axis, and the axis is where the range the reader chose is written.</summary>
     internal void CaptureCharts(string directory)
     {
         string[] files = { "chart-reads.png", "chart-bytes.png", "chart-latency.png", "chart-writes.png" };
