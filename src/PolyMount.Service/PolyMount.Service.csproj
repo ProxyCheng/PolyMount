@@ -9,6 +9,8 @@
     <AssemblyName>PolyMount.Service</AssemblyName>
     <RootNamespace>PolyMount.Service</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Shared with the tray and the setup wizard; see scripts/Build-AppIcon.ps1. -->
+    <ApplicationIcon>..\..\assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
