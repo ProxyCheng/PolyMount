@@ -418,7 +418,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             var cache = new List<(DateTime Time, double Value)>();
             var svn = new List<(DateTime Time, double Value)>();
             double step = Math.Max(1, span / 600);
-            for (double back = span; back >= 0; back -= step)
+            // Started one sample inside the window rather than exactly on its edge, which is where a
+            // real history leaves it — the trim keeps the window's worth of observations and no
+            // more — and which is the case the left-edge rule exists for. Started on the edge, the
+            // rule does nothing and this capture would not test it.
+            for (double back = span - step; back >= 0; back -= step)
             {
                 double wave = Math.Sin(back / 7.0);
                 cache.Add((end.AddSeconds(-back), 6.0 + wave * 3.0));
@@ -796,10 +800,19 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     if (sample.Access is { } access) AcceptAccess(access);
                     if (sample.Held is { } held)
                     {
+                        // A reading that names no layer is not a reading of zero held. It is what
+                        // the first status call after a mount comes back with, before the layers
+                        // have opened their stores and have a footprint to report — and drawn, it
+                        // put a point at nothing at the left end of both held cards and a vertical
+                        // jump from there to the first real level. The clock moves either way, so
+                        // a page that got one of these does not start asking every tick.
                         _lastHeld = DateTime.UtcNow;
-                        _heldHistory.Add(new HeldSecond(DateTime.UtcNow, held));
-                        while (_heldHistory.Count > 1 && _heldHistory[0].Time < DateTime.UtcNow.AddSeconds(-_rangeSeconds))
-                            _heldHistory.RemoveAt(0);
+                        if (held.Count > 0)
+                        {
+                            _heldHistory.Add(new HeldSecond(DateTime.UtcNow, held));
+                            while (_heldHistory.Count > 1 && _heldHistory[0].Time < DateTime.UtcNow.AddSeconds(-_rangeSeconds))
+                                _heldHistory.RemoveAt(0);
+                        }
                     }
                     // Only a request that carried the trends is an observation of them: one that
                     // went out for the access window alone leaves the history and the overhead
@@ -1872,6 +1885,11 @@ internal sealed class PerformanceChart : QWidget
                 double edge = StartX(left, X(times[start]), coversWindow);
                 using var fill = new QPainterPath();
                 fill.MoveTo(edge, Y(lower[start]));
+                // Up the left side to the top before the top edge begins. Without this the top edge
+                // is drawn from the baseline at the edge straight to the second observation, which
+                // leaves a triangle of nothing where the first observation's contribution is — and
+                // reads as the series starting at zero.
+                fill.LineTo(edge, Y(upper[start]));
                 for (int index = start + 1; index < finish; index++) fill.LineTo(X(times[index]), Y(upper[index]));
                 for (int index = finish - 1; index > start; index--) fill.LineTo(X(times[index]), Y(lower[index]));
                 fill.LineTo(edge, Y(lower[start]));
