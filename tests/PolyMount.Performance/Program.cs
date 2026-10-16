@@ -16,16 +16,22 @@ if (args.Contains("--metrics-cost"))
     var elapsed = TimeSpan.FromMicroseconds(120);
     const int count = 2_000_000;
     for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+    long before = GC.GetAllocatedBytesForCurrentThread();
     var watch = System.Diagnostics.Stopwatch.StartNew();
     for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
     watch.Stop();
-    Console.WriteLine($"record, nobody watching : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
+    long allocatedIdle = GC.GetAllocatedBytesForCurrentThread() - before;
+    double recordIdle = watch.Elapsed.TotalNanoseconds / count;
+    Console.WriteLine($"record, nobody watching : {recordIdle:0.0} ns/call  ({count:N0} calls, one thread)");
     collector.Watch();
     for (int i = 0; i < 200_000; i++) collector.RecordRead("cache", elapsed, 4096, true);
+    before = GC.GetAllocatedBytesForCurrentThread();
     watch.Restart();
     for (int i = 0; i < count; i++) collector.RecordRead("cache", elapsed, 4096, cached: true);
     watch.Stop();
-    Console.WriteLine($"record, watching        : {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call  ({count:N0} calls, one thread)");
+    long allocatedWatching = GC.GetAllocatedBytesForCurrentThread() - before;
+    double recordWatching = watch.Elapsed.TotalNanoseconds / count;
+    Console.WriteLine($"record, watching        : {recordWatching:0.0} ns/call  ({count:N0} calls, one thread)");
     foreach (int threads in new[] { 1, 4, 8 })
     {
         var per = count / threads;
@@ -45,6 +51,7 @@ if (args.Contains("--metrics-cost"))
     // What one request costs on top of the layer it was served by: every request is counted once,
     // whatever answered it, so that the time in requests no layer answered for is visible at all.
     // This is the number that decides whether that is worth having while a recording runs.
+    double requestIdle = 0, requestWatching = 0;
     foreach (bool watching in new[] { false, true })
     {
         if (watching) collector.Watch();
@@ -53,7 +60,36 @@ if (args.Contains("--metrics-cost"))
         watch.Restart();
         for (int i = 0; i < count; i++) collector.RecordRequest(elapsed);
         watch.Stop();
-        Console.WriteLine($"request, {(watching ? "watching" : "nobody watching"),-15}: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call");
+        double per = watch.Elapsed.TotalNanoseconds / count;
+        if (watching) requestWatching = per; else requestIdle = per;
+        Console.WriteLine($"request, {(watching ? "watching" : "nobody watching"),-15}: {per:0.0} ns/call");
+    }
+    if (args.Contains("--assert"))
+    {
+        // A gate, not a benchmark: the budgets are loose enough for a busy machine and tight
+        // enough to catch the shapes this repository has already paid for once - a record that
+        // allocates, a record that grows with the threads counting beside it, a scope that grows
+        // back towards the 345 bytes it was. Run it after touching the collector.
+        var failures = new List<string>();
+        void Within(string what, double value, double budget, string unit = "ns/call")
+        {
+            if (value > budget) failures.Add($"{what}: {value:0.0} {unit} > {budget:0.0}");
+        }
+        Within("record, nobody watching", recordIdle, 40);
+        Within("record, watching", recordWatching, 150);
+        Within("request, nobody watching", requestIdle, 40);
+        Within("request, watching", requestWatching, 120);
+        // Per call, not in total: a few tens of bytes once in two million calls is the JIT
+        // recompiling the loop, while an allocation on the path is megabytes by then.
+        if (allocatedIdle > count / 1000) failures.Add($"record, nobody watching allocated {allocatedIdle} bytes over {count:N0} calls");
+        if (allocatedWatching > count / 1000) failures.Add($"record, watching allocated {allocatedWatching} bytes over {count:N0} calls");
+        if (failures.Count == 0)
+            Console.WriteLine($"assert: within budget (record {recordIdle:0.#}/{recordWatching:0.#} ns, request {requestIdle:0.#}/{requestWatching:0.#} ns, no allocation)");
+        else
+        {
+            foreach (var failure in failures) Console.Error.WriteLine("assert failed - " + failure);
+            return 1;
+        }
     }
     collector.Watch();
     for (int i = 0; i < 200_000; i++) { collector.RecordRequest(elapsed); collector.RecordRead("cache", elapsed, 0, true); }
