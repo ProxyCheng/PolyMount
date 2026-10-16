@@ -21,6 +21,9 @@ internal sealed class LayerAccessPie : QChartView
         SetFixedSize(300, 260);
         SetChart(_chart);
         SetRenderHint(QPainter.RenderHint.Antialiasing);
+        // The pie sits on the page's white, not on the platform's window colour: the chart itself
+        // draws nothing behind its slices.
+        SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
         _chart.SetAnimationOptions(QChart.AnimationOptions.NoAnimation);
         _chart.SetBackgroundVisible(false);
         _chart.SetPlotAreaBackgroundVisible(false);

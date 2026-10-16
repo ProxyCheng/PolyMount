@@ -24,7 +24,7 @@ $published = @{
 
 # QtSharp.Charts is a separate release repository with its own checksums file.
 $chartsPublished = @{
-    '0.1.0' = '2b70f1449eb46d50feeea78928a4d18f879081b04c58daee4ce6fccf143779eb'
+    '0.1.0' = 'c8211b94e6066e522fa90c057e3ef9df55489a7bac9de5fd689a5d3e0d0dbe40'   # repackaged 2026-10-16 with the legend and scene-item interfaces
 }
 
 function Get-PublishedHash([string]$version) {

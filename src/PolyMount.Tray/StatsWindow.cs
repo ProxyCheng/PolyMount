@@ -1979,7 +1979,10 @@ internal sealed class PerformanceChart : QWidget
                     bottom.Append(x, lower[index]);
                 }
                 var area = new QAreaSeries(top, bottom);
-                area.SetName(item.Name + " " + FormatValue(item.Samples.LastOrDefault().Value));
+                // The legend names the series, which is all Qt's legend carries: the value every
+                // series is at is in the headline above and in the tooltip, and the layer is what
+                // a reader is looking for when they read the row.
+                area.SetName(item.Name);
                 using var fill = new QColor(item.Color);
                 fill.SetAlpha(155);
                 if (item.Hatched)
