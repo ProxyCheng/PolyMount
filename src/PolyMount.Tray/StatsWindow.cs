@@ -1878,9 +1878,11 @@ internal sealed class PerformanceChart : QWidget
     private readonly QChartView _plot;
     private readonly QValueAxis _valueAxis = new();
     private readonly QValueAxis _timeAxis = new();
-    /// <summary>What the last draw put into the chart, so the next one can take it back: an area
-    /// per run of every series, a hairline per recording edge, and the words beside those.</summary>
-    private readonly List<QAreaSeries> _bands = new();
+    /// <summary>What the chart is holding, so the next draw can move it rather than remake it: one
+    /// band per run of every series, one hairline per recording edge, and the words beside those.
+    /// A band is a slot a draw may find a different series in; an edge and its words belong to one
+    /// marker each.</summary>
+    private readonly List<Band> _bands = new();
     private readonly List<QLineSeries> _edges = new();
     private readonly List<QGraphicsSimpleTextItem> _notes = new();
     /// <summary>What the last draw was scaled to: the value domain both axes were given, and the
@@ -1981,6 +1983,10 @@ internal sealed class PerformanceChart : QWidget
         // The card is white behind the plot: a view's own viewport is otherwise the platform's
         // window colour, which shows through wherever the chart draws nothing.
         _plot.SetBackgroundBrush(new QBrush(new QColor("#ffffff")));
+        // A card's plot is repainted whole rather than in the pieces Qt works out have changed: the
+        // window moves under the chart at every sample, every series is re-mapped with it, and what
+        // a partial update leaves showing is the frame before — which is the plot blinking.
+        _plot.SetViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate);
         // The plot is placed by this layout rather than by hand: a graphics view that is never told
         // what size it is lays itself out against a rectangle of its own making, which is how a
         // chart's legend ends up below the bottom edge of the widget the reader is looking at.
@@ -2087,25 +2093,118 @@ internal sealed class PerformanceChart : QWidget
     private double PlotRoom() =>
         Math.Max(40, _plot.Height - AxisFurniture - (_chart.Legend().IsVisible() ? _chart.Legend().Geometry.Height() : 0));
 
+    /// <summary>One stretch of one series as the chart is holding it: the area, and the two lines it
+    /// is built from. These are kept between draws and given new points, because a chart that is
+    /// handed a fresh set of series every second rebuilds its item list and its legend every second:
+    /// measured, tearing the seven cards down and building them again cost thirteen milliseconds a
+    /// redraw, which at ten hertz is the interface thread blocked for an eighth of every second —
+    /// and it is what a reader sees as the plot blinking.</summary>
+    private sealed class Band
+    {
+        public Band(QAreaSeries area, QLineSeries top, QLineSeries bottom, string name, string color, bool hatched)
+        {
+            Area = area;
+            Top = top;
+            Bottom = bottom;
+            Name = name;
+            Color = color;
+            Hatched = hatched;
+        }
+        public QAreaSeries Area { get; }
+        public QLineSeries Top { get; }
+        public QLineSeries Bottom { get; }
+        /// <summary>What this band was last drawn as, so a draw that changes nothing about it does
+        /// not touch the chart at all.</summary>
+        public string Name { get; set; }
+        public string Color { get; set; }
+        public bool Hatched { get; set; }
+    }
+
     /// <summary>Hands the window to the chart: both axes, an area per run of every series, and a
     /// hairline per recording edge.
     ///
-    /// The series are added back to front, so the first one in the list is drawn last and reads as
-    /// the top of the stack; what is not stacked is drawn over what came before it instead.</summary>
+    /// The runs are walked back to front, so the first one in the list is drawn last and reads as
+    /// the top of the stack; what is not stacked is drawn over what came before it instead.
+    ///
+    /// A draw whose runs are the same runs as the last one moves their points rather than replacing
+    /// them, which is the steady state of a page that is being watched: the same layers, drawn
+    /// again, a moment later. Anything else — a layer appearing or going, a gap opening in the
+    /// readings — is a new set of items, and the chart is rebuilt for it.</summary>
     private void Plot()
     {
-        foreach (var band in _bands) { _chart.RemoveSeries(band); band.Dispose(); }
-        foreach (var edge in _edges) { _chart.RemoveSeries(edge); edge.Dispose(); }
-        _bands.Clear();
-        _edges.Clear();
-        // A note is not an object the binding owns, so it is taken out of the scene rather than disposed.
-        foreach (var note in _notes) _plot.Scene()?.RemoveItem(note);
-        _notes.Clear();
-
         ConfigureAxes();
+        var runs = Runs();
+        bool same = runs.Count == _bands.Count;
+        for (int index = 0; same && index < runs.Count; index++) same = _bands[index].Name == runs[index].Name;
+        if (same)
+        {
+            for (int index = 0; index < runs.Count; index++)
+            {
+                var (name, color, hatched, top, bottom) = runs[index];
+                var band = _bands[index];
+                band.Top.Replace(top);
+                band.Bottom.Replace(bottom);
+                if (band.Color != color || band.Hatched != hatched)
+                {
+                    band.Color = color;
+                    band.Hatched = hatched;
+                    Style(band.Area, color, hatched);
+                }
+            }
+        }
+        else
+        {
+            foreach (var band in _bands) { _chart.RemoveSeries(band.Area); band.Area.Dispose(); }
+            _bands.Clear();
+            foreach (var (name, color, hatched, top, bottom) in runs)
+            {
+                var topLine = new QLineSeries();
+                var bottomLine = new QLineSeries();
+                topLine.Replace(top);
+                bottomLine.Replace(bottom);
+                var area = new QAreaSeries(topLine, bottomLine);
+                // The legend names the series, which is all a legend carries: what every series is
+                // at is in the headline above, in the tooltip, and in each area's own edge.
+                area.SetName(name);
+                Style(area, color, hatched);
+                _chart.AddSeries(area);
+                _chart.SetAxisX(_timeAxis, area);
+                _chart.SetAxisY(_valueAxis, area);
+                _bands.Add(new Band(area, topLine, bottomLine, name, color, hatched));
+            }
+        }
+        PlotNotes();
+    }
+
+    /// <summary>Colours one area the way its series is drawn: its own colour at the alpha a fill
+    /// under a line is read at, hatched and dashed when it is a second reading of a layer that is
+    /// already on the card rather than a layer of its own.</summary>
+    private static void Style(QAreaSeries area, string color, bool hatched)
+    {
+        using var fill = new QColor(color);
+        fill.SetAlpha(155);
+        if (hatched)
+        {
+            using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
+            hatch.SetColor(fill);
+            area.SetBrush(hatch);
+        }
+        else area.SetBrush(new QBrush(fill));
+        using var stroke = new QColor(color);
+        using var pen = new QPen(stroke);
+        if (hatched) pen.SetStyle(Qt.PenStyle.DashLine);
+        pen.SetWidthF(1.8);
+        area.SetPen(pen);
+    }
+
+    /// <summary>The window as the runs the chart draws: one per series, split wherever the readings
+    /// pause for longer than a gap, back to front — the last one is the bottom of the stack.</summary>
+    private List<(string Name, string Color, bool Hatched, QPointF[] Top, QPointF[] Bottom)> Runs()
+    {
         var times = _series.SelectMany(item => item.Samples.Select(sample => sample.Time)).Distinct().Order().ToArray();
         var values = _series.Select(item => item.Samples.ToDictionary(sample => sample.Time, sample => sample.Value)).ToArray();
         var baseline = new double[times.Length];
+        var runs = new List<(string, string, bool, QPointF[], QPointF[])>();
         for (int layer = _series.Count - 1; layer >= 0; layer--)
         {
             var item = _series[layer];
@@ -2118,42 +2217,21 @@ internal sealed class PerformanceChart : QWidget
                 // curve: the run ends there and the next one begins where the readings resume.
                 int finish = start + 1;
                 while (finish < times.Length && (times[finish] - times[finish - 1]).TotalSeconds <= GapSeconds) finish++;
-                var top = new QLineSeries();
-                var bottom = new QLineSeries();
+                var top = new QPointF[finish - start];
+                var bottom = new QPointF[finish - start];
                 for (int index = start; index < finish; index++)
                 {
-                    top.Append(Along(times[index]), upper[index]);
-                    bottom.Append(Along(times[index]), lower[index]);
+                    top[index - start] = new QPointF(Along(times[index]), upper[index]);
+                    bottom[index - start] = new QPointF(Along(times[index]), lower[index]);
                 }
-                var area = new QAreaSeries(top, bottom);
-                // The legend names the series, which is all a legend carries: what every series is
-                // at is in the headline above, in the tooltip, and in each area's own edge.
-                area.SetName(item.Name);
-                using var fill = new QColor(item.Color);
-                fill.SetAlpha(155);
-                if (item.Hatched)
-                {
-                    using var hatch = new QBrush(Qt.BrushStyle.BDiagPattern);
-                    hatch.SetColor(fill);
-                    area.SetBrush(hatch);
-                }
-                else area.SetBrush(new QBrush(fill));
-                using var stroke = new QColor(item.Color);
-                using var pen = new QPen(stroke);
-                if (item.Hatched) pen.SetStyle(Qt.PenStyle.DashLine);
-                pen.SetWidthF(1.8);
-                area.SetPen(pen);
-                _chart.AddSeries(area);
-                _chart.SetAxisX(_timeAxis, area);
-                _chart.SetAxisY(_valueAxis, area);
-                _bands.Add(area);
+                runs.Add((item.Name, item.Color, item.Hatched, top, bottom));
                 start = finish;
             }
             if (item.Stacked)
                 for (int index = 0; index < times.Length; index++)
                     if (upper[index] > baseline[index]) baseline[index] = upper[index];
         }
-        PlotNotes();
+        return runs;
     }
 
     /// <summary>Hands both axes what they draw with: the value domain, and the window as time
@@ -2207,36 +2285,39 @@ internal sealed class PerformanceChart : QWidget
     /// would land on one already placed drops to a second row, and one with no room in either is
     /// left out rather than overprinted — its hairline is still on the axis, which is where the
     /// moment is read from anyway.
-    /// </summary>
+    ///
+    /// The hairlines and their words are kept and moved rather than made again, the way a series is:
+    /// an edge that is being watched is redrawn ten times a second, and a scene that gains and loses
+    /// items ten times a second is a scene that blinks.</summary>
     private void PlotNotes()
     {
         if (_plot.Scene() is not { } scene) return;
         using var labelFont = new QFont("Segoe UI", 8);
         double left = -SpanSeconds / _timeUnit, fade = left * 0.12;
         var placed = new List<(double Left, double Right, int Row)>();
+        int slot = 0;
         foreach (var marker in _markers.OrderBy(mark => mark.Time))
         {
             if (marker.Time < _end.AddSeconds(-SpanSeconds) || marker.Time > _end) continue;
             double x = Along(marker.Time);
             double alpha = x >= fade ? 1 : Math.Clamp((x - left) / (fade - left), 0, 1);
-            var line = new QLineSeries();
-            line.Append(x, _domain.Floor);
-            line.Append(x, _domain.Max);
+            var line = slot < _edges.Count ? _edges[slot] : FreshEdge();
+            line.Replace(new[] { new QPointF(x, _domain.Floor), new QPointF(x, _domain.Max) });
             using var hairline = new QColor(marker.Color);
             hairline.SetAlpha((int)(Math.Min(alpha, 0.45) * 255));
             using var pen = new QPen(hairline);
             pen.SetStyle(Qt.PenStyle.DashLine);
             pen.SetWidthF(1.2);
             line.SetPen(pen);
-            _chart.AddSeries(line);
-            _chart.SetAxisX(_timeAxis, line);
-            _chart.SetAxisY(_valueAxis, line);
-            _edges.Add(line);
-            foreach (var legend in _chart.Legend().Markers(line)) legend.SetVisible(false);
 
-            var item = new QGraphicsSimpleTextItem();
-            item.SetFont(labelFont);
-            scene.AddItem(item);
+            if (slot >= _notes.Count)
+            {
+                var fresh = new QGraphicsSimpleTextItem();
+                fresh.SetFont(labelFont);
+                _notes.Add(fresh);
+                scene.AddItem(fresh);
+            }
+            var item = _notes[slot];
             item.SetText(I18n.T(marker.LabelKey));
             using var ink = new QColor(marker.Color);
             ink.SetAlpha((int)(alpha * 255));
@@ -2249,15 +2330,35 @@ internal sealed class PerformanceChart : QWidget
             bool Clashes(int row) => placed.Any(other => other.Row == row &&
                 noteLeft < other.Right + 6 && noteLeft + width > other.Left - 6);
             int stack = Clashes(0) ? 1 : 0;
-            if (stack == 1 && Clashes(1))
-            {
-                scene.RemoveItem(item);
-                continue;
-            }
-            placed.Add((noteLeft, noteLeft + width, stack));
+            item.SetVisible(!(stack == 1 && Clashes(1)));
+            if (item.IsVisible()) placed.Add((noteLeft, noteLeft + width, stack));
             item.SetPos(noteLeft, at.Y() + 3 + stack * 16);
-            _notes.Add(item);
+            slot++;
         }
+        // What is left over belonged to edges that have left the window: their hairlines come off
+        // the chart and their words go, which is the one thing here that is taken away rather than
+        // moved — an edge that has left has nothing left to move.
+        while (_edges.Count > slot)
+        {
+            var extra = _edges[^1];
+            _chart.RemoveSeries(extra);
+            extra.Dispose();
+            _edges.RemoveAt(_edges.Count - 1);
+        }
+        foreach (var note in _notes.Skip(slot)) note.SetVisible(false);
+    }
+
+    /// <summary>A hairline for a recording edge that has not had one before. It carries no reading,
+    /// so its legend marker goes: the chart lists every series it holds, and this is not one.</summary>
+    private QLineSeries FreshEdge()
+    {
+        var line = new QLineSeries();
+        _chart.AddSeries(line);
+        _chart.SetAxisX(_timeAxis, line);
+        _chart.SetAxisY(_valueAxis, line);
+        foreach (var legend in _chart.Legend().Markers(line)) legend.SetVisible(false);
+        _edges.Add(line);
+        return line;
     }
 
     public override void ResizeEvent(QResizeEvent e)
