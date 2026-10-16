@@ -70,14 +70,16 @@ internal sealed class LayerVisualizer : QWidget
         _release.SetEnabled(false);
         _release.Clicked += _ => Release();
         root.AddWidget(_release);
-        var scroll = new QScrollArea();
-        scroll.SetWidgetResizable(true);
-        scroll.SetFrameShape(QFrame.Shape.NoFrame);
+        // The cards go straight into the page. The window is already a scroll area, and the second
+        // one here did nothing but take the room the cards needed: it held the stretch, so the panel
+        // stayed as tall as whatever was left and grew a scrollbar of its own, inside a window whose
+        // own bar was still at the top — the last card cut in half against a scrollbar nobody had
+        // scrolled. What is taller than the window is the outer bar's business, and it is the one
+        // the reader is already using.
         var cards = new QWidget();
         _cardLayout = new QVBoxLayout(cards);
         _cardLayout.SetSpacing(12);
-        scroll.SetWidget(cards);
-        root.AddWidget(scroll, 1);
+        root.AddWidget(cards);
         _status = new QLabel();
         _status.SetTextFormat(Qt.TextFormat.PlainText);
         _status.SetWordWrap(true);
