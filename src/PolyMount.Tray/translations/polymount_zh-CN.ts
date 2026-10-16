@@ -1146,6 +1146,10 @@
     <message><source>record.note</source><translation>说明：</translation></message>
     <message><source>record.discarded</source><translation>已结束并丢弃这次录制。</translation></message>
     <message><source>record.collected</source><translation>请求通道 {0} / {1} 行 · 逐层每秒采样 {2} 行</translation></message>
+    <message><source>stats.layerHeld</source><translation>层持有字节 · 每层（内存 + 磁盘）</translation></message>
+    <message><source>stats.layerHeld.definition</source><translation>每层当前占着的量：内存与磁盘字节，按层相加。进程的内存没法拆到层上——上面那组进程卡就是它的全部——但每层自己持有了多少是我们自己数的，是这个层自己的开销。</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>字节对账 · 近 {0} 秒：进程搬了 {1}，各层解析 {2}，未归因 {3}。</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>解析字节是各层答复的文件大小之和；传输字节是操作系统看到的、本进程读了写了的量。两者的差不是错误：里面有与挂载无关的 IO（日志、缓存库、通往这个窗口的管道），而源端在它自己进程里抓取的那些又不在其中。</translation></message>
     <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
     <message><source>stats.process.io.read</source><translation>读</translation></message>
     <message><source>stats.process.io.write</source><translation>写</translation></message>

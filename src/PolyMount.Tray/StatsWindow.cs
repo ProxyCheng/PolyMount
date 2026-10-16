@@ -33,6 +33,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// a layer: there is nothing to break down, so these are drawn as plain series rather than as
     /// contributions that stack.</summary>
     private readonly List<ProcessSecond> _processHistory = new();
+    /// <summary>What each layer holds — its memory and its on-disk footprint — one row per second.
+    /// A process's memory cannot be split between layers, but this can: it is our own count of what
+    /// each layer keeps, which is that layer's own share of the cost.</summary>
+    private readonly List<HeldSecond> _heldHistory = new();
+    private readonly PerformanceChart _heldChart;
+    private readonly QLabel _reconcile;
+    private DateTime _lastHeld = DateTime.MinValue;
     private readonly PerformanceChart[] _processCharts;
     private readonly QWidget _processSection;
     private readonly QLabel _processFigures;
@@ -72,7 +79,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>The height of one row of the layer table, which the table is sized from.</summary>
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
-    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
+    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<(string Key, string Name, string Color, long Held)>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
     private bool _paused, _requested, _wasVisible;
     private int _epoch, _requestEpoch;
     private DateTime _next;
@@ -175,6 +182,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
+        // A fifth card for what the layers keep: the other four are what they did, this is what they
+        // hold. It belongs beside them because it is their own number, not the process's.
+        _heldChart = new PerformanceChart("stats.layerHeld", "#7c3aed", "B", ChartSummary.Volume);
+        grid.AddWidget(_heldChart, _charts.Length / 2, _charts.Length % 2);
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
         if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
@@ -212,6 +223,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _layerLegend.SetObjectName("muted");
         root.AddWidget(_layerLegend);
         root.AddWidget(Label("stats.layerBytes.definition", "muted"));
+        // What the layers served and what the process moved are two different counts, and the
+        // difference is the part nobody has attributed yet: this is that arithmetic, said out loud.
+        _reconcile = new QLabel();
+        _reconcile.SetObjectName("muted");
+        _reconcile.SetWordWrap(true);
+        _reconcile.SetTextFormat(Qt.TextFormat.PlainText);
+        root.AddWidget(_reconcile);
+        root.AddWidget(Label("stats.reconcile.definition", "muted"));
         var access = new QHBoxLayout();
         _accessPie = new LayerAccessPie();
         access.AddWidget(_accessPie);
@@ -266,6 +285,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         using var section = _processSection.Grab();
         section.Save(Path.Combine(directory, "process.png"));
+    }
+
+    /// <summary>The held-bytes card and the byte account under it, for a smoke run: they sit below
+    /// the fold of a 960 pixel window, the same way the process section does.</summary>
+    internal void CaptureHeld(string directory)
+    {
+        using var card = _heldChart.Grab();
+        card.Save(Path.Combine(directory, "layer-held.png"));
+        using var line = _reconcile.Grab();
+        line.Save(Path.Combine(directory, "reconcile.png"));
     }
 
     /// <summary>The trend charts on their own: a window shot on a small screen stops above the time
@@ -610,6 +639,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
                     if (sample.Access is { } access) AcceptAccess(access);
+                    if (sample.Held is { } held)
+                    {
+                        _lastHeld = DateTime.UtcNow;
+                        _heldHistory.Add(new HeldSecond(DateTime.UtcNow, held));
+                        while (_heldHistory.Count > 1 && _heldHistory[0].Time < DateTime.UtcNow.AddSeconds(-_rangeSeconds))
+                            _heldHistory.RemoveAt(0);
+                    }
                     // Only a request that carried the trends is an observation of them: one that
                     // went out for the access window alone leaves the history and the overhead
                     // label untouched.
@@ -653,7 +689,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // table and the pie, so it keeps a once-a-second schedule of its own instead of riding
             // the trend rate - which is also what keeps it at a second when the charts run slower.
             bool accessDue = _accessMetrics.Count == 0 || (now - _lastAccess).TotalSeconds >= 1;
-            if (trendsDue || accessDue)
+            // What the layers hold is a status question, and status is the expensive one: it walks
+            // every layer's storage. It rides the access schedule for the same reason.
+            bool heldDue = _heldHistory.Count == 0 || (now - _lastHeld).TotalSeconds >= 1;
+            if (trendsDue || accessDue || heldDue)
             {
                 // The window is the time since the previous sample, so consecutive windows tile
                 // the timeline: a tick that ran late - only one request may be in flight, so they
@@ -672,14 +711,79 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     var process = _process.Read();
                     var trends = trendsDue ? Window(seconds) : null;
                     var access = accessDue ? Window(AccessSeconds) : null;
+                    var held = heldDue ? Held() : null;
                     watch.Stop();
-                    return (trends, access, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds);
+                    return (trends, access, held, process, watch.Elapsed.TotalMilliseconds, Stopwatch.GetTimestamp(), seconds);
                 });
             }
         }
         _wasVisible = visible;
     }
 
+
+    /// <summary>What every layer of this window's instances holds. The metrics describe what the
+    /// layers did; what they keep is a status question, and for the "all instances" view it takes
+    /// every instance's own answer rather than the supervisor's summary of them.</summary>
+    private List<(string Key, string Name, string Color, long Held)> Held()
+    {
+        var status = _instanceName == null ? InstanceView.Status() : _client.Status();
+        var layers = new List<(string Key, string Name, string Color, long Held)>();
+        foreach (var mount in status.Mounts.Where(m => _instanceName == null || m.Name == _instanceName))
+            foreach (var provider in mount.Providers)
+                if (provider.StorageUsage is { } usage)
+                    layers.Add((mount.Name + "/" + provider.Name,
+                        string.IsNullOrEmpty(provider.DisplayName) ? provider.Name : provider.DisplayName,
+                        provider.Color, usage.MemoryBytes + usage.DiskBytes));
+        return layers;
+    }
+
+    /// <summary>The card for what the layers hold, drawn the way the other layer cards are: one
+    /// series per layer, in that layer's own color, from this window's own once-a-second readings.
+    /// </summary>
+    private void RenderHeld(string selected)
+    {
+        DateTime end = _heldHistory.Count == 0 ? DateTime.UtcNow : _heldHistory[^1].Time;
+        var rows = _heldHistory.Where(row => row.Time >= end.AddSeconds(-_rangeSeconds)).ToList();
+        var drawn = new List<ChartSeries>();
+        if (_heldHistory.Count > 0)
+            foreach (var (key, name, color, _) in _heldHistory[^1].Layers)
+            {
+                if (selected.Length > 0 && !key.StartsWith(selected + "/", StringComparison.Ordinal)) continue;
+                drawn.Add(new ChartSeries(selected.Length == 0 ? key : name,
+                    string.IsNullOrEmpty(color) ? "#7c3aed" : color,
+                    rows.Select(row => (row.Time, (double)row.Layers.FirstOrDefault(layer => layer.Key == key).Held)).ToList()));
+            }
+        double[] totals = rows.Select(row => (double)row.Layers.Where(layer =>
+            selected.Length == 0 || layer.Key.StartsWith(selected + "/", StringComparison.Ordinal)).Sum(layer => layer.Held)).ToArray();
+        _heldChart.SpanSeconds = _rangeSeconds;
+        _heldChart.GapSeconds = Math.Max(BreakSeconds, 3);
+        _heldChart.SetSeries(drawn, end, ChartStatistics.Of(totals));
+        _heldChart.SetMarkers(_recording?.Marks ?? Array.Empty<PerformanceChart.ChartMarker>());
+    }
+
+    /// <summary>The two counts that describe bytes, and the difference between them. The layers
+    /// report the sizes of the files they resolved, which is our own bookkeeping; the process
+    /// reports what it actually moved, which is the operating system's. They answer different
+    /// questions, so the gap between them is not an error — it is everything neither of them
+    /// attributes: IO that has nothing to do with a mount (logs, the cache database, the pipe to
+    /// this window), and the source's own fetching, which happens in a process of its own and so
+    /// never appears here at all.
+    /// </summary>
+    private void RenderReconcile(IReadOnlyList<LayerSampler.Sample> samples, string selected)
+    {
+        long served = 0;
+        foreach (var sample in samples)
+            foreach (var (key, layer) in sample.Layers)
+                if (selected.Length == 0 || key.StartsWith(selected + "/", StringComparison.Ordinal))
+                    served += (long)layer.Bytes;
+        if (_processHistory.Count == 0) { _reconcile.SetText(""); return; }
+        var first = _processHistory[0];
+        var last = _processHistory[^1];
+        long moved = Math.Max(0, last.ReadBytes + last.WriteBytes - first.ReadBytes - first.WriteBytes);
+        double seconds = Math.Max(1, (last.Time - first.Time).TotalSeconds);
+        _reconcile.SetText(I18n.F("stats.reconcile.bytes", (long)Math.Round(seconds),
+            ByteUnits.Format(moved), ByteUnits.Format(served), ByteUnits.Format(moved - served)));
+    }
 
     /// <summary>One window of read analytics: the instance's own process answers for itself, and
     /// the "all instances" view — which no single process owns — is every one of them asked and put
@@ -696,6 +800,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// divided by the interval, so a row is that interval's share of a core.</summary>
     private readonly record struct ProcessSecond(DateTime Time, double Cores, long WorkingSet, long Private,
         int Threads, int Handles, long ReadBytes, long WriteBytes);
+
+    /// <summary>One reading of what every layer holds, with the names and colors the layer charts
+    /// already use, so the card reads as part of that family rather than as its own thing.</summary>
+    private readonly record struct HeldSecond(DateTime Time, List<(string Key, string Name, string Color, long Held)> Layers);
 
     /// <summary>Adds a reading to the window and repaints the process charts. A reading taken while
     /// nothing is running the instance is still a reading — zeroes say the process is not there,
@@ -810,6 +918,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     {
         string selected = _instanceName ?? (_mount.CurrentIndex <= 0 ? "" : _mount.CurrentText);
         var samples = _history.GetValueOrDefault(selected) ?? new();
+        RenderHeld(selected);
+        RenderReconcile(samples, selected);
         DateTime end = samples.LastOrDefault()?.Time ?? DateTime.UtcNow;
         var mounts = _latest.Where(m => selected == "" || m.Mount == selected).ToList();
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (m, l))).ToList();

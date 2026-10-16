@@ -1146,6 +1146,10 @@ Close applications using mounted files first.</translation>
     <message><source>record.note</source><translation>Note: </translation></message>
     <message><source>record.discarded</source><translation>The recording was ended and discarded.</translation></message>
     <message><source>record.collected</source><translation>Request channel {0} / {1} lines · {2} per-second sample rows</translation></message>
+    <message><source>stats.layerHeld</source><translation>Bytes held · Per layer (memory + disk)</translation></message>
+    <message><source>stats.layerHeld.definition</source><translation>What each layer is holding: its memory and the bytes it takes on disk, summed per layer. A process's memory cannot be split between layers — the process cards above are the whole of it — but what a layer keeps is our own count and is that layer's own cost.</translation></message>
+    <message><source>stats.reconcile.bytes</source><translation>Byte account · last {0} s: the process moved {1}, the layers resolved {2} — unattributed {3}.</translation></message>
+    <message><source>stats.reconcile.definition</source><translation>Resolved bytes are the sizes of the files the layers answered with; transferred bytes are what the operating system saw this process read and write. The difference is not an error: it holds IO that belongs to no mount (logs, the cache database, the pipe to this window) and misses whatever the source fetched in a process of its own.</translation></message>
     <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
     <message><source>stats.process.io.read</source><translation>Read</translation></message>
     <message><source>stats.process.io.write</source><translation>Written</translation></message>

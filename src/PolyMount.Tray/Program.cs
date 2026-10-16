@@ -300,6 +300,7 @@ internal static class Program
                 stats.CaptureCharts(capture);
                 stats.CaptureRecording(Path.Combine(capture, "recording.png"));
                 stats.CaptureProcess(capture);
+                stats.CaptureHeld(capture);
                 editor.CaptureCacheAction(Path.Combine(capture, "cache-action.png"));
             }
             if (ticks == 20)
@@ -323,9 +324,15 @@ internal static class Program
             {
                 // A catalog that is missing a key answers with the key itself, which is what the
                 // window would then show, so every string these windows name is asked for here.
+                // Every string these windows name is asked for, so a catalog that lost one - a
+                // resource bundle built before the catalog was, for instance - fails here rather
+                // than quietly painting the key itself into a chart title.
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
-                    "stats.process.handles", "stats.process.figures", "stats.process.definition" })
+                    "stats.process.handles", "stats.process.figures", "stats.process.definition",
+                    "stats.process.io", "stats.process.io.read", "stats.process.io.write",
+                    "stats.layerHeld", "stats.layerHeld.definition",
+                    "stats.reconcile.bytes", "stats.reconcile.definition", "record.process" })
                     if (I18n.T(key) == key) failure = "Qt resource translation lookup failed: " + key;
                 I18n.SetLanguage(original);
             }
