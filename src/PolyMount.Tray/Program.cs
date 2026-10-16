@@ -499,6 +499,7 @@ internal static class Program
                 // photographed half empty.
                 stats.DrawEverything();
                     stats.VerifyResponseSampling();
+                    stats.VerifyAccessSplit();
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
                     stats.VerifyCharts();

@@ -105,13 +105,33 @@ internal sealed class ChartPreview : QWidget
             new("memory-cache", "#2563eb", 48213, 0), new("cache", "#0891b2", 12044, 0),
             new("overlay", "#059669", 3120, 908), new("svn", "#f59e0b", 1402, 0)
         },
-        // Who asked over the same window: two tools doing the reading, one of them writing too, and
-        // a background service that only shows up because it read something.
-        new List<AccessSlice>
+        // Who asked over the same window: two tools doing the reading, one of them writing too, a
+        // background service that only shows up because it read something, a folded tail, and last
+        // the service's own read-ahead, which no process asked for. The pieces are arranged so that
+        // each layer's column adds up to that layer's slice of the circle above — which is what the
+        // card is for, and what a fixture has to get right or the picture lies.
+        new List<AccessRow>
         {
-            new("Code.exe", "#7c3aed", 39104, 640), new("Explorer.EXE", "#0891b2", 14822, 12),
-            new("svn.exe", "#f59e0b", 6102, 0), new("MsMpEng.exe", "#94a3b8", 4201, 0)
+            Row("Code.exe", ("memory-cache", 30000, 0), ("cache", 3904, 0), ("overlay", 2600, 620)),
+            Row("Explorer.EXE", ("memory-cache", 11000, 0), ("cache", 4200, 0), ("overlay", 300, 288)),
+            Row("svn.exe", ("memory-cache", 4300, 0), ("cache", 1802, 0)),
+            Row("MsMpEng.exe", ("memory-cache", 1500, 0), ("cache", 700, 0), ("overlay", 220, 0)),
+            Row(I18n.T("stats.access.other"), ("cache", 1438, 0), ("memory-cache", 413, 0)),
+            Row(I18n.T("stats.process.unattributed"), ("svn", 1402, 0), ("memory-cache", 1000, 0))
         });
+    }
+
+    /// <summary>One caller's row from the counts a reader would see: the pieces the bar is made of,
+    /// in the colours the layer list gives them.</summary>
+    private static AccessRow Row(string name, params (string Layer, long Reads, long Writes)[] parts) =>
+        new(name, parts.Select(part => new AccessPart(part.Layer, Colour(part.Layer), part.Reads, part.Writes)).ToList());
+
+    /// <summary>The colour a layer is drawn in, from the same list the circle and the trend cards are
+    /// drawn from.</summary>
+    private static string Colour(string layer)
+    {
+        foreach (var (name, color) in Layers) if (name == layer) return color;
+        return "#64748B";
     }
 
     /// <summary>One window of readings, one per second: what the layers served, what they hold and

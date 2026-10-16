@@ -602,11 +602,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 throw new InvalidOperationException(
                     $"{chart.TitleKey} had to elide its value labels to fit its plot: {areas}");
         }
-        // The access section's four circles are cards of the same kind and squeeze the same way. What
-        // a squeeze does to them is worse than to a chart: a pie below its own width is one whose
-        // legend has been cut, and a legend of three-letter names is a circle nobody can read —
-        // measured with four of them across the page instead of two, which is why they are two to a
-        // row.
+        // The access section's cards are of the same kind and squeeze the same way. What a squeeze
+        // does to them is worse than to a chart: a circle below its own width is one whose legend has
+        // been cut, and a row of bars squeezed under its names is one whose numbers have been — so
+        // they are two to a row rather than four.
         foreach (var (title, width, height, minWidth, minHeight) in _accessPie.Cards)
             if (width < minWidth || height < minHeight)
                 throw new InvalidOperationException(
@@ -669,6 +668,133 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         using var image = _table.Grab();
         image.Save(path);
     }
+    /// <summary>How many callers the access cards name before the rest are folded into one row. A
+    /// card is 250 px tall and a row wants up to 26 of them, so seven rows is what fits — the named
+    /// callers, the fold's own row, and the service's unattributed one.</summary>
+    private const int AccessNamedCallers = 5;
+
+    /// <summary>The access section's two readings of one window: the layers' own counts, which the
+    /// circle is drawn from, and the same counts split by the caller that asked for them, which the
+    /// rows beside it are drawn from. Built here rather than inside the render loop so that the
+    /// smoke run can put a fixture through it and add the rows up against the circle — agreeing is
+    /// the one property this section exists for.
+    /// </summary>
+    internal static (List<AccessSlice> Layers, List<AccessRow> Callers) AccessSlices(
+        IReadOnlyList<MountMetrics> metrics, string selected)
+    {
+        var chosen = metrics.Where(m => selected.Length == 0 || m.Mount == selected).ToList();
+        // Which colour a layer is drawn in, so that a bar's pieces are the circle's slices by more
+        // than their names: one layer keeps one colour on both sides of the card.
+        var colors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var layer in chosen.SelectMany(m => m.Layers))
+            if (!colors.ContainsKey(layer.Name))
+                colors[layer.Name] = string.IsNullOrEmpty(layer.Color) ? "#64748B" : layer.Color;
+
+        var layers = chosen.SelectMany(m => m.Layers.Select(layer => (Mount: m.Mount, Layer: layer)))
+            .Select(row => new AccessSlice(
+                selected.Length == 0 ? row.Mount + "/" + row.Layer.Name
+                    : string.IsNullOrEmpty(row.Layer.DisplayName) ? row.Layer.Name : row.Layer.DisplayName,
+                string.IsNullOrEmpty(row.Layer.Color) ? "#64748B" : row.Layer.Color,
+                row.Layer.Hits, row.Layer.Writes))
+            .ToList();
+
+        // Who asked, over the same window, ranked and folded together: one application may be in two
+        // mounts' answers, so the fold is over the merged list rather than per instance — which is
+        // also why Core sends counts rather than shares for these. Ranked by what the layers did on
+        // a caller's behalf rather than by the requests it made, because that is what the bars are
+        // drawn from: a fold keeping the busiest callers by requests could drop the busiest by layer
+        // traffic, which is the row the card is here to show.
+        var callers = ProcessFold.Top(
+            chosen.SelectMany(m => m.Processes).ToList(),
+            AccessNamedCallers,
+            row => row.ByLayer.Sum(part => part.Reads + part.Writes));
+        var rows = callers.Select(row => new AccessRow(
+            row.Other ? I18n.T("stats.access.other")
+                : row.Name.Length > 0 ? row.Name : I18n.F("stats.process.pid", row.Pid),
+            Parts(row.ByLayer, colors))).ToList();
+        // What nobody asked for: the read-ahead and the warm-up the service did for itself. It is a
+        // row like any other here, because the circle beside these rows counts that work — it was
+        // in the layers' account and in no process's, which is the whole of why the two circles this
+        // section used to draw could not be added up against each other.
+        var unattributed = Parts(chosen.SelectMany(m => m.Unattributed), colors);
+        if (unattributed.Count > 0)
+            rows.Add(new AccessRow(I18n.T("stats.process.unattributed"), unattributed));
+        return (layers, rows.OrderByDescending(row => row.Parts.Sum(part => part.Reads + part.Writes)).ToList());
+    }
+
+    /// <summary>The pieces of one bar: what each layer did for one caller, merged across the mounts
+    /// that answered for it, in the colours the circle beside it uses.</summary>
+    private static List<AccessPart> Parts(IEnumerable<ProcessLayerCount> counts, Dictionary<string, string> colors)
+    {
+        var merged = new Dictionary<string, (long Reads, long Writes)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var count in counts)
+        {
+            merged.TryGetValue(count.Name, out var held);
+            merged[count.Name] = (held.Reads + count.Reads, held.Writes + count.Writes);
+        }
+        return merged
+            .OrderByDescending(entry => entry.Value.Reads + entry.Value.Writes)
+            .Select(entry => new AccessPart(entry.Key,
+                colors.TryGetValue(entry.Key, out var color) ? color : "#64748B",
+                entry.Value.Reads, entry.Value.Writes))
+            .ToList();
+    }
+
+    /// <summary>What the access section is for, pinned: the rows beside a circle are the same
+    /// traffic as the circle, split by who asked, so every layer's row counts have to add up to that
+    /// layer's slice — the service's own work included. That last row is the one that used to be
+    /// missing, and without it the two ways of reading the window could not be checked against each
+    /// other at all.</summary>
+    internal void VerifyAccessSplit()
+    {
+        var fixture = new MountMetrics
+        {
+            Mount = "m",
+            Layers = new()
+            {
+                new() { Name = "cache", Color = "#0891b2", Hits = 300, Writes = 20 },
+                new() { Name = "svn", Color = "#f59e0b", Hits = 40 }
+            },
+            Processes = new()
+            {
+                new()
+                {
+                    Pid = 11, Name = "Code.exe", Reads = 200, Writes = 20,
+                    ByLayer = new() { new() { Name = "cache", Reads = 160, Writes = 20 }, new() { Name = "svn", Reads = 40 } }
+                },
+                new()
+                {
+                    Pid = 22, Name = "explorer.exe", Reads = 100,
+                    ByLayer = new() { new() { Name = "cache", Reads = 100 } }
+                }
+            },
+            Unattributed = new() { new() { Name = "cache", Reads = 40 } }
+        };
+        var (layers, callers) = AccessSlices(new[] { fixture }, "");
+        if (callers.Count != 3) throw new InvalidOperationException($"The access card drew {callers.Count} rows for two callers and the service's own work");
+        foreach (var layer in fixture.Layers)
+        {
+            long reads = callers.Sum(row => row.Parts.Where(part => part.Name == layer.Name).Sum(part => part.Reads));
+            long writes = callers.Sum(row => row.Parts.Where(part => part.Name == layer.Name).Sum(part => part.Writes));
+            if (reads != layer.Hits || writes != layer.Writes)
+                throw new InvalidOperationException(
+                    $"The rows account for {reads} reads and {writes} writes on {layer.Name} where the circle says "
+                    + $"{layer.Hits} and {layer.Writes}");
+        }
+        long drawn = callers.Sum(row => row.Parts.Sum(part => part.Reads + part.Writes));
+        long circled = layers.Sum(slice => slice.Reads + slice.Writes);
+        if (drawn != circled)
+            throw new InvalidOperationException($"The rows add up to {drawn} against a circle of {circled}");
+        // The colour a piece is drawn in is the colour its slice is drawn in, or the bar says one
+        // thing and the legend beside it another.
+        foreach (var part in callers.SelectMany(row => row.Parts))
+        {
+            string expected = fixture.Layers.Single(layer => layer.Name == part.Name).Color;
+            if (part.Color != expected)
+                throw new InvalidOperationException($"{part.Name} is drawn {part.Color} in the rows and {expected} in the circle");
+        }
+    }
+
     internal void VerifyResponseSampling()
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))
@@ -1704,21 +1830,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var accessRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
         long total = accessRows.Sum(r => r.Layer.Hits + r.Layer.Writes);
-        var slices = accessRows.Select(r => new AccessSlice(selected == "" ? r.Mount + "/" + r.Layer.Name
-            : string.IsNullOrEmpty(r.Layer.DisplayName) ? r.Layer.Name : r.Layer.DisplayName,
-            string.IsNullOrEmpty(r.Layer.Color) ? "#64748B" : r.Layer.Color, r.Layer.Hits, r.Layer.Writes)).ToList();
-        // Who asked, over the same window, ranked and folded together: one application may be in two
-        // mounts' answers, so the fold is over the merged list rather than per instance — which is
-        // also why Core sends counts rather than shares for these. The row that stands for what was
-        // left over, and a process whose own name could not be read, are named by the page.
-        var processRows = _accessMetrics.Where(m => selected == "" || m.Mount == selected)
-            .SelectMany(m => m.Processes).ToList();
-        var processSlices = ProcessFold.Top(processRows).Select(row => new AccessSlice(
-            row.Other ? I18n.T("stats.access.other")
-                : row.Name.Length > 0 ? row.Name : I18n.F("stats.process.pid", row.Pid),
-            row.Other ? "#94A3B8" : string.IsNullOrEmpty(row.Color) ? "#64748B" : row.Color,
-            row.Reads, row.Writes)).ToList();
-        _accessPie.SetSlices(slices, processSlices);
+        var (slices, callers) = AccessSlices(_accessMetrics, selected);
+        _accessPie.SetSlices(slices, callers);
         // The line the layer section keeps while it is folded: how many layers there are and what
         // they served between them, which is enough to tell an instance that is working from one
         // that is not, without opening anything. The chart cards carry their own legend — the same
