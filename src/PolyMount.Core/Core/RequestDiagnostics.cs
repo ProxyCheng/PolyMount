@@ -137,14 +137,17 @@ public sealed class RequestDiagnostics : IDisposable
         private readonly Scope? _parent;
         private readonly string _operation, _path;
         private readonly int _thread = Environment.CurrentManagedThreadId;
-        private readonly Stopwatch _watch = Stopwatch.StartNew();
+        /// <summary>A timestamp, not a <see cref="Stopwatch"/>: a scope is built for every request,
+        /// a stopwatch object is forty bytes of garbage per request, and all that is ever asked of
+        /// it is how long ago it started.</summary>
+        private readonly long _startedTicks = Stopwatch.GetTimestamp();
         private readonly bool _suppressed;
         private string _stage = "running";
         private int _finished;
         internal long Id { get; }
         internal int ProcessId { get; }
         internal bool Trace { get; }
-        internal long ElapsedMs => _watch.ElapsedMilliseconds;
+        internal long ElapsedMs => (Stopwatch.GetTimestamp() - _startedTicks) * 1000L / Stopwatch.Frequency;
         internal long LastReportMs = -5000;
 
         internal Scope(RequestDiagnostics owner, Scope? parent, string operation, string path, int processId, bool suppressed)
