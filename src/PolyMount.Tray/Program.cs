@@ -313,6 +313,7 @@ internal static class Program
         var timer = new QTimer();
         int ticks = 0;
         string original = I18n.Language;
+        DateTime awayFrom = DateTime.MinValue;
         string? failure = null;
         ApiRuntime.UnhandledCallbackException += (context, ex) => failure = context + ": " + ex;
         timer.Timeout += () =>
@@ -351,6 +352,18 @@ internal static class Program
                 editor.SmokeInteractions();
                 dashboard.SmokeSilentUpdate();
                 I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
+            }
+            // Step away from the performance tab and back again, the way a reader glancing at
+            // another tab does — Qt hides the page it is not showing — and read what the page took
+            // down while it was not on screen: a page that pauses when it is not on show comes back
+            // to a hole where the time it was away should be.
+            if (ticks == 22) { awayFrom = DateTime.UtcNow; stats.Hide(); }
+            if (ticks == 48)
+            {
+                var until = DateTime.UtcNow;
+                stats.Show();
+                try { stats.VerifyWatchedWhileHidden(awayFrom, until); }
+                catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks == 36 && capture != null)
             {

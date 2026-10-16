@@ -9,7 +9,7 @@ namespace PolyMount.Tray;
 
 /// <summary>Task-manager style performance charts. The page samples asynchronously at a rate the
 /// reader chooses; every figure on it is a rate, so the line reads the same at any of them.</summary>
-internal sealed class StatsWindow : QWidget, ICloseGuard
+internal sealed class StatsWindow : QWidget, ICloseGuard, IParked
 {
     private readonly QWidget _page;
     private readonly QComboBox _mount;
@@ -116,7 +116,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private const int TableRowHeight = 36;
     private List<MountMetrics> _latest = new();
     private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds)>? _pending;
-    private bool _paused, _requested, _wasVisible;
+    private bool _paused, _requested;
+    /// <summary>Whether the workspace has put this page away. A page is parked when its tab is
+    /// closed and kept, so that reopening that tab finds the same charts on it; that is the one
+    /// thing that stops it watching, and it is told rather than left to work it out from whether it
+    /// is on screen. See <see cref="IParked"/>.</summary>
+    private bool _parked;
     private int _epoch, _requestEpoch;
     private DateTime _next;
     /// <summary>When the last accepted sample was taken, which is what the next window starts
@@ -335,10 +340,51 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         Show();
         Raise();
         ActivateWindow();
-        // Watching starts here: the first sample measures the nominal interval rather than the
-        // time the window spent closed, so a hidden window is not billed to the point after it.
-        _lastSample = DateTime.MinValue;
+        // The page has been watching throughout, so what is on screen is the last minute of it and
+        // there is no gap to make up for: this only asks for what is happening now rather than
+        // waiting out the interval that is already running.
         _requested = true;
+    }
+
+    /// <summary>The page is on screen again. Qt shows a page whenever its tab is selected, so this
+    /// also fires on a reader stepping back to it — where there is nothing to do — and only a page
+    /// that had been put away starts watching again here.
+    /// </summary>
+    public override void ShowEvent(QShowEvent e)
+    {
+        base.ShowEvent(e);
+        if (!_parked) return;
+        _parked = false;
+        _timer.Start(100);
+        _requested = true;
+    }
+
+    /// <summary>Put away: the tab was closed and the workspace keeps this page for reopening it.
+    /// What stops is the watching — nothing asks the instance anything while nobody has the page
+    /// open — and what is kept is everything already watched, so the tab comes back to the charts it
+    /// had rather than to a card that starts from now.</summary>
+    void IParked.Parked()
+    {
+        _parked = true;
+        _timer.Stop();
+    }
+
+    /// <summary>Whether this page is watching its instance: not paused, not put away, and its timer
+    /// running. For the smoke run, which parks and re-opens a page inside one turn of the event loop
+    /// and has no second to wait for a sample it could count instead.</summary>
+    internal bool Watching => !_parked && !_paused && _timer.IsActive();
+
+    /// <summary>Self-check: a page that is not on screen keeps watching. The smoke run steps to
+    /// another tab, waits a couple of seconds and steps back; a page that pauses when it is not on
+    /// show comes back to a hole where the time it was away should be, which is what its reader sees
+    /// as a line that stops and starts again.</summary>
+    internal void VerifyWatchedWhileHidden(DateTime from, DateTime until)
+    {
+        var samples = _history.GetValueOrDefault(_instanceName ?? "") ?? new();
+        int readings = samples.Count(sample => sample.Time > from && sample.Time < until);
+        if (readings == 0)
+            throw new InvalidOperationException(
+                $"Nothing was taken down in the {(until - from).TotalSeconds:0.#} seconds this page's tab was not on show");
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
@@ -983,8 +1029,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     private void Tick()
     {
-        bool visible = IsVisible();
-        if (!visible && _wasVisible) _epoch++;
+        // What a page samples for is the tab it is on, not the picture it is showing: a reader who
+        // steps to another tab for a moment and comes back must not find a hole in the line, so a
+        // page that is merely not on show keeps watching. Only being put away stops it (see
+        // IParked), which is what closing its tab does — and its timer is stopped with it.
+        bool watching = !_parked && !_paused;
         if (_pending is { IsCompleted: true })
         {
             var task = _pending;
@@ -993,7 +1042,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             {
                 var sample = task.GetAwaiter().GetResult();
                 AcceptProcess(sample.Process, DateTime.UtcNow);
-                if (_requestEpoch == _epoch && !_paused && visible)
+                if (_requestEpoch == _epoch && watching)
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
@@ -1042,16 +1091,17 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             }
             catch (Exception ex)
             {
-                if (!_paused && visible) _status.SetText(T("stats.gap") + " · " + ex.Message);
+                if (watching) _status.SetText(T("stats.gap") + " · " + ex.Message);
             }
         }
-        if (visible && !_paused && _pending == null)
+        if (watching && _pending == null)
         {
             DateTime now = DateTime.UtcNow;
             // Watching starts here, resumes here, or follows a rate the reader just changed: the
-            // next sample then measures the nominal interval rather than however long the window
-            // spent hidden, paused or on the old rate.
-            bool fresh = _requested || !_wasVisible || _lastSample == DateTime.MinValue;
+            // next sample then measures the nominal interval rather than however long the page spent
+            // paused or on the old rate. A page that has been watching all along is not fresh, and
+            // its next sample covers the time since the last one it took.
+            bool fresh = _requested || _lastSample == DateTime.MinValue;
             bool trendsDue = fresh || now >= _next;
             // The 60-second access window is the expensive half of a request and its readers are the
             // table and the pie, so it keeps a once-a-second schedule of its own instead of riding
@@ -1085,7 +1135,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 });
             }
         }
-        _wasVisible = visible;
     }
 
 
