@@ -1,20 +1,28 @@
 <#
 .SYNOPSIS
-  Stop -> publish in place -> restart PolyMount. Invoked by ..\Update.bat.
+  Publish PolyMount, restart only what actually changed. Invoked by ..\Update.bat.
 .DESCRIPTION
   Preserves config.json and layer data. Supports interactive hosting and the installed
   PolyMount Windows service. Run as administrator when updating an installed service.
+
+  Nothing running is stopped until it is known that it has to be: the sources the deployed
+  service and tray were built from are recorded next to them, and a run that finds them
+  unchanged leaves every process - the supervisor, the instance workers behind their mounts,
+  and the tray with whatever windows the reader has open - exactly as it found them. A build
+  that changed only the tray restarts the tray alone. -Force restarts both whatever the
+  comparison says; -TrayOnly never touches the service, comparison included.
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
     [string]$PipeName = 'PolyMount.Control',
-    # Publish and restart the tray alone, leaving the supervisor and every instance worker
-    # running: the mounts, their caches and whatever they are warming stay untouched. For a
-    # change that is the tray's own - a window, a chart - stopping the backend for it only
-    # costs the reader a remount.
-    [switch]$TrayOnly
+    # Publish and restart the tray alone: the service is not stopped, not published and not
+    # compared. For a change that is the tray's own, this is what the comparison would decide
+    # anyway - asking for it saves the service's publish as well.
+    [switch]$TrayOnly,
+    # Restart both even if nothing that would be published has changed.
+    [switch]$Force
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +33,11 @@ $serviceDir = Join-Path $repo "src\PolyMount.Service\bin\$Configuration\net10.0-
 $trayDir = Join-Path $repo "src\PolyMount.Tray\bin\$Configuration\net10.0-windows"
 $serviceExe = Join-Path $serviceDir 'PolyMount.Service.exe'
 $trayExe = Join-Path $trayDir 'PolyMount.Tray.exe'
+# What the two deployments are built from. A file added, removed or edited anywhere under these
+# is a deployment; a build that comes out the same is not, and neither is a file touched and put
+# back.
+$backendRoots = @('src\PolyMount.Core', 'src\PolyMount.Service', 'src\plugins')
+$trayRoots = @('src\PolyMount.Tray')
 $installed = Get-Service -Name 'PolyMount' -ErrorAction SilentlyContinue
 
 function Send-Control([string]$Command, [string]$TargetPipe = $PipeName) {
@@ -44,16 +57,88 @@ function Send-Control([string]$Command, [string]$TargetPipe = $PipeName) {
     finally { $pipe.Dispose() }
 }
 
-function Start-PolyMount {
-    if ($installed) {
-        Start-Service -Name 'PolyMount'
+# The state of the sources a deployment would be built from: every file under the given roots,
+# its path and the hash of its contents, in one hash. Deciding on this rather than on a build is
+# what makes a no-op run possible at all - a running process holds its own folder open, so
+# publishing beside itself to be compared only works while nothing has changed, which is exactly
+# the case that does not need deciding.
+function Get-SourceState([string[]]$Roots) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($root in $Roots) {
+        $full = Join-Path $repo $root
+        if (-not (Test-Path -LiteralPath $full)) { continue }
+        foreach ($file in (Get-ChildItem -LiteralPath $full -Recurse -File |
+                Where-Object { $_.FullName -notmatch '\\(bin|obj)\\' } | Sort-Object FullName)) {
+            $lines.Add(("{0}|{1}" -f $file.FullName.Substring($repo.Length),
+                (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash))
+        }
     }
-    else {
-        Start-Process -FilePath $serviceExe -WorkingDirectory $serviceDir -WindowStyle Hidden | Out-Null
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        # As is, the sources are the state; the hash only has to be comparable with itself.
+        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+        return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
     }
+    finally { $sha.Dispose() }
+}
+
+# What the deployment in that folder was built from, as written when it was deployed: absent
+# means nothing has been deployed here by this script, which is a deployment to do.
+function Get-DeployedState([string]$Directory) {
+    $manifest = Join-Path $Directory '.deployed'
+    if (-not (Test-Path -LiteralPath $manifest)) { return $null }
+    return (Get-Content -LiteralPath $manifest -Raw).Trim()
+}
+
+function Set-DeployedState([string]$Directory, [string]$State) {
+    Set-Content -LiteralPath (Join-Path $Directory '.deployed') -Value $State -Encoding ascii
+}
+
+function Publish-Project([string]$Project, [string]$Destination) {
+    if (-not (Test-Path -LiteralPath (Split-Path $Destination -Parent))) {
+        New-Item -ItemType Directory -Path (Split-Path $Destination -Parent) -Force | Out-Null
+    }
+    & dotnet publish $Project -c $Configuration --self-contained false -o $Destination --nologo -v minimal
+    if ($LASTEXITCODE -ne 0) { throw "Publish failed: $Project" }
+}
+
+function Start-Supervisor {
+    if ($installed) { Start-Service -Name 'PolyMount' }
+    else { Start-Process -FilePath $serviceExe -WorkingDirectory $serviceDir -WindowStyle Hidden | Out-Null }
+}
+
+function Start-Tray {
+    Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
+}
+
+function Stop-Supervisor {
+    $running = @(Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) { return }
+    try { Send-Control 'shutdown' | Out-Null }
+    catch {
+        if ($installed) { Stop-Service -Name 'PolyMount' }
+        else { throw "Service did not accept graceful shutdown ($($_.Exception.Message)); update cancelled." }
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ((Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) {
+        throw 'Service did not exit within 30 seconds; refusing to overwrite locked binaries.'
+    }
+}
+
+function Stop-Tray {
+    Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue | Stop-Process
+    Start-Sleep -Milliseconds 500
+}
+
+# Waits for the supervisor and every instance worker to answer, and prints what is mounted.
+function Wait-ForMounts {
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     $pending = @()
     $ready = $false
+    $response = $null
     $lastError = 'no answer from the control pipe'
     do {
         try {
@@ -77,12 +162,22 @@ function Start-PolyMount {
     } while (-not $ready -and [DateTime]::UtcNow -lt $deadline)
     if (-not $response) { throw "Service did not become ready within 60 seconds: $lastError. Check its log." }
     if (-not $ready) { throw "Service is responding, but mounts did not become ready within 60 seconds: $lastError. Check its log." }
-    Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
     foreach ($mount in $response.Mounts) {
         if ($mount.Error) { Write-Warning "Mount '$($mount.Name)': $($mount.Error)" }
         else { Write-Host "  $($mount.Name): mounted=$($mount.Mounted), $($mount.MountPoint), worker pid $($mount.WorkerPid)" }
     }
 }
+
+function Assert-Administrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
+        throw 'An installed Windows service was detected. Run Update.bat as administrator.'
+    }
+}
+
+function ServiceRunning { return [bool](Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) }
+function TrayRunning { return [bool](Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue) }
 
 try {
     # Perform preflight before stopping a running instance.
@@ -90,12 +185,10 @@ try {
     if (-not (Test-Path -LiteralPath $serviceProject) -or -not (Test-Path -LiteralPath $trayProject)) {
         throw "PolyMount projects were not found under $repo"
     }
-    if ($installed -and -not $TrayOnly) {
-        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-            throw 'An installed Windows service was detected. Run Update.bat as administrator.'
-        }
+    if ($installed) {
+        # Which build the installed service runs from is a question the comparison cannot answer:
+        # its files would look deployed-and-different for the wrong configuration and the publish
+        # would land beside them.
         $registration = Get-CimInstance Win32_Service -Filter "Name='PolyMount'"
         $registeredPath = $registration.PathName.Trim().Trim('"')
         if (-not [string]::Equals($registeredPath, $serviceExe, [StringComparison]::OrdinalIgnoreCase)) {
@@ -107,13 +200,12 @@ try {
         # Nothing here touches the service: it is not stopped, not published and not asked
         # anything. The tray is the only process whose files this run replaces.
         Write-Host '[1/2] Stopping the tray (the service keeps running)...'
-        Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue | Stop-Process
-        Start-Sleep -Milliseconds 500
+        Stop-Tray
         Write-Host '[2/2] Publishing the tray...'
-        & dotnet publish $trayProject -c $Configuration --self-contained false -o $trayDir --nologo -v minimal
-        if ($LASTEXITCODE -ne 0) { throw "Publish failed: $trayProject. The service is untouched and still running." }
+        Publish-Project $trayProject $trayDir
         if (-not (Test-Path -LiteralPath $trayExe)) { throw 'Published tray executable was not found.' }
-        Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
+        Start-Tray
+        Set-DeployedState $trayDir ("{0} {1}" -f $Configuration, (Get-SourceState $trayRoots))
         try {
             $status = Send-Control 'status'
             Write-Host ("Tray-only update complete. The service answered with {0} instance(s) (unchanged)." -f @($status.Mounts).Count) -ForegroundColor Green
@@ -124,38 +216,52 @@ try {
         exit 0
     }
 
-    Write-Host "[1/3] Stopping PolyMount ($Configuration)..."
-    $running = @(Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue)
-    if ($running.Count -gt 0) {
-        try { Send-Control 'shutdown' | Out-Null }
-        catch {
-            if ($installed) { Stop-Service -Name 'PolyMount' }
-            else { throw "Service did not accept graceful shutdown ($($_.Exception.Message)); update cancelled." }
-        }
-        $deadline = [DateTime]::UtcNow.AddSeconds(30)
-        while ((Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
-            Start-Sleep -Milliseconds 250
-        }
-        if (Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) {
-            throw 'Service did not exit within 30 seconds; refusing to overwrite locked binaries.'
-        }
+    Write-Host "[1/3] Comparing the sources with what is deployed ($Configuration)..."
+    $backendState = "{0} {1}" -f $Configuration, (Get-SourceState $backendRoots)
+    $trayState = "{0} {1}" -f $Configuration, (Get-SourceState $trayRoots)
+    $backendChanged = $Force -or -not (Test-Path -LiteralPath $serviceExe) -or (Get-DeployedState $serviceDir) -ne $backendState
+    $trayChanged = $Force -or -not (Test-Path -LiteralPath $trayExe) -or (Get-DeployedState $trayDir) -ne $trayState
+    # A process that is not running is work to do whatever the sources say: what is deployed is
+    # not what is being served.
+    if (-not (ServiceRunning)) { $backendChanged = $true }
+    if (-not (TrayRunning)) { $trayChanged = $true }
+    Write-Host ("  service, core and plugins: {0}" -f $(if ($backendChanged) { 'to deploy' } else { 'unchanged, left running' }))
+    Write-Host ("  tray:                      {0}" -f $(if ($trayChanged) { 'to deploy' } else { 'unchanged, left running' }))
+    if (-not $backendChanged -and -not $trayChanged) {
+        Write-Host 'Nothing to deploy: every process is already running what the sources build.' -ForegroundColor Green
+        exit 0
     }
-    Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue | Stop-Process
+    if ($backendChanged -and $installed) { Assert-Administrator }
 
-    Write-Host '[2/3] Publishing service and tray (configuration and layer data are preserved)...'
-    foreach ($target in @(@{ Project = $serviceProject; Directory = $serviceDir }, @{ Project = $trayProject; Directory = $trayDir })) {
-        if (-not (Test-Path -LiteralPath (Split-Path $target.Directory -Parent))) {
-            New-Item -ItemType Directory -Path (Split-Path $target.Directory -Parent) -Force | Out-Null
-        }
-        & dotnet publish $target.Project -c $Configuration --self-contained false -o $target.Directory --nologo -v minimal
-        if ($LASTEXITCODE -ne 0) { throw "Publish failed: $($target.Project). Service remains stopped." }
+    Write-Host '[2/3] Publishing and restarting what changed...'
+    if ($backendChanged) {
+        # The supervisor and its workers are stopped together: the workers are the service's own
+        # children, and the files being replaced are held open by the processes that loaded them.
+        Write-Host '  stopping the service (its instances are remounted when it comes back)...'
+        Stop-Supervisor
+        Publish-Project $serviceProject $serviceDir
+        & (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $serviceDir 'plugins') -Configuration $Configuration
+        if (-not (Test-Path -LiteralPath $serviceExe)) { throw 'Published service executable was not found.' }
     }
-    if (-not (Test-Path -LiteralPath $serviceExe) -or -not (Test-Path -LiteralPath $trayExe)) {
-        throw 'Published executables were not found.'
+    if ($trayChanged) {
+        Write-Host '  stopping the tray...'
+        Stop-Tray
+        Publish-Project $trayProject $trayDir
+        if (-not (Test-Path -LiteralPath $trayExe)) { throw 'Published tray executable was not found.' }
     }
-    & (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $serviceDir 'plugins') -Configuration $Configuration
-    Write-Host '[3/3] Restarting service and tray...'
-    Start-PolyMount
+
+    Write-Host '[3/3] Starting what was restarted...'
+    if ($backendChanged) {
+        Start-Supervisor
+        Wait-ForMounts
+        # Written once the deployment is serving, so a run that failed halfway is deployed again
+        # rather than taken for done.
+        Set-DeployedState $serviceDir $backendState
+    }
+    if ($trayChanged) {
+        Start-Tray
+        Set-DeployedState $trayDir $trayState
+    }
     Write-Host 'Update complete.' -ForegroundColor Green
     exit 0
 }
