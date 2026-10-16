@@ -46,8 +46,17 @@ public sealed class MetricsCollector
         public long Bytes;
         public long Writes;
         public long WriteBytes;
-        public long CostUs;
-        public long MaxCostUs;
+        /// <summary>Cost in nanoseconds, not microseconds: a read served from memory resolves in a
+        /// fraction of one, and whole microseconds throw that away - the layer then reads as free
+        /// while the time it took is real, and it lands in whatever account is left over.</summary>
+        public long CostNs;
+        public long MaxCostNs;
+        /// <summary>Requests as the file system boundary saw them, and the time they took. Only the
+        /// request ring uses these: a request belongs to no layer — that is the whole reason they
+        /// are kept apart — and the layers it was served by are already counted beside it.</summary>
+        public long Requests;
+        /// <summary>Nanoseconds, like the layer cost beside it, and for the same reason.</summary>
+        public long RequestNs;
     }
 
     private sealed class Ring
@@ -56,7 +65,7 @@ public sealed class MetricsCollector
     }
 
     /// <summary>What one layer's cells add up to over a window.</summary>
-    private readonly record struct Sums(long Reads, long Cached, long Bytes, long Writes, long WriteBytes, long CostUs, long MaxCostUs);
+    private readonly record struct Sums(long Reads, long Cached, long Bytes, long Writes, long WriteBytes, long CostNs, long MaxCostNs);
 
     /// <summary>The slot this collector was created in: the ring cannot have watched time before
     /// it existed, and saying so is what keeps a rate off a window the process never covered.</summary>
@@ -65,6 +74,11 @@ public sealed class MetricsCollector
     // One ring per layer. A layer's reads arrive on whichever thread WinFsp handed the request to,
     // so this is the one shared structure on the write path; the counters inside a cell are atomic.
     private readonly ConcurrentDictionary<string, Ring> _layers = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Every request, and how long it took, whatever answered it. The per-layer rings can
+    /// only charge a request to a layer that served it, so a lookup no layer answered for — which is
+    /// most of what an engine probing for files it may not have produces — would otherwise be time
+    /// nobody counted.</summary>
+    private readonly Ring _requests = new();
     private long _lastActivityMs;
 
     /// <summary>Until when reads and writes are counted, on the coarse clock. Nobody watching means
@@ -118,6 +132,20 @@ public sealed class MetricsCollector
     }
     public void RecordWrite(string layer, TimeSpan elapsed, long bytes) => Record(layer, elapsed, bytes, false, true);
 
+    /// <summary>One request, at the boundary that took it: whether a layer answered or not, and
+    /// however many layers were asked on the way. Recorded beside the layer's own count rather than
+    /// instead of it, so the two can be put next to each other later — the difference between them
+    /// is the time nothing accounted for.</summary>
+    public void RecordRequest(TimeSpan elapsed)
+    {
+        long now = Environment.TickCount64;
+        Volatile.Write(ref _lastActivityMs, now);
+        if (now >= Volatile.Read(ref _watchedUntilMs)) return;
+        ref Cell cell = ref CellAt(_requests, _slot());
+        Interlocked.Increment(ref cell.Requests);
+        Interlocked.Add(ref cell.RequestNs, elapsed.Ticks * 100);
+    }
+
     private void Record(string layer, TimeSpan elapsed, long bytes, bool cached, bool write)
     {
         // The activity stamp moves whether or not anyone is watching: the warm-up reads IdleFor to
@@ -142,13 +170,15 @@ public sealed class MetricsCollector
             Interlocked.Increment(ref cell.Reads);
             if (cached) Interlocked.Increment(ref cell.Cached);
             if (bytes > 0) Interlocked.Add(ref cell.Bytes, bytes);
-            long cost = (long)elapsed.TotalMicroseconds;
+            // Ticks are hundreds of nanoseconds, so this is exact: no rounding, and nothing that
+            // happened is dropped for being small.
+            long cost = elapsed.Ticks * 100;
             if (cost > 0)
             {
-                Interlocked.Add(ref cell.CostUs, cost);
+                Interlocked.Add(ref cell.CostNs, cost);
                 long seen;
-                while (cost > (seen = Volatile.Read(ref cell.MaxCostUs)) &&
-                       Interlocked.CompareExchange(ref cell.MaxCostUs, cost, seen) != seen)
+                while (cost > (seen = Volatile.Read(ref cell.MaxCostNs)) &&
+                       Interlocked.CompareExchange(ref cell.MaxCostNs, cost, seen) != seen)
                 {
                 }
             }
@@ -174,6 +204,11 @@ public sealed class MetricsCollector
             _lastLayer = layer;
             _lastRing = ring;
         }
+        return ref CellAt(ring, slot);
+    }
+
+    private static ref Cell CellAt(Ring ring, long slot)
+    {
         ref Cell cell = ref ring.Cells[slot % CellCount];
         long stamped = Volatile.Read(ref cell.Slot);
         if (stamped < slot)
@@ -183,8 +218,8 @@ public sealed class MetricsCollector
             cell.Bytes = 0;
             cell.Writes = 0;
             cell.WriteBytes = 0;
-            cell.CostUs = 0;
-            cell.MaxCostUs = 0;
+            cell.CostNs = 0;
+            cell.MaxCostNs = 0;
             Volatile.Write(ref cell.Slot, slot);
         }
         return ref cell;
@@ -227,8 +262,23 @@ public sealed class MetricsCollector
         // the start of time as this process counts it, and a negative slot is not an index.
         long oldest = Math.Max(0, now - slots + 1);
 
+        long requests = 0, requestNs = 0;
+        {
+            var cells = _requests.Cells;
+            int index = (int)(oldest % CellCount);
+            for (long slot = oldest; slot <= now; slot++)
+            {
+                if (Volatile.Read(ref cells[index].Slot) == slot)
+                {
+                    requests += Volatile.Read(ref cells[index].Requests);
+                    requestNs += Volatile.Read(ref cells[index].RequestNs);
+                }
+                if (++index == CellCount) index = 0;
+            }
+        }
+
         var totals = new Dictionary<string, Sums>(StringComparer.OrdinalIgnoreCase);
-        long reads = 0, cached = 0, writes = 0, costUs = 0;
+        long reads = 0, cached = 0, writes = 0, costNs = 0;
         foreach (var (name, ring) in _layers)
         {
             var cells = ring.Cells;
@@ -243,7 +293,7 @@ public sealed class MetricsCollector
                 if (Volatile.Read(ref cells[index].Slot) == slot)
                 {
                     long cellReads = Volatile.Read(ref cells[index].Reads);
-                    long cellCost = Volatile.Read(ref cells[index].CostUs);
+                    long cellCost = Volatile.Read(ref cells[index].CostNs);
                     totals.TryGetValue(name, out var sum);
                     totals[name] = new Sums(
                         sum.Reads + cellReads,
@@ -251,12 +301,12 @@ public sealed class MetricsCollector
                         sum.Bytes + Volatile.Read(ref cells[index].Bytes),
                         sum.Writes + Volatile.Read(ref cells[index].Writes),
                         sum.WriteBytes + Volatile.Read(ref cells[index].WriteBytes),
-                        sum.CostUs + cellCost,
-                        Math.Max(sum.MaxCostUs, Volatile.Read(ref cells[index].MaxCostUs)));
+                        sum.CostNs + cellCost,
+                        Math.Max(sum.MaxCostNs, Volatile.Read(ref cells[index].MaxCostNs)));
                     reads += cellReads;
                     cached += Volatile.Read(ref cells[index].Cached);
                     writes += Volatile.Read(ref cells[index].Writes);
-                    costUs += cellCost;
+                    costNs += cellCost;
                 }
                 if (++index == CellCount) index = 0;
             }
@@ -272,11 +322,13 @@ public sealed class MetricsCollector
         {
             Mount = mountName,
             WindowSeconds = windowSeconds,
+            RequestCount = requests,
+            RequestMs = requestNs / 1_000_000.0,
             MeasuredSeconds = Math.Max(0, now - watchedFrom + 1) * CellMilliseconds / 1000.0,
             TotalReads = reads,
             TotalWrites = writes,
             CacheHitPercent = reads == 0 ? 0 : 100.0 * cached / reads,
-            AvgCostMs = reads == 0 ? 0 : costUs / 1000.0 / reads
+            AvgCostMs = reads == 0 ? 0 : costNs / 1_000_000.0 / reads
         };
         long events = reads + writes;
         foreach (var (name, sum) in totals)
@@ -289,8 +341,8 @@ public sealed class MetricsCollector
                 Writes = sum.Writes,
                 AccessSharePercent = events == 0 ? 0 : 100.0 * (sum.Reads + sum.Writes) / events,
                 SharePercent = reads == 0 ? 0 : 100.0 * sum.Reads / reads,
-                AvgCostMs = sum.Reads == 0 ? 0 : sum.CostUs / 1000.0 / sum.Reads,
-                MaxCostMs = sum.MaxCostUs / 1000.0,
+                AvgCostMs = sum.Reads == 0 ? 0 : sum.CostNs / 1_000_000.0 / sum.Reads,
+                MaxCostMs = sum.MaxCostNs / 1_000_000.0,
                 Bytes = sum.Bytes,
                 WriteBytes = sum.WriteBytes
             });

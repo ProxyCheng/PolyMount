@@ -118,6 +118,10 @@ public sealed class VirtualFileSystem
         long epoch = Interlocked.Read(ref _resolutionEpoch);
         var watch = System.Diagnostics.Stopwatch.StartNew();
         bool found = Visible(path) && ResolveHeader(path, out entry, out index);
+        // Counted exactly where a layer would have been charged, so what is left over when the two
+        // are put together is the time in requests this account covers but nothing answered for —
+        // not the traffic it never claimed to cover.
+        if (recordAccess) Metrics?.RecordRequest(watch.Elapsed);
         if (recordAccess && index < _layers.Count)
             Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
         if (found && index < _layers.Count)
@@ -148,7 +152,11 @@ public sealed class VirtualFileSystem
         request?.Stage("resolving directory");
         path = VfsPath.Normalize(path);
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir) return new();
+        if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir)
+        {
+            if (recordAccess) Metrics?.RecordRequest(watch.Elapsed);
+            return new();
+        }
         // Provider objects are immutable directory snapshots. Copy before merging
         // upper child headers so unrelated reads and mutations can proceed.
         // The authoritative listing already contains its provider's child headers.
@@ -157,6 +165,7 @@ public sealed class VirtualFileSystem
         var items = value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _, index)
             ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
         if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
+        if (recordAccess) Metrics?.RecordRequest(watch.Elapsed);
         return items;
     }
     public Stream OpenRead(string path, out VfsEntry entry, bool speculative = false)
@@ -170,10 +179,19 @@ public sealed class VirtualFileSystem
             {
                 entry = new VfsEntry { Name = VfsPath.Name(path), Size = handle.Length, TimeUtc = open.LastWriteTimeUtc };
                 Metrics?.RecordRead(open.LayerName, TimeSpan.Zero, entry.Size);
+                Metrics?.RecordRequest(TimeSpan.Zero);
                 return handle;
             }
-            if (!Visible(path)) throw new VfsNotFoundException(path);
-            if (ResolveHeader(path, out var visibleHeader, out _) && visibleHeader.IsDir) throw new IOException("Path is a directory");
+            if (!Visible(path))
+            {
+                Metrics?.RecordRequest(TimeSpan.Zero);
+                throw new VfsNotFoundException(path);
+            }
+            if (ResolveHeader(path, out var visibleHeader, out _) && visibleHeader.IsDir)
+            {
+                Metrics?.RecordRequest(TimeSpan.Zero);
+                throw new IOException("Path is a directory");
+            }
             var watch = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < _layers.Count; i++)
             {
@@ -182,6 +200,9 @@ public sealed class VirtualFileSystem
                 if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
                 TouchBelow(path, i);
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
+                // The request the layer was just charged for, with the same elapsed: the two counts
+                // have to be about the same resolutions, or their difference means nothing.
+                Metrics?.RecordRequest(watch.Elapsed);
                 try
                 {
                     Fill(path, new(entry), stream, i);
@@ -283,6 +304,7 @@ public sealed class VirtualFileSystem
             foreach (var change in changes) if (change.Content != null) change.Content.Position = 0;
             if (!((IObjectLayer)layer).TryApply(changes)) continue;
             Metrics?.RecordWrite(layer.Name, watch.Elapsed, 0);
+            Metrics?.RecordRequest(watch.Elapsed);
             UpdateCachesAfterWrite(changes, layer);
             return layer;
         }

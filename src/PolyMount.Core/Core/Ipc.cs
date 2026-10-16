@@ -332,6 +332,12 @@ public sealed class MountMetrics
     public double MeasuredSeconds { get; set; }
     public long TotalReads { get; set; }
     public long TotalWrites { get; set; }
+    /// <summary>Requests taken at the file system boundary in this window, and the time they took,
+    /// whatever answered them. The layers can only be charged for the requests they served, so this
+    /// is the total the per-layer cost is measured against: what is left over is the time spent in
+    /// requests no layer answered for, and in the paths that record no cost per layer.</summary>
+    public long RequestCount { get; set; }
+    public double RequestMs { get; set; }
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();

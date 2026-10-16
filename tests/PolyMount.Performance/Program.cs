@@ -42,6 +42,25 @@ if (args.Contains("--metrics-cost"))
         concurrent.Stop();
         Console.WriteLine($"record x{threads,-2}    : {concurrent.Elapsed.TotalNanoseconds / (per * threads):0.0} ns/call  (aggregate, watching)");
     }
+    // What one request costs on top of the layer it was served by: every request is counted once,
+    // whatever answered it, so that the time in requests no layer answered for is visible at all.
+    // This is the number that decides whether that is worth having while a recording runs.
+    foreach (bool watching in new[] { false, true })
+    {
+        if (watching) collector.Watch();
+        else collector = new MetricsCollector();
+        for (int i = 0; i < 200_000; i++) collector.RecordRequest(elapsed);
+        watch.Restart();
+        for (int i = 0; i < count; i++) collector.RecordRequest(elapsed);
+        watch.Stop();
+        Console.WriteLine($"request, {(watching ? "watching" : "nobody watching"),-15}: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call");
+    }
+    collector.Watch();
+    for (int i = 0; i < 200_000; i++) { collector.RecordRequest(elapsed); collector.RecordRead("cache", elapsed, 0, true); }
+    watch.Restart();
+    for (int i = 0; i < count; i++) { collector.RecordRequest(elapsed); collector.RecordRead("cache", elapsed, 0, true); }
+    watch.Stop();
+    Console.WriteLine($"lookup (layer + request), watching: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call");
     foreach (double window in new[] { 0.1, 1.0, 60.0 })
     {
         const int snapshots = 2000;
@@ -51,7 +70,7 @@ if (args.Contains("--metrics-cost"))
         Console.WriteLine($"snapshot {window,5:0.#}s : {begin.Elapsed.TotalMicroseconds / snapshots:0.0} us/call");
     }
     var measured = collector.Snapshot("m", 60);
-    Console.WriteLine($"window says  : asked 60s, measured {measured.MeasuredSeconds:0.##}s, {measured.TotalReads:N0} reads over {measured.Layers.Count} layer(s)");
+    Console.WriteLine($"window says  : asked 60s, measured {measured.MeasuredSeconds:0.##}s, {measured.TotalReads:N0} reads over {measured.Layers.Count} layer(s), {measured.RequestCount:N0} requests / {measured.RequestMs:0.0} ms");
     return 0;
 }
 if (args.Contains("--warm-probe"))
