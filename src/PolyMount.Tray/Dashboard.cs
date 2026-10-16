@@ -31,6 +31,9 @@ internal sealed class Dashboard : QWidget
     private readonly TabWorkspace _tabs;
     private bool _quietPending;
     private Action? _queued;
+    /// <summary>Whether the window has been told it may go: the answer to the pages it asked, kept
+    /// so that closing it again does not ask them twice.</summary>
+    private bool _allowClose;
     private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet, bool ServiceAction = false);
     /// <summary>The theme picker's items, in the order the modes are numbered: its index is the mode
     /// the reader chose, which is why they are read by position and re-lettered where they stand
@@ -275,6 +278,34 @@ internal sealed class Dashboard : QWidget
         Update();
     }
 
+    /// <summary>Closing the window closes it. It used to hide itself and stay, which is what a tray
+    /// application usually does — the icon is the application and the window is one of its views —
+    /// but what that meant here is that the pages went on sampling, recording and holding drafts
+    /// while nobody was looking at them, and a reader who had just closed the window had every
+    /// reason to think they had stopped. So the window goes, and the tray icon is what keeps the
+    /// tray alive.
+    ///
+    /// What a page would be sorry to lose is asked first — the question a tab close asks, put to
+    /// each page in turn — and a page that would rather stay keeps the whole window open. A window
+    /// whose pages have nothing to lose is closed without a word, which is most of them.</summary>
+    public override void CloseEvent(QCloseEvent e)
+    {
+        if (_allowClose) { e.Accept(); return; }
+        e.Ignore();
+        _tabs.RequestCloseAll(() =>
+        {
+            _tabs.ShutDown();
+            _allowClose = true;
+            // Hidden and deleted rather than closed. This runs inside the close event the window is
+            // already in — a question a page asks is answered inside it too — and Qt refuses a close
+            // that re-enters one: the widget is already closing, so a nested Close() here returns
+            // saying it worked and does nothing at all. Hiding and deleting is what an accepted
+            // close amounts to, and it cannot be swallowed that way.
+            Hide();
+            DeleteLater();
+        });
+    }
+
     public void ShowWindow()
     {
         Show();
@@ -284,6 +315,53 @@ internal sealed class Dashboard : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>Self-check for closing the dashboard, in two steps because the interesting half of
+    /// it is asynchronous: closing a window makes it disappear now and deletes it when the event
+    /// loop gets its turn, so the window this one asks about is kept between the two calls.
+    ///
+    /// What is checked is that it goes rather than hiding itself: a window that had only hidden
+    /// would pass the first step and fail the second, which is exactly the difference between the
+    /// behaviour this replaced and the behaviour it wants. The pages it holds are what is asked
+    /// before it may go, and a page with something to lose asks a reader a question — which a smoke
+    /// run has nobody to answer, so this window keeps none: what that path does is what the pages'
+    /// own answers do, which their own steps check.</summary>
+    private static Dashboard? _closing;
+    private static bool _closingDestroyed;
+
+    internal static void CloseWindowForCheck()
+    {
+        var window = new Dashboard();
+        _closing = window;
+        _closingDestroyed = false;
+        // Whether it was destroyed is remembered as a flag rather than asked of the field: a
+        // destroyed widget reads as null (the binding's own `==`, so that `w != null` is the guard
+        // against using one), which makes `_closing == null` true for the very window being asked
+        // about. `is null` is the reference test — what a wrapper is, not what it holds.
+        window.Destroyed += _ => _closingDestroyed = true;
+        window.ShowWindow();
+        if (!window.IsVisible())
+            throw new InvalidOperationException("A dashboard that was just opened is not on screen");
+        // A page that would rather stay keeps the window open — asked first, and one page at a time.
+        var stubborn = new CheckPage { Refuses = true };
+        window._tabs.Open("check-window", () => stubborn, () => "check-window");
+        window.Close();
+        if (!window.IsVisible())
+            throw new InvalidOperationException("A page that asked to stay was closed anyway with the window it was in");
+        // And once it agrees, the window goes.
+        stubborn.Refuses = false;
+        window.Close();
+        if (window.IsVisible())
+            throw new InvalidOperationException("Closing the dashboard left it on screen");
+    }
+
+    internal static void VerifyWindowClosed()
+    {
+        if (_closing is null) throw new InvalidOperationException("No dashboard was closed to check");
+        if (!_closingDestroyed)
+            throw new InvalidOperationException("The dashboard hid itself rather than closing: it is still here");
+        _closing = null;
+    }
 
     /// <summary>Self-check for the sidebar's two pickers: each is at least as wide as the widest
     /// thing it can show, in either language. A picker narrower than its own items draws the name as

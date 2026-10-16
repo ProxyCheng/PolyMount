@@ -9,6 +9,22 @@ internal interface ICloseGuard
     void RequestClose(Action proceed);
 }
 
+/// <summary>A page whose answer to "may I close" is whatever a check sets it to. The real pages ask
+/// a reader — about a draft, about a recording — and a smoke run has nobody to answer, so what those
+/// answer is checked by their own steps and what the *window* does with an answer is checked with
+/// this: a page that would rather stay, and then one that does not.</summary>
+internal sealed class CheckPage : QWidget, ICloseGuard
+{
+    /// <summary>Whether this page asks to stay when it is asked to go.</summary>
+    public bool Refuses { get; set; }
+
+    void ICloseGuard.RequestClose(Action proceed)
+    {
+        if (Refuses) return;
+        proceed();
+    }
+}
+
 /// <summary>Native tab groups and splitter trees; moving a page always reparents the same widget.</summary>
 internal sealed class TabWorkspace : QWidget
 {
@@ -172,6 +188,61 @@ internal sealed class TabWorkspace : QWidget
         page.Widget.DeleteLater();
         Prune(group);
     }
+    /// <summary>Puts the close question to each of those pages in turn and calls
+    /// <paramref name="proceed"/> once they have all said yes. A page answers by calling what it was
+    /// given; one that would rather stay simply does not, and nothing further is asked — so a reader
+    /// who cancels the last question has cancelled the whole thing, whichever window it was.</summary>
+    private static void Ask(IReadOnlyList<Page> pages, Action proceed)
+    {
+        var guards = pages.Where(page => page.Widget is ICloseGuard)
+            .Select(page => (ICloseGuard)page.Widget).ToList();
+        int next = 0;
+        void Once()
+        {
+            if (next >= guards.Count) { proceed(); return; }
+            guards[next++].RequestClose(Once);
+        }
+        Once();
+    }
+
+    /// <summary>The pages this workspace holds, which is what a window of it asks before it goes.</summary>
+    internal void RequestCloseAll(Action proceed) =>
+        Ask(_pages.Values.Where(page => page.Group != null).ToList(), proceed);
+
+    /// <summary>Closing one of the detached windows closes what is in it. Sending its pages back to
+    /// the window they were pulled out of was the other answer, and it is not what a reader closing
+    /// a window means: the things in it go, which is what every other close on this workspace does.
+    /// Each page is asked first, the way a tab close asks it; one that would rather stay keeps the
+    /// window it is in, and the window itself follows its last page out (see Prune).</summary>
+    private void CloseWindow(FloatingWindow host)
+    {
+        var pages = _pages.Values.Where(page => page.Group?.Host == host).ToList();
+        var closeable = pages.Where(page => !page.Pinned).ToList();
+        // A window holding nothing that may be closed — the pinned home page, which has no close
+        // button and no way of being got rid of — is the one case that still goes back.
+        if (closeable.Count == 0) { ReturnWindow(host); return; }
+        Ask(closeable, () => { foreach (var page in closeable) FinishClosePage(page); });
+    }
+
+    /// <summary>The window this workspace is in is going away, and the pages that were detached into
+    /// windows of their own go with it. A floating window is a window precisely because it has no
+    /// parent in the widget tree, so nothing else would take it down, and what it would be left
+    /// showing is pages whose workspace no longer exists. The pages have been asked already, all of
+    /// them, by whoever is taking the window down.</summary>
+    internal void ShutDown()
+    {
+        foreach (var host in _windows) { host.Hide(); host.DeleteLater(); }
+        _windows.Clear();
+    }
+
+
+    /// <summary>Lets Qt do what it deferred: a page that is closed is deleted when the event loop
+    /// next gets a turn, so a check that closes one has to give it that turn before it looks.</summary>
+    private static void Settle()
+    {
+        for (int round = 0; round < 10; round++) QCoreApplication.ProcessEvents();
+    }
+
     private static string PageTitle(Page page) => page.Widget is ConfigEditor ? page.Widget.WindowTitle : page.Title();
 
     private void MovePage(Page page, Group target, Zone zone, int index = -1)
@@ -413,8 +484,12 @@ internal sealed class TabWorkspace : QWidget
         }
         public override void CloseEvent(QCloseEvent e)
         {
-            _owner.ReturnWindow(this);
-            e.Accept();
+            // Not accepted here and not closed here either: what closing this window means is that
+            // the pages in it go, they are asked one at a time, and the window itself is taken down
+            // by the last of them leaving (Prune). Nothing re-enters a close, which Qt refuses to do
+            // twice over anyway — a close already in progress makes a nested one do nothing.
+            e.Ignore();
+            _owner.CloseWindow(this);
         }
     }
 
@@ -434,12 +509,35 @@ internal sealed class TabWorkspace : QWidget
             if (_splitters.Count != 0 || _groups.Count != 1)
                 throw new InvalidOperationException($"Empty tab groups/splitters were not collapsed: {zone}, groups={_groups.Count}, splits={_splitters.Count}");
         }
+        // A page pulled out into a window of its own gets back by being dragged back — the page
+        // itself never left. Closing that window is the other thing a reader can do to it, and that
+        // closes what is in it (see CloseWindow), which is checked just below.
         Detach(editor, 120, 120);
-        var host = editor.Group!.Host!;
-        MovePage(stats, editor.Group, Zone.Bottom);
-        host.Close();
+        MovePage(stats, editor.Group!, Zone.Bottom);
+        MovePage(editor, home.Group!, Zone.Center);
+        MovePage(stats, home.Group!, Zone.Center);
         if (_windows.Count != 0 || _groups.Count != 1 || editor.Group != home.Group || stats.Group != home.Group)
             throw new InvalidOperationException("Floating window pages were not returned to the workspace");
+        // Closing one closes the pages that were in it: a page that asks to stay keeps the window
+        // open, and one that agrees takes it down with them. The page asked here is a check page,
+        // which answers by itself — a page a reader has puts its question to *them*, and a smoke run
+        // is nobody — so what the editor and the performance page answer is left to their own steps.
+        var stubborn = new CheckPage { Refuses = true };
+        bool destroyed = false;
+        Open("check-detached", () => stubborn, () => "check-detached");
+        stubborn.Destroyed += _ => destroyed = true;
+        Detach(_pages["check-detached"], 120, 120);
+        var window = _windows[^1];
+        window.Close();
+        if (_windows.Count != 1 || !_pages.ContainsKey("check-detached"))
+            throw new InvalidOperationException("A window closed a page that had asked to stay");
+        stubborn.Refuses = false;
+        window.Close();
+        Settle();
+        if (!destroyed)
+            throw new InvalidOperationException("Closing a window left the page that was in it alive");
+        if (_windows.Count != 0 || _groups.Count != 1 || _pages.ContainsKey("check-detached"))
+            throw new InvalidOperationException("Closing a window left the page or the window itself behind");
         home.Group!.TabBar().MoveTab(home.Group.IndexOf(stats.Widget), 0);
         if (editor.Widget.Handle != originalEditor || stats.Widget.Handle != originalStats)
             throw new InvalidOperationException("Moving a tab recreated its page");

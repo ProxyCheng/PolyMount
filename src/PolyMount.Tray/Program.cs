@@ -212,9 +212,43 @@ internal static class Program
 
     private static void ShowDashboard()
     {
-        _dashboard ??= new Dashboard();
+        if (_dashboard == null)
+        {
+            var window = new Dashboard();
+            // The reader can close the window for good, so what is kept here has to let go of it:
+            // the next open builds a new one rather than showing a destroyed widget.
+            window.Destroyed += _ => { if (ReferenceEquals(_dashboard, window)) _dashboard = null; };
+            _dashboard = window;
+        }
         if (_dashboard.IsMinimized()) _dashboard.ShowNormal();
         _dashboard.ShowWindow();
+    }
+
+    /// <summary>Self-check for opening the dashboard after the reader has closed it: a window of its
+    /// own is built rather than the one that was closed being shown again. In two steps, because the
+    /// window a close let go of is deleted when the event loop next gets a turn — a second open
+    /// before that turn is still holding the window that is on its way out — and because it goes
+    /// through the same call the tray icon and its menu make, which is where that remembering lives.
+    /// </summary>
+    private static Dashboard? _closedDashboard;
+
+    private static void CloseDashboardForCheck()
+    {
+        ShowDashboard();
+        _closedDashboard = _dashboard is { } opened
+            ? opened
+            : throw new InvalidOperationException("Opening the dashboard left nothing to show");
+        _closedDashboard.Close();
+    }
+
+    private static void VerifyDashboardReopens()
+    {
+        var closed = _closedDashboard ?? throw new InvalidOperationException("No dashboard was closed to reopen");
+        _closedDashboard = null;
+        ShowDashboard();
+        if (_dashboard is not { } reopened || ReferenceEquals(reopened, closed))
+            throw new InvalidOperationException("Opening the dashboard after closing it did not build a window of its own");
+        reopened.Close();
     }
 
     /// <summary>The first instance the service is running, so a smoke run charts live data
@@ -426,6 +460,27 @@ internal static class Program
                     stats.CaptureRecording(Path.Combine(capture, "recording-small.png"));
                     editor.CaptureCacheAction(Path.Combine(capture, "cache-action-small.png"));
                 }
+            }
+            if (ticks == 52)
+            {
+                try { Dashboard.CloseWindowForCheck(); }
+                catch (Exception ex) { failure = ex.ToString(); }
+            }
+            // Two ticks later, so that the event loop has been round once: a window that was only
+            // hidden would still be there.
+            if (ticks == 54)
+            {
+                try
+                {
+                    Dashboard.VerifyWindowClosed();
+                    CloseDashboardForCheck();
+                }
+                catch (Exception ex) { failure = ex.ToString(); }
+            }
+            if (ticks == 56)
+            {
+                try { VerifyDashboardReopens(); }
+                catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks >= 60)
             {
