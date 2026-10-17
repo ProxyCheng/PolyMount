@@ -41,9 +41,14 @@ foreach ($download in @(
     $signature = Get-AuthenticodeSignature -LiteralPath $destination
     if ($signature.Status -ne 'Valid') { throw "Dependency signature validation failed: $destination ($($signature.Status))" }
 }
-$docDir = Join-Path $payload 'docs'
-New-Item -ItemType Directory -Path $docDir -Force | Out-Null
-Copy-Item -Path (Join-Path $repo 'docs\*.md') -Destination $docDir
+# The design notes are part of the working repository, not necessarily of the product: a tree
+# published without them still has a README and the third-party notices.
+$docs = Join-Path $repo 'docs'
+if (Test-Path -LiteralPath $docs) {
+    $docDir = Join-Path $payload 'docs'
+    New-Item -ItemType Directory -Path $docDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $docs '*.md') -Destination $docDir
+}
 & $Compiler /Qp "/DAppVersion=$Version" "/DPayloadDir=$payload" "/DOutputDir=$artifacts" (Join-Path $repo 'installer\PolyMount.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 $installer = Join-Path $artifacts "PolyMount-$Version-win-x64-Setup.exe"
