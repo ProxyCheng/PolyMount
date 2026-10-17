@@ -119,7 +119,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
         // A read-only cache does not own this path even if an older chain left user writes in
         // the store: the overlay below is the authority now.
         if (_writable && _writes.TryOpen(path, out var durable, out stream)) { entry = durable.Header; return true; }
-        string key = Key(path);
+        var key = ResidentKey(path);
         ObjectDatabase.Record? record;
         lock (Gate)
         {
@@ -176,7 +176,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
         return stream;
     }
 
-    private void ForgetRecord(string key, ObjectDatabase.Record? record)
+    private void ForgetRecord(CacheKey key, ObjectDatabase.Record? record)
     {
         lock (Gate) if (TryGetResident(key, out var item) && item.Record == record) RemoveResident(key);
     }
