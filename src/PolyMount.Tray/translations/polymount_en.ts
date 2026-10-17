@@ -650,6 +650,58 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Exit PolyMount</translation>
     </message>
     <message>
+      <source>update.title</source>
+      <translation>Check for updates</translation>
+    </message>
+    <message>
+      <source>update.menu</source>
+      <translation>Check for updates...</translation>
+    </message>
+    <message>
+      <source>update.checking</source>
+      <translation>Checking for updates...</translation>
+    </message>
+    <message>
+      <source>update.download</source>
+      <translation>Download PolyMount %1...</translation>
+    </message>
+    <message>
+      <source>update.ignore</source>
+      <translation>Do not tell me about %1 again</translation>
+    </message>
+    <message>
+      <source>update.later</source>
+      <translation>Later</translation>
+    </message>
+    <message>
+      <source>update.balloon.title</source>
+      <translation>Update available</translation>
+    </message>
+    <message>
+      <source>update.balloon.body</source>
+      <translation>PolyMount %1 is available. Open this menu to download it.</translation>
+    </message>
+    <message>
+      <source>update.current</source>
+      <translation>PolyMount %1 is the latest version.</translation>
+    </message>
+    <message>
+      <source>update.confirm</source>
+      <translation>PolyMount %1 is available; you have %2. Download it now?</translation>
+    </message>
+    <message>
+      <source>update.failed</source>
+      <translation>Could not check for updates: %1</translation>
+    </message>
+    <message>
+      <source>update.noRelease</source>
+      <translation>No version has been published yet.</translation>
+    </message>
+    <message>
+      <source>close</source>
+      <translation>Close</translation>
+    </message>
+    <message>
       <source>tray.message</source>
       <translation>PolyMount is running. Click the tray icon to open your workspace.</translation>
     </message>

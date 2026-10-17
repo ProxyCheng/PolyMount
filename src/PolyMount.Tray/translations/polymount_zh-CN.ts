@@ -653,6 +653,58 @@
       <translation>退出 PolyMount</translation>
     </message>
     <message>
+      <source>update.title</source>
+      <translation>检查更新</translation>
+    </message>
+    <message>
+      <source>update.menu</source>
+      <translation>检查更新...</translation>
+    </message>
+    <message>
+      <source>update.checking</source>
+      <translation>正在检查更新...</translation>
+    </message>
+    <message>
+      <source>update.download</source>
+      <translation>下载 PolyMount %1...</translation>
+    </message>
+    <message>
+      <source>update.ignore</source>
+      <translation>不再提醒 %1</translation>
+    </message>
+    <message>
+      <source>update.later</source>
+      <translation>稍后</translation>
+    </message>
+    <message>
+      <source>update.balloon.title</source>
+      <translation>有可用更新</translation>
+    </message>
+    <message>
+      <source>update.balloon.body</source>
+      <translation>PolyMount %1 已可用。打开菜单即可下载。</translation>
+    </message>
+    <message>
+      <source>update.current</source>
+      <translation>已是最新版本 PolyMount %1。</translation>
+    </message>
+    <message>
+      <source>update.confirm</source>
+      <translation>PolyMount %1 已可用，当前版本 %2。现在下载吗？</translation>
+    </message>
+    <message>
+      <source>update.failed</source>
+      <translation>无法检查更新：%1</translation>
+    </message>
+    <message>
+      <source>update.noRelease</source>
+      <translation>尚未发布任何版本。</translation>
+    </message>
+    <message>
+      <source>close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
       <source>tray.message</source>
       <translation>PolyMount 正在运行。点击托盘图标打开工作台。</translation>
     </message>

@@ -10,6 +10,8 @@ internal static class Program
     private static Dashboard? _dashboard;
     private static QSystemTrayIcon? _tray;
     private static QMenu? _menu;
+    private static UpdateCheck? _updates;
+    private static QTimer? _updateTimer;
 
     [STAThread]
     private static int Main(string[] args)
@@ -148,6 +150,7 @@ internal static class Program
         _tray = new QSystemTrayIcon();
         _tray.SetIcon(TrayIcons.App);
         _tray.SetToolTip("PolyMount");
+        _updates = new UpdateCheck(_tray, RebuildMenu);
         _menu = BuildMenu();            // keep a reference so it is not garbage-collected
         _tray.SetContextMenu(_menu);
         _tray.Activated += reason =>
@@ -156,6 +159,18 @@ internal static class Program
                 ShowDashboard();
         };
         _tray.SetVisible(true);
+
+        // Asked once, well after start-up has settled: a check that competes with the windows
+        // opening would be the only thing a reader noticed about it.
+        _updateTimer = new QTimer();
+        _updateTimer.SetSingleShot(true);
+        _updateTimer.Timeout += () =>
+        {
+            _updateTimer?.Dispose();
+            _updateTimer = null;
+            _updates?.StartAutomatic();
+        };
+        _updateTimer.Start(8000);
 
         // Surface the icon: Windows parks new tray icons in the overflow area, so pop a balloon
         // and open the dashboard once so the user can find it.
@@ -230,11 +245,50 @@ internal static class Program
 
         menu.AddSeparator();
 
+        // Checking is always available; being told about a version is what "do not remind me"
+        // turns off, and the download stays here even then.
+        var check = menu.AddAction("");
+        I18n.Bind(check.SetText, _updates is { Busy: true } ? "update.checking" : "update.menu");
+        check.Triggered += _ => _updates?.CheckManually();
+        if (_updates?.Available is { } release)
+        {
+            var download = menu.AddAction("");
+            BindFormat(download.SetText, "update.download", release.Version);
+            download.Triggered += _ => _updates?.Download();
+            var ignore = menu.AddAction("");
+            BindFormat(ignore.SetText, "update.ignore", release.Version);
+            ignore.Triggered += _ => _updates?.Dismiss();
+        }
+
+        menu.AddSeparator();
+
         var exit = menu.AddAction("");
         I18n.Bind(exit.SetText, "tray.exit");
         exit.Triggered += _ => _app.Quit();
 
         return menu;
+    }
+
+    /// <summary>Rebuilds the menu in place. The update items appear and disappear with what the
+    /// last check found, and the menu is built once at start-up otherwise.</summary>
+    private static void RebuildMenu()
+    {
+        if (_tray == null) return;
+        var previous = _menu;
+        _menu = BuildMenu();
+        _tray.SetContextMenu(_menu);
+        previous?.DeleteLater();
+    }
+
+    /// <summary>Sets an action's text from a message that takes an argument, and keeps it in the
+    /// current language. <see cref="I18n.Bind"/> does this for a bare key; this is the same thing
+    /// for one that is formatted.</summary>
+    private static void BindFormat(Action<string> setter, string key, params object[] args)
+    {
+        if (setter.Target is not QObject target) throw new ArgumentException("Translation target must be a Qt object");
+        void Apply() => setter(I18n.F(key, args));
+        Apply();
+        I18n.OnChanged(Apply, target);
     }
 
     private static void ShowDashboard()

@@ -164,6 +164,30 @@ plugins/Svn         the Subversion source plugin
 - The tray draws its charts with **Qt Charts** (through the `QtSharp` bindings). See the licensing
   note below.
 
+## Update checks
+
+The tray asks its release feed at most once a day. A newer version produces a notification and two
+extra menu items — **Download PolyMount x.y.z** and **Do not tell me about x.y.z again**. The
+second silences that version only: a later one is announced again, and the download stays in the
+menu either way. **Check for updates** is always available, including after a dismissal.
+
+The feed defaults to
+`https://api.github.com/repos/ProxyCheng/PolyMount/releases/latest`. A repository that is not
+public answers that without credentials with a 404 — an automatic check then stays silent, and a
+manual one says it could not check rather than claiming to be up to date. Both the feed and an
+optional token can be set in `%LOCALAPPDATA%\PolyMount\ui.json`:
+
+```json
+{
+  "update.feed": "https://example.com/polymount/latest.json",
+  "update.token": "<token, if the feed needs one>"
+}
+```
+
+The feed may use GitHub's shape (`tag_name`, `html_url`) or a plain one (`version`, `url`), so
+pointing it at a file server needs no code change. Tags are compared as versions, not as text, and
+`v1.2.3` and `1.2.3+stamp` both read as `1.2.3`.
+
 ## Status
 
 Early, but functional end to end: layered reads and writes, SVN and directory sources, pinning,
