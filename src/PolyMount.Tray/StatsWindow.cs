@@ -125,7 +125,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private static readonly double[] RangeLadder = { 30, 60, 120, 300, 900 };
     /// <summary>The choices this page remembers, read once at startup and validated against the
     /// ladders above whichever they name.</summary>
-    private static readonly (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections) Remembered = LoadStats();
+    private static readonly (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections, bool AccessAligned) Remembered = LoadStats();
     /// <summary>Which of the sections under the charts the reader left open, by the key each is
     /// remembered under. Folded is where a section starts: a reader who has never touched one is
     /// shown the charts and three lines saying what is under them, which is the page's subject and
@@ -151,6 +151,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private DateTime _lastSample = DateTime.MinValue;
     /// <summary>How often the charts are refreshed, in samples per second.</summary>
     private double _refreshHz = Remembered.RefreshHz, _rangeSeconds = Remembered.RangeSeconds;
+    /// <summary>Whether the access cards are drawn with the layers in columns or one bar per
+    /// caller. Both are readings of the same table, so the choice is the reader's and is
+    /// remembered like the rest of this page's.</summary>
+    private bool _accessAligned = Remembered.AccessAligned;
     private static string T(string key) => I18n.T(key);
 
     public StatsWindow(string? instanceName = null)
@@ -267,6 +271,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         layerBody.SetSpacing(14);
         var access = new QHBoxLayout();
         _accessPie = new LayerAccessPie();
+        _accessPie.SetAligned(_accessAligned);
+        // Switching the drawing is a choice like the refresh rate: written down the moment it is
+        // made, so the page opens the way the reader left it.
+        _accessPie.ModeChanged += () => { _accessAligned = _accessPie.Aligned; SaveStats(); };
         access.AddWidget(_accessPie, 1);
         layerBody.AddLayout(access);
         _table = ContinuousScrolling.Table();
@@ -793,6 +801,24 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             if (part.Color != expected)
                 throw new InvalidOperationException($"{part.Name} is drawn {part.Color} in the rows and {expected} in the circle");
         }
+    }
+
+    /// <summary>The access cards are read two ways and the heading over them is the switch. What is
+    /// checked is the whole of that path: the click raises the switch, every card follows, the page
+    /// takes the drawing the cards are actually using (so it can write it down), and the way back is
+    /// the way it came.</summary>
+    internal void VerifyAccessModes()
+    {
+        bool before = _accessPie.Aligned;
+        _accessPie.SmokeToggle();
+        if (_accessPie.Aligned == before)
+            throw new InvalidOperationException("The access cards' switch did not change the drawing");
+        if (_accessAligned != _accessPie.Aligned)
+            throw new InvalidOperationException(
+                $"The page kept {_accessAligned} while the cards are drawing {_accessPie.Aligned}");
+        _accessPie.SmokeToggle();
+        if (_accessPie.Aligned != before || _accessAligned != before)
+            throw new InvalidOperationException("Switching the access drawing twice did not come back to where it started");
     }
 
     internal void VerifyResponseSampling()
@@ -1941,7 +1967,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// or a span this build does not offer is not one it knows how to draw. Best effort in both
     /// directions, like the other preferences this tray keeps - a missing or unreadable file means
     /// the defaults, and a failed write is not worth telling the reader about.</summary>
-    private static (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections) LoadStats()
+    private static (double RefreshHz, double RangeSeconds, Dictionary<string, bool> Sections, bool AccessAligned) LoadStats()
     {
         try
         {
@@ -1959,10 +1985,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 foreach (var entry in stored.EnumerateObject())
                     if (entry.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
                         sections[entry.Name] = entry.Value.GetBoolean();
+            // Missing from a file written before the access cards had two drawings, and aligned is
+            // the right answer then too: it is the one the page was showing.
+            bool aligned = !json.RootElement.TryGetProperty("AccessAligned", out var drawing) ||
+                drawing.ValueKind != JsonValueKind.False;
             return (Array.Exists(RefreshRates, known => known == rate) ? rate : 1,
-                Array.Exists(RangeLadder, known => known == span) ? span : 60, sections);
+                Array.Exists(RangeLadder, known => known == span) ? span : 60, sections, aligned);
         }
-        catch { return (1, 60, new Dictionary<string, bool>()); }
+        catch { return (1, 60, new Dictionary<string, bool>(), true); }
     }
 
     /// <summary>Writes everything this page remembers. Called from whichever choice changed, and
@@ -1976,7 +2006,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             {
                 RefreshHz = _refreshHz,
                 RangeSeconds = _rangeSeconds,
-                Sections = _sections
+                Sections = _sections,
+                AccessAligned = _accessAligned
             }));
         }
         catch (IOException) { }

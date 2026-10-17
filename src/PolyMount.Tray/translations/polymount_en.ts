@@ -139,6 +139,18 @@
       <translation>by process</translation>
     </message>
     <message>
+      <source>stats.access.byProcess.aligned</source>
+      <translation>by process · aligned by layer</translation>
+    </message>
+    <message>
+      <source>stats.access.byProcess.stacked</source>
+      <translation>by process · stacked</translation>
+    </message>
+    <message>
+      <source>stats.access.byProcess.hint</source>
+      <translation>Click to switch: layers aligned in columns, or one stacked bar per caller</translation>
+    </message>
+    <message>
       <source>stats.access.other</source>
       <translation>other</translation>
     </message>

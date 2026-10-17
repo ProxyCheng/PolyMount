@@ -139,6 +139,18 @@
       <translation>按进程</translation>
     </message>
     <message>
+      <source>stats.access.byProcess.aligned</source>
+      <translation>按进程 · 按层对齐</translation>
+    </message>
+    <message>
+      <source>stats.access.byProcess.stacked</source>
+      <translation>按进程 · 堆叠</translation>
+    </message>
+    <message>
+      <source>stats.access.byProcess.hint</source>
+      <translation>点击切换：按层对齐的网格，或每个进程一条堆叠条</translation>
+    </message>
+    <message>
       <source>stats.access.other</source>
       <translation>其他</translation>
     </message>

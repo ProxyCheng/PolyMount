@@ -438,6 +438,7 @@ internal static class Program
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",
                     "theme", "theme.system", "theme.light", "theme.dark",
                     "stats.access.reads", "stats.access.writes", "stats.access.byLayer", "stats.access.byProcess",
+                    "stats.access.byProcess.aligned", "stats.access.byProcess.stacked", "stats.access.byProcess.hint",
                     "stats.access.other", "stats.process.pid", "stats.process.unattributed",
                     "stats.access.noreads", "stats.access.nowrites", "stats.access.slice",
                     "stats.layerHeld.memory", "stats.layerHeld.disk",
@@ -500,6 +501,7 @@ internal static class Program
                 stats.DrawEverything();
                     stats.VerifyResponseSampling();
                     stats.VerifyAccessSplit();
+                    stats.VerifyAccessModes();
                     stats.VerifyChartScale();
                     stats.VerifyLayout();
                     stats.VerifyCharts();

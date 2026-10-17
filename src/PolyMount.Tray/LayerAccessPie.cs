@@ -56,6 +56,7 @@ internal sealed class LayerAccessPie : QWidget
     private readonly SubjectCard _writes = new("stats.access.writes", reads: false);
     private List<AccessSlice> _layers = new();
     private List<AccessRow> _rows = new();
+    private bool _aligned = true;
 
     public LayerAccessPie()
     {
@@ -65,11 +66,45 @@ internal sealed class LayerAccessPie : QWidget
         row.SetSpacing(16);
         row.AddWidget(_reads, 1);
         row.AddWidget(_writes, 1);
+        _reads.Switched += Toggle;
+        _writes.Switched += Toggle;
         // A language change re-reads the titles, the captions, the legends and what a subject says
         // when it has nothing to draw, for as long as this is on a page: the page goes when its tab
-        // is closed.
-        I18n.OnChanged(() => SetSlices(_layers, _rows), this);
+        // is closed. The headings that also switch the drawing are rewritten here too, which is why
+        // the mode is set again rather than only the data.
+        I18n.OnChanged(() =>
+        {
+            SetSlices(_layers, _rows);
+            SetAligned(_aligned);
+        }, this);
     }
+
+    /// <summary>Whether the rows are drawn as columns standing on the layers or as one bar per
+    /// caller. Both are true readings of the same table and they answer different questions: the
+    /// columns say how much of a layer one caller used and let a reader compare down the card, and
+    /// the bar says how much one caller used altogether and lets them compare along it. Neither is
+    /// the fallback for the other.</summary>
+    public bool Aligned => _aligned;
+
+    /// <summary>Raised when the reader switched, so the page can remember the choice.</summary>
+    internal event Action? ModeChanged;
+
+    public void SetAligned(bool aligned)
+    {
+        _aligned = aligned;
+        _reads.SetAligned(aligned);
+        _writes.SetAligned(aligned);
+    }
+
+    private void Toggle()
+    {
+        SetAligned(!_aligned);
+        ModeChanged?.Invoke();
+    }
+
+    /// <summary>The switch as a click reaches it, for the smoke run: a check that only called
+    /// <see cref="SetAligned"/> would test the setter and not the wiring the reader uses.</summary>
+    internal void SmokeToggle() => Toggle();
 
     /// <summary>What each layer answered and what each caller asked, over the window the page is
     /// reading. Both directions are in every row, each card counts the one it is about, and a row
@@ -104,6 +139,9 @@ internal sealed class LayerAccessPie : QWidget
         private const int CardWidth = 400, CardHeight = 250;
         private readonly Pie _byLayer;
         private readonly Breakdown _byProcess;
+        /// <summary>The heading over the rows, which is also the switch between the two ways they
+        /// can be drawn: it says which one is showing, and clicking it shows the other.</summary>
+        private readonly Caption _caption = new();
         private readonly string _titleKey;
         private string _title = "";
 
@@ -126,27 +164,67 @@ internal sealed class LayerAccessPie : QWidget
             // An even split, which is what the two circles had: the rows need no more of the card
             // than the circle does, and every pixel taken from the circle is a letter taken off the
             // end of a layer's name in the legend both halves are read by.
-            row.AddWidget(Captioned(_byLayer), 1);
-            row.AddWidget(Captioned(_byProcess), 1);
+            row.AddWidget(Captioned(_byLayer, null), 1);
+            row.AddWidget(Captioned(_byProcess, _caption), 1);
             layout.AddLayout(row);
+            Translate();
         }
 
         public string Title => _title;
 
+        /// <summary>Raised when the reader asked for the other way of drawing the rows.</summary>
+        internal event Action? Switched;
+
+        private void Toggle() => Switched?.Invoke();
+
+        /// <summary>Which way the rows are drawn, said in the heading over them.</summary>
+        public void SetAligned(bool aligned)
+        {
+            _byProcess.SetAligned(aligned);
+            Translate();
+        }
+
+        /// <summary>The heading's own words, in the language the page is in: it names the subject
+        /// and, when it is the switch, which of the two drawings is showing.</summary>
+        public void Translate()
+        {
+            _title = I18n.T(_titleKey);
+            _caption.SetText(I18n.T(_byProcess.Aligned ? "stats.access.byProcess.aligned" : "stats.access.byProcess.stacked"));
+            _caption.SetToolTip(I18n.T("stats.access.byProcess.hint"));
+            Update();
+        }
+
         /// <summary>A subject with the axis it reads written over it: two subjects side by side
         /// inside one card are two questions, and the card's title only says which traffic they are
         /// about.
-        /// </summary>
-        private static QWidget Captioned(IReadsOneWay subject)
+        ///
+        /// <paramref name="control"/> is the heading that switches between the two drawings of the
+        /// rows; a subject given none gets an ordinary heading that only names it.</summary>
+        private QWidget Captioned(IReadsOneWay subject, Caption? control)
         {
             var holder = new QWidget();
             var column = new QVBoxLayout(holder);
             column.SetContentsMargins(0, 0, 0, 0);
             column.SetSpacing(2);
-            var caption = new QLabel();
+            QLabel caption;
+            if (control != null)
+            {
+                // The rows are read two ways and the heading says which one is showing, so the
+                // switch needs no button beside it: a reader who wants the other one clicks the
+                // word that named this one. The tooltip says so, because a heading that is also a
+                // control is only discoverable if something says it is.
+                control.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+                control.Clicked += Toggle;
+                caption = control;
+            }
+            else
+            {
+                var plain = new QLabel();
+                I18n.Bind(plain.SetText, subject.AxisKey);
+                caption = plain;
+            }
             caption.SetObjectName("muted");
             caption.SetAlignment(Qt.Alignment.AlignHCenter);
-            I18n.Bind(caption.SetText, subject.AxisKey);
             column.AddWidget(caption);
             column.AddWidget((QWidget)subject, 1);
             return holder;
@@ -165,6 +243,20 @@ internal sealed class LayerAccessPie : QWidget
             using var p = new QPainter(AsQPaintDevice());
             try { CardFace.Paint(p, Width, Height, _title); }
             finally { p.End(); }
+        }
+    }
+
+    /// <summary>A heading that is also a control: it names the subject and, when clicked, shows the
+    /// subject the other way. A label rather than a button because it is a line of text in a column
+    /// of text, and the page's muted style is what it should look like.
+    /// </summary>
+    private sealed class Caption : QLabel
+    {
+        internal event Action? Clicked;
+
+        public override void MousePressEvent(QMouseEvent e)
+        {
+            if (e.Button() == Qt.MouseButton.LeftButton) Clicked?.Invoke();
         }
     }
 
@@ -306,35 +398,63 @@ internal sealed class LayerAccessPie : QWidget
         }
     }
 
-    /// <summary>The callers, one row each: a bar in the layers' own colours, as long as that caller's
-    /// traffic against the busiest caller's, with the count at its end. It is the table the circle
-    /// beside it is the column total of.
+    /// <summary>The callers, one row each, against the layers, one column each: a cell is what one
+    /// layer did for one caller, in that layer's colour, as long as that caller's use of the layer
+    /// is against the busiest caller's use of the same layer. The count of everything the row used
+    /// is at its end; the circle beside it is what the columns add up to.
     ///
-    /// Painted rather than charted, and painted whole from the list it holds: a row is a name, a bar
-    /// and a number, and Qt Charts offers neither a label at the end of a bar nor a gap between two
-    /// pieces of one — and a chart handed a new series every second is the blink the pie above has
-    /// already been cured of. Nothing here is built per sample: the rows are read, measured and
-    /// drawn, so a sample that changes only the numbers changes only the numbers.</summary>
+    /// Two drawings of the same table, and which one is showing is the reader's to choose (the
+    /// heading over it is the switch):
+    ///
+    /// - One column per layer, each a fixed x in every row. A stack puts a layer's piece at a
+    ///   different place in every row — it starts after whatever the row spent on the layers before
+    ///   it — so the same layer could not be read down the card, and reading a layer down the card
+    ///   is the question. It costs the one thing the stack had: a row's length is not its total.
+    /// - One bar per caller, the layers back to back in one order. The length is the caller's
+    ///   total against the busiest caller's, so the card answers "who is doing the most work" at a
+    ///   glance and gives up the alignment.
+    ///
+    /// The columns are not equal either. Each one takes its width from what it carried — the card is
+    /// this direction's traffic laid out left to right — so a layer that served a tenth of it gets a
+    /// tenth of the room, and the widths are readable as the layers' own shares while the cells
+    /// inside a column are normalised on that column (the busiest caller of a layer fills it). So a
+    /// cell says "how much of this layer, against whoever used it most": a reading down a column,
+    /// with the column's width saying how big the layer was in the first place.
+    ///
+    /// Painted rather than charted, and painted whole from the list it holds: a row is a name, some
+    /// cells and a number, and Qt Charts offers neither a label at the end of a bar nor a grid of
+    /// bars with a heading over each column — and a chart handed a new series every second is the
+    /// blink the pie above has already been cured of. Nothing here is built per sample: the rows are
+    /// read, measured and drawn, so a sample that changes only the numbers changes only the
+    /// numbers.</summary>
     private sealed class Breakdown : QWidget, IReadsOneWay
     {
-        /// <summary>The surface showing between two pieces of one bar, and between a name and the
-        /// bar it belongs to. Half of it is taken off each side of a join, so the seam is the same
-        /// width seen from either piece.</summary>
-        private const int Gap = 2;
+        /// <summary>The surface showing between two columns, so two full cells do not read as one
+        /// bar. It is taken out of the width before the columns are divided into it, so the cells
+        /// keep their own places whatever the card's width.</summary>
+        private const int ColumnGap = 2;
         /// <summary>How tall a bar wants to be, and the range of rows the card will draw them in:
         /// below the floor a bar is a line, above the ceiling a list of three is spread out as if it
         /// were a list of ten.</summary>
         private const int BarHeight = 10, RowFloor = 14, RowCeiling = 26;
-        /// <summary>The widest the names may take, as a share of the card: past this the bars they
+        /// <summary>The strip above the first row that names the columns: a grid of bars without a
+        /// heading over each column is a table nobody can read across. Only the columns with room
+        /// for a word get one — a heading that is three letters and a dot names nothing, and the
+        /// legend beside the circle is where a colour's full name is anyway.</summary>
+        private const int HeaderHeight = 14, HeadingFloor = 34;
+        /// <summary>The widest the names may take, as a share of the card: past this the cells they
         /// are read against stop being comparable, and a name is elided instead.</summary>
         private const double NameShare = 0.42;
-        /// <summary>The least a bar may be worth drawing in: a bar a few pixels long is not a
-        /// reading, and below this the card keeps its names and its numbers and drops the bars.
-        /// </summary>
-        private const int BarFloor = 24;
+        /// <summary>The least a column is given, however little it carried, and the width below
+        /// which the grid is not drawn at all: a layer's column shares the room with the others in
+        /// proportion to what it served, but a column a few pixels wide is a line, not a reading —
+        /// so a small layer is given this much, and the card keeps its names and its numbers when
+        /// even that does not fit.</summary>
+        private const int ColumnFloor = 18;
 
         private readonly bool _reads, _processes;
         private List<AccessRow> _rows = new();
+        private bool _aligned = true;
 
         public Breakdown(Axis axis, bool reads)
         {
@@ -344,11 +464,31 @@ internal sealed class LayerAccessPie : QWidget
 
         public string AxisKey => _processes ? "stats.access.byProcess" : "stats.access.byLayer";
 
+        /// <summary>Which of the two drawings is showing: columns standing on the layers, or one
+        /// bar per caller.</summary>
+        public bool Aligned => _aligned;
+
+        public void SetAligned(bool aligned)
+        {
+            _aligned = aligned;
+            Update();
+        }
+
         public long Count(long reads, long writes) => _reads ? reads : writes;
 
         /// <summary>What one row is worth on this card: the layers' counts for the direction it
         /// reads, added up. A row that none of them served is not drawn at all.</summary>
         private long Total(AccessRow row) => row.Parts.Sum(part => Count(part.Reads, part.Writes));
+
+        /// <summary>What one row used of one column.</summary>
+        private long Value(AccessRow row, string layer)
+        {
+            long value = 0;
+            foreach (var part in row.Parts)
+                if (string.Equals(part.Name, layer, StringComparison.OrdinalIgnoreCase))
+                    value += Count(part.Reads, part.Writes);
+            return value;
+        }
 
         public void SetRows(List<AccessRow> rows)
         {
@@ -383,31 +523,94 @@ internal sealed class LayerAccessPie : QWidget
                 return;
             }
 
-            // The bars are measured against the busiest row rather than against the whole: a row
-            // drawn to its own total would be as long as every other row and would say nothing about
-            // which caller is doing the work. The number at the end is what the length is read
-            // against, and the circle beside it is what the bars add up to.
-            long largest = rows.Max(Total);
+            // The columns: every layer this direction has traffic on, in one order for the whole
+            // card and the busiest first. It is the order the circle's legend beside it reads in, so
+            // a reader who has found a colour there finds its column here.
+            var columns = rows
+                .SelectMany(row => row.Parts)
+                .Where(part => Count(part.Reads, part.Writes) > 0)
+                .GroupBy(part => part.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => (Name: group.Key, Color: group.First().Color,
+                    Sum: group.Sum(part => Count(part.Reads, part.Writes))))
+                .OrderByDescending(column => column.Sum)
+                .ToList();
+
             string[] figures = rows.Select(row => Total(row).ToString("N0", I18n.Culture)).ToArray();
             int figureWidth = figures.Max(text => values.HorizontalAdvance(text));
             int nameWidth = Math.Min(
                 rows.Max(row => names.HorizontalAdvance(row.Name)),
                 (int)(width * NameShare));
-            int barLeft = nameWidth + 8;
-            int barRight = width - figureWidth - 8;
-            // A card too narrow to hold a name, a bar and a number keeps the names and the numbers:
-            // a bar of a few pixels is not a reading, and the figure is what the row is here for.
-            bool bars = barRight - barLeft >= BarFloor;
-            if (!bars) nameWidth = 0;
+            int gridLeft = nameWidth + 8;
+            int gridRight = width - figureWidth - 8;
+            int span = gridRight - gridLeft - (_aligned ? ColumnGap * Math.Max(0, columns.Count - 1) : 0);
+            // The columns take their width from what they carried, not from how many of them there
+            // are: the card is the whole of this direction's traffic laid out left to right, so a
+            // layer that served a tenth of it gets a tenth of the room. That is what makes the grid
+            // readable down a column and across the card at once — the widths say how big each layer
+            // was, and the cells inside a column say who used it. A layer too small to have a
+            // readable column is given one anyway (ColumnFloor): its bar would be a line, but a
+            // column that is not there at all reads as a layer nothing used.
+            long carried = columns.Sum(column => column.Sum);
+            int[] widths = new int[columns.Count];
+            if (columns.Count > 0 && span > 0)
+            {
+                for (int column = 0; column < columns.Count; column++)
+                    widths[column] = Math.Max(ColumnFloor, (int)Math.Round(span * (double)columns[column].Sum / carried));
+                // The floors can ask for more room than there is; when they do, every column gives
+                // back the same share of what it was given, so the order and the proportions stay.
+                int asked = widths.Sum();
+                if (asked > span)
+                    for (int column = 0; column < columns.Count; column++)
+                        widths[column] = Math.Max(1, widths[column] * span / asked);
+            }
+            int[] lefts = new int[columns.Count];
+            for (int column = 0, at = gridLeft; column < columns.Count; column++)
+            {
+                lefts[column] = at;
+                at += widths[column] + ColumnGap;
+            }
+            // A card too narrow to stand the columns in keeps its names and its numbers: a bar of a
+            // few pixels is not a reading, and the figure is what the row is here for.
+            bool grid = _aligned && columns.Count > 0 && widths.Max() >= ColumnFloor;
+            // The other drawing needs no columns: every row is one bar, its pieces in the same order
+            // as everybody else's, measured against the busiest row.
+            bool bars = !_aligned && columns.Count > 0 && span >= ColumnFloor;
+            long widest = rows.Max(Total);
 
-            int rowHeight = Math.Clamp(height / rows.Count, RowFloor, RowCeiling);
+            int header = grid ? HeaderHeight : 0;
+            int rowHeight = Math.Clamp((height - header) / rows.Count, RowFloor, RowCeiling);
             int barHeight = Math.Max(4, Math.Min(BarHeight, rowHeight - 6));
-            int top = Math.Max(0, (height - rowHeight * rows.Count) / 2);
+            int top = Math.Max(0, (height - (header + rowHeight * rows.Count)) / 2);
+
+            if (grid)
+            {
+                p.SetFont(nameFont);
+                p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Muted)));
+                for (int column = 0; column < columns.Count; column++)
+                {
+                    // A column too narrow for a name is not given a shrug of an ellipsis: the colour
+                    // is what names it, and the legend beside the circle is where the names are. An
+                    // ellipsis over a column would read as a name that had been left out.
+                    if (widths[column] < HeadingFloor) continue;
+                    p.DrawText(new QRect(lefts[column], top, widths[column], HeaderHeight),
+                        (int)(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter),
+                        names.ElidedText(columns[column].Name, Qt.TextElideMode.ElideRight, widths[column]));
+                }
+            }
+
+            // One denominator per column, and it is that column's own busiest row. Columns share no
+            // scale, which is the price of standing them all on one x: a cell says how much of this
+            // layer this caller used against whoever used it most, and the row's own total is the
+            // number at its end.
+            long[] largest = new long[columns.Count];
+            for (int column = 0; column < columns.Count; column++)
+                foreach (var row in rows) largest[column] = Math.Max(largest[column], Value(row, columns[column].Name));
+
             using var noPen = new QPen(Qt.PenStyle.NoPen);
             for (int index = 0; index < rows.Count; index++)
             {
                 var row = rows[index];
-                int y = top + index * rowHeight;
+                int y = top + header + index * rowHeight;
                 if (nameWidth > 0)
                 {
                     p.SetFont(nameFont);
@@ -417,30 +620,49 @@ internal sealed class LayerAccessPie : QWidget
                         names.ElidedText(row.Name, Qt.TextElideMode.ElideRight, nameWidth));
                 }
 
-                long total = Total(row);
-                if (bars && total > 0)
+                if (grid)
                 {
-                    int barWidth = (int)Math.Round((barRight - barLeft) * (double)total / largest);
                     int barY = y + (rowHeight - barHeight) / 2;
-                    // The pieces are laid out back to back and the seam between them is taken off
-                    // the two sides that meet, so the surface shows through as a hairline rather
-                    // than as a border drawn around anything.
-                    var pieces = row.Parts.Where(part => Count(part.Reads, part.Writes) > 0).ToList();
-                    int x = barLeft;
+                    for (int column = 0; column < columns.Count; column++)
+                    {
+                        long value = Value(row, columns[column].Name);
+                        if (value <= 0) continue;
+                        int length = largest[column] == 0
+                            ? 0
+                            : (int)Math.Round(widths[column] * (double)value / largest[column]);
+                        // What was counted is drawn, however little of the column it fills.
+                        p.SetBrush(new QBrush(new QColor(columns[column].Color)));
+                        p.SetPen(noPen);
+                        p.DrawRect(lefts[column], barY, Math.Max(1, length), barHeight);
+                    }
+                }
+                else if (bars)
+                {
+                    // One bar, the layers in the same order across the whole card so the bands can
+                    // be followed from row to row even though they do not line up: a layer is always
+                    // the third band from the left, wherever the first two ended.
+                    int barY = y + (rowHeight - barHeight) / 2;
+                    int length = (int)Math.Round(span * (double)Total(row) / widest);
+                    int x = gridLeft;
+                    var pieces = columns.Where(column => Value(row, column.Name) > 0).ToList();
                     for (int piece = 0; piece < pieces.Count; piece++)
                     {
-                        int length = piece == pieces.Count - 1
-                            ? barLeft + barWidth - x
-                            : (int)Math.Round(barWidth * (double)Count(pieces[piece].Reads, pieces[piece].Writes) / total);
-                        int from = x + (piece == 0 ? 0 : Gap / 2);
-                        int to = x + length - (piece == pieces.Count - 1 ? 0 : Gap / 2);
+                        // The last piece takes what rounding left over, so a bar adds up to its own
+                        // length rather than a pixel short of it.
+                        int part = piece == pieces.Count - 1
+                            ? gridLeft + length - x
+                            : (int)Math.Round(length * (double)Value(row, pieces[piece].Name) / Total(row));
+                        // The seam is taken off the two sides that meet, so the surface shows through
+                        // as a hairline rather than as a border drawn around anything.
+                        int from = x + (piece == 0 ? 0 : ColumnGap / 2);
+                        int to = x + part - (piece == pieces.Count - 1 ? 0 : ColumnGap / 2);
                         if (to > from)
                         {
                             p.SetBrush(new QBrush(new QColor(pieces[piece].Color)));
                             p.SetPen(noPen);
                             p.DrawRect(from, barY, to - from, barHeight);
                         }
-                        x += length;
+                        x += part;
                     }
                 }
 

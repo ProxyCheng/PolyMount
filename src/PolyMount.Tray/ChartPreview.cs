@@ -92,6 +92,12 @@ internal sealed class ChartPreview : QWidget
         preview.PlacePie();
         Pump();
         using (var pie = preview._pie.Grab()) pie.Save(Path.Combine(directory, "chart-pie.png"));
+        // The same readings drawn the other way: the rows are a grid of columns by one click and one
+        // stacked bar per caller by the next, and both are pictures somebody has to look at.
+        preview._pie.SetAligned(false);
+        Pump();
+        using (var stacked = preview._pie.Grab()) stacked.Save(Path.Combine(directory, "chart-pie-stacked.png"));
+        preview._pie.SetAligned(true);
         preview.Hide();
         if (language != null) I18n.SetLanguage(original);
         Console.WriteLine($"Rendered {preview._cards.Count} chart cards and the pie to {directory}.");
