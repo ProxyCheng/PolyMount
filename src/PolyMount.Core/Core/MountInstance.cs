@@ -13,7 +13,7 @@ public sealed class MountInstance : IDisposable
     private readonly object _gate = new();
     private FileSystemHost? _host;
     private bool _unmounting;
-    private ListingWarmup? _warmup;
+    private readonly List<IMountAwareLayer> _background = new();
     private string _lastWinFspBin = "";
     private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
@@ -65,9 +65,24 @@ public sealed class MountInstance : IDisposable
         // Publish this instance to whatever is listening from outside (dotnet-counters). Nothing is
         // published until something asks, so this costs a mount with nobody watching nothing.
         PolyMountEventSource.Log.Register(this);
+        // Layers that need the chain beneath them, or the mount's lifecycle, are wired here.
+        // The mount only knows these capabilities; which layer type supplies one is the
+        // chain's business, so adding a background layer does not change this file.
         for (int i = 0; i < configs.Count; i++)
-            if (_providers[configs[i].Id] is PredictionCacheLayer prediction)
-                prediction.Attach(new VirtualFileSystem(layers.Skip(i + 1)) { Diagnostics = Vfs.Diagnostics });
+        {
+            var provider = _providers[configs[i].Id];
+            VirtualFileSystem? lower = null;
+            VirtualFileSystem Lower() => lower ??= new VirtualFileSystem(layers.Skip(i + 1)) { Diagnostics = Vfs.Diagnostics };
+            if (provider is IMountAwareLayer background)
+            {
+                // The quiet reading is the instance's: a layer only sees the requests that
+                // reach it, and background work must yield to the mount's readers.
+                background.Attach(Lower(), () => Metrics.IdleFor);
+                _background.Add(background);
+            }
+            else if (provider is ILowerChainLayer chained)
+                chained.Attach(Lower());
+        }
     }
 
     public MountProfile Profile { get; }
@@ -150,23 +165,26 @@ public sealed class MountInstance : IDisposable
                 throw new IOException($"mount failed for '{Profile.MountPoint}': 0x{rc:X8}");
             }
             _host = host;
-            StartWarmup();
+            StartBackground();
         }
     }
 
-    /// <summary>Walks the listing tree in the background while the mount is not being read.</summary>
-    private void StartWarmup()
+    /// <summary>Starts every background layer's pass. The layer does the work; the mount
+    /// decides when, so an unmounted instance fetches nothing.</summary>
+    private void StartBackground()
     {
-        StopWarmup();
-        if (Profile.WarmListings && Profile.WarmListingsLimit > 0)
-            _warmup = new ListingWarmup(Vfs, Metrics, Profile.WarmListingsLimit, seconds: Profile.WarmListingsSeconds);
+        StopBackground();
+        foreach (var layer in _background) layer.Start();
     }
 
-    private void StopWarmup() => Interlocked.Exchange(ref _warmup, null)?.Dispose();
+    private void StopBackground()
+    {
+        foreach (var layer in _background) layer.Stop();
+    }
 
     public void Unmount()
     {
-        StopWarmup();
+        StopBackground();
         FileSystemHost host;
         lock (_gate)
         {
@@ -189,7 +207,7 @@ public sealed class MountInstance : IDisposable
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         foreach (var rev in revisions) rev.SetRevision(revision);
         // The listings already warmed belong to the version just left; warm the new one.
-        if (Mounted) StartWarmup();
+        if (Mounted) StartBackground();
     }
 
     public void RefreshHead(string? layer = null)
@@ -197,7 +215,7 @@ public sealed class MountInstance : IDisposable
         var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         foreach (var rev in revisions) rev.SetRevision(rev.HeadRevision());
-        if (Mounted) StartWarmup();
+        if (Mounted) StartBackground();
     }
 
     public void ClearCache(string? layer = null)
@@ -321,6 +339,9 @@ public sealed class MountInstance : IDisposable
 
     public MountStatus GetStatus()
     {
+        // What a background layer reports is its own: the mount sums the counts and shows the
+        // first layer's wording, without knowing what kind of work it is.
+        var progress = _background.Select(layer => layer.Progress).OfType<LayerProgress>().ToList();
         var status = new MountStatus
         {
             Name = Profile.Name,
@@ -332,9 +353,9 @@ public sealed class MountInstance : IDisposable
             CacheBytes = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.TotalBytes),
             CacheCapacity = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Capacity),
             CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count),
-            WarmedDirectories = _warmup?.WarmedDirectories ?? 0,
-            WarmupLimit = Profile.WarmListings ? Profile.WarmListingsLimit : 0,
-            WarmupDetail = LayerTexts.Get(Profile.WarmListings && Profile.WarmListingsLimit > 0 ? "warmup.progress" : "warmup.off"),
+            WarmedDirectories = progress.Sum(p => p.Completed),
+            WarmupLimit = progress.FirstOrDefault()?.Total ?? 0,
+            WarmupDetail = progress.FirstOrDefault()?.Detail ?? LayerTexts.Get("warmup.off"),
             // Two volatile reads: a front-end polls this once per request and must not make it
             // list a directory to answer whether a recording is running.
             Recording = Vfs.Diagnostics?.Recording ?? false,
@@ -384,7 +405,7 @@ public sealed class MountInstance : IDisposable
     public void Dispose()
     {
         PolyMountEventSource.Log.Unregister();
-        StopWarmup();
+        StopBackground();
         Vfs.Prediction?.Dispose();
         try { Unmount(); }
         finally

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PolyMount.Core;
+using PolyMount.Layers;
 
 namespace PolyMount;
 
@@ -142,6 +143,10 @@ public sealed class MountProfile
     // Fetches directory listings in the background after mount, so the first walk through the
     // tree is answered from the cache instead of the source. It yields while the mount is being
     // read, and stops at whichever budget runs out first.
+    //
+    // Kept for configurations written before warm-up became a layer: an enabled flag is
+    // translated by GetLayers into the same layer such a configuration would have had if it
+    // had been written today. An explicit warm-up layer, once present, suppresses this.
     public bool WarmListings { get; set; }
     public int WarmListingsLimit { get; set; } = 2000;
     public int WarmListingsSeconds { get; set; } = 60;
@@ -164,7 +169,36 @@ public sealed class MountProfile
     public string GetLayerStorage(LayerConfig layer) => string.IsNullOrWhiteSpace(layer.Path)
         ? Path.Combine(GetStoreRoot(), layer.Id) : layer.Path;
 
-    public List<LayerConfig> GetLayers() => Layers ?? new();
+    /// <summary>The configured chain, plus the layer an older configuration's warm-up flag
+    /// stands for. The synthesized layer goes on top — all caches, and the whole chain below
+    /// it, which is what the flag meant when the walk went through the mount's own resolver.
+    /// It is not written back here; the editor stores it the next time this profile is saved,
+    /// and the flag then has nothing left to synthesize.</summary>
+    public List<LayerConfig> GetLayers()
+    {
+        var layers = Layers ?? new();
+        if (!WarmListings || WarmListingsLimit <= 0) return layers;
+        if (layers.Any(l => string.Equals(l.Type, ListingWarmupLayer.Type, StringComparison.OrdinalIgnoreCase)))
+            return layers;
+        string id = ListingWarmupLayer.Type;
+        for (int suffix = 1; layers.Any(l => string.Equals(l.Id, id, StringComparison.OrdinalIgnoreCase)); suffix++)
+            id = ListingWarmupLayer.Type + "-" + suffix;
+        var effective = new List<LayerConfig>(layers.Count + 1)
+        {
+            new()
+            {
+                Id = id,
+                Type = ListingWarmupLayer.Type,
+                Parameters = new()
+                {
+                    ["Limit"] = JsonSerializer.SerializeToElement(WarmListingsLimit),
+                    ["Seconds"] = JsonSerializer.SerializeToElement(WarmListingsSeconds)
+                }
+            }
+        };
+        effective.AddRange(layers);
+        return effective;
+    }
 
     public void ValidateLayers()
     {

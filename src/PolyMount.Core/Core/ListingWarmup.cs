@@ -22,7 +22,7 @@ public sealed class ListingWarmup : IDisposable
     private const int QuietPollMs = 50;
 
     private readonly VirtualFileSystem _vfs;
-    private readonly MetricsCollector _metrics;
+    private readonly Func<TimeSpan> _idleFor;
     private readonly int _limit;
     private readonly int _quietMs;
     private readonly long _deadlineMs;
@@ -30,10 +30,10 @@ public sealed class ListingWarmup : IDisposable
     private readonly Task _worker;
     private long _warmed;
 
-    public ListingWarmup(VirtualFileSystem vfs, MetricsCollector metrics, int limit, int quietMs = 250, int seconds = 60)
+    public ListingWarmup(VirtualFileSystem vfs, Func<TimeSpan> idleFor, int limit, int quietMs = 250, int seconds = 60)
     {
         _vfs = vfs;
-        _metrics = metrics;
+        _idleFor = idleFor;
         _limit = Math.Max(limit, 0);
         _quietMs = Math.Max(quietMs, 0);
         // A budget in directories only bounds the work if the source is fast; on a large tree
@@ -55,7 +55,7 @@ public sealed class ListingWarmup : IDisposable
         while (!_stop.IsCancellationRequested && pending.Count > 0 && Interlocked.Read(ref _warmed) < _limit &&
             Environment.TickCount64 < _deadlineMs)
         {
-            if (_metrics.IdleFor.TotalMilliseconds < _quietMs)
+            if (_idleFor().TotalMilliseconds < _quietMs)
             {
                 if (_stop.Token.WaitHandle.WaitOne(QuietPollMs)) return;
                 continue;

@@ -14,7 +14,7 @@ namespace PolyMount.Layers;
 /// wasted. Both are counters only — neither feeds back into the learned model.
 /// </para>
 /// </summary>
-public sealed class PredictionCacheLayer : CacheLayer, IDisposable
+public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IDisposable
 {
     private sealed class Entry(VirtualObject value, byte[]? content, long bytes, bool sibling)
     {

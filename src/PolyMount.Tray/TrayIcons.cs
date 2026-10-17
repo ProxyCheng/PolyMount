@@ -89,6 +89,11 @@ internal static class TrayIcons
                 Path((8, 17.5), (11, 17.5), (11, 7), (18, 7)); Path((15, 4), (18, 7), (15, 10));
                 Line(20, 13, 20, 19); Line(17, 16, 23, 16);
                 break;
+            case "warm-listings":
+                // A folder with the listing being filled in ahead of the reader.
+                Path((3, 7), (3, 19), (21, 19), (21, 7), (11, 7), (9, 4), (3, 4), (3, 7));
+                Path((8, 12.5), (12, 8.5), (16, 12.5)); Line(12, 9, 12, 16);
+                break;
             case "repository":
                 p.DrawEllipse(3, 3, 5, 5); p.DrawEllipse(3, 16, 5, 5); p.DrawEllipse(16, 3, 5, 5);
                 Line(5, 8, 5, 16); Path((18.5, 8), (18.5, 11), (5.5, 15));

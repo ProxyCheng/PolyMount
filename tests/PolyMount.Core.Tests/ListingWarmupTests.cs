@@ -35,7 +35,7 @@ public sealed class ListingWarmupTests
     public void Warmup_stores_listings_so_the_first_walk_stays_off_the_source()
     {
         using var chain = Chain.Build();
-        using (var warmup = new ListingWarmup(chain.Vfs, chain.Metrics, limit: 16, quietMs: 0))
+        using (var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 16, quietMs: 0))
         {
             Assert.IsTrue(warmup.WaitForCompletion(TimeSpan.FromSeconds(10)), "the warm-up did not finish");
             // "", "a", "a/b" and "a/empty" — every directory the mount has.
@@ -56,7 +56,7 @@ public sealed class ListingWarmupTests
     public void Warmup_stops_at_its_budget()
     {
         using var chain = Chain.Build();
-        using var warmup = new ListingWarmup(chain.Vfs, chain.Metrics, limit: 1, quietMs: 0);
+        using var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 1, quietMs: 0);
         Assert.IsTrue(warmup.WaitForCompletion(TimeSpan.FromSeconds(10)));
         Assert.AreEqual(1, warmup.WarmedDirectories);
         Assert.IsFalse(chain.Cache.TryReadObject("a", out _), "the walk went past its budget");
@@ -66,7 +66,7 @@ public sealed class ListingWarmupTests
     public void Warmup_stops_at_its_deadline()
     {
         using var chain = Chain.Build();
-        using var warmup = new ListingWarmup(chain.Vfs, chain.Metrics, limit: 64, quietMs: 0, seconds: 0);
+        using var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 64, quietMs: 0, seconds: 0);
         Assert.IsTrue(warmup.WaitForCompletion(TimeSpan.FromSeconds(10)));
         Assert.AreEqual(0, warmup.WarmedDirectories, "a pass outlived its deadline");
     }
@@ -76,7 +76,7 @@ public sealed class ListingWarmupTests
     {
         using var chain = Chain.Build();
         chain.Vfs.List("");                       // a client read, so the mount is in use
-        using var warmup = new ListingWarmup(chain.Vfs, chain.Metrics, limit: 8, quietMs: 30000);
+        using var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 8, quietMs: 30000);
         Assert.IsFalse(warmup.WaitForCompletion(TimeSpan.FromMilliseconds(300)));
         Assert.AreEqual(0, warmup.WarmedDirectories, "the warm-up ran while the mount was being read");
     }
@@ -85,7 +85,7 @@ public sealed class ListingWarmupTests
     public void A_warmed_version_is_dropped_when_the_source_moves()
     {
         using var chain = Chain.Build();
-        using (var warmup = new ListingWarmup(chain.Vfs, chain.Metrics, limit: 16, quietMs: 0))
+        using (var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 16, quietMs: 0))
             warmup.WaitForCompletion(TimeSpan.FromSeconds(10));
         Assert.IsTrue(chain.Cache.TryReadObject("a", out _));
 

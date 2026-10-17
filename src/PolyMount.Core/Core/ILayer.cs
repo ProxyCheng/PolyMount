@@ -27,6 +27,29 @@ public interface ICacheLayer : ILayer
     void Invalidate();
 }
 
+/// <summary>A layer that needs the chain beneath it once the whole chain is built, so it can
+/// fetch through layers it does not know by name. The mount hands it a resolver over those
+/// layers and nothing else; what it does with it is the layer's business.</summary>
+public interface ILowerChainLayer
+{
+    void Attach(VirtualFileSystem lower);
+}
+
+/// <summary>A layer whose work is not a request: it runs in the background between a mount
+/// and an unmount. The mount starts and stops it without knowing what it does, so a layer
+/// can be added to a chain without the mount depending on that layer's definition.</summary>
+public interface IMountAwareLayer
+{
+    void Attach(VirtualFileSystem lower, Func<TimeSpan> idleFor);
+    void Start();
+    void Stop();
+    /// <summary>Progress for the instance status, or null when there is nothing to report.</summary>
+    LayerProgress? Progress { get; }
+}
+
+/// <summary>What a background layer reports about the pass it is running.</summary>
+public sealed record LayerProgress(long Completed, long Total, LocalizedText Detail);
+
 // Marker for data sources backed by the local filesystem. Such sources do not benefit from a
 // read-through disk cache (the data is already local), so the mount chain omits the cache layer.
 public interface ILocalSource

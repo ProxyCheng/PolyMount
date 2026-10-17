@@ -54,6 +54,29 @@ public static class LayerRegistry
                 } });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
+        Register(ListingWarmupLayer.Type, (c, ctx) => new ListingWarmupLayer(ctx.LowerGeneration,
+                Number(c, "Limit", 2000), Number(c, "Seconds", 60), Number(c, "QuietMs", 250)),
+            c =>
+            {
+                if (Number(c, "Limit", 2000) is < 0 or > 1_000_000) throw new ArgumentException("warmup limit must be 0-1000000");
+                if (Number(c, "Seconds", 60) is < 0 or > 86400) throw new ArgumentException("warmup seconds must be 0-86400");
+                if (Number(c, "QuietMs", 250) is < 0 or > 60000) throw new ArgumentException("warmup quiet period must be 0-60000 ms");
+            }, new LayerDescriptor
+            {
+                Type = ListingWarmupLayer.Type, Title = LayerTexts.Get("warmup.title"), Icon = "warm-listings",
+                Description = LayerTexts.Get("warmup.description"),
+                // The two budgets are what the old WarmListings fields meant; the quiet period
+                // was a constant until the layer needed a field for it.
+                Fields = new()
+                {
+                    new() { Path = "Parameters.Limit", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 1_000_000,
+                        DefaultValue = "2000", Title = LayerTexts.Get("warmup.limit"), Description = LayerTexts.Get("warmup.limit.description") },
+                    new() { Path = "Parameters.Seconds", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 86400,
+                        DefaultValue = "60", Title = LayerTexts.Get("warmup.seconds"), Description = LayerTexts.Get("warmup.seconds.description") },
+                    new() { Path = "Parameters.QuietMs", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 60000,
+                        DefaultValue = "250", Title = LayerTexts.Get("warmup.quiet"), Description = LayerTexts.Get("warmup.quiet.description") }
+                }
+            });
         RegisterCache("memory-cache", (c, ctx) => new MemoryCacheLayer(MemoryCapacity(c), MemoryBlockSize(c), ctx.LowerGeneration),
             c =>
             {
