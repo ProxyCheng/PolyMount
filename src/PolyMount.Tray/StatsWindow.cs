@@ -1447,7 +1447,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             try
             {
                 var sample = task.GetAwaiter().GetResult();
-                AcceptProcess(sample.Process, sample.At);
+                // The process reading is one of the charts' readings, so it is recorded with the
+                // chart sample and at the reader's rate. It is *taken* with every request because
+                // taking it costs nothing — it is the operating system being asked about a local
+                // process — but a request that went out for the once-a-second access window alone
+                // is a reading of the table, not another point on the IO card.
+                if (sample.Trends is not null) AcceptProcess(sample.Process, sample.At);
                 if (_requestEpoch == _epoch && watching)
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
@@ -1734,10 +1739,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// gap the chart would draw as an absence of observation. The history is bounded by time rather
     /// than by count, because the refresh rate decides how many readings fall inside the window.
     ///
-    /// The cards are not repainted from here: a reading arrives with every request, which is more
-    /// often than the window's own sampling, and a card drawn as its rows arrive is a card with a
-    /// cadence of its own. The page draws every card at the moment it takes a sample, against the
-    /// one clock they share; this reading is drawn with the rest of them then.</summary>
+    /// The cards are not repainted from here: a reading arrives with the chart sample, and a card
+    /// drawn as its rows arrive is a card with a cadence of its own. The page draws every card at
+    /// the moment it takes a sample, against the one clock they share; this reading is drawn with
+    /// the rest of them then.</summary>
     private void AcceptProcess(ProcessReading reading, DateTime now)
     {
         _processHistory.Add(new ProcessSecond(now, reading.Cores, reading.WorkingSetBytes, reading.PrivateBytes,
