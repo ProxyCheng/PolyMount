@@ -41,6 +41,18 @@ function Ask-Supervisor([string]$command) {
         return $reader.ReadLine() | ConvertFrom-Json
     } finally { $pipe.Dispose() }
 }
+# The setup can return before the installation has finished: when it is not already elevated it
+# starts an elevated copy of itself and the first process exits at once. Waiting for the service is
+# what makes the checks read a finished installation rather than a snapshot taken mid-copy.
+function Wait-Service([int]$seconds = 120) {
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        $running = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
+        if ($running -and $running.Status -eq 'Running') { return $running }
+        Start-Sleep -Milliseconds 500
+    }
+    return Get-Service -Name PolyMount -ErrorAction SilentlyContinue
+}
 function Wait-Supervisor([int]$seconds = 30) {
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
@@ -64,7 +76,7 @@ Remove-Item -LiteralPath $setupLog -Force -ErrorAction SilentlyContinue
 $code = Invoke-Setup $Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$setupLog`""
 Check 'setup exited 0' ($code -eq 0) "exit $code"
 
-$service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
+$service = Wait-Service
 Check 'service registered' ($null -ne $service)
 Check 'service running' ($service.Status -eq 'Running') $(if ($service) { $service.Status } else { 'absent' })
 $registered = Get-CimInstance Win32_Service -Filter "Name='PolyMount'" -ErrorAction SilentlyContinue
@@ -124,13 +136,18 @@ Set-Content -LiteralPath $marker -Value 'first install' -Encoding ASCII
 $parsed = Read-Config
 $parsed | Add-Member -NotePropertyName KeepMe -NotePropertyValue 'from the first install' -Force
 Set-Content -LiteralPath $config -Value ($parsed | ConvertTo-Json -Depth 20) -Encoding UTF8
-$before = (Get-Item (Join-Path $app 'Service\PolyMount.Service.exe')).LastWriteTimeUtc
+# Proof that the second setup replaced the program files: a file it owns is tampered with, and has
+# to come back as the setup wrote it. Timestamps cannot say this -- reinstalling the same version
+# writes identical bytes with identical times.
+$owned = Join-Path $app 'install.json'
+$originalOwned = Get-Content -LiteralPath $owned -Raw
+Set-Content -LiteralPath $owned -Value '{"tampered":true}' -Encoding UTF8
 
-$code = Invoke-Setup $Setup '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+$code = Invoke-Setup $Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$setupLog`""
 Check 'second setup exited 0' ($code -eq 0) "exit $code"
+$service = Wait-Service
 Check 'the overwrite left the previous install in place' (Test-Path -LiteralPath $marker)
-Check 'the program files were replaced' ((Get-Item (Join-Path $app 'Service\PolyMount.Service.exe')).LastWriteTimeUtc -ne $before)
-$service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
+Check 'the program files were replaced' ((Get-Content -LiteralPath $owned -Raw) -eq $originalOwned)
 Check 'still exactly one service, running' (($null -ne $service) -and ($service.Status -eq 'Running'))
 $after = Read-Config
 Check 'the configuration kept what was not the setup''s' ($after.KeepMe -eq 'from the first install')
@@ -141,6 +158,9 @@ Check 'supervisor still answers' ($null -ne $reply)
 if (-not $KeepInstalled) {
     Write-Host ''
     Write-Host '=== uninstall ==='
+    # The marker is the test's own file; Inno leaves a directory holding something it did not
+    # install, so keeping it would make "the program directory is gone" fail for the wrong reason.
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     $uninstaller = Join-Path $app 'unins000.exe'
     Check 'uninstaller present' (Test-Path -LiteralPath $uninstaller)
     $code = Invoke-Setup $uninstaller '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
