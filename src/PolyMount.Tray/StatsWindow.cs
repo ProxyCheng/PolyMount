@@ -27,6 +27,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly Queue<(double Request, double Dispatch, double Ui, DateTime At)> _responseSamples = new();
     private readonly QComboBox _refresh, _range;
     private List<MountMetrics> _accessMetrics = new();
+    /// <summary>The instance's answers about its own traffic, one per once-a-second reading, each
+    /// covering the interval since the one before it. The section adds them up over the range the
+    /// reader chose — the instance's own record is only a minute deep, so this is where a longer
+    /// window comes from. See <see cref="AccessTotals"/>.</summary>
+    private readonly List<(DateTime At, List<MountMetrics> Entries)> _accessHistory = new();
+    /// <summary>When the last access reading's request went out, which is what the next answer's
+    /// window starts from. <c>MinValue</c> means "no previous reading": its window is then the
+    /// nominal second rather than however long the page has existed.</summary>
+    private DateTime _lastAccessAt = DateTime.MinValue;
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
     /// <summary>What the instance's own process cost, one row per sample. A process is not
@@ -87,11 +96,6 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// floor: a page refreshing slower than once a second spaces its observations wider than this
     /// by design, and the gap it tolerates has to follow the rate.</summary>
     private const double SamplingGapSeconds = 3;
-    /// <summary>The window the instance is asked about for the table, the pie and the legend. It is
-    /// not the reader's time range: the charts draw this page's own samples, whatever span they
-    /// cover, while a windowed question is a query over the instance's own record of recent reads
-    /// and that record is finite.</summary>
-    private const int AccessSeconds = 60;
     /// <summary>How many points one series is drawn with. A long range holds more observations
     /// than a screen can show, and past this the drawing folds them into buckets - the figures
     /// still come from every observation.</summary>
@@ -227,6 +231,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // that is what the series is drawn from to reach the edge.
             DateTime cutoff = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
             foreach (var samples in _history.Values) LayerSampler.Trim(samples, cutoff, kept => kept.Time, BreakSeconds);
+            // The access section is a window of this page's own answers too, so it is cut to the
+            // new range and added up again from what is left — the range is what it is drawn over,
+            // not something asked of the instance.
+            _accessHistory.RemoveAll(entry => entry.At < cutoff);
+            _accessMetrics = AccessTotals.Sum(_accessHistory, _clock, _rangeSeconds);
+            _latest = _accessMetrics;
             // The range is a property of the drawing, so what it redraws is the readings already in
             // hand: asking for a fresh sample to redraw with restarts the trend schedule and leaves
             // the once-a-second one where it was, and from then on every moment the two are each due
@@ -857,6 +867,61 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         }
     }
 
+    /// <summary>Self-check: the table and the two drawings cover the range the reader chose, not a
+    /// fixed minute the instance keeps. Two answers ten seconds apart: a window that holds only the
+    /// newer one counts only its traffic, and one that holds both counts their sum — and the
+    /// section's own invariant survives that, the caller rows still adding up to the circle.</summary>
+    internal void VerifyAccessWindow()
+    {
+        var at = new DateTime(2026, 1, 1, 0, 0, 30, DateTimeKind.Utc);
+        static MountMetrics Answer(long reads, long writes) => new()
+        {
+            Mount = "m",
+            WindowSeconds = 1,
+            TotalReads = reads,
+            TotalWrites = writes,
+            Layers = new() { new LayerMetric { Name = "cache", Color = "#0891b2", Hits = reads, Writes = writes } },
+            Processes = new()
+            {
+                new ProcessMetric
+                {
+                    Pid = 7,
+                    Name = "tool.exe",
+                    Reads = reads,
+                    Writes = writes,
+                    ByLayer = new() { new ProcessLayerCount { Name = "cache", Reads = reads, Writes = writes } }
+                }
+            }
+        };
+        var history = new List<(DateTime At, List<MountMetrics> Entries)>
+        {
+            (at.AddSeconds(-10), new() { Answer(10, 2) }),
+            (at, new() { Answer(4, 0) })
+        };
+
+        var recent = AccessTotals.Sum(history, at, 5);
+        var whole = AccessTotals.Sum(history, at, 30);
+        if (recent.Count != 1 || recent[0].TotalReads != 4 || recent[0].Layers[0].Hits != 4 ||
+            recent[0].Layers[0].Writes != 0)
+            throw new InvalidOperationException("A window shorter than the oldest answer counted more than the answer it holds");
+        if (whole.Count != 1 || whole[0].TotalReads != 14 || whole[0].Layers[0].Hits != 14 ||
+            whole[0].Layers[0].Writes != 2)
+            throw new InvalidOperationException("A window holding both answers did not count their sum");
+        if (whole[0].MeasuredSeconds > 30 || whole[0].MeasuredSeconds < 10)
+            throw new InvalidOperationException(
+                $"A window of two answers ten seconds apart reports {whole[0].MeasuredSeconds:0.#} seconds watched");
+        var (layers, callers) = AccessSlices(whole, "");
+        long drawn = callers.Sum(row => row.Parts.Sum(part => part.Reads + part.Writes));
+        long circled = layers.Sum(slice => slice.Reads + slice.Writes);
+        if (drawn != circled)
+            throw new InvalidOperationException($"A summed window's rows add up to {drawn} against a circle of {circled}");
+
+        // And the page's own account, which is what the section is drawn from: a page that has been
+        // watching for seconds must have kept every answer it was given.
+        if (_accessHistory.Count == 0)
+            throw new InvalidOperationException("The access section kept none of the answers it was given");
+    }
+
     /// <summary>The access cards are read two ways and the heading over them is the switch. What is
     /// checked is the whole of that path: the click raises the switch, every card follows, the page
     /// takes the drawing the cards are actually using (so it can write it down), and the way back is
@@ -1431,7 +1496,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _epoch++;
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
-        if (!_paused) { _requested = true; RestartSchedules(); _lastSample = DateTime.MinValue; }
+        if (!_paused) { _requested = true; RestartSchedules(); _lastSample = DateTime.MinValue; _lastAccessAt = DateTime.MinValue; }
     }
 
     private void Tick()
@@ -1457,7 +1522,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 {
                     double dispatch = Stopwatch.GetElapsedTime(sample.Completed).TotalMilliseconds;
                     var ui = Stopwatch.StartNew();
-                    if (sample.Access is { } access) AcceptAccess(access);
+                    if (sample.Access is { } access) AcceptAccess(access, sample.At);
                     if (sample.Held is { } held)
                     {
                         // A reading that names no layer is not a reading of zero held. It is what
@@ -1514,9 +1579,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // its next sample covers the time since the last one it took.
             bool fresh = _requested || _lastSample == DateTime.MinValue;
             bool trendsDue = fresh || now >= _next;
-            // The 60-second access window is the expensive half of a request and its readers are the
-            // table and the pie, so it keeps a once-a-second schedule of its own instead of riding
-            // the trend rate - which is also what keeps it at a second when the charts run slower.
+            // The access reading is the expensive half of a request and its readers are the table
+            // and the two drawings, so it keeps a once-a-second schedule of its own instead of
+            // riding the trend rate - which is also what keeps it at a second when the charts run
+            // slower. What it covers is the interval since the previous reading, so the answers
+            // tile the timeline and the section can add them up over the range the reader chose.
             bool secondDue = _nextSecond == DateTime.MinValue || now >= _nextSecond;
             bool accessDue = _accessMetrics.Count == 0 || secondDue;
             // What the layers hold is a status question, and status is the expensive one: it walks
@@ -1529,6 +1596,18 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 // do run late - covers what it missed instead of leaving a hole or counting it
                 // twice. The clamp keeps a long gap from billing a minute of traffic to one point.
                 double seconds = fresh ? RefreshSeconds : Math.Clamp((now - _lastSample).TotalSeconds, 0.1, 5);
+                // The access window tiles the same way, but it is measured from its own previous
+                // reading rather than from the charts': the two schedules fire on different ticks,
+                // and an answer that covered the wrong interval would be traffic counted twice or
+                // not at all once the page adds the answers up over its range.
+                double accessSeconds = 0;
+                if (accessDue)
+                {
+                    accessSeconds = _lastAccessAt == DateTime.MinValue
+                        ? Math.Min(1, Math.Max(0.1, RefreshSeconds))
+                        : Math.Clamp((now - _lastAccessAt).TotalSeconds, 0.1, 5);
+                    _lastAccessAt = now;
+                }
                 _requested = false;
                 _requestEpoch = _epoch;
                 if (trendsDue) { _next = NextDue(_next, now, RefreshSeconds); _lastSample = now; }
@@ -1543,7 +1622,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                     // question is asked.
                     var process = _process.Read();
                     var trends = trendsDue ? Window(seconds) : null;
-                    var access = accessDue ? Window(AccessSeconds) : null;
+                    var access = accessDue ? Window(accessSeconds) : null;
                     var held = heldDue ? Held() : null;
                     watch.Stop();
                     // The moment the request went out travels with the answer: it is the moment the
@@ -1820,12 +1899,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             _process.Processes, last.Cores.ToString("0.00", I18n.Culture), ByteUnits.Format(last.WorkingSet)));
     }
 
-    /// <summary>Takes a 60-second window: the table, the pie, the legend, and the layer list the
-    /// trend series are named and coloured from all read this rather than the trend sample.</summary>
-    private void AcceptAccess(List<MountMetrics> access)
+    /// <summary>Takes one once-a-second reading: the table, the drawings, the legend, and the layer
+    /// list the trend series are named and coloured from all read the sum of these over the range
+    /// the reader chose rather than this answer alone.</summary>
+    private void AcceptAccess(List<MountMetrics> access, DateTime at)
     {
-        _accessMetrics = access;
-        _latest = access;
+        _accessHistory.Add((at, access));
+        DateTime cutoff = at.AddSeconds(-_rangeSeconds);
+        _accessHistory.RemoveAll(entry => entry.At < cutoff);
+        _accessMetrics = AccessTotals.Sum(_accessHistory, at, _rangeSeconds);
+        _latest = _accessMetrics;
         var alive = access.Select(m => m.Mount).Append("").ToHashSet();
         foreach (var stale in _history.Keys.Where(k => !alive.Contains(k)).ToArray()) _history.Remove(stale);
     }
