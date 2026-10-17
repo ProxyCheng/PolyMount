@@ -27,6 +27,8 @@ internal static class Program
         using var help = options.AddHelpOption();
         using var install = new QCommandLineOption("install-shell-menu", "Register the Explorer context menu for the current user.");
         using var smoke = new QCommandLineOption("ui-smoke", "Run bounded UI checks without saving mount configuration.");
+        using var checksOption = new QCommandLineOption("checks",
+            "With --ui-smoke, run only these areas (comma separated; 'list' names them). All of them when omitted.", "areas");
         using var captureOption = new QCommandLineOption("capture", "Save UI smoke screenshots to an existing directory.", "directory");
         using var manage = new QCommandLineOption(new[] { "manage-cache", "probe" }, "Open object cache boundary management (repeatable).", "path");
         using var record = new QCommandLineOption("record", "Record an instance for --seconds and write the bundle, without a page.", "mount");
@@ -37,6 +39,7 @@ internal static class Program
         using var languageOption = new QCommandLineOption("lang", "Language for --render: en or zh-CN.", "language");
         options.AddOption(install);
         options.AddOption(smoke);
+        options.AddOption(checksOption);
         options.AddOption(captureOption);
         options.AddOption(manage);
         options.AddOption(record);
@@ -53,12 +56,13 @@ internal static class Program
         }
         if (options.IsSet(help)) { Console.WriteLine(options.HelpText()); return 0; }
         if (options.IsSet(captureOption) && !options.IsSet(smoke) ||
+            options.IsSet(checksOption) && !options.IsSet(smoke) ||
             (options.IsSet(secondsOption) || options.IsSet(outputOption)) && !options.IsSet(record) ||
             (options.IsSet(sizeOption) || options.IsSet(languageOption)) && !options.IsSet(render) ||
             options.PositionalArguments().Length > 0 && !options.IsSet(manage) ||
             new[] { options.IsSet(install), options.IsSet(smoke), options.IsSet(manage), options.IsSet(record), options.IsSet(render) }.Count(set => set) > 1)
         {
-            Console.Error.WriteLine("Choose one mode; --capture requires --ui-smoke, --seconds/--output require --record, "
+            Console.Error.WriteLine("Choose one mode; --capture and --checks require --ui-smoke, --seconds/--output require --record, "
                 + "--size and --lang require --render, and object paths require --manage-cache.");
             return 2;
         }
@@ -72,7 +76,25 @@ internal static class Program
 
         // A bounded, read-only UI smoke run for checking native widgets and both languages.
         if (options.IsSet(smoke))
-            return RunUiSmoke(options.IsSet(captureOption) ? options.Value(captureOption) : null);
+        {
+            string? checks = options.IsSet(checksOption) ? options.Value(checksOption) : null;
+            if (string.Equals(checks?.Trim(), "list", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Smoke areas: " + string.Join(", ", SmokeAreas));
+                return 0;
+            }
+            HashSet<string>? areas;
+            try
+            {
+                areas = ParseSmokeAreas(checks);
+            }
+            catch (ArgumentException error)
+            {
+                Console.Error.WriteLine(error.Message);
+                return 2;
+            }
+            return RunUiSmoke(options.IsSet(captureOption) ? options.Value(captureOption) : null, areas);
+        }
 
         // The performance cards drawn from a fixture: looking at how a card is laid out is looking
         // at a picture, and a picture of a chart does not need an instance behind it.
@@ -344,8 +366,35 @@ internal static class Program
         Console.WriteLine($"Instance status: {merged.Mounts.Count} instance(s), {merged.Mounts.Count(row => row.Mounted)} mounted and reported by their own processes.");
     }
 
-    private static int RunUiSmoke(string? capture)
+    /// <summary>The parts of the smoke run that can be asked for by name. A check that fails in one
+    /// window should not cost the time of driving every other one, and a change to one window
+    /// should not have to be verified against every other one either — so the run says what it
+    /// covers, and the caller can ask for less.</summary>
+    internal static readonly string[] SmokeAreas =
+        { "workspace", "dashboard", "editor", "object", "service", "stats", "recording", "locale" };
+
+    /// <summary>The areas a run was asked for, or null for all of them. Names are matched
+    /// case-insensitively, and a name this build does not know is refused rather than ignored:
+    /// a typo that silently ran nothing would read as a pass.</summary>
+    private static HashSet<string>? ParseSmokeAreas(string? value)
     {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var areas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in value.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!SmokeAreas.Contains(name, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException($"Unknown smoke area '{name}'. Known: {string.Join(", ", SmokeAreas)}");
+            areas.Add(name.ToLowerInvariant());
+        }
+        return areas.Count == 0 ? null : areas;
+    }
+
+    private static int RunUiSmoke(string? capture, HashSet<string>? areas = null)
+    {
+        // Which parts of the run this invocation was asked for. Everything that is only a check,
+        // or only the scenario a check needs, is behind one of these; what the run needs whatever
+        // it was asked for — the windows, the event loop, the page drawn — is not.
+        bool Runs(string area) => areas == null || areas.Contains(area);
         TrayActivation.Smoke();
         var dashboard = new Dashboard();
         var editor = dashboard.OpenEditor("L10")!;
@@ -367,7 +416,7 @@ internal static class Program
         timer.Timeout += () =>
         {
             ticks++;
-            if (ticks == 2)
+            if (ticks == 2 && Runs("workspace"))
             {
                 try { dashboard.SmokeTabs(instance); } catch (Exception ex) { failure = ex.ToString(); }
                 // Those interactions close the performance tab and open it again, and a closed tab
@@ -378,18 +427,18 @@ internal static class Program
             // The reader changing the range is a change of window, not of cadence: readings are
             // counted from the moment the range changes, against a rate pinned here so the count
             // means the same thing on every machine.
-            if (ticks == 4)
+            if (ticks == 4 && Runs("stats"))
             {
                 rateBefore = stats.SamplingRate;
                 stats.SmokeSamplingRate(1);
             }
-            if (ticks == 8)
+            if (ticks == 8 && Runs("stats"))
             {
                 readingsAtRangeChange = stats.ProcessReadings;
                 rangeChangedAt = DateTime.UtcNow;
                 rangeBefore = stats.SmokeChangeRange();
             }
-            if (ticks == 44)
+            if (ticks == 44 && Runs("stats"))
             {
                 try { stats.VerifyRangeKeepsCadence(readingsAtRangeChange, rangeChangedAt); }
                 catch (Exception ex) { failure = ex.ToString(); }
@@ -423,20 +472,26 @@ internal static class Program
             }
             if (ticks == 20)
             {
-                dashboard.VerifyPickers();
-                try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
-                try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
-                catch (Exception ex) { failure = ex.ToString(); }
-                editor.SmokeInteractions();
-                dashboard.SmokeSilentUpdate();
-                I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
+                if (Runs("dashboard")) dashboard.VerifyPickers();
+                if (Runs("object"))
+                {
+                    try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
+                }
+                if (Runs("editor"))
+                {
+                    try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
+                    editor.SmokeInteractions();
+                }
+                if (Runs("dashboard")) dashboard.SmokeSilentUpdate();
+                if (Runs("locale")) I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
             }
             // Step away from the performance tab and back again, the way a reader glancing at
             // another tab does — Qt hides the page it is not showing — and read what the page took
             // down while it was not on screen: a page that pauses when it is not on show comes back
             // to a hole where the time it was away should be.
-            if (ticks == 22) { awayFrom = DateTime.UtcNow; stats.Hide(); }
-            if (ticks == 48)
+            if (ticks == 22 && Runs("stats")) { awayFrom = DateTime.UtcNow; stats.Hide(); }
+            if (ticks == 48 && Runs("stats"))
             {
                 var until = DateTime.UtcNow;
                 stats.Show();
@@ -445,13 +500,16 @@ internal static class Program
             }
             if (ticks == 36 && capture != null)
             {
-                try { editor.SmokeLayerPicker(Path.Combine(capture, "layer-picker-alternate.png")); }
-                catch (Exception ex) { failure = ex.ToString(); }
+                if (Runs("editor"))
+                {
+                    try { editor.SmokeLayerPicker(Path.Combine(capture, "layer-picker-alternate.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
+                }
                 dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
                 editor.Capture(Path.Combine(capture, "layers-alternate.png"));
                 editor.CaptureCacheAction(Path.Combine(capture, "cache-action-alternate.png"));
             }
-            if (ticks == 40)
+            if (ticks == 40 && Runs("locale"))
             {
                 // A catalog that is missing a key answers with the key itself, which is what the
                 // window would then show, so every string these windows name is asked for here.
@@ -481,7 +539,7 @@ internal static class Program
             }
             if (ticks == 50)
             {
-                if (dashboard.Width > 560)
+                if (Runs("workspace") && dashboard.Width > 560)
                     failure = $"Workspace windows could not shrink to the requested size: "
                         + $"{dashboard.Width}x{dashboard.Height} where 560x420 was asked for";
                 if (capture != null)
@@ -493,14 +551,14 @@ internal static class Program
                     editor.CaptureCacheAction(Path.Combine(capture, "cache-action-small.png"));
                 }
             }
-            if (ticks == 52)
+            if (ticks == 52 && Runs("workspace"))
             {
                 try { Dashboard.CloseWindowForCheck(); }
                 catch (Exception ex) { failure = ex.ToString(); }
             }
             // Two ticks later, so that the event loop has been round once: a window that was only
             // hidden would still be there.
-            if (ticks == 54)
+            if (ticks == 54 && Runs("workspace"))
             {
                 try
                 {
@@ -509,7 +567,7 @@ internal static class Program
                 }
                 catch (Exception ex) { failure = ex.ToString(); }
             }
-            if (ticks == 56)
+            if (ticks == 56 && Runs("workspace"))
             {
                 try { VerifyDashboardReopens(); }
                 catch (Exception ex) { failure = ex.ToString(); }
@@ -519,31 +577,44 @@ internal static class Program
                 timer.Stop();
                 try
                 {
-                    VerifyInstanceDirectory();
-                    VerifyInstanceStatus();
-                // The whole page is drawn for the checks and the pictures that follow: a card
-                // outside the viewport is not drawn on purpose, and it would be verified and
-                // photographed half empty.
-                stats.DrawEverything();
-                    stats.VerifyResponseSampling();
-                    stats.VerifyAccessSplit();
-                    stats.VerifyAccessGrid();
-                    stats.VerifyAccessModes();
-                    stats.VerifyChartScale();
-                    stats.VerifyLayout();
-                    stats.VerifyCharts();
-                    stats.VerifySmoothing();
-                    stats.VerifyFrames();
-                    stats.VerifyChartsModule(capture == null ? null : Path.Combine(capture, "charts-module.png"));
-                    stats.VerifyHistories();
-                    stats.VerifyProcess();
-                    stats.VerifyByteAccount();
-                    stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));
-                    stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
-                    stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
+                    if (Runs("service"))
+                    {
+                        VerifyInstanceDirectory();
+                        VerifyInstanceStatus();
+                    }
+                    // The whole page is drawn for the checks and the pictures that follow: a card
+                    // outside the viewport is not drawn on purpose, and it would be verified and
+                    // photographed half empty. A recording's bundle is built from that page too.
+                    if (Runs("stats") || Runs("recording")) stats.DrawEverything();
+                    if (Runs("stats"))
+                    {
+                        stats.VerifyResponseSampling();
+                        stats.VerifyAccessSplit();
+                        stats.VerifyAccessGrid();
+                        stats.VerifyAccessModes();
+                        stats.VerifyChartScale();
+                        stats.VerifyLayout();
+                        stats.VerifyCharts();
+                        stats.VerifySmoothing();
+                        stats.VerifyFrames();
+                        stats.VerifyChartsModule(capture == null ? null : Path.Combine(capture, "charts-module.png"));
+                        stats.VerifyHistories();
+                        stats.VerifyProcess();
+                        stats.VerifyByteAccount();
+                    }
+                    if (Runs("recording"))
+                    {
+                        stats.VerifyRecording(capture == null ? null : Path.Combine(capture, "chart-markers.png"));
+                        stats.SmokeRecordingStartAndDiscard(capture == null ? null : Path.Combine(capture, "recording-live.png"));
+                        stats.VerifyRecordingBundle(Path.Combine(capture ?? Path.GetTempPath(), "polymount-export-smoke"));
+                    }
                 }
                 catch (Exception ex) { failure = ex.ToString(); }
-                Console.WriteLine(failure ?? "UI smoke passed: tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, Stats with its recording panel, and live localization.");
+                string covered = areas == null
+                    ? "tab reorder, four-way splits, detach/return, preserved drafts, Dashboard, ConfigEditor, "
+                        + "Stats with its recording panel, and live localization"
+                    : "areas " + string.Join(", ", SmokeAreas.Where(area => areas.Contains(area)));
+                Console.WriteLine(failure ?? "UI smoke passed: " + covered + ".");
                 _app.Exit(failure == null ? 0 : 1);
             }
         };
