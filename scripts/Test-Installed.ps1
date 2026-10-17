@@ -59,7 +59,9 @@ Check 'no install directory yet' (-not (Test-Path -LiteralPath $app))
 
 Write-Host ''
 Write-Host '=== install ==='
-$code = Invoke-Setup $Setup '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
+$setupLog = Join-Path $env:TEMP 'polymount-setup.log'
+Remove-Item -LiteralPath $setupLog -Force -ErrorAction SilentlyContinue
+$code = Invoke-Setup $Setup "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$setupLog`""
 Check 'setup exited 0' ($code -eq 0) "exit $code"
 
 $service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
@@ -75,6 +77,16 @@ if ($registered) {
     Check 'service passes the installed configuration' ($registered.PathName -like "*--config*") $registered.PathName
     Check 'service account' ($registered.StartName -ne '') $registered.StartName
 } else { Check 'service registration readable' $false }
+
+# When the service is missing, the installer's own log is the only thing that says why.
+if ($null -eq (Get-Service -Name PolyMount -ErrorAction SilentlyContinue)) {
+    Write-Host '--- sc.exe query PolyMount ---'
+    & sc.exe query PolyMount 2>&1 | Write-Host
+    if (Test-Path -LiteralPath $setupLog) {
+        Write-Host "--- tail of $setupLog ---"
+        Get-Content -LiteralPath $setupLog -Tail 40 | Write-Host
+    } else { Write-Host "no setup log at $setupLog" }
+}
 
 $running = @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue)
 Check 'exactly one backend process' ($running.Count -eq 1) "$($running.Count) process(es)"
