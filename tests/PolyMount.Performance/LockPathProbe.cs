@@ -103,20 +103,24 @@ internal static class LockPathProbe
     {
         int per = Math.Max(1, lookups / threads);
         long checksum = 0;
+        long allocatedBytes = 0;
         void Body(int seed)
         {
             long local = 0;
+            long allocated = GC.GetAllocatedBytesForCurrentThread();
             for (int i = 0; i < per; i++)
             {
                 lookup(paths[(seed + i) % paths.Length], out var result);
                 local += result.Checksum;
             }
+            Interlocked.Add(ref allocatedBytes, GC.GetAllocatedBytesForCurrentThread() - allocated);
             Interlocked.Add(ref checksum, local);
         }
 
         // Warm the JIT and the dictionaries before either clock starts. One pass, not a
         // loop of passes: Body already runs a full phase on its own.
         Body(0);
+        Interlocked.Exchange(ref allocatedBytes, 0);
 
         long contentionBefore = System.Threading.Monitor.LockContentionCount;
         long started = Stopwatch.GetTimestamp();
@@ -136,7 +140,7 @@ internal static class LockPathProbe
         }
         double ns = Stopwatch.GetElapsedTime(started).TotalNanoseconds / (double)(per * threads);
         long contention = System.Threading.Monitor.LockContentionCount - contentionBefore;
-        Console.WriteLine($"  {label}: {ns,9:0.0} ns/lookup  contention +{contention:N0}  (checksum {checksum:N0})");
+        Console.WriteLine($"  {label}: {ns,9:0.0} ns/lookup  {allocatedBytes / (double)(per * threads),6:0.0} B/lookup  contention +{contention:N0}");
         GC.KeepAlive(checksum);
     }
 

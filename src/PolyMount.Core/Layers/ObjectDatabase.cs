@@ -28,6 +28,9 @@ internal sealed class ObjectDatabase
     /// the lookups queued behind it accumulated a further 662 s. Once a second is how often a
     /// durable cache already revalidates its own storage.</summary>
     private const int StorageCheckMs = 1000;
+    /// <summary>How stale a recency stamp may get before a hit refreshes it. Eviction orders
+    /// records by this stamp; a second is finer than any eviction decision needs.</summary>
+    private const long RecencyStampTicks = TimeSpan.TicksPerSecond;
     private long _storageCheckedAt;
     // Lookup cost, split by phase. Written under _gate, where the phases happen, so the
     // counters need no atomics of their own. TotalUs and MaxUs are gate-held time: the blob
@@ -187,11 +190,17 @@ internal sealed class ObjectDatabase
                     loadUs += Microseconds(load, Stopwatch.GetTimestamp());
                     if (found == null) return false;
                 }
-                found = found with { Access = DateTime.UtcNow.Ticks };
-                // Admission can evict the row again straight away under a tight budget; the
-                // record just read stays valid, so answer from it either way.
-                if (_records.ContainsKey(key)) _records[key] = found;
-                else Admit(found);
+                // Recency orders eviction and nothing reads its exact value, so a hit refreshes
+                // the stamp at most once a second: stamping every hit allocated a record and
+                // rewrote the index entry on every lookup of every file. A row just read back
+                // from disk is always stamped, so a slot it was loaded into is fresh.
+                long now = DateTime.UtcNow.Ticks;
+                if (!resident || now - found.Access >= RecencyStampTicks)
+                {
+                    found = found with { Access = now };
+                    if (_records.ContainsKey(key)) _records[key] = found;
+                    else Admit(found);
+                }
                 value = found.Value;
                 record = found;
             }

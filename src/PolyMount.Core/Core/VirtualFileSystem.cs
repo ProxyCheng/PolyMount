@@ -135,14 +135,21 @@ public sealed class VirtualFileSystem
     private bool Visible(string path, bool fill = true)
     {
         if (path.Length == 0) return true;
+        int start = 0;
         string current = "";
-        foreach (string name in path.Split('/'))
+        while (true)
         {
+            int slash = path.IndexOf('/', start);
+            int end = slash < 0 ? path.Length : slash;
             if (!Resolve(current, out var directory, out _, fill) || !directory.Header.IsDir ||
-                directory.Content is not DirectoryObjectContent members || !members.Contains(name)) return false;
-            current = VfsPath.Child(current, name);
+                directory.Content is not DirectoryObjectContent members ||
+                !members.Contains(path.AsSpan(start, end - start))) return false;
+            if (slash < 0) return true;
+            // The prefix is the next lookup's key, so it has to exist; the component itself
+            // does not, and Split used to build every one of them plus an array.
+            current = path[..end];
+            start = slash + 1;
         }
-        return true;
     }
     // Attribute queries must not read a directory's children. Remote providers can
     // obtain the header from its parent's already resolved listing.

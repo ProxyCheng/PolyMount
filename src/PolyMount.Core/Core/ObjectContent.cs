@@ -65,6 +65,10 @@ public sealed class DirectoryObjectContent : ObjectContent
     public override long LogicalBytes => EstimatedMemoryBytes;
     public override long EstimatedMemoryBytes { get; }
     public bool Contains(string name) => _members.ContainsKey(name);
+    /// <summary>Membership without materialising the name. Resolving a path checks one of
+    /// these per component per lookup, and the caller already holds the path; a substring
+    /// per component was pure garbage next to the prefix it was about to build anyway.</summary>
+    public bool Contains(ReadOnlySpan<char> name) => _members.GetAlternateLookup<ReadOnlySpan<char>>().ContainsKey(name);
     public bool TryGetEntry(string name, out VfsEntry entry) => _members.TryGetValue(name, out entry!);
     public override ObjectContent Snapshot() => new DirectoryObjectContent(_entries);
 }
