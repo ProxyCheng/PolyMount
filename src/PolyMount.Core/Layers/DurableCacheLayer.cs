@@ -165,12 +165,15 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         return true;
     }
 
-    /// <summary>Re-admits a value read back from the store when the index no longer holds it.</summary>
-    private void Reindex(string key, VirtualObject value)
+    /// <summary>Re-admits a value read back from the store when the index no longer holds it.
+    /// The record travels with the value: a content entry that comes back without it looks
+    /// resident yet has neither staged bytes nor a blob to open, and the read that follows
+    /// asks a null record for its blob.</summary>
+    private void Reindex(string key, VirtualObject value, ObjectDatabase.Record? record)
     {
-        long bytes = value.Content.PersistenceEstimate;
+        long bytes = record?.StoredBytes ?? value.Content.PersistenceEstimate;
         long metadata = CacheBudgets.Estimate(key, value);
-        var item = NewItem(value, bytes);
+        var item = NewItem(value, bytes, record);
         item.Metadata = metadata;
         _items[key] = item;
         _bytes += bytes;
@@ -220,8 +223,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         // than a source read. Namespace records in particular must survive being dropped
         // from the index: losing one costs every path beneath it. Re-admit so the next
         // lookup comes from memory again.
-        if (!_store.TryGet(key, out value) || !KeepIndexed(value)) { value = null!; return false; }
-        lock (_gate) Reindex(key, value);
+        if (!_store.TryGet(key, out value, out var record) || !KeepIndexed(value)) { value = null!; return false; }
+        lock (_gate) Reindex(key, value, record);
         return true;
     }
 

@@ -133,7 +133,12 @@ internal sealed class ObjectDatabase
         _lookupExistsChecks++;
         EnsureAvailable();
     }
-    public bool TryGet(string key, out VirtualObject value)
+    public bool TryGet(string key, out VirtualObject value) => TryGet(key, out value, out _);
+
+    /// <summary>Looks a row up and hands back the record it came from. A caller that keeps
+    /// the value has to keep the record with it: the blob path is the only way back to the
+    /// bytes, and nothing rewrites that row for it.</summary>
+    internal bool TryGet(string key, out VirtualObject value, out Record? record)
     {
         long started = Stopwatch.GetTimestamp();
         lock (_gate)
@@ -143,14 +148,15 @@ internal sealed class ObjectDatabase
             try
             {
                 value = null!;
-                bool resident = _records.TryGetValue(key, out var record);
+                record = null;
+                bool resident = _records.TryGetValue(key, out var found);
                 if (resident)
                 {
                     // The store may have been removed underneath us; this drops the stale index.
                     long check = Stopwatch.GetTimestamp();
                     VerifyStorage();
                     existsUs += Microseconds(check, Stopwatch.GetTimestamp());
-                    if (!_records.TryGetValue(key, out record)) return false;
+                    if (!_records.TryGetValue(key, out found)) return false;
                 }
                 else
                 {
@@ -166,14 +172,14 @@ internal sealed class ObjectDatabase
                     // A recoverable store keeps a bounded resident index over a complete
                     // table, so a miss in memory is not a miss on disk.
                     long load = Stopwatch.GetTimestamp();
-                    record = LoadRecord(key);
+                    found = LoadRecord(key);
                     loadUs += Microseconds(load, Stopwatch.GetTimestamp());
-                    if (record == null) return false;
+                    if (found == null) return false;
                 }
-                if (record!.Blob != null)
+                if (found.Blob != null)
                 {
                     long check = Stopwatch.GetTimestamp();
-                    bool present = File.Exists(Path.Combine(_root, record.Blob));
+                    bool present = File.Exists(Path.Combine(_root, found.Blob));
                     existsUs += Microseconds(check, Stopwatch.GetTimestamp());
                     if (!present)
                     {
@@ -182,12 +188,13 @@ internal sealed class ObjectDatabase
                         return false;
                     }
                 }
-                record = record with { Access = DateTime.UtcNow.Ticks };
+                found = found with { Access = DateTime.UtcNow.Ticks };
                 // Admission can evict the row again straight away under a tight budget; the
                 // record just read stays valid, so answer from it either way.
-                if (_records.ContainsKey(key)) _records[key] = record;
-                else Admit(record);
-                value = record.Value;
+                if (_records.ContainsKey(key)) _records[key] = found;
+                else Admit(found);
+                value = found.Value;
+                record = found;
                 return true;
             }
             finally

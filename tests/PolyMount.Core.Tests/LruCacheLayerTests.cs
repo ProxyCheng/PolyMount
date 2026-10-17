@@ -77,4 +77,31 @@ public class LruCacheLayerTests
         var cache = new LruCacheLayer(t.Sub("cache"), () => "v1", 1024);
         Assert.AreEqual(0, cache.ListOwn("").Count);
     }
+
+    /// <summary>
+    /// A content row lives on disk beyond this index's budget, so a header lookup loads it
+    /// back and re-admits it. The re-admitted entry used to carry no record, and the read
+    /// behind that lookup asked the null record for its blob.
+    /// </summary>
+    [TestMethod]
+    public void Read_after_the_index_forgets_a_row_serves_it_from_the_store()
+    {
+        using var t = new TempDir();
+        string root = t.Sub("cache");
+        using (var seed = new LruCacheLayer(root, () => "v1", 1024 * 1024))
+        {
+            for (int i = 0; i < 3; i++)
+                using (var content = new MemoryStream(System.Text.Encoding.UTF8.GetBytes("payload-" + i)))
+                    seed.Store("f" + i, "v1", FileEntry("f" + i, 9), content);
+            seed.WaitForPendingFillsAsync().GetAwaiter().GetResult();
+        }
+
+        // One row's metadata fits the budget; the rest are only in the store.
+        using var cache = new LruCacheLayer(root, () => "v1", 1024 * 1024, metadataBudget: 700);
+        Assert.AreEqual(1, cache.Count, "this test needs a resident index that holds one row");
+
+        Assert.IsTrue(cache.TryGetEntry("f2", out _), "the store must answer for a row outside the index");
+        Assert.IsTrue(cache.TryOpenRead("f2", out _, out var stream));
+        using (stream) Assert.AreEqual("payload-2", new StreamReader(stream).ReadToEnd());
+    }
 }

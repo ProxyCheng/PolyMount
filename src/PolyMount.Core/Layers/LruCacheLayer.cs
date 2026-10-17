@@ -117,10 +117,14 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
             if (item.OpenContent != null) { stream = item.OpenContent.Acquire()!; return stream != null; }
             record = item.Record;
         }
+        // Content and an open handle were both checked above, so a durable record is all
+        // that is left to read from. An entry that has neither is a cache miss, not a
+        // reason to throw inside the provider chain.
+        if (record?.Blob == null) return false;
         try
         {
-            if (!Reads.TryOpenRecord(record!, out stream)) return false;
-            if (record!.Compressed || stream is not FileStream file || file.Length > MaxOpenBytes) return true;
+            if (!Reads.TryOpenRecord(record, out stream)) return false;
+            if (record.Compressed || stream is not FileStream file || file.Length > MaxOpenBytes) return true;
             // Open outside the index lock. Publish a shared immutable handle only
             // if this record is still current; each reader has an independent offset.
             var opened = CacheContent.Own(file);
