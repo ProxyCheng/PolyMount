@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build, test, smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+
+      # Not a runtime nicety: PolyMount.Core compiles against Fsp.* from winfsp-msil.dll, which the
+      # projects reference at its installed path. Without it nothing builds at all.
+      - name: Install WinFsp
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP 'winfsp.msi'
+          if (-not (Test-Path -LiteralPath $msi)) {
+            curl.exe --ssl-revoke-best-effort -fL --retry 3 -o $msi `
+              https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi
+          }
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+          Write-Host "WinFsp installer exit code: $($p.ExitCode)"
+          if (-not (Test-Path -LiteralPath "${env:ProgramFiles(x86)}\WinFsp\bin\winfsp-msil.dll")) {
+            throw 'WinFsp did not install winfsp-msil.dll'
+          }
+
+      # QtSharp.Api and QtSharp.Charts are not on nuget.org; the qtsharp source is a local folder.
+      - name: Fetch QtSharp packages
+        shell: pwsh
+        run: ./scripts/Fetch-QtSharp.ps1
+
+      - name: Build
+        run: dotnet build PolyMount.slnx -c Release --nologo
+
+      - name: Unit tests
+        run: dotnet test PolyMount.slnx -c Release --no-build --nologo
+
+      # The plugin tests are their own runner, not a test-SDK project, so dotnet test never sees
+      # them. Their network case skips itself unless svn.repository is passed.
+      - name: Plugin tests
+        shell: pwsh
+        run: |
+          $plugins = Join-Path $env:RUNNER_TEMP 'plugins'
+          ./scripts/Publish-Plugins.ps1 -Destination $plugins -Configuration Release
+          dotnet run --project tests/PolyMount.Plugin.Tests -c Release -- "$plugins"
+
+      # Both are self-contained: their own configuration, their own store, a dir source and a
+      # mount point under %TEMP%. What they need from the runner is the built service and WinFsp.
+      - name: Smoke - one instance, its own pipe
+        shell: pwsh
+        run: ./scripts/Test-InstanceWorker.ps1 -ServiceExecutable src/PolyMount.Service/bin/Release/net10.0-windows/PolyMount.Service.exe
+
+      - name: Smoke - copy-up, delete, rename, persistence
+        shell: pwsh
+        run: ./scripts/Test-ObjectMount.ps1 -ServiceExecutable src/PolyMount.Service/bin/Release/net10.0-windows/PolyMount.Service.exe
+
+  package:
+    name: Package installer
+    runs-on: windows-latest
+    needs: build
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install WinFsp
+        shell: pwsh
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP 'winfsp.msi'
+          curl.exe --ssl-revoke-best-effort -fL --retry 3 -o $msi `
+            https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi
+          $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait -PassThru
+          Write-Host "WinFsp installer exit code: $($p.ExitCode)"
+
+      - name: Fetch QtSharp packages
+        shell: pwsh
+        run: ./scripts/Fetch-QtSharp.ps1
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          # A tag names the version; otherwise a build number keeps it valid and increasing.
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          } else {
+            $version = "0.0.0.$($env:GITHUB_RUN_NUMBER)"
+          }
+          Write-Host "Installer version: $version"
+          ./scripts/Build-Installer.ps1 -Version $version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PolyMount-Setup
+          path: |
+            artifacts/PolyMount-*-Setup.exe
+            artifacts/PolyMount-*-Setup.exe.sha256
+          if-no-files-found: error
