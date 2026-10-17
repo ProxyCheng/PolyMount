@@ -37,6 +37,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private Task<ControlResponse>? _pending;
     private bool _saving;
     private bool _layerOperation;
+    // What the in-flight layer action named, so its answer can be applied to the draft: the
+    // layer and the field its result belongs to.
+    private string? _layerOperationLayer, _layerOperationField;
     private bool _clearingCache;
     private string? _openName;
     private bool _addAfterLoad;
@@ -350,6 +353,12 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             if (_layerOperation)
             {
                 _layerOperation = false;
+                string? field = _layerOperationField, layer = _layerOperationLayer;
+                _layerOperationLayer = _layerOperationField = null;
+                // A revision an action produced belongs in the field that action sits beside;
+                // the draft then says "unsaved", because saving is what makes it the pin.
+                if (response.Revision > 0 && !string.IsNullOrEmpty(field) && AdoptRevision(field, layer, response.Revision))
+                    return;
                 _status.SetText(T("operation.done"));
                 return;
             }
@@ -548,6 +557,14 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         layout.AddLayout(form);
         if (_layer == null) return;
         var descriptor = Descriptor(_layer.Type);
+        // An action that names a field belongs beside that field's editor: it produces the
+        // value that goes there, and a reader should not have to find it at the bottom of the
+        // panel. Actions that name none are layer-wide and stay there.
+        var inline = descriptor.Actions
+            .Where(action => !string.IsNullOrWhiteSpace(action.Field) &&
+                descriptor.Fields.Any(field => string.Equals(field.Path, action.Field, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(action => action.Field, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
         foreach (var field in descriptor.Fields)
         {
             string value = LayerProperties.Read(_layer, field);
@@ -578,10 +595,28 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             }
             var label = Plain(field.Title.Resolve(I18n.Language), "muted");
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
-            form.AddRow(label, editor);
+            QWidget row = editor;
+            if (inline.TryGetValue(field.Path, out var actions))
+            {
+                var widget = new QWidget();
+                var rowLayout = new QHBoxLayout(widget);
+                rowLayout.SetContentsMargins(0, 0, 0, 0);
+                rowLayout.AddWidget(editor, 1);
+                foreach (var action in actions)
+                {
+                    var button = new QPushButton(action.Title.Resolve(I18n.Language));
+                    button.SetToolTip(action.Confirmation.Resolve(I18n.Language));
+                    button.Clicked += _ => LayerOperation(action);
+                    rowLayout.AddWidget(button);
+                    _propertyActions.Add((button, action));
+                }
+                row = widget;
+            }
+            form.AddRow(label, row);
             _propertyEditors.Add((field, editor, label));
         }
-        foreach (var action in descriptor.Actions)
+        foreach (var action in descriptor.Actions.Where(action =>
+            string.IsNullOrWhiteSpace(action.Field) || !inline.ContainsKey(action.Field)))
         {
             var button = new QPushButton(action.Title.Resolve(I18n.Language));
             button.Clicked += _ => LayerOperation(action);
@@ -606,7 +641,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 combo.BlockSignals(false);
             }
         }
-        foreach (var (button, action) in _propertyActions) button.SetText(action.Title.Resolve(I18n.Language));
+        foreach (var (button, action) in _propertyActions)
+        {
+            button.SetText(action.Title.Resolve(I18n.Language));
+            button.SetToolTip(action.Confirmation.Resolve(I18n.Language));
+        }
     }
 
     private void ReorderLayers()
@@ -806,9 +845,28 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var request = new ControlRequest { Cmd = action.Command, Layer = id };
         _saving = false;
         _layerOperation = true;
+        _layerOperationLayer = id;
+        _layerOperationField = action.Field;
         _pending = Task.Run(() => _client.Send(request));
         _save.SetEnabled(false);
         _status.SetText(T("working"));
+    }
+
+    /// <summary>Writes a revision an action produced into the draft field that action belongs
+    /// to. The field is the only thing touched: committing it is <see cref="CommitLayer"/>'s
+    /// job, and saving it is the reader's, which is the same rule every typed field follows.</summary>
+    private bool AdoptRevision(string fieldPath, string? layerId, long revision)
+    {
+        if (_layer == null || !string.Equals(_layer.Id, layerId, StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (var (field, editor, _) in _propertyEditors)
+        {
+            if (!string.Equals(field.Path, fieldPath, StringComparison.OrdinalIgnoreCase) || editor is not QLineEdit edit) continue;
+            string text = revision.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (string.Equals(edit.Text, text, StringComparison.Ordinal)) return false;
+            edit.SetText(text);          // TextChanged marks the draft unsaved
+            return true;
+        }
+        return false;
     }
     private void UpdateColor()
     {

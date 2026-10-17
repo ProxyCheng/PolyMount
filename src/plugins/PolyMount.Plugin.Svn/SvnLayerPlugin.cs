@@ -69,6 +69,7 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                         Description = SvnTexts.Get("svn.field.lane.description") }
                 },
                 Actions = new() { new() { Command = PolyMount.Core.Ipc.ControlCommands.RefreshHead,
+                    Field = "Source.PinnedRevision",
                     Title = SvnTexts.Get("svn.action.refreshHead"),
                     Confirmation = SvnTexts.Get("svn.action.refreshHead.confirmation") } }
             });

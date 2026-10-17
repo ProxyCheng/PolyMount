@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Xml.Linq;
 using PolyMount.Core;
+using PolyMount.Core.Ipc;
 using PolyMount.Plugin.Testing;
 
 namespace PolyMount.Plugins.Svn;
@@ -186,6 +187,10 @@ public sealed class SvnPluginTests : IPluginTestProvider
             var descriptor = LayerRegistry.Describe("svn");
             if (!descriptor.Fields.Any(f => f.Path == "Source.Password" && f.Kind == LayerFieldKind.Secret) ||
                 !descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");
+            // Refresh HEAD writes its result into the pin field, so the editor draws it beside
+            // that field rather than at the bottom of the panel.
+            var refresh = descriptor.Actions.Single(a => a.Command == ControlCommands.RefreshHead);
+            if (refresh.Field != "Source.PinnedRevision") throw new Exception("Refresh HEAD is not attached to the pinned revision field");
             if (typeof(SvnLayer).Assembly == typeof(ILayer).Assembly) throw new Exception("Plugin is not independent");
             PluginLoader.LoadConfigured(Array.Empty<PluginConfig>(), AppContext.BaseDirectory);
             if (SourceRegistry.Contains("svn") || LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Disabled plugin registrations remain active");

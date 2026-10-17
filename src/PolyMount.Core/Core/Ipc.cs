@@ -161,6 +161,10 @@ public sealed class ControlResponse
     // Populated by "getConfig": serialized AppConfig.
     public string? Config { get; set; }
 
+    // Populated by "refreshHead": the revision the named layer was moved to, so a caller that
+    // wants to make it the pin does not have to read it back out of the status.
+    public long Revision { get; set; }
+
     // Populated by "metrics": per-mount read analytics.
     public List<MountMetrics> Metrics { get; set; } = new();
 

@@ -37,7 +37,7 @@ internal static class InstanceCommands
                 instance.SetPin(request.Rev, request.Layer);
                 break;
             case ControlCommands.RefreshHead:
-                instance.RefreshHead(request.Layer);
+                response.Revision = instance.RefreshHead(request.Layer);
                 break;
             case ControlCommands.ClearCache:
                 instance.ClearCache(request.Layer);

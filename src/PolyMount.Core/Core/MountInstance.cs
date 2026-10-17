@@ -210,12 +210,17 @@ public sealed class MountInstance : IDisposable
         if (Mounted) StartBackground();
     }
 
-    public void RefreshHead(string? layer = null)
+    /// <summary>Moves the named layer to the source's HEAD and reports the revision it now
+    /// serves. When no layer is named every revision source is moved, and the last one's
+    /// revision is reported: callers that need a particular one name it.</summary>
+    public long RefreshHead(string? layer = null)
     {
         var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
-        foreach (var rev in revisions) rev.SetRevision(rev.HeadRevision());
+        long revision = 0;
+        foreach (var rev in revisions) { revision = rev.HeadRevision(); rev.SetRevision(revision); }
         if (Mounted) StartBackground();
+        return revision;
     }
 
     public void ClearCache(string? layer = null)

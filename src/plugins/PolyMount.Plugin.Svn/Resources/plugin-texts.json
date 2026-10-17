@@ -34,5 +34,8 @@
     "zh-CN": "预取最多同时占用的源请求数；始终为它保留一条，其余留给读取方。它同时也限制了上面的预取并发数。"
   },
   "svn.action.refreshHead": { "en": "Refresh HEAD", "zh-CN": "更新到 HEAD" },
-  "svn.action.refreshHead.confirmation": { "en": "Refresh this layer to HEAD?", "zh-CN": "将此层更新到 HEAD？" }
+  "svn.action.refreshHead.confirmation": {
+    "en": "Move this layer to HEAD and put that revision into the pinned revision field? Saving makes it the pin.",
+    "zh-CN": "将此层更新到 HEAD，并把该版本填入固定 revision？保存后成为固定版本。"
+  }
 }

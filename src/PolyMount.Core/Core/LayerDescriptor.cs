@@ -44,6 +44,11 @@ public sealed class LayerActionDescriptor
     public string Command { get; set; } = "";
     public LocalizedText Title { get; set; } = new();
     public LocalizedText Confirmation { get; set; } = new();
+    /// <summary>The property field this action belongs to, by its descriptor path (for example
+    /// <c>Source.PinnedRevision</c>). A front-end renders such an action beside that field's
+    /// editor, where its result lands; an empty path means a layer-wide action and belongs at
+    /// the bottom of the panel.</summary>
+    public string Field { get; set; } = "";
 }
 
 public sealed class LayerDescriptor
