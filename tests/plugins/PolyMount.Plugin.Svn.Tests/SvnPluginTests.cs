@@ -182,8 +182,12 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Missing plugin preset");
             var preset = LayerPresetRegistry.All.Single(p => p.Id == "svn-workspace");
-            if (!preset.Layers.Select(l => l.Type).SequenceEqual(new[] { "memory-cache", "warmup", "overlay", "prediction-cache", "cache", "svn" }))
+            if (!preset.Layers.Select(l => l.Type).SequenceEqual(new[] { "memory-cache", "warmup", "prediction-cache", "cache", "overlay", "svn" }))
                 throw new Exception("Unexpected SVN workspace layer order");
+            var cacheLayer = preset.Layers.Single(l => l.Type == "cache");
+            if (!cacheLayer.Parameters.TryGetValue("Writable", out var writable) ||
+                writable.ValueKind != System.Text.Json.JsonValueKind.False)
+                throw new Exception("The read cache above the overlay must not accept writes");
             var descriptor = LayerRegistry.Describe("svn");
             if (!descriptor.Fields.Any(f => f.Path == "Source.Password" && f.Kind == LayerFieldKind.Secret) ||
                 !descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");

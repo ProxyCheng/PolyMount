@@ -64,6 +64,27 @@ public sealed class RequestDiagnostics : IDisposable
     /// takes when it charges a request to process 0.</summary>
     public static int AmbientProcessId => Current.Value?.ProcessId ?? 0;
 
+    /// <summary>
+    /// A runtime key for the caller's stream: the process plus the thread handling the request.
+    /// It is only a hint for which history a demand belongs to, never part of a model key — the
+    /// learned table is keyed by the paths themselves — so a thread pool changing threads, or a
+    /// process getting a new pid on the next run, does not make the persisted model unusable.
+    /// With no scope (tests and background work) the thread alone still separates callers.
+    /// </summary>
+    public static long AmbientStreamId
+    {
+        get
+        {
+            int processId = Current.Value?.ProcessId ?? 0;
+            return StreamId(processId, Environment.CurrentManagedThreadId);
+        }
+    }
+
+    public static long StreamId(int processId, int threadId) =>
+        ((long)(uint)processId << 32) | (uint)threadId;
+
+    public static int ProcessOfStream(long streamId) => (int)(streamId >> 32);
+
     public static Scope? Begin(string operation, string path, RequestDiagnostics? diagnostics = null, int processId = 0)
     {
         var parent = Current.Value;

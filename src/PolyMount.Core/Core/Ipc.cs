@@ -38,6 +38,18 @@ public sealed class ProviderInfo
     public long SiblingWasted { get; set; }
     /// <summary>Directories whose walk the stride is following right now.</summary>
     public int SiblingDirectories { get; set; }
+    /// <summary>Preloads a spatial batch issued: the rest of a directory the caller had
+    /// enumerated and started reading. Subsets of the preload and held counters above.</summary>
+    public long SpatialPreloads { get; set; }
+    public long SpatialCompleted { get; set; }
+    public long SpatialHits { get; set; }
+    public long SpatialWasted { get; set; }
+    /// <summary>Caller streams with a history right now. One per process/thread the predictor
+    /// has seen recently; a bounded runtime hint, not part of the persisted model.</summary>
+    public int PredictionStreams { get; set; }
+    /// <summary>Held guesses dropped because a lower layer accepted a write to their path.
+    /// They were correct until the write changed them, so they are not prediction misses.</summary>
+    public long Invalidated { get; set; }
     /// <summary>How a source layer that serves several priorities shared itself out. What the
     /// reader's class keeps is what read-ahead may not take, so read-ahead being busy is never
     /// what its wait is made of; read-ahead waits in its own class's queue instead, and that

@@ -389,6 +389,12 @@ public sealed class MountInstance : IDisposable
                 info.SiblingHits = prediction.SiblingHits;
                 info.SiblingWasted = prediction.SiblingWasted;
                 info.SiblingDirectories = prediction.TrackedDirectories;
+                info.SpatialPreloads = prediction.SpatialPreloads;
+                info.SpatialCompleted = prediction.SpatialCompleted;
+                info.SpatialHits = prediction.SpatialHits;
+                info.SpatialWasted = prediction.SpatialWasted;
+                info.PredictionStreams = prediction.ActiveStreams;
+                info.Invalidated = prediction.Invalidated;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");
             }
             // A source that serves read-ahead at a priority of its own reports what admitting

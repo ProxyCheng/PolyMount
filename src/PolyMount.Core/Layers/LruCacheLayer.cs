@@ -6,7 +6,7 @@ namespace PolyMount.Layers;
 /// Read-through cache for file content and the directory namespace. Namespace records
 /// are never evicted from the store; content is bounded by capacity.
 /// </summary>
-public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayerStorageUsage
+public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObjectManagement, ILayerStorageUsage
 {
     private sealed class ContentItem(VirtualObject value, long bytes, ObjectDatabase.Record? record = null)
         : Item(value, bytes, record)
@@ -20,22 +20,27 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
     private const long MaxOpenBytes = 64L * 1024 * 1024;
 
     private readonly ObjectDatabase _writes;
+    private readonly bool _writable;
     private int _openCount;
     private readonly LinkedList<Item> _openLru = new();
     private long _openBytes;
 
     public LruCacheLayer(string root, Func<string> version, long capacityBytes, bool compression = false,
-        long metadataBudget = CacheBudgets.MetadataBytes)
+        long metadataBudget = CacheBudgets.MetadataBytes, bool writable = true)
         : base(new ObjectDatabase(Path.Combine(root, "reads"), compression, recoverable: true,
                 preferredPrefix: version() + "|", metadataBudget: metadataBudget),
             Path.Combine(root, "reads", "objects-v2"), version, capacityBytes, metadataBudget,
             _ => true)
     {
         _writes = new(Path.Combine(root, "writes"), compression);
+        _writable = writable;
     }
 
     public override string Name => "cache";
-    public override bool Writable => true;
+    /// <summary>Whether this cache is also the chain's writable layer. A read-through cache
+    /// placed above an overlay is not: the overlay owns writes, and accepting one here would
+    /// keep it from ever reaching the overlay.</summary>
+    public override bool Writable => _writable;
     public bool HasDurableWrites => _writes.Records.Count > 0;
     public int RetainedReadHandles { get { lock (Gate) return _openCount; } }
 
@@ -100,7 +105,14 @@ public sealed class LruCacheLayer : DurableCacheLayer, IObjectManagement, ILayer
         content.OpenContent = null;
     }
 
-    public override bool TryApply(IReadOnlyList<ObjectChange> changes) { _writes.Apply(changes); return true; }
+    public override bool TryApply(IReadOnlyList<ObjectChange> changes) { if (!_writable) return false; _writes.Apply(changes); return true; }
+
+    /// <summary>A lower layer accepted a write, so this cache's copy of the changed paths is
+    /// stale. Only those paths are dropped; the rest of the read cache survives a save.</summary>
+    public void UpdateAfterWrite(IReadOnlyList<ObjectChange> changes)
+    {
+        foreach (var change in changes) InvalidateEntry(change.Path);
+    }
 
     public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
     {

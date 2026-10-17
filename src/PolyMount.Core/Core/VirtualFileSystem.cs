@@ -208,7 +208,7 @@ public sealed class VirtualFileSystem
     public List<VfsEntry> List(string path, bool recordAccess = true, bool speculative = false)
     {
         using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
-        using var predictionDemand = recordAccess ? ObservePredictions(VfsPath.Normalize(path)) : null;
+        using var predictionDemand = recordAccess ? ObservePredictions(VfsPath.Normalize(path), listing: true) : null;
         using var request = RequestDiagnostics.Begin("VFS.List", path, Diagnostics);
         request?.Stage("resolving directory");
         path = VfsPath.Normalize(path);
@@ -232,7 +232,7 @@ public sealed class VirtualFileSystem
     public Stream OpenRead(string path, out VfsEntry entry, bool speculative = false)
     {
             using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
-            using var demand = speculative ? null : Prediction?.Demand(VfsPath.Normalize(path));
+            using var demand = speculative ? null : Prediction?.Demand(VfsPath.Normalize(path), RequestDiagnostics.AmbientStreamId);
             using var layerDemand = speculative ? null : ObservePredictions(VfsPath.Normalize(path));
             using var request = RequestDiagnostics.Begin("VFS.OpenRead", path, Diagnostics);
             path = VfsPath.Normalize(path);
@@ -333,10 +333,14 @@ public sealed class VirtualFileSystem
         return !_layers.Skip(index + 1).Take(hit - index).Any(l =>
             (l is NamedLayer named ? named.Inner : l) is PolyMount.Layers.LruCacheLayer lru ? lru.HasDurableWrites : l.Writable);
     }
-    private IDisposable ObservePredictions(string path)
+    private IDisposable ObservePredictions(string path, bool listing = false)
     {
+        // One stream key for every predictor in the chain: the caller's process and the thread
+        // handling this demand. The key is a runtime hint only; the learned table is keyed by
+        // paths, so it survives threads and runs changing underneath it.
+        long streamId = RequestDiagnostics.AmbientStreamId;
         var scopes = _layers.Select(l => l is NamedLayer named ? named.Inner : l)
-            .OfType<PolyMount.Layers.PredictionCacheLayer>().Select(l => l.Observe(path)).ToArray();
+            .OfType<PolyMount.Layers.PredictionCacheLayer>().Select(l => l.Observe(path, streamId, listing)).ToArray();
         return new PredictionScopes(scopes);
     }
     private sealed class PredictionScopes(IDisposable?[] scopes) : IDisposable
@@ -516,10 +520,13 @@ public sealed class VirtualFileSystem
             // invalidating it would throw away the entire read cache on every save.
             for (int i = 0; i < hit; i++)
             {
-                if (_layers[i] is not ICacheLayer cache) continue;
-                var inner = _layers[i] is NamedLayer named ? named.Inner : _layers[i];
-                if (inner is IWriteAwareCache tracking) tracking.UpdateAfterWrite(changes);
-                else cache.Invalidate();
+                var layer = _layers[i];
+                var inner = layer is NamedLayer named ? named.Inner : layer;
+                if (inner is IWriteAwareCache tracking) { tracking.UpdateAfterWrite(changes); continue; }
+                // Read-ahead above a writable layer holds copies that the write just made stale;
+                // it never accepts the write itself, so it only has to drop those paths.
+                if (inner is IWriteInvalidation invalidating) { invalidating.InvalidateAfterWrite(changes); continue; }
+                if (inner is ICacheLayer cache) cache.Invalidate();
             }
         }
     }

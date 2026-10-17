@@ -14,8 +14,14 @@ internal static class BuiltInLayerDescriptors
         {
             new() { Path = "Path", Title = LayerTexts.Get("storage.path"), Description = LayerTexts.Get("storage.path.description") },
             new() { Path = "Compression", Kind = LayerFieldKind.Boolean, Title = LayerTexts.Get("storage.compression") }
-        }.Concat(cache ? new[] { new LayerFieldDescriptor { Path = "CacheCapacityBytes", Kind = LayerFieldKind.Integer,
-            Title = LayerTexts.Get("storage.capacity"), Scale = 1048576, Minimum = 1, Maximum = long.MaxValue / 1048576 } } : Array.Empty<LayerFieldDescriptor>()).ToList(),
+        }.Concat(cache ? new[] {
+            new LayerFieldDescriptor { Path = "CacheCapacityBytes", Kind = LayerFieldKind.Integer,
+                Title = LayerTexts.Get("storage.capacity"), Scale = 1048576, Minimum = 1, Maximum = long.MaxValue / 1048576 },
+            // A read-through cache above an overlay is not the write target: the overlay is,
+            // and a cache that accepted writes would keep them from ever reaching it.
+            new LayerFieldDescriptor { Path = "Parameters.Writable", Kind = LayerFieldKind.Boolean,
+                DefaultValue = "true", Title = LayerTexts.Get("directory.writable") }
+        } : Array.Empty<LayerFieldDescriptor>()).ToList(),
         Actions = cache ? new() : new() { new() { Command = ControlCommands.ClearLocalChanges,
             Title = LayerTexts.Get("overlay.discard"),
             Confirmation = LayerTexts.Get("overlay.discard.confirm") } }

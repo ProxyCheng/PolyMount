@@ -16,7 +16,7 @@ public sealed class ReadPredictionTests
         var predicted = new List<string>();
         using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
             new ReadPredictionOptions(), temp.Sub("divergence.json"),
-            path => { lock (predicted) predicted.Add(path); });
+            (path, _, _) => { lock (predicted) predicted.Add(path); });
 
         // a -> b five times, then one divergence to c. Keeping a single slot per path would
         // let that one divergence discard the five observations behind b.
@@ -43,7 +43,7 @@ public sealed class ReadPredictionTests
         var predicted = new List<string>();
         using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
             new ReadPredictionOptions(), temp.Sub("coinflip.json"),
-            path => { lock (predicted) predicted.Add(path); });
+            (path, _, _) => { lock (predicted) predicted.Add(path); });
 
         // Two successors seen once each: no leader worth spending source bandwidth on.
         using (prediction.Demand("a")) { } using (prediction.Demand("b")) { }
@@ -64,7 +64,7 @@ public sealed class ReadPredictionTests
         var vfs = new VirtualFileSystem(new[] { source });
         using var loaded = new ManualResetEventSlim();
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { IdleDelayMs = 100 },
-            temp.Sub("one-run.json"), path => { if (path == "b") loaded.Set(); });
+            temp.Sub("one-run.json"), (path, _, _) => { if (path == "b") loaded.Set(); });
         using (prediction.Demand("a")) { }
         using (prediction.Demand("b")) { }
         using (prediction.Demand("a"))
@@ -240,7 +240,7 @@ public sealed class ReadPredictionTests
             var predicted = new List<string>();
             using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
                 new ReadPredictionOptions { ContextDepth = depth, PrefetchDepth = 1 }, temp.Sub("context.json"),
-                path => { lock (predicted) predicted.Add(path); });
+                (path, _, _) => { lock (predicted) predicted.Add(path); });
             // a -> x -> p and b -> x -> q: x alone is a coin flip, (a,x) and (b,x) are not.
             foreach (var step in walk.Split(' '))
                 foreach (var name in step) using (prediction.Demand(name.ToString())) { }
@@ -267,7 +267,7 @@ public sealed class ReadPredictionTests
             var predicted = new List<string>();
             using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
                 new ReadPredictionOptions { ContextDepth = 1, PrefetchDepth = depth }, temp.Sub("chain.json"),
-                path => { lock (predicted) predicted.Add(path); });
+                (path, _, _) => { lock (predicted) predicted.Add(path); });
             foreach (var path in new[] { "a", "b", "c", "a", "b", "c" }) using (prediction.Demand(path)) { }
             await Task.Delay(800);
             lock (predicted) predicted.Clear();
@@ -291,20 +291,21 @@ public sealed class ReadPredictionTests
         var source = new FakeSourceLayer();
         foreach (var name in new[] { "a", "b" }) source.AddFile(name, name);
         var predicted = new List<string>();
+        const long stream = 1;
         using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
             new ReadPredictionOptions { ContextDepth = 1 }, temp.Sub("throttle.json"),
-            path => { lock (predicted) predicted.Add(path); });
-        foreach (var path in new[] { "a", "b", "a", "b" }) using (prediction.Demand(path)) { }
+            (path, _, _) => { lock (predicted) predicted.Add(path); });
+        foreach (var path in new[] { "a", "b", "a", "b" }) using (prediction.Demand(path, stream)) { }
         await Task.Delay(800);
 
         prediction.Throttle = 0;
         lock (predicted) predicted.Clear();
-        using (prediction.Demand("a")) { }
+        using (prediction.Demand("a", stream)) { }
         await Task.Delay(600);
         lock (predicted) Assert.AreEqual(0, predicted.Count, "a throttled predictor issues nothing");
 
         prediction.Throttle = 1;
-        using (prediction.Demand("a")) { }
+        using (prediction.Demand("a", stream)) { }
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (DateTime.UtcNow < deadline) { lock (predicted) if (predicted.Count > 0) break; await Task.Delay(25); }
         lock (predicted) Assert.AreEqual("b", predicted.FirstOrDefault(), "and resumes when released");
@@ -323,7 +324,7 @@ public sealed class ReadPredictionTests
         // stride predicted: both may name the same file, and only one of them is the stride.
         var strided = new List<string>();
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 3 },
-            temp.Sub("siblings.json"), path => { }, path => { lock (strided) strided.Add(path); });
+            temp.Sub("siblings.json"), (path, _, origin) => { if (origin == PreloadOrigin.Sibling) lock (strided) strided.Add(path); });
 
         // Two files of one directory, in the order a listing hands them over.
         using (prediction.Demand("dir/f0")) { }
@@ -347,11 +348,12 @@ public sealed class ReadPredictionTests
         var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
         vfs.List("dir");
         var strided = new List<string>();
+        const long stream = 1;
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1 },
-            temp.Sub("covered.json"), path => { }, path => { lock (strided) strided.Add(path); });
+            temp.Sub("covered.json"), (path, _, origin) => { if (origin == PreloadOrigin.Sibling) lock (strided) strided.Add(path); });
 
-        using (prediction.Demand("dir/f0")) { }
-        using (prediction.Demand("dir/f1")) { }
+        using (prediction.Demand("dir/f0", stream)) { }
+        using (prediction.Demand("dir/f1", stream)) { }
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (prediction.SiblingCompleted < 1 && DateTime.UtcNow < deadline) await Task.Delay(25);
         Assert.AreEqual(1L, prediction.SiblingPredictions);
@@ -360,12 +362,12 @@ public sealed class ReadPredictionTests
         // The reader catches up with the file that was fetched for it, which moves the walk on,
         // and then reads the same ascending pair again: the position behind it is one that has
         // been taken already, by the read-ahead or by the read itself.
-        using (prediction.Demand("dir/f2")) { }
+        using (prediction.Demand("dir/f2", stream)) { }
         await Task.Delay(300);
         long issued = prediction.SiblingPredictions;
         lock (strided) strided.Clear();
-        using (prediction.Demand("dir/f0")) { }
-        using (prediction.Demand("dir/f1")) { }
+        using (prediction.Demand("dir/f0", stream)) { }
+        using (prediction.Demand("dir/f1", stream)) { }
         await Task.Delay(400);
         Assert.AreEqual(issued, prediction.SiblingPredictions, "a covered sibling is not nominated a second time");
         lock (strided) Assert.AreEqual(0, strided.Count(p => p == "dir/f2"));
@@ -381,19 +383,20 @@ public sealed class ReadPredictionTests
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
         var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
         foreach (var dir in new[] { "one", "two" }) vfs.List(dir);
+        const long stream = 1;
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1 },
-            temp.Sub("stride-throttle.json"), path => { });
+            temp.Sub("stride-throttle.json"), (path, _, _) => { });
 
-        using (prediction.Demand("one/f0")) { }
-        using (prediction.Demand("one/f1")) { }
+        using (prediction.Demand("one/f0", stream)) { }
+        using (prediction.Demand("one/f1", stream)) { }
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (prediction.SiblingCompleted < 1 && DateTime.UtcNow < deadline) await Task.Delay(25);
         Assert.AreEqual(1L, prediction.SiblingCompleted, "a stride runs while the feedback says guesses pay off");
 
         // The same dial the owning cache lowers for a bad successor guess, lowered for both.
         prediction.Throttle = 0;
-        using (prediction.Demand("two/f0")) { }
-        using (prediction.Demand("two/f1")) { }
+        using (prediction.Demand("two/f0", stream)) { }
+        using (prediction.Demand("two/f1", stream)) { }
         await Task.Delay(500);
         Assert.AreEqual(1L, prediction.SiblingPredictions, "a throttled predictor issues no stride either");
 
@@ -415,18 +418,19 @@ public sealed class ReadPredictionTests
         foreach (var dir in new[] { "one", "two" }) vfs.List(dir);
         using var gate = new ManualResetEventSlim();
         var started = new List<string>();
+        const long stream = 1;
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 1, MaxInFlight = 1 },
-            temp.Sub("stride-budget.json"), path => { lock (started) started.Add(path); gate.Wait(TimeSpan.FromSeconds(10)); });
+            temp.Sub("stride-budget.json"), (path, _, _) => { lock (started) started.Add(path); gate.Wait(TimeSpan.FromSeconds(10)); });
 
-        using (prediction.Demand("one/f0")) { }
-        using (prediction.Demand("one/f1")) { }
+        using (prediction.Demand("one/f0", stream)) { }
+        using (prediction.Demand("one/f1", stream)) { }
         var deadline = DateTime.UtcNow.AddSeconds(5);
         while (true) { lock (started) if (started.Count >= 1) break; if (DateTime.UtcNow > deadline) Assert.Fail("the stride never started"); await Task.Delay(25); }
 
         // A second walk nominates its own sibling while the first fetch is still out. One slot
         // is the whole budget, so the nomination waits instead of being issued.
-        using (prediction.Demand("two/f0")) { }
-        using (prediction.Demand("two/f1")) { }
+        using (prediction.Demand("two/f0", stream)) { }
+        using (prediction.Demand("two/f1", stream)) { }
         await Task.Delay(500);
         lock (started) Assert.AreEqual(1, started.Count, "the in-flight bound is the whole of the budget");
 
@@ -471,13 +475,182 @@ public sealed class ReadPredictionTests
         var source = SourceWith("dir", 5);
         var vfs = new VirtualFileSystem(new ILayer[] { source });
         using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions { PrefetchDepth = 3 },
-            temp.Sub("no-listing.json"), path => { });
+            temp.Sub("no-listing.json"), (path, _, _) => { });
 
         foreach (var path in new[] { "dir/f0", "dir/f1", "dir/f2" }) using (prediction.Demand(path)) { }
         await Task.Delay(400);
         Assert.AreEqual(0L, prediction.SiblingPredictions, "with no held listing there is no position to continue from");
         Assert.AreEqual(0, prediction.TrackedDirectories);
         Assert.AreEqual(0, source.ListedDirectories.Count, "and none is enumerated to find one");
+    }
+
+    [TestMethod]
+    public async Task Two_interleaved_streams_learn_their_own_successors()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "a0", "a1", "a2", "a3", "b0", "b1", "b2", "b3" })
+            source.AddFile(name, name);
+        var predicted = new List<(string Path, long Stream)>();
+        using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+            new ReadPredictionOptions { ContextDepth = 1, PrefetchDepth = 1 }, temp.Sub("streams.json"),
+            (path, stream, _) => { lock (predicted) predicted.Add((path, stream)); });
+
+        // Two callers walk their own order, interleaved. A single global "previous" would
+        // record a0->b0, b0->a1, ... and neither caller would ever be predicted.
+        const long streamA = 1, streamB = 2;
+        var a = new[] { "a0", "a1", "a2", "a3" };
+        var b = new[] { "b0", "b1", "b2", "b3" };
+        for (int cycle = 0; cycle < 2; cycle++)
+            for (int i = 0; i < 4; i++)
+            {
+                using (prediction.Demand(a[i], streamA)) { }
+                using (prediction.Demand(b[i], streamB)) { }
+            }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (predicted) if (predicted.Any(p => p.Path == "a1") && predicted.Any(p => p.Path == "b1")) break;
+            await Task.Delay(25);
+        }
+
+        lock (predicted)
+        {
+            CollectionAssert.Contains(predicted.Select(p => p.Path).ToList(), "a1");
+            CollectionAssert.Contains(predicted.Select(p => p.Path).ToList(), "b1");
+            Assert.IsTrue(predicted.Where(p => p.Path.StartsWith("a")).All(p => p.Stream == streamA));
+            Assert.IsTrue(predicted.Where(p => p.Path.StartsWith("b")).All(p => p.Stream == streamB));
+        }
+        Assert.IsTrue(prediction.ActiveStreams >= 2, "the two callers have separate histories");
+    }
+
+    [TestMethod]
+    public void A_thread_change_inside_one_process_reuses_the_stream_it_was_reading()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "a", "b" }) source.AddFile(name, name);
+        using var prediction = new ReadPrediction(new VirtualFileSystem(new[] { source }),
+            new ReadPredictionOptions { ContextDepth = 1 }, temp.Sub("alias.json"));
+
+        long first = RequestDiagnostics.StreamId(4242, 1);
+        long second = RequestDiagnostics.StreamId(4242, 2);
+        using (prediction.Demand("a", first)) { }
+        using (prediction.Demand("b", first)) { }
+        using (prediction.Demand("a", first)) { }
+        // The same process, a different pool thread. The stream whose next prediction is b is
+        // the one this caller was using, so the new thread id is aliased to it rather than
+        // starting a cold history.
+        using (prediction.Demand("b", second)) { }
+        Assert.AreEqual(1, prediction.ActiveStreams);
+    }
+
+    [TestMethod]
+    public async Task Spatial_prefetch_expands_a_listed_directory_but_only_the_matching_prefix()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[]
+                 {
+                     "d/world@a.ilevel", "d/world@b.ilevel", "d/world@c.ilevel",
+                     "d/other@a.ilevel", "d/other@b.ilevel", "d/other@c.ilevel"
+                 })
+            source.AddFile(name, name);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("d");                                         // the engine enumerates the directory
+        var spatial = new List<string>();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions
+        {
+            SpatialEnabled = true, SpatialTriggerFiles = 2, SpatialMaxFiles = 8,
+            SpatialSmallDirectory = 0, SpatialMinPrefix = 3, PrefetchDepth = 1
+        }, temp.Sub("spatial.json"), (path, _, origin) =>
+        {
+            if (origin == PreloadOrigin.Spatial) lock (spatial) spatial.Add(path);
+        });
+
+        using (prediction.Demand("d", 1, listing: true)) { }
+        using (prediction.Demand("d/world@a.ilevel", 1)) { }
+        using (prediction.Demand("d/world@b.ilevel", 1)) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline) { lock (spatial) if (spatial.Count > 0) break; await Task.Delay(25); }
+
+        lock (spatial)
+        {
+            CollectionAssert.Contains(spatial, "d/world@c.ilevel");
+            CollectionAssert.DoesNotContain(spatial, "d/other@a.ilevel");
+        }
+        Assert.IsTrue(prediction.SpatialPredictions >= 1);
+    }
+
+    [TestMethod]
+    public async Task Spatial_prefetch_does_not_run_without_a_directory_enumeration()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "d/x1", "d/x2", "d/x3", "d/x4" }) source.AddFile(name, name);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("d");                                         // held, but the caller never listed it
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions
+        {
+            SpatialEnabled = true, SpatialTriggerFiles = 2, SpatialSmallDirectory = 16, PrefetchDepth = 1
+        }, temp.Sub("no-listing.json"));
+
+        using (prediction.Demand("d/x1", 1)) { }
+        using (prediction.Demand("d/x2", 1)) { }
+        await Task.Delay(400);
+        Assert.AreEqual(0L, prediction.SpatialPredictions,
+            "a directory reached by direct probes is not a set the caller asked to consume");
+    }
+
+    [TestMethod]
+    public async Task Spatial_prefetch_refuses_a_large_directory_whose_files_share_no_prefix()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "d/a1", "d/a2", "d/b1", "d/b2", "d/c1", "d/c2" }) source.AddFile(name, name);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("d");
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions
+        {
+            SpatialEnabled = true, SpatialTriggerFiles = 2, SpatialMaxFiles = 8,
+            SpatialSmallDirectory = 0, SpatialMinPrefix = 3, PrefetchDepth = 1
+        }, temp.Sub("no-prefix.json"));
+
+        using (prediction.Demand("d", 1, listing: true)) { }
+        using (prediction.Demand("d/a1", 1)) { }
+        using (prediction.Demand("d/b1", 1)) { }
+        await Task.Delay(400);
+        Assert.AreEqual(0L, prediction.SpatialPredictions);
+    }
+
+    [TestMethod]
+    public async Task A_small_listed_directory_is_expanded_even_without_a_common_prefix()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "d/a", "d/b", "d/c" }) source.AddFile(name, name);
+        using var cache = new LruCacheLayer(temp.Sub("cache"), () => source.Generation, 1048576);
+        var vfs = new VirtualFileSystem(new ILayer[] { cache, source });
+        vfs.List("d");
+        var spatial = new List<string>();
+        using var prediction = new ReadPrediction(vfs, new ReadPredictionOptions
+        {
+            SpatialEnabled = true, SpatialTriggerFiles = 2, SpatialMaxFiles = 8,
+            SpatialSmallDirectory = 16, PrefetchDepth = 1
+        }, temp.Sub("small-dir.json"), (path, _, origin) =>
+        {
+            if (origin == PreloadOrigin.Spatial) lock (spatial) spatial.Add(path);
+        });
+
+        using (prediction.Demand("d", 1, listing: true)) { }
+        using (prediction.Demand("d/a", 1)) { }
+        using (prediction.Demand("d/b", 1)) { }
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline) { lock (spatial) if (spatial.Count > 0) break; await Task.Delay(25); }
+        lock (spatial) CollectionAssert.Contains(spatial, "d/c");
     }
 
     /// <summary>An in-memory source holding <paramref name="count"/> single-letter files under

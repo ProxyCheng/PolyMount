@@ -41,6 +41,43 @@ public sealed class ReadPredictionOptions
     /// loader stopped using keeps being predicted, and the stale guess propagates forward.
     /// Zero keeps transitions until the capacity bound recycles them.</summary>
     public int RetentionMs { get; set; } = 3600000;
+    /// <summary>Whether a directory the reader has started walking is read in full after a few
+    /// of its files. This is the spatial counterpart of the successor table: a loader that
+    /// consumes one asset directory often consumes the rest of it, and one directory position
+    /// says more than one transition per file. Bounded by files, bytes and directory size,
+    /// because a reader that only samples a large directory must not trigger it.</summary>
+    public bool SpatialEnabled { get; set; }
+    /// <summary>Distinct files from one directory that must be read before the rest is fetched.</summary>
+    public int SpatialTriggerFiles { get; set; } = 2;
+    /// <summary>Most files one spatial batch may name.</summary>
+    public int SpatialMaxFiles { get; set; } = 32;
+    /// <summary>Byte budget for one spatial batch, from the listing's own sizes.</summary>
+    public long SpatialMaxBytes { get; set; } = 32L * 1024 * 1024;
+    /// <summary>Directories larger than this are containers, not asset sets, and are not
+    /// expanded in full.</summary>
+    public int SpatialMaxChildren { get; set; } = 256;
+    /// <summary>A directory at most this many entries large is expanded without asking for a
+    /// common prefix; small asset directories (fonts, a few configs) are usually consumed whole.</summary>
+    public int SpatialSmallDirectory { get; set; } = 16;
+    /// <summary>For a larger directory, the files the caller has read must share at least this
+    /// many leading characters; a world-level directory holds several worlds' files, and a
+    /// GUID-sharded directory shares no meaningful prefix at all.</summary>
+    public int SpatialMinPrefix { get; set; } = 3;
+    /// <summary>How long before a directory may contribute another spatial batch.</summary>
+    public int SpatialCooldownMs { get; set; } = 30000;
+    /// <summary>Runtime histories kept at once (one per caller stream). The learned table is
+    /// shared and keyed by paths, so evicting a stream costs its history, not the model.</summary>
+    public int MaxStreams { get; set; } = 64;
+}
+
+/// <summary>Which prediction produced a read-ahead entry. The layer counts hits and waste
+/// apart per origin, so a stride or a spatial batch that stops paying off can be told from the
+/// successor table without giving either a second confidence model.</summary>
+public enum PreloadOrigin : byte
+{
+    Table = 0,
+    Sibling = 1,
+    Spatial = 2
 }
 
 /// <summary>
@@ -58,17 +95,17 @@ public static class ReadPredictionProfiles
 
     /// <summary>Today's behaviour: one speculative load, only in a quiet gap.</summary>
     public static ReadPredictionOptions IdleOptions() => new()
-    { Enabled = true, TickIntervalMs = 50, IdleDelayMs = 0, MaxActiveDemandForPreload = 2, MaxInFlight = 1, MaxTransitions = 8192 };
+    { Enabled = true, TickIntervalMs = 50, IdleDelayMs = 0, MaxActiveDemandForPreload = 2, MaxInFlight = 1, MaxTransitions = 8192, SpatialEnabled = true };
 
     /// <summary>Preloads while a few reads are in flight, so a loader that pauses between
     /// resources still gets files ahead of asking for them.</summary>
     public static ReadPredictionOptions SteadyOptions() => new()
-    { Enabled = true, TickIntervalMs = 25, IdleDelayMs = 0, MaxActiveDemandForPreload = 8, MaxInFlight = 2, MaxTransitions = 32768 };
+    { Enabled = true, TickIntervalMs = 25, IdleDelayMs = 0, MaxActiveDemandForPreload = 8, MaxInFlight = 2, MaxTransitions = 32768, SpatialEnabled = true };
 
     /// <summary>Keeps up with a continuously busy loader. Competes with it for the source,
     /// which helps when the source is latency-bound and hurts when it is bandwidth-bound.</summary>
     public static ReadPredictionOptions EagerOptions() => new()
-    { Enabled = true, TickIntervalMs = 10, IdleDelayMs = 0, MaxActiveDemandForPreload = 32, MaxInFlight = 4, MaxTransitions = 131072 };
+    { Enabled = true, TickIntervalMs = 10, IdleDelayMs = 0, MaxActiveDemandForPreload = 32, MaxInFlight = 4, MaxTransitions = 131072, SpatialEnabled = true };
 
     public static ReadPredictionOptions Resolve(string? profile, Func<ReadPredictionOptions> custom) => profile switch
     {
@@ -94,8 +131,7 @@ public sealed class ReadPrediction : IDisposable
     private readonly VirtualFileSystem _vfs;
     private readonly ReadPredictionOptions _options;
     private readonly string _modelPath;
-    private readonly Action<string>? _preload;
-    private readonly Action<string>? _siblingPreload;
+    private readonly Action<string, long, PreloadOrigin>? _preload;
     /// <summary>Stride read-ahead for a directory the reader is walking, beside the successor
     /// table. A loader enumerating a directory in order is not producing successors to learn:
     /// it is traversing a listing, and one position in that listing says what a key per sibling
@@ -103,8 +139,37 @@ public sealed class ReadPrediction : IDisposable
     private readonly SiblingStride _siblings;
     private readonly Timer _timer;
     private readonly CancellationTokenSource _stop = new();
-    private string? _previous;
-    private readonly List<string> _history = new();
+    /// <summary>Per-caller history. The learned table is shared and keyed by paths; only the
+    /// history that forms a key is per stream, which is what keeps interleaved callers from
+    /// writing each other's transitions into the model.</summary>
+    private sealed class StreamState
+    {
+        public long Id;
+        public string? Previous;
+        public readonly List<string> History = new();
+        public double Throttle;
+        public double SpatialThrottle;
+        public int InFlight;
+        public long LastSeen;
+    }
+    private readonly Dictionary<long, StreamState> _streams = new();
+    private double _defaultThrottle = 1;
+    /// <summary>Per stream and directory: how many of its files this caller has read, which
+    /// ones it has already asked for, and when a spatial batch was last queued. The listing is
+    /// the one a lower cache already holds — this never enumerates a source.</summary>
+    private sealed class SpatialWalk
+    {
+        public readonly HashSet<string> Seen = new(StringComparer.OrdinalIgnoreCase);
+        public readonly HashSet<string> Queued = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>The caller enumerated this directory. A directory rest-prefetch is only
+        /// worth making when the engine itself listed it; a GUID shard reached by direct probes
+        /// is not a set of siblings anything will consume.</summary>
+        public bool Listed;
+        public long LastQueued;
+        public long LastSeen;
+    }
+    private readonly Dictionary<(long Stream, string Parent), SpatialWalk> _spatialWalks = new();
+    private readonly Queue<(long Stream, string Path)> _spatialCandidates = new();
     private readonly Queue<Nomination> _candidates = new();
     private long _lastDemand;
     private int _activeDemand;
@@ -125,23 +190,48 @@ public sealed class ReadPrediction : IDisposable
     public long SiblingPredictions { get; private set; }
     /// <summary>The same subset of <see cref="Completed"/>.</summary>
     public long SiblingCompleted { get; private set; }
-    /// <summary>Directories currently being walked.</summary>
+    /// <summary>Preloads issued from a spatial batch (the rest of a directory the caller had
+    /// started reading), and how many of them completed.</summary>
+    public long SpatialPredictions { get; private set; }
+    public long SpatialCompleted { get; private set; }
+    /// <summary>Directories currently being walked, across streams.</summary>
     public int TrackedDirectories => _siblings.TrackedDirectories;
-    /// <summary>How much of the configured read-ahead to actually issue, 0..1. The owning
-    /// cache lowers it when recent guesses have not been paying off.</summary>
+    /// <summary>Runtime streams with a history right now.</summary>
+    public int ActiveStreams { get { lock (_gate) return _streams.Values.Distinct().Count(); } }
+    /// <summary>How much of the configured read-ahead to actually issue, 0..1. Setting this
+    /// applies the same throttle to every stream, which is what tests and a global shutdown
+    /// want; the owning cache normally lowers one stream at a time through <see cref="SetThrottle"/>.</summary>
     public double Throttle
     {
-        get { lock (_gate) return _throttle; }
-        set { lock (_gate) _throttle = Math.Clamp(value, 0, 1); }
+        get { lock (_gate) return _defaultThrottle; }
+        set
+        {
+            lock (_gate)
+            {
+                _defaultThrottle = Math.Clamp(value, 0, 1);
+                foreach (var stream in _streams.Values.Distinct()) stream.Throttle = _defaultThrottle;
+            }
+        }
     }
-    private double _throttle = 1;
+    /// <summary>Sets one stream's read-ahead quality. A stream that keeps guessing wrong slows
+    /// down without taking the others with it.</summary>
+    public void SetThrottle(long streamId, double value)
+    {
+        lock (_gate)
+            if (_streams.TryGetValue(streamId, out var stream)) stream.Throttle = Math.Clamp(value, 0, 1);
+    }
+    /// <summary>Separate quality for spatial batches: a directory expansion that wastes its
+    /// bytes should not also throttle the successor table, which may be doing well.</summary>
+    public void SetSpatialThrottle(long streamId, double value)
+    {
+        lock (_gate)
+            if (_streams.TryGetValue(streamId, out var stream)) stream.SpatialThrottle = Math.Clamp(value, 0, 1);
+    }
 
-    /// <param name="preload">Fetches a path the successor table predicted.</param>
-    /// <param name="siblingPreload">Fetches a path the stride nominated, when the owner wants the
-    /// two origins told apart — it is what lets a cache count a stride's hits and waste without
-    /// adding a second voting mechanism. Falls back to <paramref name="preload"/>.</param>
-    public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath, Action<string>? preload = null,
-        Action<string>? siblingPreload = null)
+    /// <param name="preload">Fetches a path a nomination predicted, with the stream that
+    /// nominated it and which predictor produced it, so the owner can keep the origins apart.</param>
+    public ReadPrediction(VirtualFileSystem vfs, ReadPredictionOptions options, string modelPath,
+        Action<string, long, PreloadOrigin>? preload = null)
     {
         if (options.MaxTransitions is < 1 or > 1048576 || options.MaxFileBytes is <= 0 or > 256L * 1024 * 1024 ||
             options.IdleDelayMs is < 0 or > 60000 || options.TickIntervalMs is < 10 or > 10000 ||
@@ -149,9 +239,14 @@ public sealed class ReadPrediction : IDisposable
             options.MaxSuccessorsPerKey is < 1 or > 16 || options.MinConfidence is < 0 or > 1 ||
             options.ContextDepth is < 1 or > 4 || options.PrefetchDepth is < 1 or > 8 ||
             options.FeedbackWindowMs is < 0 or > 600000 || options.FeedbackSamples is < 1 or > 4096 ||
-            options.RetentionMs is < 0 or > 7 * 24 * 3600000)
+            options.RetentionMs is < 0 or > 7 * 24 * 3600000 ||
+            options.SpatialTriggerFiles is < 1 or > 1024 || options.SpatialMaxFiles is < 1 or > 4096 ||
+            options.SpatialMaxBytes is < 0 or > 256L * 1024 * 1024 ||
+            options.SpatialMaxChildren is < 1 or > 65536 ||
+            options.SpatialSmallDirectory is < 0 or > 65536 || options.SpatialMinPrefix is < 0 or > 64 ||
+            options.SpatialCooldownMs is < 0 or > 600000 || options.MaxStreams is < 1 or > 256)
             throw new ArgumentException("Invalid read prediction budgets");
-        _vfs = vfs; _options = options; _modelPath = modelPath; _preload = preload; _siblingPreload = siblingPreload;
+        _vfs = vfs; _options = options; _modelPath = modelPath; _preload = preload;
         _siblings = new SiblingStride(vfs);
         try
         {
@@ -181,36 +276,92 @@ public sealed class ReadPrediction : IDisposable
     /// resolved when there is a slot, so it cannot act on evidence that has since been
     /// contradicted; a stride nomination already names its path and carries the position it was
     /// taken from, so the fetch can continue the walk it came from.</summary>
-    private readonly record struct Nomination(Context? Context, SiblingStep? Sibling);
+    private readonly record struct Nomination(long StreamId, Context? Context, SiblingStep? Sibling);
 
-    public IDisposable Demand(string path)
+    public IDisposable Demand(string path) => Demand(path, RequestDiagnostics.AmbientStreamId);
+
+    /// <summary>
+    /// One demand from one caller stream. <paramref name="streamId"/> selects which history
+    /// forms the context; the successor table itself is shared and keyed by the paths, so a
+    /// stream is a runtime hint and the learned model remains useful across processes and runs.
+    /// <paramref name="listing"/> says the caller enumerated a directory rather than read a
+    /// file; that is the signal a spatial batch is allowed to act on.
+    /// </summary>
+    public IDisposable Demand(string path, long streamId, bool listing = false)
     {
-        // The stride reads the listing back from a layer, so it runs outside this lock: the
-        // layers publish a read-ahead's quality back into the throttle, and taking their locks
-        // while holding this one would close a cycle with that.
-        if (path.Length <= 4096 && _siblings.Nominate(path) is { } sibling)
-            Enqueue(new Nomination(null, sibling));
+        StreamState stream;
+        lock (_gate) stream = GetStream(streamId, path);
+        // The stride reads the listing back from a layer, so it runs outside the metadata lock:
+        // the layers publish a read-ahead's quality back into the throttle, and taking their
+        // locks while holding this one would close a cycle with that.
+        if (path.Length <= 4096)
+        {
+            if (listing)
+            {
+                if (_options.SpatialEnabled) NoteListing(path, stream.Id);
+            }
+            else
+            {
+                if (_siblings.Nominate(path, stream.Id) is { } sibling)
+                    Enqueue(new Nomination(stream.Id, null, sibling));
+                if (_options.SpatialEnabled) NominateSpatial(path, stream.Id);
+            }
+        }
         lock (_gate)
         {
             _activeDemand++; _lastDemand = Environment.TickCount64;
             if (path.Length > 4096) return new DemandScope(this);
-            if (_previous != null && !string.Equals(_previous, path, StringComparison.OrdinalIgnoreCase))
+            if (stream.Previous != null && !string.Equals(stream.Previous, path, StringComparison.OrdinalIgnoreCase))
             {
-                var observed = ContextOf(_previous);
+                var observed = ContextOf(stream, stream.Previous);
                 Observe(observed.Key, path);
                 // Also record the last path alone: a longer key needs the pattern to repeat
                 // before it has any evidence, and read-ahead should not go dark until then.
-                if (observed.Paths.Length > 1) Observe(_previous, path);
+                if (observed.Paths.Length > 1) Observe(stream.Previous, path);
             }
-            PushHistory(_previous);
-            _previous = path;
+            PushHistory(stream, stream.Previous);
+            stream.Previous = path;
             // Nominate the context, not the successor it points at: what to fetch is resolved
             // when read-ahead runs, so a nomination cannot act on evidence that has since been
             // contradicted. Keep a small queue so a later access does not erase earlier ones.
-            var context = ContextOf(path);
-            if (HasEvidence(context)) Enqueue(new Nomination(context, null));
+            var context = ContextOf(stream, path);
+            if (HasEvidence(context)) Enqueue(new Nomination(stream.Id, context, null));
         }
         return new DemandScope(this);
+    }
+
+    /// <summary>The history a caller stream belongs to. An exact id is the common case. When a
+    /// thread-pool thread changes between reads of the same loader, a stream of the same process
+    /// whose next prediction is this path is the one that caller was using, so the new id is
+    /// aliased to it instead of starting a cold history. Pid 0 (tests, callers with no boundary
+    /// identity) never aliases: its thread ids are the only distinction there is.</summary>
+    private StreamState GetStream(long streamId, string path)
+    {
+        long now = Environment.TickCount64;
+        if (_streams.TryGetValue(streamId, out var state)) { state.LastSeen = now; return state; }
+        int pid = RequestDiagnostics.ProcessOfStream(streamId);
+        if (pid != 0)
+        {
+            foreach (var candidate in _streams.Values.Distinct())
+            {
+                if (RequestDiagnostics.ProcessOfStream(candidate.Id) != pid) continue;
+                if (candidate.Previous == null) continue;
+                if (!string.Equals(PredictedSuccessor(ContextOf(candidate, candidate.Previous)), path,
+                        StringComparison.OrdinalIgnoreCase)) continue;
+                _streams[streamId] = candidate;
+                candidate.LastSeen = now;
+                return candidate;
+            }
+        }
+        if (_streams.Values.Distinct().Count() >= _options.MaxStreams)
+        {
+            var oldest = _streams.Values.Distinct().MinBy(s => s.LastSeen)!;
+            foreach (var key in _streams.Where(p => ReferenceEquals(p.Value, oldest)).Select(p => p.Key).ToArray())
+                _streams.Remove(key);
+        }
+        state = new StreamState { Id = streamId, LastSeen = now, Throttle = _defaultThrottle, SpatialThrottle = 1 };
+        _streams[streamId] = state;
+        return state;
     }
 
     /// <summary>Queues a nomination for the next read-ahead slot, unless the same thing is
@@ -223,6 +374,7 @@ public sealed class ReadPrediction : IDisposable
         {
             foreach (var queued in _candidates)
             {
+                if (queued.StreamId != nomination.StreamId) continue;
                 bool duplicate = nomination.Sibling is { } step
                     ? queued.Sibling is { } waiting && string.Equals(waiting.Path, step.Path, StringComparison.OrdinalIgnoreCase)
                     : queued.Context?.Key == nomination.Context!.Key;
@@ -254,20 +406,125 @@ public sealed class ReadPrediction : IDisposable
             : string.Join((char)31, Paths, Paths.Length - length, length);
     }
 
-    private Context ContextOf(string path)
+    private Context ContextOf(StreamState stream, string path)
     {
-        int take = Math.Min(_options.ContextDepth - 1, _history.Count);
+        int take = Math.Min(_options.ContextDepth - 1, stream.History.Count);
         var paths = new string[take + 1];
-        for (int i = 0; i < take; i++) paths[i] = _history[_history.Count - take + i];
+        for (int i = 0; i < take; i++) paths[i] = stream.History[stream.History.Count - take + i];
         paths[take] = path;
         return new Context(paths);
     }
 
-    private void PushHistory(string? path)
+    private void PushHistory(StreamState stream, string? path)
     {
         if (path == null || _options.ContextDepth <= 1) return;
-        _history.Add(path);
-        while (_history.Count > _options.ContextDepth - 1) _history.RemoveAt(0);
+        stream.History.Add(path);
+        while (stream.History.Count > _options.ContextDepth - 1) stream.History.RemoveAt(0);
+    }
+
+    /// <summary>
+    /// Notes that the caller enumerated <paramref name="directory"/>. A directory rest-prefetch
+    /// is only allowed after this: the engine itself decided the directory is a set, and the
+    /// listing is in a cache already. Direct probes of GUID-sharded or packed layouts never
+    /// produce this signal, which is exactly the case where expanding a directory would be noise.
+    /// </summary>
+    private void NoteListing(string directory, long streamId)
+    {
+        if (directory.Length == 0) return;
+        lock (_gate)
+        {
+            var walk = SpatialWalkFor(streamId, directory);
+            walk.Listed = true;
+            walk.LastSeen = Environment.TickCount64;
+        }
+    }
+
+    /// <summary>
+    /// Nominates the rest of a directory after the caller has read a few of its files. The
+    /// directory must have been enumerated by the caller and its listing must still be held by
+    /// a cache: the trigger is what the reader did, never an extra enumeration. For a large
+    /// directory the files already read must share a prefix (a world directory holds several
+    /// worlds' levels; a GUID shard shares nothing), and a batch is bounded by files, by the
+    /// listing's own sizes, by directory size, and by a cooldown.
+    /// </summary>
+    private void NominateSpatial(string path, long streamId)
+    {
+        string parent = VfsPath.Parent(path);
+        if (parent.Length == 0) return;
+        SpatialWalk walk;
+        lock (_gate)
+        {
+            walk = SpatialWalkFor(streamId, parent);
+            walk.LastSeen = Environment.TickCount64;
+            if (!walk.Listed) return;
+            if (walk.Seen.Count >= 4096) walk.Seen.Clear();
+            if (!walk.Seen.Add(VfsPath.Name(path))) return;
+            if (walk.Seen.Count < _options.SpatialTriggerFiles) return;
+            // If the successor table already knows what comes next, it is the better predictor
+            // for this read; a directory batch would only duplicate it. Spatial is for the
+            // directory whose order the caller does not repeat, not for the one it walks.
+            if (_streams.TryGetValue(streamId, out var stream) &&
+                PredictedSuccessor(ContextOf(stream, path)) != null) return;
+            if (walk.LastQueued != 0 && Environment.TickCount64 - walk.LastQueued < _options.SpatialCooldownMs) return;
+        }
+        // Outside the lock: a listing comes from a cache, and a cache publishes its own quality
+        // back into the throttle.
+        var listing = SiblingStride.FindHeldListing(_vfs, parent);
+        if (listing?.Children == null || listing.Children.Count > _options.SpatialMaxChildren) return;
+        bool small = listing.Children.Count <= _options.SpatialSmallDirectory;
+        string prefix = small ? "" : CommonPrefix(walk.Seen);
+        if (!small && prefix.Length < _options.SpatialMinPrefix) return;
+        var files = listing.Children
+            .Where(c => !c.IsDir && c.Size <= _options.MaxFileBytes &&
+                        (small || c.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        long bytes = 0;
+        int queued = 0;
+        lock (_gate)
+        {
+            // Another thread may have queued a batch while the listing was being read.
+            if (walk.LastQueued != 0 && Environment.TickCount64 - walk.LastQueued < _options.SpatialCooldownMs) return;
+            foreach (var file in files)
+            {
+                if (walk.Queued.Count >= _options.SpatialMaxFiles) break;
+                if (walk.Seen.Contains(file.Name) || walk.Queued.Contains(file.Name)) continue;
+                if (bytes + file.Size > _options.SpatialMaxBytes) break;
+                bytes += file.Size;
+                walk.Queued.Add(file.Name);
+                if (_spatialCandidates.Count >= 512) _spatialCandidates.Dequeue();
+                _spatialCandidates.Enqueue((streamId, VfsPath.Child(parent, file.Name)));
+                queued++;
+            }
+            if (queued > 0) walk.LastQueued = Environment.TickCount64;
+        }
+    }
+
+    private SpatialWalk SpatialWalkFor(long streamId, string parent)
+    {
+        var key = (streamId, parent);
+        if (_spatialWalks.TryGetValue(key, out var walk)) return walk;
+        if (_spatialWalks.Count >= 128)
+            _spatialWalks.Remove(_spatialWalks.MinBy(p => p.Value.LastSeen).Key);
+        walk = new SpatialWalk();
+        _spatialWalks[key] = walk;
+        return walk;
+    }
+
+    /// <summary>The common prefix of the names a caller has read, ignoring case. Empty when
+    /// they share nothing, which is the signal not to expand a large directory.</summary>
+    private static string CommonPrefix(IEnumerable<string> names)
+    {
+        string? prefix = null;
+        foreach (var name in names)
+        {
+            if (prefix == null) { prefix = name; continue; }
+            int length = 0, max = Math.Min(prefix.Length, name.Length);
+            while (length < max && char.ToUpperInvariant(prefix[length]) == char.ToUpperInvariant(name[length])) length++;
+            prefix = prefix[..length];
+            if (prefix.Length == 0) break;
+        }
+        return prefix ?? "";
     }
     private sealed class DemandScope(ReadPrediction owner) : IDisposable
     {
@@ -345,80 +602,147 @@ public sealed class ReadPrediction : IDisposable
 
     private void Tick()
     {
-        SiblingStep? covered = null;
+        List<SiblingStep>? covered = null;
         lock (_gate)
         {
             ForgetStale();
             _inFlight.RemoveAll(task => task.IsCompleted);
-            // The owning cache lowers the throttle when recent guesses stopped paying off.
-            // A stride is issued through the same budget, so a run of guesses nobody reads
-            // slows the walk down exactly as it slows the table down.
-            int budget = (int)Math.Round(_options.MaxInFlight * _throttle);
-            if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload || _candidates.Count == 0 ||
-                _inFlight.Count >= budget ||
-                (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs)) return;
-            var nominated = _candidates.Dequeue();
-            string? candidate;
-            if (nominated.Sibling is { } step)
+            if (_stop.IsCancellationRequested || _activeDemand > _options.MaxActiveDemandForPreload) return;
+            if (_activeDemand == 0 && Environment.TickCount64 - _lastDemand < _options.IdleDelayMs) return;
+            // Every stream gets its own budget, but the mount still has to stay out of the
+            // source's way: the global bound is a multiple of the per-stream one, capped.
+            int globalBudget = Math.Min(64, _options.MaxInFlight * Math.Max(1, _streams.Values.Distinct().Count()));
+            if (_inFlight.Count >= globalBudget) return;
+
+            // A tick is a chance to issue, not a limit of one. At eight streams the demands
+            // arrive faster than a ten-millisecond timer, and issuing one nomination per tick
+            // would leave the queue draining behind the reader: the model would be right and
+            // the data would still not be there. Fill every stream's budget, then stop.
+            int issued = 0;
+            int attempts = _candidates.Count;
+            while (issued < 64 && attempts-- > 0 && _candidates.Count > 0 && _inFlight.Count < globalBudget)
             {
-                candidate = step.Path;
-                // The position is covered as soon as it is issued, so the reader's own demand
-                // for the same sibling does not nominate it a second time.
-                covered = step;
-                SiblingPredictions++;
-            }
-            else if (PredictedSuccessor(nominated.Context!) is { } predicted) candidate = predicted;
-            else return;
-            Predictions++;
-            bool sibling = nominated.Sibling != null;
-            var fetch = sibling ? _siblingPreload ?? _preload : _preload;
-            long epoch = _epoch;
-            using (ExecutionContext.SuppressFlow()) _inFlight.Add(Task.Run(() =>
-            {
-                // This task is read-ahead from the first lookup to the last, and it runs with the
-                // execution context suppressed, so the lanes it was queued from do not flow here:
-                // the lane is named at the boundary that creates the work.
-                using var lane = ReadPriority.Enter(ReadPriority.Speculative);
-                try
+                var next = _candidates.Peek();
+                if (!_streams.TryGetValue(next.StreamId, out var stream)) { _candidates.Dequeue(); continue; }
+                int budget = (int)Math.Round(_options.MaxInFlight * stream.Throttle);
+                if (budget <= 0 || stream.InFlight >= budget)
                 {
-                    var context = nominated.Context;
-                    var walk = nominated.Sibling;
-                    string path = candidate!;
-                    for (int step = 0; step < _options.PrefetchDepth; step++)
-                    {
-                        if (_stop.IsCancellationRequested || epoch != _epoch) return;
-                        if (_activeDemand > _options.MaxActiveDemandForPreload) return;
-                        if (!_vfs.TryLookup(path, out var entry) || (!entry.IsDir && entry.Size > _options.MaxFileBytes)) return;
-                        if (entry.IsDir && fetch == null) return;
-                        using (var trace = RequestDiagnostics.Begin("Predict.Preload", path, _vfs.Diagnostics))
-                        {
-                            if (fetch != null) fetch(path);
-                            else { using var stream = _vfs.OpenRead(path, out _, speculative: true); }
-                        }
-                        lock (_gate) if (epoch == _epoch) { Completed++; if (sibling) SiblingCompleted++; }
-                        if (_activeDemand > _options.MaxActiveDemandForPreload) return;
-                        // A stride carries the walk it came from one position further; the table
-                        // follows its own path, keeping going while the next step is confident.
-                        if (walk is { } from)
-                        {
-                            if (!_siblings.TryNext(from, out var following)) return;
-                            _siblings.Note(following);
-                            path = following.Path; walk = following;
-                            continue;
-                        }
-                        context = context!.Follow(path);
-                        if (PredictedSuccessor(context) is not { } next) return;
-                        path = next;
-                    }
+                    // This stream is at its budget; another stream behind it may not be.
+                    _candidates.Dequeue();
+                    _candidates.Enqueue(next);
+                    continue;
                 }
-                catch (IOException) { }
-                catch (Exception ex) { using var trace = RequestDiagnostics.Begin("Predict.Failed", candidate!, _vfs.Diagnostics); trace?.Stage(ex.GetType().Name); }
-            }));
+                _candidates.Dequeue();
+                string candidate;
+                PreloadOrigin origin;
+                if (next.Sibling is { } step)
+                {
+                    candidate = step.Path;
+                    // The position is covered as soon as it is issued, so the reader's own demand
+                    // for the same sibling does not nominate it a second time.
+                    (covered ??= new()).Add(step);
+                    SiblingPredictions++;
+                    origin = PreloadOrigin.Sibling;
+                }
+                else if (PredictedSuccessor(next.Context!) is { } predicted)
+                {
+                    candidate = predicted;
+                    origin = PreloadOrigin.Table;
+                }
+                else continue;
+                Issue(next.StreamId, stream, candidate, origin, next);
+                issued++;
+            }
+
+            // A spatial batch is opportunistic: it gets capacity the table and the stride are
+            // not using, never a slot one of them is waiting for.
+            int spatialAttempts = _spatialCandidates.Count;
+            while (issued < 64 && spatialAttempts-- > 0 && _spatialCandidates.Count > 0 && _inFlight.Count < globalBudget)
+            {
+                var next = _spatialCandidates.Peek();
+                if (!_streams.TryGetValue(next.Stream, out var stream)) { _spatialCandidates.Dequeue(); continue; }
+                int budget = (int)Math.Round(_options.MaxInFlight * stream.SpatialThrottle);
+                if (budget <= 0 || stream.InFlight >= budget)
+                {
+                    _spatialCandidates.Dequeue();
+                    _spatialCandidates.Enqueue(next);
+                    continue;
+                }
+                _spatialCandidates.Dequeue();
+                SpatialPredictions++;
+                Issue(next.Stream, stream, next.Path, PreloadOrigin.Spatial, null);
+                issued++;
+            }
         }
         // Taken outside the lock: the stride reads layers, and a layer publishes guess quality
         // back into this predictor, so it must never be entered while this lock is held.
-        if (covered is { } taken) _siblings.Note(taken);
+        if (covered != null) foreach (var step in covered) _siblings.Note(step);
     }
+
+    /// <summary>Starts one read-ahead task. Caller holds <see cref="_gate"/>.</summary>
+    private void Issue(long streamId, StreamState stream, string path, PreloadOrigin origin, Nomination? nomination)
+    {
+        Predictions++;
+        bool sibling = origin == PreloadOrigin.Sibling;
+        long epoch = _epoch;
+        string path0 = path;
+        stream.InFlight++;
+        using (ExecutionContext.SuppressFlow())
+            _inFlight.Add(Task.Run(() => PreloadTask(stream, streamId, path0, origin, nomination, epoch, sibling)));
+    }
+
+    private void PreloadTask(StreamState owner, long streamId, string path0, PreloadOrigin origin,
+        Nomination? nomination, long epoch, bool sibling)
+    {
+        // This task is read-ahead from the first lookup to the last, and it runs with the
+        // execution context suppressed, so the lanes it was queued from do not flow here:
+        // the lane is named at the boundary that creates the work.
+        using var lane = ReadPriority.Enter(ReadPriority.Speculative);
+        try
+        {
+            var context = nomination?.Context;
+            var walk = nomination?.Sibling;
+            string path = path0;
+            int depth = origin == PreloadOrigin.Spatial ? 1 : _options.PrefetchDepth;
+            for (int step = 0; step < depth; step++)
+            {
+                if (_stop.IsCancellationRequested || epoch != _epoch) return;
+                if (_activeDemand > _options.MaxActiveDemandForPreload) return;
+                if (!_vfs.TryLookup(path, out var entry) || (!entry.IsDir && entry.Size > _options.MaxFileBytes)) return;
+                if (entry.IsDir && _preload == null) return;
+                using (var trace = RequestDiagnostics.Begin("Predict.Preload", path, _vfs.Diagnostics))
+                {
+                    if (_preload != null) _preload(path, streamId, origin);
+                    else { using var read = _vfs.OpenRead(path, out _, speculative: true); }
+                }
+                lock (_gate)
+                    if (epoch == _epoch)
+                    {
+                        Completed++;
+                        if (sibling) SiblingCompleted++;
+                        if (origin == PreloadOrigin.Spatial) SpatialCompleted++;
+                    }
+                if (_activeDemand > _options.MaxActiveDemandForPreload) return;
+                if (origin == PreloadOrigin.Spatial) return;
+                // A stride carries the walk it came from one position further; the table
+                // follows its own path, keeping going while the next step is confident.
+                if (walk is { } from)
+                {
+                    if (!_siblings.TryNext(from, out var following)) return;
+                    _siblings.Note(following);
+                    path = following.Path; walk = following;
+                    continue;
+                }
+                context = context!.Follow(path);
+                if (PredictedSuccessor(context) is not { } next) return;
+                path = next;
+            }
+        }
+        catch (IOException) { }
+        catch (Exception ex) { using var trace = RequestDiagnostics.Begin("Predict.Failed", path0, _vfs.Diagnostics); trace?.Stage(ex.GetType().Name); }
+        finally { lock (_gate) owner.InFlight = Math.Max(0, owner.InFlight - 1); }
+    }
+
     public void Reset()
     {
         lock (_gate)
@@ -426,8 +750,9 @@ public sealed class ReadPrediction : IDisposable
             // Do not reset live demand counts or abort an already-started I/O.
             // Queued candidates from the old model cannot begin after this reset.
             _epoch++;
-            _nodes.Clear(); _previous = null; _history.Clear(); _candidates.Clear();
+            _nodes.Clear(); _streams.Clear(); _candidates.Clear(); _spatialWalks.Clear(); _spatialCandidates.Clear();
             Predictions = 0; Completed = 0; SiblingPredictions = 0; SiblingCompleted = 0;
+            SpatialPredictions = 0; SpatialCompleted = 0;
             Directory.CreateDirectory(Path.GetDirectoryName(_modelPath)!);
             string temp = _modelPath + ".tmp";
             File.WriteAllText(temp, "[]");

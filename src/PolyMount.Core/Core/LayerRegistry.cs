@@ -52,7 +52,8 @@ public static class LayerRegistry
                     new() { Path = "Parameters.PrefetchDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 8,
                         DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") }
                 } });
-        RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes, c.Compression),
+        RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes,
+                c.Compression, writable: Bool(c, "Writable", true)),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
         Register(ListingWarmupLayer.Type, (c, ctx) => new ListingWarmupLayer(ctx.LowerGeneration,
                 Number(c, "Limit", 2000), Number(c, "Seconds", 60), Number(c, "QuietMs", 250)),
@@ -102,6 +103,20 @@ public static class LayerRegistry
         config.Parameters.TryGetValue(key, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
             ? value.GetString()! : "";
 
+    /// <summary>A boolean parameter, accepting the JSON literal the service writes and the
+    /// "True"/"False" string the editor's checkbox writes.</summary>
+    private static bool Bool(LayerConfig config, string key, bool fallback)
+    {
+        if (!config.Parameters.TryGetValue(key, out var value)) return fallback;
+        return value.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.True => true,
+            System.Text.Json.JsonValueKind.False => false,
+            System.Text.Json.JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed) => parsed,
+            _ => fallback
+        };
+    }
+
     private static int Number(LayerConfig config, string key, int fallback) =>
         config.Parameters.TryGetValue(key, out var value) &&
         value.ValueKind == System.Text.Json.JsonValueKind.Number ? value.GetInt32() : fallback;
@@ -124,6 +139,18 @@ public static class LayerRegistry
         baseline.FeedbackWindowMs = Number(config, "FeedbackWindowMs", baseline.FeedbackWindowMs);
         baseline.FeedbackSamples = Number(config, "FeedbackSamples", baseline.FeedbackSamples);
         baseline.MinConfidence = Number(config, "MinConfidencePercent", (int)Math.Round(baseline.MinConfidence * 100)) / 100.0;
+        baseline.MaxStreams = Number(config, "MaxStreams", baseline.MaxStreams);
+        if (config.Parameters.TryGetValue("SpatialEnabled", out var spatial))
+            baseline.SpatialEnabled = Bool(config, "SpatialEnabled", baseline.SpatialEnabled);
+        baseline.SpatialTriggerFiles = Number(config, "SpatialTriggerFiles", baseline.SpatialTriggerFiles);
+        baseline.SpatialMaxFiles = Number(config, "SpatialMaxFiles", baseline.SpatialMaxFiles);
+        baseline.SpatialMaxChildren = Number(config, "SpatialMaxChildren", baseline.SpatialMaxChildren);
+        baseline.SpatialSmallDirectory = Number(config, "SpatialSmallDirectory", baseline.SpatialSmallDirectory);
+        baseline.SpatialMinPrefix = Number(config, "SpatialMinPrefix", baseline.SpatialMinPrefix);
+        baseline.SpatialCooldownMs = Number(config, "SpatialCooldownMs", baseline.SpatialCooldownMs);
+        if (config.Parameters.TryGetValue("SpatialMaxBytes", out var spatialBytes) &&
+            spatialBytes.ValueKind == System.Text.Json.JsonValueKind.Number)
+            baseline.SpatialMaxBytes = spatialBytes.GetInt64() * 1048576;
         if (config.Parameters.TryGetValue("MaxFileBytes", out var bytes) && bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
             baseline.MaxFileBytes = bytes.GetInt64() * 1048576;
         return baseline;

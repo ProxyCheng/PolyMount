@@ -20,10 +20,15 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                 // the one that answers a restart.
                 new() { Id = "memory-cache", Type = "memory-cache" },
                 new() { Id = "warmup", Type = "warmup" },
-                new() { Id = "overlay", Type = "overlay" },
+                // Predictions read through the overlay, so a guess sees local writes. The
+                // durable read cache sits below it (it caches the chain's view) but above the
+                // overlay, which is the only layer that accepts writes and therefore sits
+                // directly above the source.
                 new() { Id = "predict", Type = "prediction-cache", Parameters = new()
                     { ["CapacityBytes"] = System.Text.Json.JsonSerializer.SerializeToElement(16L * 1048576) } },
-                new() { Id = "cache", Type = "cache" },
+                new() { Id = "cache", Type = "cache", Parameters = new()
+                    { ["Writable"] = System.Text.Json.JsonSerializer.SerializeToElement(false) } },
+                new() { Id = "overlay", Type = "overlay" },
                 new() { Id = "svn", Type = "svn", Source = new() { Type = "svn" } }
             }
         });
