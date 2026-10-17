@@ -42,14 +42,17 @@ foreach ($download in @(
     if ($signature.Status -ne 'Valid') { throw "Dependency signature validation failed: $destination ($($signature.Status))" }
 }
 # The design notes are part of the working repository, not necessarily of the product: a tree
-# published without them still has a README and the third-party notices.
+# published without them still has a README and the third-party notices. The installer script
+# carries the matching Source only when there is something to copy.
 $docs = Join-Path $repo 'docs'
+$compilerArgs = @('/Qp', "/DAppVersion=$Version", "/DPayloadDir=$payload", "/DOutputDir=$artifacts")
 if (Test-Path -LiteralPath $docs) {
     $docDir = Join-Path $payload 'docs'
     New-Item -ItemType Directory -Path $docDir -Force | Out-Null
     Copy-Item -Path (Join-Path $docs '*.md') -Destination $docDir
+    $compilerArgs += '/DDocsPresent=1'
 }
-& $Compiler /Qp "/DAppVersion=$Version" "/DPayloadDir=$payload" "/DOutputDir=$artifacts" (Join-Path $repo 'installer\PolyMount.iss')
+& $Compiler @compilerArgs (Join-Path $repo 'installer\PolyMount.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 $installer = Join-Path $artifacts "PolyMount-$Version-win-x64-Setup.exe"
 $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash

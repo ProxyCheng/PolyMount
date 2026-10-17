@@ -68,7 +68,11 @@ Source: "install.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PayloadDir}\Dependencies\winfsp.msi"; Flags: dontcopy
 Source: "{#PayloadDir}\Dependencies\vc_redist.x64.exe"; Flags: dontcopy
+; The design notes are part of the working repository; a tree published without them has no docs
+; to ship, and Inno aborts a Source that matches nothing. The build decides.
+#ifdef DocsPresent
 Source: "{#PayloadDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
 Name: "{group}\PolyMount"; Filename: "{app}\Tray\PolyMount.Tray.exe"
