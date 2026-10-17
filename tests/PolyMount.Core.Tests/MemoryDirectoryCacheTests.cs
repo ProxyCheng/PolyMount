@@ -10,9 +10,9 @@ public sealed class MemoryDirectoryCacheTests
     public void Local_directory_preset_places_memory_cache_above_writes()
     {
         var preset = LayerPresetRegistry.All.Single(p => p.Id == "local-directory");
-        CollectionAssert.AreEqual(new[] { "memory-cache", "overlay", "dir" }, preset.Layers.Select(l => l.Type).ToArray());
+        CollectionAssert.AreEqual(new[] { "warmup", "memory-cache", "overlay", "dir" }, preset.Layers.Select(l => l.Type).ToArray());
         Assert.AreEqual(preset.Layers.Count, preset.Layers.Select(l => l.Id).Distinct().Count());
-        LayerRegistry.Validate(preset.Layers[0]);
+        LayerRegistry.Validate(preset.Layers.Single(l => l.Type == "memory-cache"));
     }
 
     private sealed class DelayedSource : ILayer
