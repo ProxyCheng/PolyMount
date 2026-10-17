@@ -2,23 +2,48 @@
 param(
     [ValidateSet('Stop','Install','Uninstall','Check')][string]$Action,
     [string]$InstallDirectory,
-    [switch]$UserAccount
+    [switch]$UserAccount,
+    # ';'-separated file names of the bundled plugins the wizard selected.
+    [string]$Plugins = '',
+    # ';'-separated file names of every bundled plugin this setup manages. Both lists are built
+    # from one table in the installer script, so neither side has to enumerate a directory and
+    # infer which of its contents the operator was ever asked about.
+    [string]$Managed = ''
 )
 $ErrorActionPreference = 'Stop'
 $data = Join-Path $env:ProgramData 'PolyMount'
 $config = Join-Path $data 'config.json'
 $service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
+$pluginDirectory = Join-Path $InstallDirectory 'Service\plugins'
 
-# The install tree ships a source plugin; a configuration that does not name it has no SVN source
-# to pick from at all, which is the difference between "installed" and "usable". The path is
-# relative to the host's own directory (PluginLoader resolves it against AppContext.BaseDirectory),
-# so it survives the install directory being chosen or changed.
-$bundledPlugin = 'plugins/PolyMount.Plugin.Svn.dll'
-$bundledPluginFile = 'Service\plugins\PolyMount.Plugin.Svn.dll'
-# The migration below may only happen once per installation, and "the list happens to be empty"
-# is not the same statement as "nobody ever filled it in" -- someone who removed the entry on
-# purpose must not find it back after the next upgrade.
-$seedMarker = Join-Path $data '.plugins-seeded'
+function Split-List([string]$value) {
+    @($value -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+function Get-InstalledPlugins {
+    # A hand-run Install names no lists. Then everything the install tree carries is managed and
+    # selected, which is what this script did before the wizard had an opinion.
+    if (-not (Test-Path -LiteralPath $pluginDirectory)) { return @() }
+    @(Get-ChildItem -LiteralPath $pluginDirectory -Filter 'PolyMount.Plugin.*.dll' -File |
+        Where-Object { $_.Name -notlike '*.Tests.dll' } | ForEach-Object { $_.Name })
+}
+
+$managedFiles = if ($Managed) { Split-List $Managed } else { Get-InstalledPlugins }
+$selectedFiles = if ($PSBoundParameters.ContainsKey('Plugins')) { Split-List $Plugins } else { $managedFiles }
+
+function Test-PluginPresent([string]$file) {
+    Test-Path -LiteralPath (Join-Path $pluginDirectory $file)
+}
+
+function Get-PluginEntry([string]$file) {
+    # Relative to the host's own directory (PluginLoader resolves it against
+    # AppContext.BaseDirectory), so it survives the install directory being chosen or changed.
+    @{ AssemblyPath = 'plugins/' + $file; Enabled = $true }
+}
+
+function ConvertTo-PluginKey([string]$path) {
+    ([string]$path).Replace('\', '/').ToLowerInvariant()
+}
 
 function Save-Config([string]$json) {
     # Written beside the target and moved over it, with the previous file kept: the host reads this
@@ -30,34 +55,52 @@ function Save-Config([string]$json) {
 }
 
 function Write-FreshConfig {
+    $entries = @($selectedFiles | Where-Object { Test-PluginPresent $_ } | ForEach-Object { Get-PluginEntry $_ })
     Save-Config (@{
         WinFspBin = (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin')
         ControlPipe = 'PolyMount.Control'
-        Plugins = @(@{ AssemblyPath = $bundledPlugin; Enabled = $true })
+        Plugins = $entries
         Mounts = @()
         LayerColors = @{}
     } | ConvertTo-Json -Depth 20)
-    New-Item -ItemType File -Path $seedMarker -Force | Out-Null
 }
 
-function Add-BundledPlugins {
-    # An installation made before the plugin was bundled keeps a configuration whose plugin list is
-    # empty, and an empty list stays empty: the host deliberately loads nothing it was not told
-    # about, so without this the operator has no SVN source to choose from at all. A configuration
-    # that already names plugins is the operator's and is left exactly as it is.
-    if (Test-Path -LiteralPath $seedMarker) { return }
-    if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory $bundledPluginFile))) { return }
+function Sync-BundledPlugins {
+    # The setup's plugin checkboxes are its statement about the plugins it ships: a selected one is
+    # named in the configuration, an unselected one is not. Only entries that point at a managed
+    # file are touched -- every other entry is the operator's and is left exactly as it is. This is
+    # also what repairs an installation made before the plugin was bundled, whose list is empty:
+    # an empty list stays empty, because the host deliberately loads nothing it was not told about.
+    if (-not (Test-Path -LiteralPath $config)) { return }
     try { $parsed = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
     catch {
-        # Unreadable is not ours to overwrite; the marker stays away so a later install may retry.
+        # Unreadable is not ours to overwrite.
         Write-Warning "Leaving $config alone: $($_.Exception.Message)"
         return
     }
-    if ($null -eq $parsed.Plugins -or @($parsed.Plugins).Count -eq 0) {
-        $parsed | Add-Member -NotePropertyName Plugins -NotePropertyValue @(@{ AssemblyPath = $bundledPlugin; Enabled = $true }) -Force
-        Save-Config ($parsed | ConvertTo-Json -Depth 20)
+
+    $entries = New-Object System.Collections.ArrayList
+    foreach ($entry in @($parsed.Plugins)) { if ($entry) { [void]$entries.Add($entry) } }
+
+    $changed = $false
+    foreach ($file in $managedFiles) {
+        $key = ConvertTo-PluginKey ('plugins/' + $file)
+        $hit = @($entries | Where-Object { (ConvertTo-PluginKey $_.AssemblyPath) -eq $key })
+        $selected = $selectedFiles -contains $file
+        if ($selected -and $hit.Count -eq 0) {
+            # A partial deployment must not name an assembly that is not there: the host fails to
+            # start at all when a configured plugin cannot be loaded.
+            if (-not (Test-PluginPresent $file)) { continue }
+            [void]$entries.Add((Get-PluginEntry $file))
+            $changed = $true
+        } elseif (-not $selected -and $hit.Count -gt 0) {
+            foreach ($existing in $hit) { $entries.Remove($existing) }
+            $changed = $true
+        }
     }
-    New-Item -ItemType File -Path $seedMarker -Force | Out-Null
+    if (-not $changed) { return }
+    $parsed | Add-Member -NotePropertyName Plugins -NotePropertyValue @($entries) -Force
+    Save-Config ($parsed | ConvertTo-Json -Depth 20)
 }
 
 function Stop-HostProcesses {
@@ -103,7 +146,7 @@ try {
             # same, or it writes the configuration underneath a host that is watching that file.
             Stop-HostProcesses
             New-Item -ItemType Directory -Path $data -Force | Out-Null
-            if (Test-Path -LiteralPath $config) { Add-BundledPlugins } else { Write-FreshConfig }
+            if (Test-Path -LiteralPath $config) { Sync-BundledPlugins } else { Write-FreshConfig }
             $exe = Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'
             $binary = '"' + $exe + '" --config "' + $config + '"'
             if ($service) {

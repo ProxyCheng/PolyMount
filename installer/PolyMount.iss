@@ -52,6 +52,10 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "autostart"; Description: "{cm:AutoStart}"; Flags: checkedonce
 Name: "overlays"; Description: "{cm:OriginDots}"; Flags: checkedonce
 Name: "useraccount"; Description: "{cm:UserAccount}"; Flags: unchecked
+; One line per bundled source plugin. Adding a plugin means adding a task here and the same file
+; name to the two tables in [Code]. Checked by default, and checked again on an upgrade: without
+; it the product has no source to mount at all.
+Name: "plugins_svn"; Description: "{cm:PluginSvn}"
 
 [Files]
 Source: "{#PayloadDir}\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -98,7 +102,9 @@ Filename: "{cmd}"; Parameters: "/c taskkill /f /im explorer.exe >nul 2>&1 & star
 
 [CustomMessages]
 english.ManageObject=Manage cache boundary...
+english.PluginSvn=SVN source: mount a Subversion repository
 chinesesimplified.ManageObject=管理缓存分界线...
+chinesesimplified.PluginSvn=SVN 源：挂载 Subversion 仓库
 english.AutoStart=Start the tray at Windows sign-in
 english.OriginDots=Show source-layer color dots in Explorer
 english.UserAccount=Use a Windows user account for the service (prompt for credentials on first install)
@@ -119,6 +125,49 @@ chinesesimplified.SvnMissing=本机 PATH 上找不到 Subversion 命令行客户
 chinesesimplified.RemoveData=同时删除 PolyMount 的配置与所有层的缓存数据？%n%n选择「否」会保留它们，以便日后重新安装。
 
 [Code]
+{ The plugins this setup ships and offers. The task name and the assembly name travel together:
+  the wizard's checkboxes decide which of them the installed configuration names, and the script
+  is told both the selection and the full list so it can also take an unselected one back out.
+  Adding a plugin means adding a task in [Tasks], a branch below, and incrementing the count. }
+const
+  PluginCount = 1;
+
+function PluginTask(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'plugins_svn';
+  else
+    Result := '';
+  end;
+end;
+
+function PluginFile(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'PolyMount.Plugin.Svn.dll';
+  else
+    Result := '';
+  end;
+end;
+
+function JoinPluginFiles(SelectedOnly: Boolean): String;
+var
+  I: Integer;
+  Task, FileName: String;
+begin
+  Result := '';
+  for I := 0 to PluginCount - 1 do
+  begin
+    Task := PluginTask(I);
+    FileName := PluginFile(I);
+    if (Task <> '') and ((not SelectedOnly) or WizardIsTaskSelected(Task)) then
+    begin
+      if Result <> '' then Result := Result + ';';
+      Result := Result + FileName;
+    end;
+  end;
+end;
+
 function HostAction(Action: String; Installed: Boolean): Boolean;
 var Script, Args: String; Code: Integer;
 begin
@@ -126,7 +175,12 @@ begin
   else Script := ExpandConstant('{tmp}\Install-Host.ps1');
   Args := '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -Action ' + Action +
     ' -InstallDirectory "' + ExpandConstant('{app}') + '"';
-  if (Action = 'Install') and WizardIsTaskSelected('useraccount') then Args := Args + ' -UserAccount';
+  if Action = 'Install' then
+  begin
+    if WizardIsTaskSelected('useraccount') then Args := Args + ' -UserAccount';
+    Args := Args + ' -Plugins "' + JoinPluginFiles(True) + '"';
+    Args := Args + ' -Managed "' + JoinPluginFiles(False) + '"';
+  end;
   Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Args, '', SW_SHOW, ewWaitUntilTerminated, Code) and (Code = 0);
 end;
 
