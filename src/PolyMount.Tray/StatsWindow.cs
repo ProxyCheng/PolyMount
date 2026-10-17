@@ -1265,6 +1265,31 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
+        // A pause in the readings splits a series into separate items so that no line is drawn
+        // across it — and the legend names every item, so a hole the width of a backend restart
+        // used to put a second copy of every layer in the legend. What the legend names is the
+        // series, not its runs.
+        using (var gapped = new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume))
+        {
+            var end = DateTime.UtcNow;
+            var samples = new List<(DateTime Time, double Value)>();
+            for (int second = 40; second >= 20; second--) samples.Add((end.AddSeconds(-second), 5));
+            for (int second = 10; second >= 0; second--) samples.Add((end.AddSeconds(-second), 5));
+            gapped.SpanSeconds = 60;
+            gapped.SetSeries(new List<ChartSeries>
+            {
+                new("cache", "#059669", samples),
+                new("svn", "#2563eb", samples)
+            }, end);
+            // The chart lays its legend out when it paints, and a card that has never painted has
+            // no markers to ask about.
+            gapped.Resize(418, 280);
+            using var painted = gapped.Grab();
+            var named = gapped.LegendNames().OrderBy(name => name).ToArray();
+            if (named.Length != 2 || named[0] != "cache" || named[1] != "svn")
+                throw new InvalidOperationException(
+                    $"Two series drawn in two runs each are named {named.Length} time(s) in the legend: {string.Join(", ", named)}");
+        }
         // Every card is drawn up to the same moment, whatever cadence feeds it. A card drawn
         // against its own newest row put the same moment at a different place on each of them, and
         // the two fed once a second (the layers' holdings, the process's cost) drifted against the
@@ -2576,6 +2601,18 @@ internal sealed class PerformanceChart : QWidget
     /// drawn up to the same one whatever cadence feeds it.</summary>
     internal DateTime End => _end;
 
+    /// <summary>What the chart's legend names, for the smoke run. A series split around a pause is
+    /// several items drawn and one name in the legend, so this is what a reader sees beside the
+    /// plot rather than what the chart is holding.</summary>
+    internal List<string> LegendNames()
+    {
+        var names = new List<string>();
+        foreach (var band in _bands)
+            foreach (var marker in _chart.Legend().Markers(band.Area))
+                if (marker.IsVisible()) names.Add(marker.label());
+        return names;
+    }
+
     /// <summary>Whether any part of this card is inside the window the reader is looking at. The page
     /// is a scroll area some two thousand pixels tall seen through a viewport of eight hundred, and a
     /// card inside a folded section is not on screen either — in both cases Qt's visible region is
@@ -2921,6 +2958,17 @@ internal sealed class PerformanceChart : QWidget
                 _chart.SetAxisX(_timeAxis, area);
                 _chart.SetAxisY(_valueAxis, area);
                 _bands.Add(new Band(area, topLine, bottomLine, name, color, hatched));
+            }
+            // A series split around a pause is several items on the chart and one thing to the
+            // reader, so only the first run of a name is named in the legend: the rest are that same
+            // layer continuing. The legend names every item, which is why a backend restart — a hole
+            // the width of the restart in the readings — used to put a second "cache" beside the
+            // first and read as a second layer.
+            var named = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var band in _bands)
+            {
+                if (named.Add(band.Name)) continue;
+                foreach (var marker in _chart.Legend().Markers(band.Area)) marker.SetVisible(false);
             }
         }
         PlotNotes();
