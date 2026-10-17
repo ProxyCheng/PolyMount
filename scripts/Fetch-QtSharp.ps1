@@ -19,12 +19,12 @@ $published = @{
     # carries Qt6Charts.dll, which the charts package links against). A machine whose NuGet
     # cache still holds an earlier build of the same version keeps those bytes until the cache
     # entry is cleared - `dotnet nuget locals global-packages --list` says where.
-    '0.1.0' = '43e7eb9ac9ca3ab95def49acfdc7f14d2175c097d6ca1b2b3337bc3b641e4804'   # repackaged 2026-10-17 with the QPointF lifetime fix
+    '0.1.0' = 'ef9befc0127629976f835e7dd74631a6250296f60e881a55e3180c10956d636a'   # republished 2026-10-18: managed binding, native glue and nuspec differ from the 10-17 bytes
 }
 
 # QtSharp.Charts is a separate release repository with its own checksums file.
 $chartsPublished = @{
-    '0.1.0' = '21ab9b03f16e2a82f96d0b5a43cd3ca331494f3415bbda542639165d6f32e507'   # repackaged 2026-10-17, beside the QPointF lifetime fix
+    '0.1.0' = 'f1570bd1f154df9a67a352007addfdae3984c91c98dfe6d927afffdb364ea11f'   # republished 2026-10-18, beside the binding
 }
 
 function Get-PublishedHash([string]$version) {
