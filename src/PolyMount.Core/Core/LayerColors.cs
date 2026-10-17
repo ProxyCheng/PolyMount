@@ -15,7 +15,9 @@ public static class LayerColors
         return Array.AsReadOnly(System.Text.RegularExpressions.Regex.Matches(reader.ReadToEnd(), "0x([0-9A-F]{6})")
             .Select(m => "#" + m.Groups[1].Value).ToArray());
     }
-    // Defaults always have an exact Explorer overlay counterpart.
+    // Defaults always have an exact Explorer overlay counterpart. All seven palette entries
+    // are assigned to built-in layers, so no two of them can share a dot; a key that is not
+    // listed here hashes into the same palette and can collide with one of these.
     private static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
     {
         ["overlay"] = OriginPalette[0],
@@ -23,7 +25,9 @@ public static class LayerColors
         ["svn"] = OriginPalette[2],
         ["dir"] = OriginPalette[3],
         ["prediction-cache"] = OriginPalette[4],
-        ["memory-cache"] = OriginPalette[5]
+        ["memory-cache"] = OriginPalette[5],
+        // Without this the layer hashed to slot 0 and showed the overlay's blue.
+        ["warmup"] = OriginPalette[6]
     };
 
     /// <summary>Deterministic auto color for an arbitrary layer key, as "#RRGGBB".</summary>

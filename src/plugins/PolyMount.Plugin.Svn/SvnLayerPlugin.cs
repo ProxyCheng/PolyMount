@@ -13,10 +13,13 @@ public sealed class SvnLayerPlugin : ILayerPlugin
             Titles = SvnTexts.All("preset.svn-workspace.title"),
             Layers = new()
             {
-                // Above every cache: the walk resolves through the chain below it, so this
-                // position is what lets its listings land in all of them.
-                new() { Id = "warmup", Type = "warmup" },
+                // Below the memory cache: warming RAM with listings would spend the memory
+                // cache's budget on records the first client enumeration fills on demand
+                // anyway, and evict the file blocks that cache exists for. Above the overlay,
+                // so the walk still sees local deletions. Here it fills the durable cache —
+                // the one that answers a restart.
                 new() { Id = "memory-cache", Type = "memory-cache" },
+                new() { Id = "warmup", Type = "warmup" },
                 new() { Id = "overlay", Type = "overlay" },
                 new() { Id = "predict", Type = "prediction-cache", Parameters = new()
                     { ["CapacityBytes"] = System.Text.Json.JsonSerializer.SerializeToElement(16L * 1048576) } },

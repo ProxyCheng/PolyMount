@@ -19,9 +19,19 @@ public class LayerColorsTests
     [TestMethod]
     public void Builtin_layers_have_distinct_preset_colors()
     {
-        var colors = new[] { "overlay", "cache", "svn", "dir", "memory-cache", "prediction-cache" }.Select(LayerColors.Auto).ToArray();
+        var colors = new[] { "overlay", "cache", "svn", "dir", "memory-cache", "prediction-cache", "warmup" }.Select(LayerColors.Auto).ToArray();
         CollectionAssert.AllItemsAreUnique(colors);
         foreach (string color in colors) CollectionAssert.Contains(LayerColors.OriginPalette.ToArray(), color);
+    }
+
+    [TestMethod]
+    public void Builtin_layers_cover_the_whole_palette_once()
+    {
+        // Explorer can only draw the seven palette colors exactly; every built-in layer type
+        // owning one of them is what keeps a chain's dots distinguishable.
+        var colors = new[] { "overlay", "cache", "svn", "dir", "memory-cache", "prediction-cache", "warmup" }
+            .Select(LayerColors.Auto).ToArray();
+        CollectionAssert.AreEquivalent(LayerColors.OriginPalette.ToArray(), colors);
     }
 
     [TestMethod]
@@ -38,7 +48,7 @@ public class LayerColorsTests
     [TestMethod]
     public void Builtin_layer_descriptors_use_distinct_semantic_icons()
     {
-        var icons = new[] { "overlay", "cache", "dir", "memory-cache", "prediction-cache" }
+        var icons = new[] { "overlay", "cache", "dir", "memory-cache", "prediction-cache", "warmup" }
             .Select(type => LayerRegistry.Describe(type).Icon).ToArray();
         CollectionAssert.AllItemsAreUnique(icons);
         Assert.IsFalse(icons.Contains("layers"));
