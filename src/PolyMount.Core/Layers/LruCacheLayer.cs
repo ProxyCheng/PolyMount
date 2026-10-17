@@ -41,7 +41,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
     /// placed above an overlay is not: the overlay owns writes, and accepting one here would
     /// keep it from ever reaching the overlay.</summary>
     public override bool Writable => _writable;
-    public bool HasDurableWrites => _writes.Records.Count > 0;
+    public bool HasDurableWrites => _writable && _writes.Records.Count > 0;
     public int RetainedReadHandles { get { lock (Gate) return _openCount; } }
 
     private protected override Item NewItem(VirtualObject value, long bytes, ObjectDatabase.Record? record = null) =>
@@ -116,7 +116,9 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
 
     public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
     {
-        if (_writes.TryOpen(path, out var durable, out stream)) { entry = durable.Header; return true; }
+        // A read-only cache does not own this path even if an older chain left user writes in
+        // the store: the overlay below is the authority now.
+        if (_writable && _writes.TryOpen(path, out var durable, out stream)) { entry = durable.Header; return true; }
         string key = Key(path);
         ObjectDatabase.Record? record;
         lock (Gate)

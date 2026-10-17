@@ -60,4 +60,23 @@ public sealed class PredictionWriteTests
             "the parent listing a higher layer held is stale after the write");
         Assert.IsTrue(prediction.Invalidated > 0);
     }
+
+    [TestMethod]
+    public void A_read_only_cache_ignores_user_writes_left_by_an_older_chain()
+    {
+        using var temp = new TempDir();
+        string root = temp.Sub("cache");
+        using (var writable = new LruCacheLayer(root, () => "v1", 1048576, writable: true))
+        {
+            using var content = new MemoryStream("old-write"u8.ToArray());
+            writable.TryApply(new[] { new ObjectChange("x",
+                new VirtualObject(new VfsEntry { Name = "x", IsDir = false, Size = 9 }), content) });
+            Assert.IsTrue(writable.TryOpenRead("x", out _, out var stream));
+            stream.Dispose();
+        }
+        using var readOnly = new LruCacheLayer(root, () => "v1", 1048576, writable: false);
+        Assert.IsFalse(readOnly.TryOpenRead("x", out _, out _),
+            "a read-only cache must not resurrect an older chain's write");
+        Assert.IsFalse(readOnly.HasDurableWrites);
+    }
 }
