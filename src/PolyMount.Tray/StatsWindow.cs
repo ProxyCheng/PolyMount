@@ -1265,30 +1265,40 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 180) != 3 ||
             PerformanceChart.Fitted(new[] { 0, 60, 120, 180 }, 59) != 0)
             throw new InvalidOperationException("Chart figures do not degrade by importance when the card is narrow");
-        // A pause in the readings splits a series into separate items so that no line is drawn
-        // across it — and the legend names every item, so a hole the width of a backend restart
-        // used to put a second copy of every layer in the legend. What the legend names is the
-        // series, not its runs.
-        using (var gapped = new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume))
+        // The legend names a series, not its runs, and a chart that is rebuilt keeps its legend.
+        // Both were real defects: a hole the width of a backend restart named every layer twice,
+        // and then the fix for that left the whole legend blank, because a series added to a chart
+        // that has already drawn has no legend marker until the legend is laid out again.
+        using (var rebuilt = new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume))
         {
             var end = DateTime.UtcNow;
-            var samples = new List<(DateTime Time, double Value)>();
-            for (int second = 40; second >= 20; second--) samples.Add((end.AddSeconds(-second), 5));
-            for (int second = 10; second >= 0; second--) samples.Add((end.AddSeconds(-second), 5));
-            gapped.SpanSeconds = 60;
-            gapped.SetSeries(new List<ChartSeries>
+            var flat = new List<(DateTime Time, double Value)>();
+            for (int second = 60; second >= 0; second--) flat.Add((end.AddSeconds(-second), 5));
+            var gapped = new List<(DateTime Time, double Value)>();
+            for (int second = 60; second >= 35; second--) gapped.Add((end.AddSeconds(-second), 5));
+            for (int second = 25; second >= 0; second--) gapped.Add((end.AddSeconds(-second), 5));
+            rebuilt.SpanSeconds = 90;
+            rebuilt.Resize(418, 280);
+            void Draw(List<(DateTime Time, double Value)> samples, string stage)
             {
-                new("cache", "#059669", samples),
-                new("svn", "#2563eb", samples)
-            }, end);
-            // The chart lays its legend out when it paints, and a card that has never painted has
-            // no markers to ask about.
-            gapped.Resize(418, 280);
-            using var painted = gapped.Grab();
-            var named = gapped.LegendNames().OrderBy(name => name).ToArray();
-            if (named.Length != 2 || named[0] != "cache" || named[1] != "svn")
-                throw new InvalidOperationException(
-                    $"Two series drawn in two runs each are named {named.Length} time(s) in the legend: {string.Join(", ", named)}");
+                rebuilt.SetSeries(new List<ChartSeries>
+                {
+                    new("cache", "#059669", samples),
+                    new("svn", "#2563eb", samples)
+                }, end);
+                // The chart lays its legend out when it paints, and a card that has never painted
+                // has no markers to ask about.
+                using var painted = rebuilt.Grab();
+                var named = rebuilt.LegendNames().OrderBy(name => name, StringComparer.Ordinal).ToArray();
+                if (named.Length != 2 || named[0] != "cache" || named[1] != "svn")
+                    throw new InvalidOperationException(
+                        $"{stage}: the legend names [{string.Join(", ", named)}] where two series are drawn");
+            }
+            // The first draw, then the two rebuilds a restart causes: a hole opens (two series
+            // become four runs) and closes again (four become two).
+            Draw(flat, "The first draw");
+            Draw(gapped, "A rebuild around a pause");
+            Draw(flat, "A rebuild with the pause gone");
         }
         // Every card is drawn up to the same moment, whatever cadence feeds it. A card drawn
         // against its own newest row put the same moment at a different place on each of them, and
