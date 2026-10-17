@@ -27,6 +27,21 @@ public interface ICacheLayer : ILayer
     void Invalidate();
 }
 
+/// <summary>
+/// A layer that can open file content by the content version its source declared, rather than
+/// only by the namespace generation. The version is opaque: the layer that resolved the entry
+/// supplied it, and this layer only compares it. A source that cannot name one leaves
+/// <see cref="VfsEntry.ContentVersion"/> null, the caller does not ask, and the chain keeps its
+/// generation-keyed behaviour — nothing here knows which backend answered.
+/// </summary>
+public interface IContentVersionCache
+{
+    /// <param name="header">The entry the resolver just resolved. Its
+    /// <see cref="VfsEntry.ContentVersion"/> names the bytes being asked for; an implementation
+    /// must not answer with content of a different size under it.</param>
+    bool TryOpenVersioned(string path, VfsEntry header, out VfsEntry entry, out Stream stream);
+}
+
 /// <summary>A layer that needs the chain beneath it once the whole chain is built, so it can
 /// fetch through layers it does not know by name. The mount hands it a resolver over those
 /// layers and nothing else; what it does with it is the layer's business.</summary>

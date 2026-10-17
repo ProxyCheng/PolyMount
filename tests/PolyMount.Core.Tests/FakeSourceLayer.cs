@@ -13,6 +13,9 @@ internal sealed class FakeSourceLayer : ILayer
         public bool IsDir;
         public byte[] Data = Array.Empty<byte>();
         public DateTime TimeUtc = DateTime.UtcNow;
+        /// <summary>What this source claims the content is, when a test wants a source that
+        /// can name one; null means it cannot, like a backend with no equivalent field.</summary>
+        public string? ContentVersion;
     }
 
     // rel -> node. "" is the implicit root directory.
@@ -41,7 +44,7 @@ internal sealed class FakeSourceLayer : ILayer
 
     /// <summary>Replaces a file's content. <paramref name="keepTime"/> leaves its timestamp
     /// alone, so a test can change content behind an identity that would otherwise move.</summary>
-    public void AddFileBytes(string rel, byte[] content, bool keepTime = false)
+    public void AddFileBytes(string rel, byte[] content, bool keepTime = false, string? contentVersion = null)
     {
         // auto-create parent dirs
         var parent = VfsPath.Parent(rel);
@@ -54,9 +57,14 @@ internal sealed class FakeSourceLayer : ILayer
         {
             IsDir = false,
             Data = content,
-            TimeUtc = keepTime && _nodes.TryGetValue(rel, out var previous) ? previous.TimeUtc : DateTime.UtcNow
+            TimeUtc = keepTime && _nodes.TryGetValue(rel, out var previous) ? previous.TimeUtc : DateTime.UtcNow,
+            ContentVersion = contentVersion
         };
     }
+
+    /// <summary>Moves the version a path's content is under without touching its bytes —
+    /// a source that says the file changed.</summary>
+    public void SetContentVersion(string rel, string? version) => _nodes[rel].ContentVersion = version;
 
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
@@ -65,7 +73,8 @@ internal sealed class FakeSourceLayer : ILayer
         EntryLookups.Add(rel);
         if (rel.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
         if (!_nodes.TryGetValue(rel, out var n)) return false;
-        entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = n.IsDir, Size = n.Data.Length, TimeUtc = n.TimeUtc };
+        entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = n.IsDir, Size = n.Data.Length, TimeUtc = n.TimeUtc,
+            ContentVersion = n.ContentVersion };
         return true;
     }
 
@@ -83,7 +92,8 @@ internal sealed class FakeSourceLayer : ILayer
                 Name = VfsPath.Name(kv.Key),
                 IsDir = kv.Value.IsDir,
                 Size = kv.Value.Data.Length,
-                TimeUtc = kv.Value.TimeUtc
+                TimeUtc = kv.Value.TimeUtc,
+                ContentVersion = kv.Value.ContentVersion
             });
         }
         return list;

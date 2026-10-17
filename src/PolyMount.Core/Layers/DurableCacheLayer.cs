@@ -25,6 +25,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         public bool Pending;
         /// <summary>Admission epoch, so a purge can retire writes already in flight.</summary>
         public long Epoch;
+        /// <summary>The resident key this item was admitted under, so content-version
+        /// bookkeeping can retire it without searching the index.</summary>
+        public CacheKey Key;
     }
 
     private const int MaxQueuedWrites = 4096;
@@ -49,6 +52,17 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 StringComparer.OrdinalIgnoreCase.GetHashCode(key.Generation));
     }
 
+    private sealed class ContentKeyComparer : IEqualityComparer<(string Path, string Version)>
+    {
+        public static readonly ContentKeyComparer Instance = new();
+        public bool Equals((string Path, string Version) left, (string Path, string Version) right) =>
+            StringComparer.OrdinalIgnoreCase.Equals(left.Path, right.Path) &&
+            string.Equals(left.Version, right.Version, StringComparison.Ordinal);
+        public int GetHashCode((string Path, string Version) key) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(key.Path),
+                StringComparer.Ordinal.GetHashCode(key.Version));
+    }
+
     private readonly ObjectDatabase _store;
     private readonly string _storeRoot;
     private readonly Func<string> _version;
@@ -57,6 +71,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private readonly Func<VirtualObject, bool> _keep;
     private readonly object _gate = new(), _persistGate = new();
     private readonly Dictionary<CacheKey, Item> _items = new(CacheKeyComparer.Instance);
+    /// <summary>Durable file records by the content version their source declared, whatever
+    /// generation admitted them. This is the content that survives the namespace moving: a
+    /// path still at version v is still v's bytes, so a cache can answer it before the source
+    /// is asked. Only records (not staged content) are indexed, and entries go with their item.</summary>
+    private readonly Dictionary<(string Path, string Version), Item> _byContent = new(ContentKeyComparer.Instance);
     private readonly Channel<(CacheKey Key, string StoreKey, Item Item)> _queue = Channel.CreateBounded<(CacheKey, string, Item)>(
         new BoundedChannelOptions(MaxQueuedWrites) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
     private readonly Timer _storageCheck;
@@ -173,7 +192,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         long metadata = CacheBudgets.Estimate(key.Path, record.Value);
         var item = NewItem(record.Value, record.StoredBytes, record);
         item.Metadata = metadata;
+        item.Key = key;
         _items[key] = item;
+        IndexContent(item);
         _metadataBytes += metadata;
         _bytes += record.StoredBytes;
     }
@@ -183,8 +204,50 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         if (!_items.Remove(key, out var item)) return;
         _bytes -= item.Bytes;
         _metadataBytes -= item.Metadata;
+        ForgetContent(item);
         ReleaseItem(item);
     }
+
+    /// <summary>Publishes a durable record under its source-declared content version. Records
+    /// without one — a directory, or a file from a source that cannot name a version — are
+    /// simply not addressable this way.</summary>
+    private void IndexContent(Item item)
+    {
+        if (item.Record is not { } record || record.Value.Header is not { IsDir: false, ContentVersion: { Length: > 0 } version }) return;
+        _byContent[(item.Key.Path, version)] = item;
+    }
+
+    private void ForgetContent(Item item)
+    {
+        if (item.Key.Path is not { } path || item.Value.Header.ContentVersion is not { Length: > 0 } version) return;
+        if (_byContent.TryGetValue((path, version), out var current) && current == item)
+            _byContent.Remove((path, version));
+    }
+
+    /// <summary>Finds durable content by what the source said it is, across generations. The
+    /// caller validates the header it resolved against the record before serving it.</summary>
+    private protected bool TryGetVersioned(string path, string version, out Item item, out ObjectDatabase.Record record)
+    {
+        lock (_gate)
+        {
+            if (_byContent.TryGetValue((path, version), out item!) && item.Record is { } found &&
+                !found.Value.Header.IsDir)
+            {
+                // Serving it is a read of this entry too, so its recency has to move or the
+                // eviction that keeps the working set would drop what is still being opened.
+                item.Access = Stopwatch.GetTimestamp();
+                record = found;
+                return true;
+            }
+        }
+        item = null!;
+        record = null!;
+        return false;
+    }
+
+    /// <summary>Drops a versioned record whose content turned out to be unreadable. The whole
+    /// resident item goes, so the next lookup re-reads the store or the source.</summary>
+    private protected void ForgetVersioned(Item item) { lock (_gate) Remove(item.Key); }
 
     private bool TryGet(CacheKey key, out Item item)
     {
@@ -206,7 +269,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         long metadata = CacheBudgets.Estimate(key.Path, value);
         var item = NewItem(value, bytes, record);
         item.Metadata = metadata;
+        item.Key = key;
         _items[key] = item;
+        IndexContent(item);
         _bytes += bytes;
         _metadataBytes += metadata;
         Trim();
@@ -293,6 +358,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 if (!_queue.Writer.TryWrite((key, storeKey, item))) { ReleaseItem(item); return; }
                 _items[key] = item;
                 item.Pending = true;
+                item.Key = key;
                 item.Epoch = _epoch;
                 _retired.Remove(storeKey);
                 _bytes += estimate;
@@ -372,6 +438,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                             current.Bytes = record.StoredBytes;
                             current.Record = record;
                             current.Pending = false;
+                            IndexContent(current);
                             SettleItem(current);
                         }
                     }

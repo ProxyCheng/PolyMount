@@ -6,7 +6,7 @@ namespace PolyMount.Layers;
 /// Read-through cache for file content and the directory namespace. Namespace records
 /// are never evicted from the store; content is bounded by capacity.
 /// </summary>
-public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObjectManagement, ILayerStorageUsage
+public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObjectManagement, ILayerStorageUsage, IContentVersionCache
 {
     private sealed class ContentItem(VirtualObject value, long bytes, ObjectDatabase.Record? record = null)
         : Item(value, bytes, record)
@@ -167,6 +167,29 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
         }
         catch (FileNotFoundException) { ForgetRecord(key, record); return false; }
         catch (DirectoryNotFoundException) { ForgetRecord(key, record); return false; }
+    }
+
+    /// <summary>
+    /// Serves a file from content this cache already holds under the version its source
+    /// declared, even though the namespace key it was admitted under has moved on. The header
+    /// the resolver just got is the authority on what is being asked for, so a record whose
+    /// size disagrees is not that content and the caller falls through to the source.
+    /// </summary>
+    public bool TryOpenVersioned(string path, VfsEntry header, out VfsEntry entry, out Stream stream)
+    {
+        entry = null!;
+        stream = null!;
+        if (header.ContentVersion is not { Length: > 0 } version) return false;
+        if (!TryGetVersioned(path, version, out var item, out var record)) return false;
+        if (record.Value.Header.Size != header.Size) return false;
+        try
+        {
+            if (!Reads.TryOpenRecord(record, out stream)) return false;
+            entry = record.Value.Header;
+            return true;
+        }
+        catch (FileNotFoundException) { ForgetVersioned(item); return false; }
+        catch (DirectoryNotFoundException) { ForgetVersioned(item); return false; }
     }
 
     private static Stream Detach(CacheContent opened)

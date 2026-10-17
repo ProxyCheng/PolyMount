@@ -30,7 +30,7 @@ public sealed record VirtualObject(VfsEntry Header, IReadOnlyList<VfsEntry>? Chi
     public VirtualObject Snapshot()
     {
         var content = Content.Snapshot();
-        return new VirtualObject(new VfsEntry { Name = Header.Name, IsDir = Header.IsDir, Size = Header.Size, TimeUtc = Header.TimeUtc },
+        return new VirtualObject(new VfsEntry { Name = Header.Name, IsDir = Header.IsDir, Size = Header.Size, TimeUtc = Header.TimeUtc, ContentVersion = Header.ContentVersion },
             content.Entries) { _payload = content };
     }
     public static VirtualObject WithContent(VfsEntry header, ObjectContent content)

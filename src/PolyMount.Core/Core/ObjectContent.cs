@@ -11,7 +11,8 @@ public abstract class ObjectContent
     internal virtual PolyMount.Layers.CacheContent? RetainBytes(Stream? stream) => null;
     internal virtual long PersistenceEstimate => EstimatedMemoryBytes;
     protected static VfsEntry Copy(VfsEntry entry) => new()
-        { Name = entry.Name, IsDir = entry.IsDir, Size = entry.Size, TimeUtc = entry.TimeUtc };
+        { Name = entry.Name, IsDir = entry.IsDir, Size = entry.Size, TimeUtc = entry.TimeUtc,
+          ContentVersion = entry.ContentVersion };
 }
 
 public sealed class FileObjectContent : ObjectContent

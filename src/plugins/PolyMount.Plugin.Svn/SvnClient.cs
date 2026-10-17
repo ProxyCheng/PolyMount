@@ -68,12 +68,18 @@ internal sealed class SvnClient : ISvnBackend
             if (sizeEl != null) long.TryParse(sizeEl.Value, out size);
 
             var timeUtc = DateTime.UnixEpoch;
-            var dateEl = entry.Element("commit")?.Element("date");
+            string contentVersion = string.Empty;
+            var commitEl = entry.Element("commit");
+            var dateEl = commitEl?.Element("date");
             if (dateEl != null && DateTime.TryParse(dateEl.Value, null,
                     DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
                 timeUtc = parsed;
+            // svn list names the revision the entry last changed in. It identifies the content
+            // at this path independently of the revision being listed, so a cache can keep the
+            // bytes that did not move when the mount does.
+            if ((string?)commitEl?.Attribute("revision") is { Length: > 0 } revision) contentVersion = revision;
 
-            result.Add(new SvnEntry { Name = name, IsDir = kind == "dir", Size = size, TimeUtc = timeUtc });
+            result.Add(new SvnEntry { Name = name, IsDir = kind == "dir", Size = size, TimeUtc = timeUtc, ContentVersion = contentVersion });
         }
         return result;
     }
@@ -98,10 +104,14 @@ internal sealed class SvnClient : ISvnBackend
         if (sizeEl != null) long.TryParse(sizeEl.Value, out size);
 
         var timeUtc = DateTime.UnixEpoch;
-        var dateEl = entry.Element("commit")?.Element("date");
+        string contentVersion = string.Empty;
+        var commitEl = entry.Element("commit");
+        var dateEl = commitEl?.Element("date");
         if (dateEl != null && DateTime.TryParse(dateEl.Value, null,
                 DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
             timeUtc = parsed;
+        // The revision this path last changed in, not the one it was asked at: see List.
+        if ((string?)commitEl?.Attribute("revision") is { Length: > 0 } revision) contentVersion = revision;
 
         // The name to report is the repository's own spelling, not the one that was asked for:
         // svn reports the canonical URL, and callers rely on seeing the advertised case.
@@ -110,7 +120,8 @@ internal sealed class SvnClient : ISvnBackend
         return new SvnEntry
         {
             Name = name.Length == 0 ? VfsPath.Name(rel) : name,
-            IsDir = (string?)entry.Attribute("kind") == "dir", Size = size, TimeUtc = timeUtc
+            IsDir = (string?)entry.Attribute("kind") == "dir", Size = size, TimeUtc = timeUtc,
+            ContentVersion = contentVersion
         };
     }
 

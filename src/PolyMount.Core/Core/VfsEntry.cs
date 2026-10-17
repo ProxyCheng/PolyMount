@@ -6,6 +6,13 @@ public sealed class VfsEntry
     public bool IsDir { get; init; }
     public long Size { get; init; }
     public DateTime TimeUtc { get; init; }
+    /// <summary>An opaque identity for this path's content, supplied by whichever layer
+    /// resolved it, or null when that layer cannot name one. It is the source's own answer to
+    /// "is this still the same bytes at this path" — SVN's last-changed revision, another
+    /// backend's etag — and caches compare it without interpreting it. A source that cannot
+    /// name a version leaves it null and the cache falls back to invalidating by generation,
+    /// so nothing here assumes a particular backend exists.</summary>
+    public string? ContentVersion { get; init; }
 }
 
 public sealed class VfsNotFoundException : Exception

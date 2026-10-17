@@ -255,10 +255,15 @@ public sealed class VirtualFileSystem
                 Metrics?.RecordRequest(TimeSpan.Zero);
                 throw new VfsNotFoundException(path);
             }
-            if (ResolveHeader(path, out var visibleHeader, out _) && visibleHeader.IsDir)
+            VfsEntry? contentHeader = null;
+            if (ResolveHeader(path, out var visibleHeader, out _))
             {
-                Metrics?.RecordRequest(TimeSpan.Zero);
-                throw new IOException("Path is a directory");
+                if (visibleHeader.IsDir)
+                {
+                    Metrics?.RecordRequest(TimeSpan.Zero);
+                    throw new IOException("Path is a directory");
+                }
+                contentHeader = visibleHeader;
             }
             var watch = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < _layers.Count; i++)
@@ -267,7 +272,15 @@ public sealed class VirtualFileSystem
                 // Named only when there is a scope to name it on: `request?.Stage("..." + name)`
                 // builds the string whatever request is, which is the cost this avoids.
                 if (request != null) request.Stage("opening content: " + layer.Name);
-                if (!layer.TryOpenRead(path, out entry!, out var stream)) continue;
+                bool opened = layer.TryOpenRead(path, out entry!, out var stream);
+                // The namespace key may have moved on while the bytes did not. A layer that can
+                // open by the source's own content version gets the header the resolver just
+                // read and answers from content it already holds; one that cannot says so only
+                // by not implementing the interface, so no layer here assumes a backend.
+                if (!opened && contentHeader is { IsDir: false, ContentVersion: { Length: > 0 } } candidate &&
+                    layer is IContentVersionCache versioned)
+                    opened = versioned.TryOpenVersioned(path, candidate, out entry!, out stream);
+                if (!opened) continue;
                 TouchBelow(path, i);
                 Metrics?.RecordRead(layer.Name, watch.Elapsed, entry.Size, layer is ICacheLayer);
                 // The request the layer was just charged for, with the same elapsed: the two counts
@@ -289,7 +302,12 @@ public sealed class VirtualFileSystem
     /// other. The origin layer's generation covers the data underneath moving; the object's
     /// own size and timestamp cover the object itself changing.
     /// </summary>
-    private string ContentIdentity(VfsEntry entry) => entry.Size + ":" + entry.TimeUtc.Ticks + ":" + _layers[^1].Generation;
+    private string ContentIdentity(VfsEntry entry) =>
+        entry.Size + ":" + entry.TimeUtc.Ticks + ":" +
+        // A source-declared version identifies the bytes themselves, so pages survive the
+        // namespace moving on. Without one, the origin generation is the only identity there
+        // is. The prefix keeps the two namespaces from ever colliding on the same string.
+        (entry.ContentVersion is { Length: > 0 } version ? "c:" + version : "g:" + _layers[^1].Generation);
     private Stream WrapContent(string path, Stream stream, int providerIndex, bool writable, string version)
     {
         for (int i = providerIndex - 1; i >= 0; i--)

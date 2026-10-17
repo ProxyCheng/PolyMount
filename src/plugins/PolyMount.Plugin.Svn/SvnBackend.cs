@@ -8,6 +8,11 @@ internal sealed class SvnEntry
     public bool IsDir;
     public long Size;
     public DateTime TimeUtc;
+    /// <summary>The revision this entry last changed in, when the transport reports it. It is
+    /// the revision whose content the path has, which is what a cache can compare across
+    /// global revisions; empty means the transport did not say, and callers fall back to the
+    /// generation. No layer above the plugin interprets it.</summary>
+    public string ContentVersion = string.Empty;
 }
 
 /// <summary>The requested repository path does not exist at the requested revision.</summary>

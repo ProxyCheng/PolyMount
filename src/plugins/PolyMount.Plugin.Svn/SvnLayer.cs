@@ -271,7 +271,8 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         using (var lane = _lanes.Enter(ReadPriority.Ambient))
             info = _svn.Info(revision, rel, RequestDiagnostics.Ambient);
         if (info == null) return false;
-        entry = new VfsEntry { Name = info.Name, IsDir = info.IsDir, Size = info.Size, TimeUtc = info.TimeUtc };
+        entry = new VfsEntry { Name = info.Name, IsDir = info.IsDir, Size = info.Size, TimeUtc = info.TimeUtc,
+            ContentVersion = info.ContentVersion.Length == 0 ? null : info.ContentVersion };
         lock (_gate)
         {
             if (_rev == revision) _entries[key] = entry;
@@ -316,7 +317,8 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
                     try
                     {
                         return _svn.List(revision, directory, diagnostics)
-                            .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc }).ToArray();
+                            .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc,
+                                ContentVersion = e.ContentVersion.Length == 0 ? null : e.ContentVersion }).ToArray();
                     }
                     catch (SvnNotFoundException) { return Array.Empty<VfsEntry>(); }
                 });
