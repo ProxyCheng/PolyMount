@@ -117,3 +117,26 @@ jobs:
             artifacts/PolyMount-*-Setup.exe
             artifacts/PolyMount-*-Setup.exe.sha256
           if-no-files-found: error
+
+  # The one check that uses the product the way a reader does: a machine that has never seen it,
+  # the real setup, and what is left behind. WinFsp is deliberately not installed beforehand so
+  # the setup's own dependency step is exercised too.
+  install-test:
+    name: Install and verify
+    runs-on: windows-latest
+    needs: package
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: PolyMount-Setup
+          path: artifacts
+
+      - name: Install, install over the top, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem artifacts/PolyMount-*-Setup.exe | Select-Object -First 1
+          Write-Host "Testing $($setup.Name)"
+          ./scripts/Test-Installed.ps1 -Setup $setup.FullName
