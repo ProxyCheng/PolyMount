@@ -1,3 +1,5 @@
+using PolyMount.Layers;
+
 namespace PolyMount.Core;
 
 public sealed class LayerPreset
@@ -13,7 +15,8 @@ public static class LayerPresetRegistry
     static LayerPresetRegistry()
     {
         Register(new() { Id = "local-directory", Titles = LayerTexts.Get("preset.local-directory.title").Values,
-            Layers = new() { new() { Id = "memory-cache", Type = "memory-cache" },
+            Layers = new() { new() { Id = "warmup", Type = ListingWarmupLayer.Type },
+                new() { Id = "memory-cache", Type = "memory-cache" },
                 new() { Id = "overlay", Type = "overlay" }, new() { Id = "dir", Type = "dir", Source = new() { Type = "dir" } } } });
     }
     public static void Register(LayerPreset preset) => Presets[preset.Id] = preset;

@@ -1,7 +1,7 @@
 {
   "preset.svn-workspace.title": {
-    "en": "SVN + read cache + predictive preload + overlay + memory cache",
-    "zh-CN": "SVN + 读取缓存 + 预测预载 + 本地修改 + 内存缓存"
+    "en": "SVN + listing warm-up + read cache + predictive preload + overlay + memory cache",
+    "zh-CN": "SVN + 清单预热 + 读取缓存 + 预测预载 + 本地修改 + 内存缓存"
   },
   "svn.title": { "en": "SVN repository", "zh-CN": "SVN 仓库" },
   "svn.description": {

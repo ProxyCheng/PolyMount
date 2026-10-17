@@ -1,4 +1,5 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using PolyMount.Layers;
 using System.Text.Json;
 
 namespace PolyMount.Core.Tests;
@@ -59,5 +60,15 @@ public sealed class LayerPresetMergerTests
         var result = LayerPresetMerger.Merge(Array.Empty<LayerConfig>(), preset);
         Assert.AreEqual("one", result.Single().Id);
         Assert.AreNotSame(existing, result.Single());
+    }
+
+    [TestMethod]
+    public void The_built_in_preset_carries_the_warmup_layer_on_top()
+    {
+        // A new layer type is only reachable through "apply preset" if the presets were
+        // updated with it; this pins that for the one preset Core owns.
+        var preset = LayerPresetRegistry.All.Single(p => p.Id == "local-directory");
+        Assert.AreEqual(ListingWarmupLayer.Type, preset.Layers[0].Type);
+        Assert.IsTrue(preset.Layers.Any(l => l.Type == "memory-cache"));
     }
 }

@@ -53,7 +53,7 @@
   "prediction.depth": { "en": "Look-ahead depth", "zh-CN": "前瞻步数" },
   "prediction.depth.description": { "en": "How many confident steps to follow. Read-ahead issues the same reads either way; depth decides how far ahead of the reader they land.", "zh-CN": "沿预测路径连续走几步。两种情况下回源次数相同，深度只决定它们落在读者前面多远。" },
   "provider.memory": { "en": "RAM · {0} hits · {1} misses · {2} write-backs", "zh-CN": "RAM · 命中 {0} · 未命中 {1} · 回写 {2}" },
-  "preset.local-directory.title": { "en": "Local directory + overlay + memory cache", "zh-CN": "本地目录 + 本地修改 + 内存缓存" },
+  "preset.local-directory.title": { "en": "Local directory + listing warm-up + overlay + memory cache", "zh-CN": "本地目录 + 清单预热 + 本地修改 + 内存缓存" },
   "warmup.title": { "en": "Listing warm-up", "zh-CN": "清单预热" },
   "warmup.description": { "en": "Walks directory listings in the background and lets the caches below this layer keep them, so the first walk through a tree is answered from the cache. Place it above the caches it should warm; it yields while the instance is being read.", "zh-CN": "后台遍历目录清单，交由本层下方的缓存保存，使第一次遍历树时由缓存回答。放在需要预热的缓存上方；实例被读取时让路。" },
   "warmup.limit": { "en": "Directories per pass", "zh-CN": "每趟目录数" },

@@ -181,7 +181,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Missing plugin preset");
             var preset = LayerPresetRegistry.All.Single(p => p.Id == "svn-workspace");
-            if (!preset.Layers.Select(l => l.Type).SequenceEqual(new[] { "memory-cache", "overlay", "prediction-cache", "cache", "svn" }))
+            if (!preset.Layers.Select(l => l.Type).SequenceEqual(new[] { "warmup", "memory-cache", "overlay", "prediction-cache", "cache", "svn" }))
                 throw new Exception("Unexpected SVN workspace layer order");
             var descriptor = LayerRegistry.Describe("svn");
             if (!descriptor.Fields.Any(f => f.Path == "Source.Password" && f.Kind == LayerFieldKind.Secret) ||

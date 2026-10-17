@@ -13,6 +13,9 @@ public sealed class SvnLayerPlugin : ILayerPlugin
             Titles = SvnTexts.All("preset.svn-workspace.title"),
             Layers = new()
             {
+                // Above every cache: the walk resolves through the chain below it, so this
+                // position is what lets its listings land in all of them.
+                new() { Id = "warmup", Type = "warmup" },
                 new() { Id = "memory-cache", Type = "memory-cache" },
                 new() { Id = "overlay", Type = "overlay" },
                 new() { Id = "predict", Type = "prediction-cache", Parameters = new()
