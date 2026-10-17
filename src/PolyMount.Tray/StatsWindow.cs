@@ -875,6 +875,80 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException("Switching the access drawing twice did not come back to where it started");
     }
 
+    /// <summary>How the access card lays its columns out, held to by arithmetic rather than by
+    /// looking at the card. Each of these was a rule the picture broke only once someone looked at
+    /// it: a layer that served four requests in twenty thousand was given a column wide enough to
+    /// read as a real one, because the widths had a minimum; and a column's cells, a column's
+    /// heading and the layers' order all hang off numbers nothing was checking.</summary>
+    internal void VerifyAccessGrid()
+    {
+        static AccessRow Row(string name, params (string Layer, long Reads, long Writes)[] parts) =>
+            new(name, parts.Select(part => new AccessPart(part.Layer, "#123456", part.Reads, part.Writes)).ToList());
+        var rows = new List<AccessRow>
+        {
+            // The shape from a real window: two layers that carry the traffic and a third that
+            // answered four requests out of twenty thousand.
+            Row("XEditorProxy_x64h", ("svn", 10155, 0), ("memory-cache", 9722, 0), ("cache", 4, 0)),
+            Row("second", ("svn", 60, 0), ("memory-cache", 40, 0))
+        };
+        const int left = 100, span = 400;
+        var columns = AccessGrid.Columns(rows, reads: true, left, span);
+        var svn = columns.Single(column => column.Name == "svn");
+        var memory = columns.Single(column => column.Name == "memory-cache");
+        var cache = columns.Single(column => column.Name == "cache");
+
+        // 0.0% takes no room: a column is a share of the traffic, not a slot.
+        if (cache.Width != 0 || cache.Drawn)
+            throw new InvalidOperationException($"A layer with 4 of 19,981 was given {cache.Width} px of the card");
+        if (cache.Length(4) != 0)
+            throw new InvalidOperationException("A cell was drawn in a column that has no room");
+
+        // The columns that are drawn are their shares of the room the gaps leave, within a pixel.
+        int room = span - AccessGrid.Gap * (columns.Count - 1);
+        foreach (var (column, sum) in new[] { (svn, 10215L), (memory, 9762L) })
+        {
+            int expected = (int)Math.Round(room * (double)sum / 19981);
+            if (Math.Abs(column.Width - expected) > 1)
+                throw new InvalidOperationException(
+                    $"{column.Name} is {column.Width} px wide where its share of the card is {expected}");
+        }
+
+        // Every row's cell for a layer starts at that layer's column, which is what aligned means.
+        if (memory.Left != svn.Left + svn.Width + AccessGrid.Gap)
+            throw new InvalidOperationException(
+                $"memory-cache starts at {memory.Left} after svn ends at {svn.Left + svn.Width}");
+
+        // A column is read against its own busiest row: that row fills it, half of it is half, and
+        // a row that used none of it is not drawn.
+        if (svn.Length(10155) != svn.Width)
+            throw new InvalidOperationException($"The busiest row fills {svn.Length(10155)} of svn's {svn.Width} px");
+        if (Math.Abs(svn.Length(60) - svn.Width * 60.0 / 10155) > 1)
+            throw new InvalidOperationException($"60 of 10,155 is drawn {svn.Length(60)} px wide of {svn.Width}");
+        if (svn.Length(0) != 0)
+            throw new InvalidOperationException("A row that used none of a layer drew a cell");
+
+        // Two layers that carried the same amount keep one order, so a sample that swaps them does
+        // not also swap their columns.
+        var tied = AccessGrid.Columns(new[] { Row("r", ("zeta", 5, 0), ("alpha", 5, 0)) }, true, left, span);
+        if (tied[0].Name != "alpha" || tied[1].Name != "zeta")
+            throw new InvalidOperationException("Layers that carried the same amount changed places: " + string.Join(", ", tied.Select(c => c.Name)));
+
+        // The stacked drawing's pieces add up to its own bar, in the columns' order.
+        var pieces = AccessGrid.Stacked(columns, rows[0], reads: true, barWidth: 400);
+        if (pieces.Sum() != 400)
+            throw new InvalidOperationException($"The stacked pieces add up to {pieces.Sum()} for a bar of 400");
+        int expectedFirst = (int)Math.Round(400.0 * 10155 / 19881);
+        if (Math.Abs(pieces[0] - expectedFirst) > 1)
+            throw new InvalidOperationException($"The first piece is {pieces[0]} px of a 400 px bar, not {expectedFirst}");
+
+        // The direction the card reads decides the numbers, so a writes card is not a reads card.
+        if (AccessGrid.Total(rows[0], reads: false) != 0 || AccessGrid.Total(rows[0], reads: true) != 19881)
+            throw new InvalidOperationException("The two directions read the same numbers");
+        var writes = AccessGrid.Columns(new[] { Row("r", ("svn", 0, 7), ("cache", 0, 3)) }, reads: false, left, span);
+        if (writes.Count != 2 || writes[0].Name != "svn")
+            throw new InvalidOperationException("A writes card is not reading the writes");
+    }
+
     internal void VerifyResponseSampling()
     {
         if (_responseSamples.Count == 0 || _responseCost.Text == T("stats.response.waiting"))

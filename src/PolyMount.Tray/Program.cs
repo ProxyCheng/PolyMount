@@ -527,6 +527,7 @@ internal static class Program
                 stats.DrawEverything();
                     stats.VerifyResponseSampling();
                     stats.VerifyAccessSplit();
+                    stats.VerifyAccessGrid();
                     stats.VerifyAccessModes();
                     stats.VerifyChartScale();
                     stats.VerifyLayout();

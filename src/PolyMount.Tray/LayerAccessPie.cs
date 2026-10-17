@@ -14,6 +14,122 @@ internal sealed record AccessPart(string Name, string Color, long Reads, long Wr
 /// what is drawn is its pieces, in the layers' colours.</summary>
 internal sealed record AccessRow(string Name, IReadOnlyList<AccessPart> Parts);
 
+/// <summary>Where the access card puts the things it draws, worked out from the rows alone: one
+/// column per layer, as wide as the share it carried, and the length of each cell inside it.
+///
+/// The painting asks this and draws what it says; the checks ask it too. A rule about a picture is
+/// hard to hold to by looking at one — a column given a minimum width because its layer served four
+/// requests in twenty thousand looked like a real column, and it took a reader asking "why does
+/// 0.0% take width" to find it. Rules that can be asserted belong in a function that can be
+/// called.</summary>
+internal static class AccessGrid
+{
+    /// <summary>The surface showing between two columns, and between two pieces of one stacked
+    /// bar.</summary>
+    internal const int Gap = 2;
+
+    /// <summary>The narrowest column that is drawn at all. Below this a layer's share is under a
+    /// hairline, and a column there would be a shape a reader takes for a real one — the same
+    /// mistake as giving a 0.0% layer a minimum width. Nothing is allocated to such a column: it
+    /// takes no room, so the ones beside it keep their own places.</summary>
+    internal const int MinWidth = 3;
+
+    /// <summary>One layer's column: everything it carried, the most any one row used of it (the
+    /// denominator its cells are read against), and the strip of the card it was given.</summary>
+    internal readonly record struct Column(string Name, string Color, long Sum, long Largest, int Left, int Width)
+    {
+        /// <summary>How long one row's cell here is drawn: against the busiest row in the same
+        /// column, so whoever used the layer most fills it. Zero for a column that is not drawn,
+        /// whatever the row says — a cell cannot be wider than the strip it stands in.</summary>
+        internal int Length(long value) =>
+            !Drawn || Largest <= 0 ? 0 : (int)Math.Round(Width * (double)value / Largest);
+
+        /// <summary>Whether the column is wide enough to be drawn at all.</summary>
+        internal bool Drawn => Width >= MinWidth;
+    }
+
+    /// <summary>How much of a layer one row used, in the direction being drawn.</summary>
+    internal static long Value(AccessRow row, string layer, bool reads)
+    {
+        long value = 0;
+        foreach (var part in row.Parts)
+            if (string.Equals(part.Name, layer, StringComparison.OrdinalIgnoreCase))
+                value += reads ? part.Reads : part.Writes;
+        return value;
+    }
+
+    /// <summary>Everything one row used, in the direction being drawn.</summary>
+    internal static long Total(AccessRow row, bool reads)
+    {
+        long total = 0;
+        foreach (var part in row.Parts) total += reads ? part.Reads : part.Writes;
+        return total;
+    }
+
+    /// <summary>The columns of one card, left to right, busiest first, each as wide as the share it
+    /// carried. The widths are strictly proportional — that is the whole point of a column taking
+    /// its width from what it carried — so a layer whose share rounds to under a pixel gets no
+    /// room. Ties in the ranking are broken by name, so two layers that swapped places between
+    /// samples do not also swap columns. <paramref name="span"/> is the whole strip the columns and
+    /// their gaps have to fit in.</summary>
+    internal static List<Column> Columns(IReadOnlyList<AccessRow> rows, bool reads, int left, int span)
+    {
+        var merged = new Dictionary<string, (string? Color, long Sum)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in rows)
+            foreach (var part in row.Parts)
+            {
+                long value = reads ? part.Reads : part.Writes;
+                if (value <= 0) continue;
+                merged.TryGetValue(part.Name, out var held);
+                merged[part.Name] = (held.Color ?? part.Color, held.Sum + value);
+            }
+        var ordered = merged
+            .OrderByDescending(entry => entry.Value.Sum)
+            .ThenBy(entry => entry.Key, StringComparer.Ordinal)
+            .ToList();
+        long carried = ordered.Sum(entry => entry.Value.Sum);
+        // The gaps come out of the strip before it is shared out, so the widest column plus the gaps
+        // cannot push the last one past the numbers at the end of the rows.
+        int room = span - Gap * Math.Max(0, ordered.Count - 1);
+        var columns = new List<Column>(ordered.Count);
+        int at = left;
+        foreach (var (name, (color, sum)) in ordered)
+        {
+            int width = carried == 0 || room <= 0 ? 0 : (int)Math.Round(room * (double)sum / carried);
+            long largest = 0;
+            foreach (var row in rows) largest = Math.Max(largest, Value(row, name, reads));
+            columns.Add(new Column(name, color ?? "#64748B", sum, largest, at, width));
+            if (width >= MinWidth) at += width + Gap;
+        }
+        return columns;
+    }
+
+    /// <summary>One row's pieces in the stacked drawing: the length of each column's piece, in the
+    /// columns' order. The last piece takes whatever rounding left, so a bar adds up to its own
+    /// length rather than a pixel short of it.</summary>
+    internal static int[] Stacked(IReadOnlyList<Column> columns, AccessRow row, bool reads, int barWidth)
+    {
+        var lengths = new int[columns.Count];
+        long total = Total(row, reads);
+        if (total <= 0 || barWidth <= 0) return lengths;
+        int last = -1;
+        for (int index = 0; index < columns.Count; index++)
+            if (Value(row, columns[index].Name, reads) > 0) last = index;
+        int drawn = 0;
+        for (int index = 0; index < columns.Count; index++)
+        {
+            long value = Value(row, columns[index].Name, reads);
+            if (value <= 0) continue;
+            int length = index == last
+                ? Math.Max(0, barWidth - drawn)
+                : (int)Math.Round(barWidth * (double)value / total);
+            lengths[index] = length;
+            drawn += length;
+        }
+        return lengths;
+    }
+}
+
 /// <summary>Which layer answered the reads and the writes, and who asked: two cards, one per
 /// direction, each reading that direction two ways.
 ///
@@ -429,10 +545,6 @@ internal sealed class LayerAccessPie : QWidget
     /// numbers.</summary>
     private sealed class Breakdown : QWidget, IReadsOneWay
     {
-        /// <summary>The surface showing between two columns, so two full cells do not read as one
-        /// bar. It is taken out of the width before the columns are divided into it, so the cells
-        /// keep their own places whatever the card's width.</summary>
-        private const int ColumnGap = 2;
         /// <summary>How tall a bar wants to be, and the range of rows the card will draw them in:
         /// below the floor a bar is a line, above the ceiling a list of three is spread out as if it
         /// were a list of ten.</summary>
@@ -445,12 +557,6 @@ internal sealed class LayerAccessPie : QWidget
         /// <summary>The widest the names may take, as a share of the card: past this the cells they
         /// are read against stop being comparable, and a name is elided instead.</summary>
         private const double NameShare = 0.42;
-        /// <summary>The least a column is given, however little it carried, and the width below
-        /// which the grid is not drawn at all: a layer's column shares the room with the others in
-        /// proportion to what it served, but a column a few pixels wide is a line, not a reading —
-        /// so a small layer is given this much, and the card keeps its names and its numbers when
-        /// even that does not fit.</summary>
-        private const int ColumnFloor = 18;
 
         private readonly bool _reads, _processes;
         private List<AccessRow> _rows = new();
@@ -525,16 +631,8 @@ internal sealed class LayerAccessPie : QWidget
 
             // The columns: every layer this direction has traffic on, in one order for the whole
             // card and the busiest first. It is the order the circle's legend beside it reads in, so
-            // a reader who has found a colour there finds its column here.
-            var columns = rows
-                .SelectMany(row => row.Parts)
-                .Where(part => Count(part.Reads, part.Writes) > 0)
-                .GroupBy(part => part.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => (Name: group.Key, Color: group.First().Color,
-                    Sum: group.Sum(part => Count(part.Reads, part.Writes))))
-                .OrderByDescending(column => column.Sum)
-                .ToList();
-
+            // a reader who has found a colour there finds its column here. Where each one stands and
+            // how wide it is comes from AccessGrid, which the checks read too.
             string[] figures = rows.Select(row => Total(row).ToString("N0", I18n.Culture)).ToArray();
             int figureWidth = figures.Max(text => values.HorizontalAdvance(text));
             int nameWidth = Math.Min(
@@ -542,39 +640,14 @@ internal sealed class LayerAccessPie : QWidget
                 (int)(width * NameShare));
             int gridLeft = nameWidth + 8;
             int gridRight = width - figureWidth - 8;
-            int span = gridRight - gridLeft - (_aligned ? ColumnGap * Math.Max(0, columns.Count - 1) : 0);
-            // The columns take their width from what they carried, not from how many of them there
-            // are: the card is the whole of this direction's traffic laid out left to right, so a
-            // layer that served a tenth of it gets a tenth of the room. That is what makes the grid
-            // readable down a column and across the card at once — the widths say how big each layer
-            // was, and the cells inside a column say who used it. A layer too small to have a
-            // readable column is given one anyway (ColumnFloor): its bar would be a line, but a
-            // column that is not there at all reads as a layer nothing used.
-            long carried = columns.Sum(column => column.Sum);
-            int[] widths = new int[columns.Count];
-            if (columns.Count > 0 && span > 0)
-            {
-                for (int column = 0; column < columns.Count; column++)
-                    widths[column] = Math.Max(ColumnFloor, (int)Math.Round(span * (double)columns[column].Sum / carried));
-                // The floors can ask for more room than there is; when they do, every column gives
-                // back the same share of what it was given, so the order and the proportions stay.
-                int asked = widths.Sum();
-                if (asked > span)
-                    for (int column = 0; column < columns.Count; column++)
-                        widths[column] = Math.Max(1, widths[column] * span / asked);
-            }
-            int[] lefts = new int[columns.Count];
-            for (int column = 0, at = gridLeft; column < columns.Count; column++)
-            {
-                lefts[column] = at;
-                at += widths[column] + ColumnGap;
-            }
+            int span = gridRight - gridLeft;
+            var columns = AccessGrid.Columns(rows, _reads, gridLeft, span);
             // A card too narrow to stand the columns in keeps its names and its numbers: a bar of a
             // few pixels is not a reading, and the figure is what the row is here for.
-            bool grid = _aligned && columns.Count > 0 && widths.Max() >= ColumnFloor;
+            bool grid = _aligned && columns.Any(column => column.Drawn);
             // The other drawing needs no columns: every row is one bar, its pieces in the same order
             // as everybody else's, measured against the busiest row.
-            bool bars = !_aligned && columns.Count > 0 && span >= ColumnFloor;
+            bool bars = !_aligned && columns.Count > 0 && span >= AccessGrid.MinWidth;
             long widest = rows.Max(Total);
 
             int header = grid ? HeaderHeight : 0;
@@ -586,25 +659,17 @@ internal sealed class LayerAccessPie : QWidget
             {
                 p.SetFont(nameFont);
                 p.SetPen(new QPen(new QColor(TrayTheme.Tokens.Muted)));
-                for (int column = 0; column < columns.Count; column++)
+                foreach (var column in columns)
                 {
                     // A column too narrow for a name is not given a shrug of an ellipsis: the colour
                     // is what names it, and the legend beside the circle is where the names are. An
                     // ellipsis over a column would read as a name that had been left out.
-                    if (widths[column] < HeadingFloor) continue;
-                    p.DrawText(new QRect(lefts[column], top, widths[column], HeaderHeight),
+                    if (column.Width < HeadingFloor) continue;
+                    p.DrawText(new QRect(column.Left, top, column.Width, HeaderHeight),
                         (int)(Qt.Alignment.AlignLeft | Qt.Alignment.AlignVCenter),
-                        names.ElidedText(columns[column].Name, Qt.TextElideMode.ElideRight, widths[column]));
+                        names.ElidedText(column.Name, Qt.TextElideMode.ElideRight, column.Width));
                 }
             }
-
-            // One denominator per column, and it is that column's own busiest row. Columns share no
-            // scale, which is the price of standing them all on one x: a cell says how much of this
-            // layer this caller used against whoever used it most, and the row's own total is the
-            // number at its end.
-            long[] largest = new long[columns.Count];
-            for (int column = 0; column < columns.Count; column++)
-                foreach (var row in rows) largest[column] = Math.Max(largest[column], Value(row, columns[column].Name));
 
             using var noPen = new QPen(Qt.PenStyle.NoPen);
             for (int index = 0; index < rows.Count; index++)
@@ -623,17 +688,18 @@ internal sealed class LayerAccessPie : QWidget
                 if (grid)
                 {
                     int barY = y + (rowHeight - barHeight) / 2;
-                    for (int column = 0; column < columns.Count; column++)
+                    foreach (var column in columns)
                     {
-                        long value = Value(row, columns[column].Name);
+                        // A column too narrow to be drawn is not drawn, cell and all: its share is
+                        // below what this card can show, and a one-pixel block would say otherwise.
+                        if (!column.Drawn) continue;
+                        long value = AccessGrid.Value(row, column.Name, _reads);
                         if (value <= 0) continue;
-                        int length = largest[column] == 0
-                            ? 0
-                            : (int)Math.Round(widths[column] * (double)value / largest[column]);
+                        int length = column.Length(value);
                         // What was counted is drawn, however little of the column it fills.
-                        p.SetBrush(new QBrush(new QColor(columns[column].Color)));
+                        p.SetBrush(new QBrush(new QColor(column.Color)));
                         p.SetPen(noPen);
-                        p.DrawRect(lefts[column], barY, Math.Max(1, length), barHeight);
+                        p.DrawRect(column.Left, barY, Math.Max(1, length), barHeight);
                     }
                 }
                 else if (bars)
@@ -643,22 +709,21 @@ internal sealed class LayerAccessPie : QWidget
                     // the third band from the left, wherever the first two ended.
                     int barY = y + (rowHeight - barHeight) / 2;
                     int length = (int)Math.Round(span * (double)Total(row) / widest);
+                    var pieces = AccessGrid.Stacked(columns, row, _reads, length);
+                    int firstPiece = Array.FindIndex(pieces, part => part > 0);
+                    int lastPiece = Array.FindLastIndex(pieces, part => part > 0);
                     int x = gridLeft;
-                    var pieces = columns.Where(column => Value(row, column.Name) > 0).ToList();
-                    for (int piece = 0; piece < pieces.Count; piece++)
+                    for (int piece = 0; piece < pieces.Length; piece++)
                     {
-                        // The last piece takes what rounding left over, so a bar adds up to its own
-                        // length rather than a pixel short of it.
-                        int part = piece == pieces.Count - 1
-                            ? gridLeft + length - x
-                            : (int)Math.Round(length * (double)Value(row, pieces[piece].Name) / Total(row));
+                        int part = pieces[piece];
+                        if (part <= 0) continue;
                         // The seam is taken off the two sides that meet, so the surface shows through
                         // as a hairline rather than as a border drawn around anything.
-                        int from = x + (piece == 0 ? 0 : ColumnGap / 2);
-                        int to = x + part - (piece == pieces.Count - 1 ? 0 : ColumnGap / 2);
+                        int from = x + (piece == firstPiece ? 0 : AccessGrid.Gap / 2);
+                        int to = x + part - (piece == lastPiece ? 0 : AccessGrid.Gap / 2);
                         if (to > from)
                         {
-                            p.SetBrush(new QBrush(new QColor(pieces[piece].Color)));
+                            p.SetBrush(new QBrush(new QColor(columns[piece].Color)));
                             p.SetPen(noPen);
                             p.DrawRect(from, barY, to - from, barHeight);
                         }
