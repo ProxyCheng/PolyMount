@@ -16,10 +16,21 @@ function Command([string]$cmd) {
     try { $pipe.Connect(1000); $writer=New-Object IO.StreamWriter($pipe);$writer.AutoFlush=$true;$writer.WriteLine((@{Cmd=$cmd}|ConvertTo-Json -Compress));$reader=New-Object IO.StreamReader($pipe);return ($reader.ReadLine()|ConvertFrom-Json) }
     finally { $pipe.Dispose() }
 }
+# The supervisor answers "mounted" as soon as the instance's worker process is up, which is before
+# that process has finished mounting. What this test needs is the drive being there, so it waits for
+# the mount point itself rather than for the status alone.
+function Wait-Mounted {
+    for($i=0;$i -lt 60;$i++) {
+        try {
+            $response = Command 'status'
+            if($response.Mounts[0].Mounted -and [IO.Directory]::Exists($mount)) { return }
+        } catch {}
+        Start-Sleep -Milliseconds 300
+    }
+    throw 'Test mount did not start'
+}
 try {
-    $ready=$false
-    for($i=0;$i -lt 30;$i++) { try { $response=Command 'status';if($response.Mounts[0].Mounted){$ready=$true;break} } catch {}; Start-Sleep -Milliseconds 300 }
-    if(-not $ready){throw 'Test mount did not start'}
+    Wait-Mounted
     [IO.File]::WriteAllText((Join-Path $mount 'new.txt'),'new-object')
     if([IO.File]::ReadAllText((Join-Path $mount 'new.txt')) -ne 'new-object'){throw 'New object read failed'}
     [IO.File]::Delete((Join-Path $mount 'deleted.txt'))
@@ -30,7 +41,7 @@ try {
     Command 'shutdown' | Out-Null
     $process.WaitForExit(10000) | Out-Null
     $process = Start-Process -FilePath $ServiceExecutable -ArgumentList @('--config',('"'+$config+'"')) -PassThru -WindowStyle Hidden
-    Start-Sleep -Seconds 2
+    Wait-Mounted
     if([IO.File]::Exists((Join-Path $mount 'deleted.txt'))){throw 'Deletion was not persisted'}
     if([IO.File]::ReadAllText((Join-Path $mount 'new.txt')) -ne 'new-object'){throw 'Compressed object did not persist'}
     'Object mount smoke passed: create/read/delete/recursive rename/persistence/compression; source unchanged.'
