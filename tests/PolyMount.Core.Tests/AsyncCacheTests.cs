@@ -14,7 +14,10 @@ public sealed class AsyncCacheTests
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 16 * 1048576);
-        cache.BeforePersist = () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(10)); };
+        // The writer is held for far longer than the budget below on purpose: an implementation
+        // that waits for it has to blow the budget even on a slow machine, while one that does
+        // not finishes in a fraction of it. A tight budget alone measured the runner, not the code.
+        cache.BeforePersist = () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(30)); };
         try
         {
             cache.StoreObject("first", VirtualObject.Directory("first", Array.Empty<VfsEntry>()));
@@ -25,7 +28,7 @@ public sealed class AsyncCacheTests
                 Assert.IsTrue(cache.Count <= 4097);
                 Assert.IsFalse(cache.TryGetEntry("dir4999", out _));
                 Assert.IsTrue(cache.TryGetEntry("first", out _));
-            }).WaitAsync(TimeSpan.FromSeconds(2));
+            }).WaitAsync(TimeSpan.FromSeconds(15));
         }
         finally { release.Set(); }
         await cache.DrainAsync().WaitAsync(TimeSpan.FromSeconds(5));
@@ -38,7 +41,7 @@ public sealed class AsyncCacheTests
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
         using var cache = new LruCacheLayer(temp.Sub("cache"), () => "1", 1048576);
-        cache.BeforePersist = () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(10)); };
+        cache.BeforePersist = () => { entered.Set(); release.Wait(TimeSpan.FromSeconds(30)); };
         string source = temp.Sub("source");
         File.WriteAllText(source, "payload");
         try
@@ -53,7 +56,7 @@ public sealed class AsyncCacheTests
                 using (var reader = new StreamReader(stream)) Assert.AreEqual("payload", reader.ReadToEnd());
                 cache.StoreObject("folder", VirtualObject.Directory("folder", Array.Empty<VfsEntry>()));
                 Assert.IsTrue(cache.TryGetEntry("folder", out _));
-            }).WaitAsync(TimeSpan.FromSeconds(2));
+            }).WaitAsync(TimeSpan.FromSeconds(15));
         }
         finally { release.Set(); }
         await cache.DrainAsync().WaitAsync(TimeSpan.FromSeconds(5));
