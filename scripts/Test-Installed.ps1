@@ -65,6 +65,23 @@ Check 'setup exited 0' ($code -eq 0) "exit $code"
 $service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
 Check 'service registered' ($null -ne $service)
 Check 'service running' ($service.Status -eq 'Running') $(if ($service) { $service.Status } else { 'absent' })
+$registered = Get-CimInstance Win32_Service -Filter "Name='PolyMount'" -ErrorAction SilentlyContinue
+if ($registered) {
+    # Started by the service control manager rather than left behind by the setup: a product whose
+    # backend is a service says so here, with an automatic start type and a binary path that names
+    # the installed executable and the configuration it reads.
+    Check 'service starts automatically' ($registered.StartMode -eq 'Auto') $registered.StartMode
+    Check 'service binary is the installed one' ($registered.PathName -like "*$app\Service\PolyMount.Service.exe*") $registered.PathName
+    Check 'service passes the installed configuration' ($registered.PathName -like "*--config*") $registered.PathName
+    Check 'service account' ($registered.StartName -ne '') $registered.StartName
+} else { Check 'service registration readable' $false }
+
+$running = @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue)
+Check 'exactly one backend process' ($running.Count -eq 1) "$($running.Count) process(es)"
+if ($running.Count -eq 1) {
+    Check 'it runs the installed executable' ($running[0].Path -like "$app\Service\*") $running[0].Path
+    Check 'it runs in the service session' ($running[0].SessionId -eq 0) "session $($running[0].SessionId)"
+}
 foreach ($relative in 'Service\PolyMount.Service.exe', 'Tray\PolyMount.Tray.exe', 'Tray\platforms\qwindows.dll',
                         'Shell\PolyMount.Shell.dll', 'Service\plugins\PolyMount.Plugin.Svn.dll',
                         'installer\Install-Host.ps1', 'install.json', 'THIRD-PARTY-NOTICES.txt') {
