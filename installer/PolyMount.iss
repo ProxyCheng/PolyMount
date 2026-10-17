@@ -266,8 +266,10 @@ begin
     exit;
   end;
   { Kept unless asked otherwise: the configuration names the mounts and the stores hold everything
-    that has been read from the sources, which is not something to discard on a guess. }
+    that has been read from the sources, which is not something to discard on a guess. A silent
+    uninstall is not a person to ask -- asking it would put a dialog on a machine nobody is
+    watching -- so it keeps the data, which is the answer the dialog defaults to anyway. }
   Data := ExpandConstant('{commonappdata}\PolyMount');
-  if DirExists(Data) and (MsgBox(CustomMessage('RemoveData'), mbConfirmation, MB_YESNO) = IDYES) then
+  if DirExists(Data) and not UninstallSilent and (MsgBox(CustomMessage('RemoveData'), mbConfirmation, MB_YESNO) = IDYES) then
     DelTree(Data, True, True, True);
 end;
