@@ -73,6 +73,12 @@ public class MetricsProcessTests
         Assert.AreEqual(0, collector.Snapshot("m", 60).Processes.Count, "and gone once it falls out of it");
     }
 
+    /// <summary>A pid range no real process sits in. The fold groups by process name, so low ids
+    /// are a trap: on a build runner they are actual processes, several of them share a name, and
+    /// they collapse into fewer rows than the test put in — the test then measures the machine's
+    /// process table instead of the fold.</summary>
+    private const int UnusedPid = 2_000_000_000;
+
     [TestMethod]
     public void The_tail_is_folded_rather_than_dropped()
     {
@@ -80,7 +86,7 @@ public class MetricsProcessTests
         var collector = At(() => slot);
         for (int i = 0; i < 20; i++)
             for (int n = 0; n <= i; n++)
-                collector.RecordProcessAccess(1000 + i, write: false);
+                collector.RecordProcessAccess(UnusedPid + i, write: false);
 
         var metrics = collector.Snapshot("m", 60);
         Assert.AreEqual(ProcessFold.Named + 1, metrics.Processes.Count, "the named ones and one bucket");
@@ -240,8 +246,8 @@ public class MetricsProcessTests
         int callers = ProcessFold.Named + 4;
         for (int i = 0; i < callers; i++)
         {
-            ServeAs(collector, diagnostics, 1000 + i, "cache", write: false);
-            ServeAs(collector, diagnostics, 1000 + i, "svn", write: false);
+            ServeAs(collector, diagnostics, UnusedPid + i, "cache", write: false);
+            ServeAs(collector, diagnostics, UnusedPid + i, "svn", write: false);
         }
 
         var metrics = collector.Snapshot("m", 60);
