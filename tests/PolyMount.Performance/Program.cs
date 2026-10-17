@@ -321,6 +321,15 @@ if (args.Contains("--diagnostics-cost"))
     try { Directory.Delete(benchRoot, true); } catch (IOException) { }
     return 0;
 }
+if (args.Contains("--lock-cost"))
+{
+    // What the read path's locks cost, and whether they serialise. Run before and after a
+    // change to the cache index, the store's metadata gate, or the resolver key.
+    PolyMount.Performance.LockPathProbe.Run(
+        int.Parse(Option("--files", "1024"), CultureInfo.InvariantCulture),
+        int.Parse(Option("--lookups", "1000000"), CultureInfo.InvariantCulture));
+    return 0;
+}
 if (args.Contains("--warm-probe"))
 {
     WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "TX4Package"),

@@ -401,6 +401,11 @@ public sealed class MountMetrics
     public double RequestMs { get; set; }
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
+    /// <summary>How many times a thread had to wait for a monitor since this worker started
+    /// (<c>Monitor.LockContentionCount</c>). Cumulative, not an amount over the window: compare
+    /// two samples, and a delta of zero means nothing queued on a lock in between — the reading
+    /// that says the locks are not where this instance's time goes.</summary>
+    public long LockContention { get; set; }
     public List<LayerMetric> Layers { get; set; } = new();
     /// <summary>Who asked, over the same window: one entry per process that touched the mount,
     /// the busiest first, with everything past the first few folded into one bucket. A process that

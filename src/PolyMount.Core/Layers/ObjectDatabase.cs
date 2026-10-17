@@ -30,7 +30,8 @@ internal sealed class ObjectDatabase
     private const int StorageCheckMs = 1000;
     private long _storageCheckedAt;
     // Lookup cost, split by phase. Written under _gate, where the phases happen, so the
-    // counters need no atomics of their own.
+    // counters need no atomics of their own. TotalUs and MaxUs are gate-held time: the blob
+    // check a disk read-back performs runs after the gate is released (see TryGet).
     private long _lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs, _lookupExistsChecks,
         _lookupLoadUs, _lookupMaxUs;
     public ObjectDatabase(string root, bool compress, bool recoverable = false, string? preferredPrefix = null,
@@ -121,9 +122,10 @@ internal sealed class ObjectDatabase
 
     /// <summary>The read path's version of <see cref="EnsureAvailable"/>: between checks a lookup
     /// answers from the resident index, so a store removed underneath us is noticed within
-    /// <see cref="StorageCheckMs"/> instead of on the next lookup. Content blobs are still
-    /// checked per hit, where a miss would otherwise be served as data. Writes and clears call
-    /// <see cref="EnsureAvailable"/> directly — they cannot answer from a stale index.</summary>
+    /// <see cref="StorageCheckMs"/> instead of on the next lookup. A record read back from disk
+    /// still has its blob checked, where a miss would otherwise be served as data — outside the
+    /// gate, see <see cref="TryGet(string, out VirtualObject, out Record?)"/>. Writes and clears
+    /// call <see cref="EnsureAvailable"/> directly — they cannot answer from a stale index.</summary>
     private void VerifyStorage()
     {
         long now = Environment.TickCount64;
@@ -137,10 +139,19 @@ internal sealed class ObjectDatabase
 
     /// <summary>Looks a row up and hands back the record it came from. A caller that keeps
     /// the value has to keep the record with it: the blob path is the only way back to the
-    /// bytes, and nothing rewrites that row for it.</summary>
+    /// bytes, and nothing rewrites that row for it.
+    ///
+    /// A row read back from disk has its blob confirmed once, after the gate is released. A
+    /// cache also confirms resident records, because that is how a vanished blob becomes a
+    /// miss; an unrecoverable store does not — the per-hit stat was the single largest cost
+    /// in an overlay lookup (tens of microseconds on this machine, paid by every lookup of
+    /// every file record while the metadata gate waited on it), and the open path already
+    /// fails loudly when the content is gone. The lookup profile counts the gate-held time.</summary>
     internal bool TryGet(string key, out VirtualObject value, out Record? record)
     {
         long started = Stopwatch.GetTimestamp();
+        Record? found;
+        bool resident = false;
         lock (_gate)
         {
             long acquired = Stopwatch.GetTimestamp();
@@ -149,7 +160,7 @@ internal sealed class ObjectDatabase
             {
                 value = null!;
                 record = null;
-                bool resident = _records.TryGetValue(key, out var found);
+                resident = _records.TryGetValue(key, out found);
                 if (resident)
                 {
                     // The store may have been removed underneath us; this drops the stale index.
@@ -176,18 +187,6 @@ internal sealed class ObjectDatabase
                     loadUs += Microseconds(load, Stopwatch.GetTimestamp());
                     if (found == null) return false;
                 }
-                if (found.Blob != null)
-                {
-                    long check = Stopwatch.GetTimestamp();
-                    bool present = File.Exists(Path.Combine(_root, found.Blob));
-                    existsUs += Microseconds(check, Stopwatch.GetTimestamp());
-                    if (!present)
-                    {
-                        if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
-                        Apply(new[] { new ObjectChange(key, null) });
-                        return false;
-                    }
-                }
                 found = found with { Access = DateTime.UtcNow.Ticks };
                 // Admission can evict the row again straight away under a tight budget; the
                 // record just read stays valid, so answer from it either way.
@@ -195,7 +194,6 @@ internal sealed class ObjectDatabase
                 else Admit(found);
                 value = found.Value;
                 record = found;
-                return true;
             }
             finally
             {
@@ -208,6 +206,24 @@ internal sealed class ObjectDatabase
                 if (total > _lookupMaxUs) _lookupMaxUs = total;
             }
         }
+        // A record whose blob is gone is removed, not answered: a cache must fall through to
+        // the source, and an unrecoverable store must say its content was removed rather than
+        // quietly serve nothing. `Apply` re-enters the gate on its own on this rare path.
+        //
+        // A cache (recoverable) checks even its resident records: that is what turns a vanished
+        // blob into a miss on the next header lookup. An unrecoverable store — the overlay and
+        // the write store, where content is user data — checks only rows it had to read back
+        // from disk; a resident one is confirmed when it is opened, which fails loudly, and
+        // stat-ing it on every header lookup cost this machine tens of microseconds per file.
+        if ((!resident || _recoverable) && record is { Blob: not null } current && !File.Exists(Path.Combine(_root, current.Blob)))
+        {
+            if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
+            Apply(new[] { new ObjectChange(key, null) });
+            value = null!;
+            record = null;
+            return false;
+        }
+        return true;
     }
 
     /// <summary>Reads one row. Called only on a resident-index miss, where a pooled

@@ -747,7 +747,11 @@ public sealed class MetricsCollector
             TotalReads = reads,
             TotalWrites = writes,
             CacheHitPercent = reads == 0 ? 0 : 100.0 * cached / reads,
-            AvgCostMs = reads == 0 ? 0 : costNs / 1_000_000.0 / reads
+            AvgCostMs = reads == 0 ? 0 : costNs / 1_000_000.0 / reads,
+            // Process-wide and cumulative, read straight from the runtime. It is the one
+            // number that says whether the locks on the read path are contended at all;
+            // zero over a window means no thread ever queued behind another.
+            LockContention = System.Threading.Monitor.LockContentionCount
         };
         long events = reads + writes;
         foreach (var (name, sum) in totals)

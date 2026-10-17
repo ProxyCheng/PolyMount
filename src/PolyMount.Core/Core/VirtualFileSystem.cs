@@ -12,7 +12,7 @@ public sealed class VirtualFileSystem
     // take this lock, including network-backed metadata and directory queries.
     private readonly object _mutationGate = new();
     private readonly object _cacheUpdateGate = new();
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>> _resolutions = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<(string Path, bool Fill, long Epoch), Lazy<(bool Found, VirtualObject Value, int Index)>> _resolutions = new(ResolutionKey.Instance);
     private long _resolutionEpoch;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SharedObjectFile> _openFiles = new(StringComparer.OrdinalIgnoreCase);
     public VirtualFileSystem(IEnumerable<ILayer> layers)
@@ -64,14 +64,34 @@ public sealed class VirtualFileSystem
     private string? _generation;
     private string? _generationKey;
 
+    /// <summary>Compares resolution keys the way the mount does: paths case-insensitively.
+    /// This is a comparer rather than upper-casing the path at the call site because that
+    /// allocated a string on every resolution — every layer lookup and every ancestor of a
+    /// listing builds one of these keys, hit or miss.</summary>
+    private sealed class ResolutionKey : IEqualityComparer<(string Path, bool Fill, long Epoch)>
+    {
+        public static readonly ResolutionKey Instance = new();
+        public bool Equals((string Path, bool Fill, long Epoch) left, (string Path, bool Fill, long Epoch) right) =>
+            left.Fill == right.Fill && left.Epoch == right.Epoch &&
+            string.Equals(left.Path, right.Path, StringComparison.OrdinalIgnoreCase);
+        public int GetHashCode((string Path, bool Fill, long Epoch) key) =>
+            HashCode.Combine(StringComparer.OrdinalIgnoreCase.GetHashCode(key.Path), key.Fill, key.Epoch);
+    }
     private bool Resolve(string path, out VirtualObject value, out int index, bool fill = true)
     {
-        var key = (path.ToUpperInvariant(), fill, System.Threading.Interlocked.Read(ref _resolutionEpoch));
-        var pending = _resolutions.GetOrAdd(key, _ => new(() =>
+        var key = (path, fill, System.Threading.Interlocked.Read(ref _resolutionEpoch));
+        // A hit needs neither the closure nor the Lazy the factory builds: it captures the
+        // path and allocates two objects per resolution, which is a listing's worth of
+        // garbage for answers that were already in the dictionary. GetOrAdd stays the
+        // arbiter on a miss, so two callers racing still evaluate exactly one resolution.
+        if (!_resolutions.TryGetValue(key, out var pending))
         {
-            bool found = ResolveOwn(path, out var resolved, out int hit, fill);
-            return (found, resolved, hit);
-        }, LazyThreadSafetyMode.ExecutionAndPublication));
+            pending = _resolutions.GetOrAdd(key, _ => new(() =>
+            {
+                bool found = ResolveOwn(path, out var resolved, out int hit, fill);
+                return (found, resolved, hit);
+            }, LazyThreadSafetyMode.ExecutionAndPublication));
+        }
         try
         {
             var result = pending.Value;

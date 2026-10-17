@@ -86,10 +86,13 @@ public interface IObjectManagement
 /// <summary>Where a store's object lookups spent their time. A directory listing probes every
 /// layer above the provider once per child, so a lookup that costs milliseconds shows up as
 /// seconds of listing latency; this splits that cost into the shared metadata gate, the
-/// filesystem check that answers "is the store still there", and reading a record back. Counts
-/// are cumulative since the store was opened, so a rate is <see cref="TotalUs"/> over
-/// <see cref="Calls"/>. <see cref="ExistsChecks"/> is how many of those lookups actually ran the
-/// check: it is meant to stay near one per second, not to track <see cref="Calls"/>.</summary>
+/// filesystem check that answers "is the store still there", and reading a record back.
+/// <see cref="TotalUs"/> is the time held inside the gate — the blob check a disk read-back
+/// performs happens after it and is not part of this profile, and a resident hit does no
+/// filesystem check at all. Counts are cumulative since the store was opened, so a rate is
+/// <see cref="TotalUs"/> over <see cref="Calls"/>. <see cref="ExistsChecks"/> is how many of
+/// those lookups actually ran the check: it is meant to stay near one per second, not to
+/// track <see cref="Calls"/>.</summary>
 public sealed record LookupProfile(long Calls, long TotalUs, long GateWaitUs, long ExistsUs, long ExistsChecks,
     long LoadUs, long MaxUs);
 
