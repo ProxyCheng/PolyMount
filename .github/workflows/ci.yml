@@ -48,13 +48,20 @@ jobs:
         run: dotnet test PolyMount.slnx -c Release --no-build --nologo
 
       # The plugin tests are their own runner, not a test-SDK project, so dotnet test never sees
-      # them. Their network case skips itself unless svn.repository is passed.
+      # them. It enumerates PolyMount.Plugin.*.Tests.dll in the directory it is given -- which is
+      # the test project's own build output, where the plugin under test sits beside it. The
+      # network case skips itself unless svn.repository is passed.
       - name: Plugin tests
         shell: pwsh
         run: |
-          $plugins = Join-Path $env:RUNNER_TEMP 'plugins'
-          ./scripts/Publish-Plugins.ps1 -Destination $plugins -Configuration Release
-          dotnet run --project tests/PolyMount.Plugin.Tests -c Release -- "$plugins"
+          $failed = $false
+          Get-ChildItem tests/plugins/*/*.Tests.csproj | ForEach-Object {
+            $out = Join-Path $_.DirectoryName 'bin/Release/net10.0-windows'
+            Write-Host "Plugin tests from $out"
+            dotnet run --project tests/PolyMount.Plugin.Tests -c Release --no-build -- $out
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          if ($failed) { exit 1 }
 
       # Both are self-contained: their own configuration, their own store, a dir source and a
       # mount point under %TEMP%. What they need from the runner is the built service and WinFsp.
