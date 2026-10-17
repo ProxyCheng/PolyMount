@@ -29,6 +29,10 @@ internal static class RequestLogDigest
     private const int TopSlowest = 40;
     private const int TopCallbacks = 40;
     private const int TopPending = 20;
+    /// <summary>How many callers' layers are ranked. A pair is one process on one layer, and both
+    /// sides are small — a chain has a handful of layers, and a busy machine a few dozen readers —
+    /// so this is a cap on the output rather than on what is collected.</summary>
+    private const int TopLayerUse = 40;
     /// <summary>The floor under which a request is not worth ranking in a sample.</summary>
     private const int SlowEnoughMs = 100;
     /// <summary>How many entries are collected before the ranked lists are trimmed. A sampled log
@@ -56,6 +60,16 @@ internal static class RequestLogDigest
         public string AtUtc = "";
     }
 
+    /// <summary>What one caller spent on one layer. The log has carried both halves of this since
+    /// the caller was put on every scope — a layer's operation names the layer
+    /// (<c>Layer.GetEntry:cache</c>) and the line names the process — but nothing joined them, so
+    /// the two figures an investigation wants together were only there for a reader willing to
+    /// count lines.</summary>
+    private sealed class LayerUseStats
+    {
+        public long Ends, Sum, Max;
+    }
+
     private readonly record struct Slow(string AtUtc, string Operation, string Path, long ElapsedMs, string Stage);
 
     private readonly record struct Pending(string AtUtc, string Operation, string Path, long ElapsedMs, string Stage);
@@ -66,6 +80,10 @@ internal static class RequestLogDigest
         public readonly Dictionary<string, OperationStats> Operations = new(StringComparer.Ordinal);
         public readonly Dictionary<(string Operation, string Path), PathStats> Paths = new();
         public readonly Dictionary<(string Pid, string Operation), CallbackStats> Callbacks = new();
+        /// <summary>What each caller spent on each layer. Keyed by the id the line carries; the
+        /// name beside it comes from the metrics snapshot, because a log line has no room for
+        /// one and resolving it here would mean opening processes to read a file.</summary>
+        public readonly Dictionary<(int Pid, string Layer), LayerUseStats> LayerUse = new();
         public readonly List<Slow> Slowest = new();
         public readonly List<Pending> PendingRequests = new();
         public readonly List<LogCoverage> Coverage = new();
@@ -87,8 +105,15 @@ internal static class RequestLogDigest
         => Build(logs, ToOffset(capturedUtc) - TimeSpan.FromSeconds(windowSeconds), ToOffset(capturedUtc), "window");
 
     /// <summary>The same reduction over a window that is stated rather than derived: a recording
-    /// covers however long the reader was recording, which is not a constant of the tool.</summary>
-    public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTimeOffset from, DateTimeOffset to, string kind)
+    /// covers however long the reader was recording, which is not a constant of the tool.
+    ///
+    /// <paramref name="processes"/> names the ids the log carries. It comes from the same
+    /// snapshot's metrics, because a log line has an id and nothing more (a process is opened to
+    /// read a name, which is not a thing to do while parsing a file), and a table of ids is a
+    /// puzzle rather than an answer. An id missing from it keeps an empty name rather than a
+    /// wrong one; id 0 is not a process at all.</summary>
+    public static RequestDigest Build(IReadOnlyList<LogFileCopy> logs, DateTimeOffset from, DateTimeOffset to,
+        string kind, IReadOnlyDictionary<int, string>? processes = null)
     {
         // A windowed export ranks only the requests worth ranking: it is a sample, so a list of
         // everything fast would bury the few that matter. A recording carries every request, so
@@ -105,7 +130,7 @@ internal static class RequestLogDigest
             aggregate = Aggregate(logs, null, null, floor);
             windowed = false;
         }
-        return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed, kind), aggregate.Coverage);
+        return new RequestDigest(Render(aggregate, windowed ? from : null, to, windowed, kind, processes), aggregate.Coverage);
     }
 
     private static DateTimeOffset ToOffset(DateTime utc) => new(DateTime.SpecifyKind(utc, DateTimeKind.Utc));
@@ -167,6 +192,23 @@ internal static class RequestLogDigest
                         if (elapsed > stats.Max) stats.Max = elapsed;
                         if (elapsed >= 100) stats.Over100++;
                         if (elapsed >= 1000) stats.Over1000++;
+                        // Who asked, charged to the layer that answered. The operation names its
+                        // layer after the colon, and the line names the caller, so the pair is one
+                        // parse away — and it is the pair nothing else in this digest forms: the
+                        // operation table says what answered, the callbacks say how hard each
+                        // process pushed, and this says what the pushing cost on that layer.
+                        int colon = operation.IndexOf(':');
+                        if (colon > 0 && colon < operation.Length - 1 &&
+                            operation.StartsWith("Layer.", StringComparison.Ordinal))
+                        {
+                            int pid = (int)Number(message, " pid=");
+                            var useKey = (pid, operation[(colon + 1)..]);
+                            if (!aggregate.LayerUse.TryGetValue(useKey, out var use))
+                                aggregate.LayerUse[useKey] = use = new LayerUseStats();
+                            use.Ends++;
+                            use.Sum += elapsed;
+                            if (elapsed > use.Max) use.Max = elapsed;
+                        }
                         // Only the slow ones are worth ranking in a sample; a log of fast
                         // requests would otherwise fill the list with entries nobody needs to see.
                         if (elapsed >= floor)
@@ -235,7 +277,8 @@ internal static class RequestLogDigest
         return true;
     }
 
-    private static string Render(LogAggregate aggregate, DateTimeOffset? from, DateTimeOffset? to, bool windowed, string kind)
+    private static string Render(LogAggregate aggregate, DateTimeOffset? from, DateTimeOffset? to, bool windowed,
+        string kind, IReadOnlyDictionary<int, string>? processes)
     {
         var operationRows = aggregate.Operations
             .OrderByDescending(pair => pair.Value.Sum)
@@ -295,6 +338,22 @@ internal static class RequestLogDigest
                 peakPerWindow = pair.Value.Peak,
                 peakAtUtc = pair.Value.AtUtc
             });
+        // Ranked by the time spent rather than by the number of calls: an investigation asks where
+        // the window went, and a layer that answered a million questions in a microsecond each is
+        // not the one to look at first.
+        var layerUseRows = aggregate.LayerUse
+            .OrderByDescending(pair => pair.Value.Sum)
+            .Take(TopLayerUse)
+            .Select(pair => new
+            {
+                pid = pair.Key.Pid,
+                process = processes != null && processes.TryGetValue(pair.Key.Pid, out var name) ? name : "",
+                layer = pair.Key.Layer,
+                ends = pair.Value.Ends,
+                totalMs = pair.Value.Sum,
+                avgMs = pair.Value.Ends == 0 ? 0 : (double)pair.Value.Sum / pair.Value.Ends,
+                maxMs = pair.Value.Max
+            });
 
         var document = new
         {
@@ -328,6 +387,9 @@ internal static class RequestLogDigest
                 dropped = aggregate.Dropped,
                 operations = aggregate.Operations.Count,
                 paths = aggregate.Paths.Count,
+                // Distinct caller-and-layer pairs: process 0 is here too, and it is the work no
+                // caller asked for (read-ahead and warm-up).
+                processLayers = aggregate.LayerUse.Count,
                 // END lines the window could not measure because their request began before it.
                 straddling = aggregate.Straddling,
                 // The ranked lists are the top of a larger set when this is true.
@@ -338,6 +400,9 @@ internal static class RequestLogDigest
             coverage = aggregate.Coverage,
             operations = operationRows,
             paths = pathRows,
+            // Which caller the layer's time was spent for. `pid` 0 with no process name is the
+            // work nobody asked for: read-ahead and warm-up, which the layers did for themselves.
+            processLayers = layerUseRows,
             slowest = slowRows,
             pendingRequests = pendingRows,
             callbacks = callbackRows

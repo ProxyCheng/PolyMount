@@ -59,6 +59,11 @@ public sealed class RecordingCounters
     {
         public readonly Dictionary<string, Tally> Operations = new(StringComparer.Ordinal);
         public readonly Dictionary<(string Operation, string Path), Tally> Paths = new();
+        /// <summary>What each caller spent on each layer, keyed by the caller and the operation —
+        /// which is the string the scope already carries, so joining the two dimensions costs a
+        /// lookup and no allocation. The layer is taken out of the operation when the recording
+        /// stops.</summary>
+        public readonly Dictionary<(int Pid, string Operation), Tally> ProcessLayers = new();
         public readonly Tally Pooled = new();
         public long PooledPaths;
         public long Events;
@@ -68,14 +73,27 @@ public sealed class RecordingCounters
     /// <c>trackAllValues</c> is what makes the second part possible.</summary>
     private readonly ThreadLocal<Shard> _shard = new(() => new Shard(), trackAllValues: true);
 
-    /// <summary>Records one finished request.</summary>
-    public void Count(string operation, string path, double elapsedMs)
+    /// <summary>Records one finished request, and — for a layer operation — which caller it was
+    /// spent for.</summary>
+    public void Count(string operation, string path, double elapsedMs, int processId = 0)
     {
         var shard = _shard.Value!;
         shard.Events++;
         if (!shard.Operations.TryGetValue(operation, out var tally))
             shard.Operations[operation] = tally = new Tally { Operation = operation };
         tally.Add(elapsedMs, elapsedMs >= 100);
+        // Beside the operation, the caller. Only layer operations: those are the ones whose name
+        // carries a layer ("Layer.GetEntry:cache"), and the pair is the reading an investigation
+        // asks for. The operation is matched by prefix rather than rebuilt into a layer name here —
+        // this runs per request, and a substring per request is an allocation on the path this
+        // class exists to keep clear.
+        if (operation.StartsWith("Layer.", StringComparison.Ordinal))
+        {
+            var pair = (processId, operation);
+            if (!shard.ProcessLayers.TryGetValue(pair, out var spent))
+                shard.ProcessLayers[pair] = spent = new Tally { Operation = operation };
+            spent.Add(elapsedMs, elapsedMs >= 100);
+        }
         if (elapsedMs < PathFloorMs) return;
         if (shard.Paths.TryGetValue((operation, path), out var pathTally)) { pathTally.Add(elapsedMs, elapsedMs >= 100); return; }
         if (shard.Paths.Count < PathsPerShard)
@@ -94,6 +112,10 @@ public sealed class RecordingCounters
     {
         var operations = new Dictionary<string, OperationCount>(StringComparer.Ordinal);
         var paths = new Dictionary<(string Operation, string Path), PathCount>();
+        // Keyed by the caller and the layer, once the layer has been taken out of the operation:
+        // a lookup, a read and a probe on one layer by one process are one line here, which is the
+        // way the performance window draws it and the way a reader asks the question.
+        var processLayers = new Dictionary<(int Pid, string Layer), ProcessLayerCost>();
         long pooledEvents = 0, pooledPaths = 0;
         double pooledMs = 0;
         foreach (var shard in _shard.Values)
@@ -102,6 +124,17 @@ public sealed class RecordingCounters
             {
                 if (!operations.TryGetValue(tally.Operation, out var entry))
                     operations[tally.Operation] = entry = new OperationCount { Operation = tally.Operation };
+                entry.Count += tally.Count;
+                entry.Over100 += tally.Over100;
+                entry.TotalMs += tally.TotalNanos / NanosPerMs;
+                entry.MaxMs = Math.Max(entry.MaxMs, tally.MaxNanos / NanosPerMs);
+            }
+            foreach (var (pair, tally) in shard.ProcessLayers)
+            {
+                string layer = LayerOf(tally.Operation);
+                var key = (pair.Pid, layer);
+                if (!processLayers.TryGetValue(key, out var entry))
+                    processLayers[key] = entry = new ProcessLayerCost { Pid = pair.Pid, Layer = layer };
                 entry.Count += tally.Count;
                 entry.Over100 += tally.Over100;
                 entry.TotalMs += tally.TotalNanos / NanosPerMs;
@@ -123,7 +156,13 @@ public sealed class RecordingCounters
 
         var rankedOperations = operations.Values.OrderByDescending(entry => entry.TotalMs).ToList();
         var rankedPaths = paths.Values.OrderByDescending(entry => entry.TotalMs).ToList();
+        var rankedLayers = processLayers.Values.OrderByDescending(entry => entry.TotalMs).ToList();
+        // Names are resolved here and once: this is the end of a recording, not a request, and a
+        // name is what turns a table of ids into something a reader can act on.
+        foreach (var entry in rankedLayers)
+            entry.Process = entry.Pid > 0 ? ProcessNames.Of(entry.Pid) ?? "" : "";
         var listed = rankedPaths.Take(topPaths).ToList();
+        var listedLayers = rankedLayers.Take(topPaths).ToList();
         var rest = rankedPaths.Skip(topPaths).ToList();
         return new RecordingCounts
         {
@@ -133,9 +172,20 @@ public sealed class RecordingCounters
             MaxMs = rankedOperations.Count == 0 ? 0 : rankedOperations.Max(entry => entry.MaxMs),
             Operations = rankedOperations,
             Paths = listed,
+            ProcessLayers = listedLayers,
+            ProcessLayersUnlisted = rankedLayers.Count - listedLayers.Count,
             PathsUnlisted = rest.Count + pooledPaths,
             EventsUnlisted = rest.Sum(entry => entry.Count) + pooledEvents,
             MsUnlisted = rest.Sum(entry => entry.TotalMs) + pooledMs
         };
+    }
+
+    /// <summary>The layer a layer operation is about: <c>Layer.GetEntry:cache</c> is the cache. The
+    /// name is cut out when a recording stops rather than on the request path, where it would be a
+    /// substring per call.</summary>
+    private static string LayerOf(string operation)
+    {
+        int colon = operation.IndexOf(':');
+        return colon > 0 && colon < operation.Length - 1 ? operation[(colon + 1)..] : operation;
     }
 }

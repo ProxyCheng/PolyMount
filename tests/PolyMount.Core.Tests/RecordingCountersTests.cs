@@ -63,4 +63,34 @@ public sealed class RecordingCountersTests
         Assert.AreEqual(200, counts.Paths.Sum(path => path.Count) + counts.EventsUnlisted);
         Assert.AreEqual(counts.TotalMs, counts.Paths.Sum(path => path.TotalMs) + counts.MsUnlisted, 0.001);
     }
+
+    /// <summary>Which caller a layer's time was spent for. The two halves are already in the log —
+    /// an operation names its layer, a line names its process — but a recording answers exactly and
+    /// for every request, so the pair is what an investigation reads instead of counting lines.</summary>
+    [TestMethod]
+    public void Layer_time_is_charged_to_the_caller_it_was_spent_for()
+    {
+        var counters = new RecordingCounters();
+        counters.Count("Layer.GetEntry:cache", "a", 4, processId: 4321);
+        counters.Count("Layer.GetEntry:cache", "a", 6, processId: 4321);
+        counters.Count("Layer.ReadObject:svn", "b", 300, processId: 4321);
+        counters.Count("Layer.GetEntry:cache", "c", 2, processId: 9999);
+        // No caller: the read-ahead and the warm-up the service did for itself.
+        counters.Count("Layer.GetEntry:cache", "d", 1);
+
+        var counts = counters.Snapshot();
+        // One line per caller and layer, so the lookup and the read on a layer are one reading.
+        var one = counts.ProcessLayers.Single(row => row.Pid == 4321 && row.Layer == "cache");
+        Assert.AreEqual(2, one.Count, "the lookup and the read of one layer are not one line");
+        Assert.AreEqual(10, one.TotalMs, 0.001);
+        Assert.AreEqual(300, counts.ProcessLayers.Single(row => row.Pid == 4321 && row.Layer == "svn").TotalMs, 0.001);
+        Assert.AreEqual(2, counts.ProcessLayers.Single(row => row.Pid == 9999).TotalMs, 0.001);
+        Assert.AreEqual("cache", counts.ProcessLayers.Single(row => row.Pid == 0).Layer, "nobody's work is nobody's");
+        // Ranked by the time spent, so the layer that cost the most is the one at the top.
+        Assert.AreEqual("svn", counts.ProcessLayers[0].Layer);
+        // The operations table still names the whole operation: the pair is a second reading of the
+        // same events, not a replacement for the first.
+        Assert.IsTrue(counts.Operations.Any(entry => entry.Operation == "Layer.GetEntry:cache"));
+        Assert.AreEqual(5, counts.Events, "every event is still one event");
+    }
 }

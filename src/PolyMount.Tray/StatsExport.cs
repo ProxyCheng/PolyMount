@@ -147,7 +147,16 @@ internal static class StatsExport
         if (seconds) File.WriteAllText(Path.Combine(directory, "seconds.csv"), SecondsCsv(snapshot.Seconds), Utf8);
         // The digest is built from the bundle's own copies, so it describes exactly the files
         // the reader has — including however far the logs had rolled by the time they were read.
-        var digest = RequestLogDigest.Build(copies, WindowStart(snapshot), ToOffset(snapshot.CapturedUtc), snapshot.Kind);
+        // The window's own process list goes with it: a log line names a caller by id and has no
+        // room for a name, and an id on its own is a puzzle rather than an answer. A recording has
+        // no metrics snapshot to take the names from — it was not being watched through a window —
+        // so its own exact counts, which resolve names when they are taken, are the other source.
+        var processes = new Dictionary<int, string>();
+        foreach (var row in snapshot.Metrics.SelectMany(metric => metric.Processes))
+            if (row.Pid > 0 && row.Name.Length > 0) processes[row.Pid] = row.Name;
+        foreach (var row in snapshot.Recording?.Counts?.ProcessLayers ?? new List<ProcessLayerCost>())
+            if (row.Pid > 0 && row.Process.Length > 0) processes[row.Pid] = row.Process;
+        var digest = RequestLogDigest.Build(copies, WindowStart(snapshot), ToOffset(snapshot.CapturedUtc), snapshot.Kind, processes);
         File.WriteAllText(Path.Combine(directory, "requests-summary.json"), digest.Json, Utf8);
         File.WriteAllText(Path.Combine(directory, "summary.json"),
             SummaryJson(snapshot, service, mounts, copies, digest, rows, workerPid), Utf8);

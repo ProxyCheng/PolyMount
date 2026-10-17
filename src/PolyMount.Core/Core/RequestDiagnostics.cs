@@ -207,7 +207,7 @@ public sealed class RequestDiagnostics : IDisposable
             Emit("END");
             // A recording counts this request whether or not a line was written about it, which is
             // what lets a window be described exactly without describing every request in it.
-            if (_owner.Recording) _owner.Channel!.Count(_operation, _path, elapsed);
+            if (_owner.Recording) _owner.Channel!.Count(_operation, _path, elapsed, ProcessId);
             Current.Value = _parent;
         }
     }

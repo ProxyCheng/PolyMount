@@ -274,6 +274,26 @@ if (args.Contains("--diagnostics-cost"))
         allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         Console.WriteLine($"probe, name kept per layer: {watch.Elapsed.TotalNanoseconds / count:0.0} ns/call, {allocated / (double)count:0.0} B/call allocated");
     }
+    // What the caller dimension costs a recorded operation. The counters do the same work for any
+    // operation; a layer one additionally files the pair (caller, layer), which is one more
+    // dictionary lookup. The two loops are identical apart from the name, so their difference is
+    // the whole of what "which process used which layer" adds to a recording.
+    {
+        var counters = new RecordingCounters();
+        string layerOperation = "Layer.GetEntry:cache", walking = "VFS.Lookup";
+        for (int i = 0; i < 200_000; i++) { counters.Count(layerOperation, path, 0.1, 4321); counters.Count(walking, path, 0.1, 4321); }
+        var counted = System.Diagnostics.Stopwatch.StartNew();
+        for (int i = 0; i < count; i++) counters.Count(walking, path, 0.1, 4321);
+        counted.Stop();
+        double walkingNs = counted.Elapsed.TotalNanoseconds / count;
+        counted.Restart();
+        for (int i = 0; i < count; i++) counters.Count(layerOperation, path, 0.1, 4321);
+        counted.Stop();
+        double layerNs = counted.Elapsed.TotalNanoseconds / count;
+        Console.WriteLine($"counted, not a layer    : {walkingNs:0.0} ns/call");
+        Console.WriteLine($"counted, a layer        : {layerNs:0.0} ns/call");
+        Console.WriteLine($"  the pair costs        : {layerNs - walkingNs:+0.0;-0.0} ns/call");
+    }
     // What is left of the scope's cost once nothing is written: the object itself, the stopwatch
     // inside it, the entry in the active map, and the ambient marker. The last one is measured on
     // its own because it is the part that is easy to overlook - an AsyncLocal write copies the

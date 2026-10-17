@@ -98,9 +98,12 @@ public sealed class RecordingChannel : IDisposable
     }
 
     /// <summary>Counts one finished request. Called from the request path: one reference read and
-    /// two tally additions. It cannot throw and it has nowhere to block.</summary>
-    internal void Count(string operation, string path, double elapsedMs)
-        => Volatile.Read(ref _counters)?.Count(operation, path, elapsedMs);
+    /// two tally additions. It cannot throw and it has nowhere to block.
+    ///
+    /// <paramref name="processId"/> is the caller the scope inherited, and it is what makes the
+    /// window's own account say which process used which layer. Zero is the service's own work.</summary>
+    internal void Count(string operation, string path, double elapsedMs, int processId = 0)
+        => Volatile.Read(ref _counters)?.Count(operation, path, elapsedMs, processId);
 
     public RecordingSessionInfo Info() { lock (_gate) return InfoLocked(); }
 
