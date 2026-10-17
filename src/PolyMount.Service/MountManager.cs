@@ -61,12 +61,12 @@ public sealed class MountManager : IControlHost, IDisposable
             // What that instance's own process wrote, under the instance rather than under the
             // service: a recording of one instance carries its own process's log and no other
             // instance's, and the worker's file name does not have to say whose it is twice.
-            foreach (string file in LogInventory.Family(AppContext.BaseDirectory, WorkerLogName(profile.Id)))
+            foreach (string file in LogInventory.Family(ServiceLogs.Directory, WorkerLogName(profile.Id)))
                 logs.Add(LogInventory.Describe(file, profile.Name, WorkerLogFile(file, profile)));
         }
         // This process's own log: the same name shape, without the instance identity a worker's
         // has. Without the filter, every worker's log would be listed here as well.
-        foreach (string file in LogInventory.Family(AppContext.BaseDirectory, ServiceLogName))
+        foreach (string file in LogInventory.Family(ServiceLogs.Directory, ServiceLogName))
             if (!Path.GetFileName(file).StartsWith(WorkerLogPrefix, StringComparison.OrdinalIgnoreCase))
                 logs.Add(LogInventory.Describe(file, "service"));
         return logs;

@@ -210,6 +210,11 @@ public sealed class WorkerPool : IDisposable
                 CreateNoWindow = true,
                 WorkingDirectory = AppContext.BaseDirectory
             };
+            // The worker logs where this process logs. It cannot work that out for itself: it is
+            // started by the supervisor, not by the service control manager, so the question "am I
+            // a service?" would answer no and it would try to write beside an executable that its
+            // account cannot write beside.
+            start.Environment["POLYMOUNT_LOG_DIR"] = ServiceLogs.Directory;
             start.ArgumentList.Add("--instance");
             start.ArgumentList.Add(worker.Id);
             start.ArgumentList.Add("--config");

@@ -143,7 +143,7 @@ public sealed class InstanceHost : IControlHost
     private List<LogFile> Logs()
     {
         var logs = Instance.GetLogFiles().Select(file => LogInventory.Describe(file, Instance.Name)).ToList();
-        foreach (string file in LogInventory.Family(AppContext.BaseDirectory, MountManager.WorkerLogName(Instance.Profile.Id)))
+        foreach (string file in LogInventory.Family(ServiceLogs.Directory, MountManager.WorkerLogName(Instance.Profile.Id)))
             logs.Add(LogInventory.Describe(file, "service"));
         return logs;
     }
