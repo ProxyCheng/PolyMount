@@ -201,8 +201,10 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             if (index < 0 || index >= RefreshRates.Length) return;
             _refreshHz = RefreshRates[index];
             SaveStats();
-            // Take effect now rather than at the end of the interval that was already running.
-            _next = DateTime.MinValue;
+            // Take effect now rather than at the end of the interval that was already running —
+            // both schedules together, because they share the moment they are anchored on. See
+            // RestartSchedules.
+            RestartSchedules();
             _requested = true;
         };
         header.AddWidget(_refresh);
@@ -225,7 +227,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             // that is what the series is drawn from to reach the edge.
             DateTime cutoff = DateTime.UtcNow.AddSeconds(-_rangeSeconds);
             foreach (var samples in _history.Values) LayerSampler.Trim(samples, cutoff, kept => kept.Time, BreakSeconds);
-            _next = DateTime.MinValue;
+            // The range is a property of the drawing, so what it redraws is the readings already in
+            // hand: asking for a fresh sample to redraw with restarts the trend schedule and leaves
+            // the once-a-second one where it was, and from then on every moment the two are each due
+            // becomes two requests — a page whose reader changed the window and got twice the
+            // sampling they had chosen. See VerifyRangeKeepsCadence.
+            Render();
         };
         header.AddWidget(_range);
         _pause = new QPushButton();
@@ -386,6 +393,53 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (readings == 0)
             throw new InvalidOperationException(
                 $"Nothing was taken down in the {(until - from).TotalSeconds:0.#} seconds this page's tab was not on show");
+    }
+
+    /// <summary>How many process readings the page has taken. One is taken per request, so this is
+    /// the page's own count of how often it looked — which is what the smoke run counts.</summary>
+    internal int ProcessReadings => _processHistory.Count;
+
+    /// <summary>The rate the page is sampling at, for the smoke run to put back afterwards.</summary>
+    internal double SamplingRate => _refreshHz;
+
+    /// <summary>Sets the sampling rate the way the reader's picker does, for the smoke run.</summary>
+    internal void SmokeSamplingRate(double rate)
+    {
+        int index = Array.IndexOf(RefreshRates, rate);
+        if (index >= 0) _refresh.SetCurrentIndex(index);
+    }
+
+    /// <summary>Picks a different range the way the reader's picker does, for the smoke run, and
+    /// answers the index it had so the run can put the reader's choice back.</summary>
+    internal int SmokeChangeRange()
+    {
+        int before = _range.CurrentIndex;
+        _range.SetCurrentIndex((Math.Max(before, 0) + 1) % RangeLadder.Length);
+        return before;
+    }
+
+    internal void SmokeRestoreRange(int index)
+    {
+        if (index >= 0 && index < RangeLadder.Length) _range.SetCurrentIndex(index);
+    }
+
+    /// <summary>Self-check: changing the range changes how much of the line is drawn, not how often
+    /// the page takes a reading. The process cards take a reading per request, so the count here is
+    /// the page's own request cadence — and one range change that also asked for a sample was enough
+    /// to leave the trend schedule and the once-a-second one anchored a fraction of a second apart,
+    /// after which every moment they were both due became two requests. A reader saw that as the IO
+    /// card sampling faster than the rate they had chosen.</summary>
+    internal void VerifyRangeKeepsCadence(int readingsWhenChanged, DateTime changedAt)
+    {
+        double seconds = (DateTime.UtcNow - changedAt).TotalSeconds;
+        // The once-a-second readings take a process reading with them even under a slower chart
+        // rate, so that is the floor the page is expected to hold — not the rate alone.
+        double asked = Math.Max(1, _refreshHz) * seconds;
+        int readings = _processHistory.Count - readingsWhenChanged;
+        if (readings > asked + 1.5)
+            throw new InvalidOperationException(
+                $"Changing the range made the page take {readings} readings in {seconds:0.#} s, "
+                + $"where the rate it is set to asks for {asked:0.#}");
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
@@ -1303,7 +1357,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _epoch++;
         _pause.SetText(T(_paused ? "stats.resume" : "stats.pause"));
         _status.SetText(T(_paused ? "stats.paused" : "stats.live"));
-        if (!_paused) { _requested = true; _next = DateTime.MinValue; _lastSample = DateTime.MinValue; }
+        if (!_paused) { _requested = true; RestartSchedules(); _lastSample = DateTime.MinValue; }
     }
 
     private void Tick()
@@ -1755,6 +1809,17 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// figures beside the line are the window's own.</summary>
     private static List<T> Covered<T>(IEnumerable<T> rows, DateTime end, double span, Func<T, DateTime> at) =>
         rows.Where(row => at(row) >= end.AddSeconds(-span)).ToList();
+
+    /// <summary>Restarts both schedules on the same moment: the moment the next request goes out.
+    ///
+    /// They must share an anchor. The once-a-second readings — the access window and what the
+    /// layers hold — normally fall due on the same tick as a trend sample and ride it, which is how
+    /// one request covers both. Restart one schedule and not the other and they end up anchored a
+    /// fraction of a second apart; from then on each moment either is due is a request of its own,
+    /// so a page a reader set to one hertz asks twice a second for as long as it lives. Only the two
+    /// places that force a sample have any reason to restart anything, and both restart everything.
+    /// </summary>
+    private void RestartSchedules() => _next = _nextSecond = DateTime.MinValue;
 
     /// <summary>When the sample after the one being taken now is due: the moment after
     /// <paramref name="now"/> on the lattice that <paramref name="due"/> stands on, or one nominal

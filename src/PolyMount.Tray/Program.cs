@@ -357,6 +357,11 @@ internal static class Program
         int ticks = 0;
         string original = I18n.Language;
         DateTime awayFrom = DateTime.MinValue;
+        // The range check below counts the readings the page takes, so it pins the rate it measures
+        // against and puts both choices back the way it found them.
+        int rangeBefore = -1, readingsAtRangeChange = 0;
+        DateTime rangeChangedAt = DateTime.MinValue;
+        double rateBefore = 0;
         string? failure = null;
         ApiRuntime.UnhandledCallbackException += (context, ex) => failure = context + ": " + ex;
         timer.Timeout += () =>
@@ -369,6 +374,27 @@ internal static class Program
                 // takes its page with it: what the rest of this run drives — its captures, its
                 // checks — is the page that came back rather than the one that was closed.
                 stats = dashboard.OpenPerformance(instance);
+            }
+            // The reader changing the range is a change of window, not of cadence: readings are
+            // counted from the moment the range changes, against a rate pinned here so the count
+            // means the same thing on every machine.
+            if (ticks == 4)
+            {
+                rateBefore = stats.SamplingRate;
+                stats.SmokeSamplingRate(1);
+            }
+            if (ticks == 8)
+            {
+                readingsAtRangeChange = stats.ProcessReadings;
+                rangeChangedAt = DateTime.UtcNow;
+                rangeBefore = stats.SmokeChangeRange();
+            }
+            if (ticks == 44)
+            {
+                try { stats.VerifyRangeKeepsCadence(readingsAtRangeChange, rangeChangedAt); }
+                catch (Exception ex) { failure = ex.ToString(); }
+                stats.SmokeRestoreRange(rangeBefore);
+                stats.SmokeSamplingRate(rateBefore);
             }
             if (ticks == 18 && capture != null)
             {
