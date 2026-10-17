@@ -1,0 +1,57 @@
+name: Bug report
+description: Something did not work as it should
+labels: [ bug ]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not paste `config.json` — it can contain a repository password. Redact URLs and
+        credentials from anything you do attach.
+  - type: input
+    id: version
+    attributes:
+      label: PolyMount version
+      description: From the tray's About, or the installer file name.
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2 (build 26100)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a mount with ...
+        2. Open the mount point in Explorer
+        3. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The tray's log is at `%LOCALAPPDATA%\PolyMount\logs\polymount-tray.log`; each instance's
+        request log is under its store's `state` folder; the service logs next to the service
+        executable. The recording bundle (performance window → record) collects all of it.
+      render: text
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source type
+      options:
+        - SVN
+        - Directory
+        - Both
+        - Neither / no mount involved
