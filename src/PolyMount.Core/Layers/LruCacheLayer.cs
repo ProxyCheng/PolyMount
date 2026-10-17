@@ -92,7 +92,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
     /// index alone is free because TryReadObject reads them back from the store.
     /// </summary>
     private protected override string[] ObsoleteKeys(IReadOnlyList<ObjectDatabase.Record> written) =>
-        written.Where(r => !r.Value.Header.IsDir && !Contains(r.Path)).Select(r => r.Path).ToArray();
+        written.Where(r => !r.Value.Header.IsDir && !Contains(r)).Select(r => r.Path).ToArray();
 
     private void ReleaseOpen(ContentItem content)
     {

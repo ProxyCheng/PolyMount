@@ -28,6 +28,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         /// <summary>The resident key this item was admitted under, so content-version
         /// bookkeeping can retire it without searching the index.</summary>
         public CacheKey Key;
+        /// <summary>The composite the record is stored under. Built once when the item is
+        /// admitted — the write needs it anyway — and kept so the persist batch can ask
+        /// "is this stored row resident" with a plain lookup instead of splitting a key per
+        /// record per pass.</summary>
+        public string StoreKey = string.Empty;
     }
 
     private const int MaxQueuedWrites = 4096;
@@ -71,6 +76,10 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private readonly Func<VirtualObject, bool> _keep;
     private readonly object _gate = new(), _persistGate = new();
     private readonly Dictionary<CacheKey, Item> _items = new(CacheKeyComparer.Instance);
+    /// <summary>The store keys of the resident items. The store-facing membership test runs
+    /// once per stored record per persist batch, so it is a plain lookup on the composite the
+    /// item was written under — never a split of that composite.</summary>
+    private readonly HashSet<string> _residentStoreKeys = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>Durable file records by the content version their source declared, whatever
     /// generation admitted them. This is the content that survives the namespace moving: a
     /// path still at version v is still v's bytes, so a cache can answer it before the source
@@ -148,14 +157,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private protected ObjectDatabase Reads => _store;
     private protected string StoreRoot => _storeRoot;
 
-    /// <summary>Whether a stored record's key is resident. The store key is parsed rather
-    /// than kept as a second index; this runs once per record per persist batch, not on a
-    /// read, and the substrings it takes are the batch's garbage, not a lookup's.</summary>
-    private protected bool Contains(string storeKey)
-    {
-        int bar = storeKey.IndexOf('|');
-        return bar >= 0 && _items.ContainsKey(new CacheKey(storeKey[(bar + 1)..], storeKey[..bar]));
-    }
+    /// <summary>Whether a stored record's row is resident. A plain lookup on the key the
+    /// entry was admitted under.</summary>
+    private protected bool Contains(ObjectDatabase.Record record) => _residentStoreKeys.Contains(record.Path);
 
     /// <summary>Resident lookup with the recency update a hit performs.</summary>
     private protected bool TryGetResident(CacheKey key, out Item item) { lock (_gate) return TryGet(key, out item); }
@@ -193,7 +197,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         var item = NewItem(record.Value, record.StoredBytes, record);
         item.Metadata = metadata;
         item.Key = key;
+        item.StoreKey = record.Path;
         _items[key] = item;
+        _residentStoreKeys.Add(record.Path);
         IndexContent(item);
         _metadataBytes += metadata;
         _bytes += record.StoredBytes;
@@ -202,6 +208,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private void Remove(CacheKey key)
     {
         if (!_items.Remove(key, out var item)) return;
+        _residentStoreKeys.Remove(item.StoreKey);
         _bytes -= item.Bytes;
         _metadataBytes -= item.Metadata;
         ForgetContent(item);
@@ -263,14 +270,16 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     /// The record travels with the value: a content entry that comes back without it looks
     /// resident yet has neither staged bytes nor a blob to open, and the read that follows
     /// asks a null record for its blob.</summary>
-    private void Reindex(CacheKey key, VirtualObject value, ObjectDatabase.Record? record)
+    private void Reindex(CacheKey key, string storeKey, VirtualObject value, ObjectDatabase.Record? record)
     {
         long bytes = record?.StoredBytes ?? value.Content.PersistenceEstimate;
         long metadata = CacheBudgets.Estimate(key.Path, value);
         var item = NewItem(value, bytes, record);
         item.Metadata = metadata;
         item.Key = key;
+        item.StoreKey = storeKey;
         _items[key] = item;
+        _residentStoreKeys.Add(storeKey);
         IndexContent(item);
         _bytes += bytes;
         _metadataBytes += metadata;
@@ -319,8 +328,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         // than a source read. Namespace records in particular must survive being dropped
         // from the index: losing one costs every path beneath it. Re-admit so the next
         // lookup comes from memory again.
-        if (!_store.TryGet(StoreKey(key), out value, out var record) || !KeepIndexed(value)) { value = null!; return false; }
-        lock (_gate) Reindex(key, value, record);
+        string storeKey = StoreKey(key);
+        if (!_store.TryGet(storeKey, out value, out var record) || !KeepIndexed(value)) { value = null!; return false; }
+        lock (_gate) Reindex(key, storeKey, value, record);
         return true;
     }
 
@@ -359,6 +369,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 _items[key] = item;
                 item.Pending = true;
                 item.Key = key;
+                item.StoreKey = storeKey;
+                _residentStoreKeys.Add(storeKey);
                 item.Epoch = _epoch;
                 _retired.Remove(storeKey);
                 _bytes += estimate;
