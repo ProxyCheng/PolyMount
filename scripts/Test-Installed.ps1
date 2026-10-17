@@ -98,6 +98,12 @@ if ($null -eq (Get-Service -Name PolyMount -ErrorAction SilentlyContinue)) {
         Write-Host "--- tail of $setupLog ---"
         Get-Content -LiteralPath $setupLog -Tail 40 | Write-Host
     } else { Write-Host "no setup log at $setupLog" }
+    foreach ($hostLog in (Join-Path $data 'install-error.log'), (Join-Path $env:TEMP 'polymount-install-host.log')) {
+        if (Test-Path -LiteralPath $hostLog) {
+            Write-Host "--- tail of $hostLog ---"
+            Get-Content -LiteralPath $hostLog -Tail 30 | Write-Host
+        }
+    }
 }
 
 $running = @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue)

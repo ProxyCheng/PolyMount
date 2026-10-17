@@ -181,6 +181,13 @@ try {
     }
     exit 0
 } catch {
+    # The setup runs this in a console window nobody is looking at, so a failure here reaches the
+    # installer as a bare "service setup failed". The reason goes to a file the installer log, the
+    # install test and a person all can read.
+    $detail = (Get-Date).ToString('o') + ' ' + $Action + ': ' + ($_ | Out-String)
+    foreach ($path in @((Join-Path $data 'install-error.log'), (Join-Path $env:TEMP 'polymount-install-host.log'))) {
+        try { Add-Content -LiteralPath $path -Value $detail; break } catch { }
+    }
     Write-Error $_ -ErrorAction Continue
     exit 1
 }
