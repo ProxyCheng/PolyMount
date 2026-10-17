@@ -173,6 +173,16 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         /// <summary>Waits for the request, claiming it when the caller is the reader: read-ahead
         /// the reader then asked for is a guess that paid off, and it must not be something the
         /// reader waits behind.</summary>
+        /// <summary>How many callers are holding or about to hold this download's file. Counted
+        /// before the wait rather than after it: a caller that has said it is interested has to
+        /// keep the bytes alive while it waits, or the one that finishes first takes the file away
+        /// from underneath it.</summary>
+        public int Users;
+
+        /// <summary>Whether the request has left the table. Its file goes when the last user is
+        /// done with it, which may be after that.</summary>
+        public bool Retired;
+
         public T Join(int priority)
         {
             admission.Promote(priority);
@@ -382,20 +392,67 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
                 request = new SharedRequest<string>(_lanes.Begin(ReadPriority.Ambient), () => Download(revision, rel));
                 _contentRequests[key] = request;
             }
+            request.Users++;
         }
-        string tmp;
+        string? tmp = null;
         try
         {
             tmp = request.Join(ReadPriority.Ambient);
         }
+        catch
+        {
+            Release(request, null);
+            throw;
+        }
         finally
         {
             lock (_gate)
-                if (_contentRequests.TryGetValue(key, out var current) && ReferenceEquals(current, request)) _contentRequests.Remove(key);
+                if (_contentRequests.TryGetValue(key, out var current) && ReferenceEquals(current, request))
+                {
+                    _contentRequests.Remove(key);
+                    request.Retired = true;
+                }
         }
-        stream = new FileStream(tmp, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete,
-            128 * 1024, FileOptions.DeleteOnClose);
+        try
+        {
+            stream = new CountedFileStream(tmp, () => Release(request, tmp));
+        }
+        catch
+        {
+            Release(request, tmp);
+            throw;
+        }
         return true;
+    }
+
+    /// <summary>Drops one user of a shared download; the file goes when the last one has closed and
+    /// the request has left the table. Deleting on close instead -- which is what this did -- lets
+    /// the caller that finishes first take the file away from one that joined the same request and
+    /// has not opened it yet, and that reader fails on a file the source can still answer.</summary>
+    private void Release(SharedRequest<string> request, string? path)
+    {
+        bool delete;
+        lock (_gate)
+        {
+            request.Users--;
+            delete = request.Users == 0 && request.Retired;
+        }
+        if (!delete || path == null) return;
+        try { File.Delete(path); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private sealed class CountedFileStream(string path, Action release)
+        : FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 128 * 1024)
+    {
+        private Action? _release = release;
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing) Interlocked.Exchange(ref _release, null)?.Invoke();
+        }
     }
 
     /// <summary>Fetches one file's content to a private temp file that the open handles own.</summary>
