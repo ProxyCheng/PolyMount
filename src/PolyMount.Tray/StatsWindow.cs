@@ -1302,6 +1302,17 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (ends.Length > 1)
             throw new InvalidOperationException(
                 $"The cards are drawn up to {ends.Length} different moments: {string.Join(", ", ends.Select(at => at.ToString("HH:mm:ss.fff")))}");
+        // And the page's own cards: what their legends say must be one entry per layer, none
+        // missing. A rebuild that leaves new markers unlaid-out, or a gap that is allowed to name
+        // every run, fails here rather than in a picture somebody has to look at.
+        foreach (var card in _charts.Where(card => card.InSight && card.Series.Count > 1))
+        {
+            var expected = card.Series.Select(item => item.Name).Distinct(StringComparer.Ordinal).ToArray();
+            var names = card.LegendNames();
+            if (names.Count != expected.Length || expected.Any(name => !names.Contains(name, StringComparer.Ordinal)))
+                throw new InvalidOperationException(
+                    $"{card.TitleKey} names {string.Join(", ", names)} in its legend where its series are {string.Join(", ", expected)}");
+        }
         // What each card's chart was handed fits the axis it was handed with it: a fill is drawn
         // between its points and the floor, against that axis, so a point above it is an area over
         // the top of the plot and a point far below it is an area nobody can see. The axis is scaled
@@ -2969,6 +2980,18 @@ internal sealed class PerformanceChart : QWidget
             {
                 if (named.Add(band.Name)) continue;
                 foreach (var marker in _chart.Legend().Markers(band.Area)) marker.SetVisible(false);
+            }
+            // A series added to a chart that has already drawn comes with its legend marker hidden,
+            // and nothing an ordinary sample does lays the legend out again — the chart is only
+            // resized when its card is. Ask for that layout here and put the chart back the size the
+            // view gave it, so a rebuild — a gap opening, a layer appearing — does not cost its
+            // readers the legend. Measured: without this, every marker was invisible after the
+            // second rebuild and stayed so; with it the first draw and every rebuild read alike.
+            var geometry = _chart.Geometry;
+            if (geometry.Width() > 0 && geometry.Height() > 0)
+            {
+                _chart.AdjustSize();
+                _chart.SetGeometry(geometry);
             }
         }
         PlotNotes();

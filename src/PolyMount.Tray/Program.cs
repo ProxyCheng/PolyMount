@@ -590,6 +590,7 @@ internal static class Program
                     {
                         stats.VerifyResponseSampling();
                         stats.VerifyAccessSplit();
+                    stats.VerifyAccessWindow();
                         stats.VerifyAccessGrid();
                         stats.VerifyAccessModes();
                         stats.VerifyChartScale();
