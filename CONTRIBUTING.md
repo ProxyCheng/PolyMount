@@ -58,6 +58,13 @@ A worktree is a place to work, not a place to leave behind. Once the branch is m
 worktree and delete the branch — an abandoned worktree keeps a checkout, an index and a branch
 name alive, and the next session finds it and has to guess whether it is still wanted.
 
+## This repository is published as a sanitized mirror
+
+The public history is produced by a rewrite: internal notes are omitted and some example names are
+replaced. It therefore does not share history with the internal development line — do not merge or
+rebase between the two, and do not force-push a development branch over it. A change reaches the
+public repository as a sanitized snapshot commit, built and checked before it is pushed.
+
 ## Commits
 
 One logical change per commit, with a message that says what changed and why. The subject line is
