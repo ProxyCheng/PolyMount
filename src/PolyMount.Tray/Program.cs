@@ -587,6 +587,17 @@ internal static class Program
                 stats.Show();
                 try { stats.VerifyWatchedWhileHidden(awayFrom, until); }
                 catch (Exception ex) { failure = ex.ToString(); }
+                // What a reader gets when a card comes back: the page was away while it kept
+                // sampling, and the fill is asked for here rather than on the heartbeat's next
+                // tick, so the check is about the fill and not about which timer fired first.
+                try
+                {
+                    if (!stats.SmokeFillReturnedCards())
+                        throw new InvalidOperationException(
+                            "The cards that came back on screen were not drawn again");
+                    stats.VerifyCardsFillWhenShown();
+                }
+                catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks == 36 && capture != null)
             {
@@ -685,6 +696,7 @@ internal static class Program
                         stats.VerifyResponseSampling();
                         stats.VerifyAccessSplit();
                     stats.VerifyAccessWindow();
+                        stats.VerifyLayerOrder();
                         stats.VerifyAccessGrid();
                         stats.VerifyAccessModes();
                         stats.VerifyChartScale();

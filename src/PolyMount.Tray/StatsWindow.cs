@@ -54,6 +54,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>Every card the page draws, in one list: what a frame of the movement between two
     /// samples hands a later moment to, all of them at that one moment.</summary>
     private readonly PerformanceChart[] _cards;
+    /// <summary>Which cards the last draw fed: the ones on screen when it ran. A card off screen is
+    /// skipped by the draw — see <see cref="PerformanceChart.InSight"/> — so the heartbeat asks here,
+    /// once per tick, whether any of them has come back: scrolled into the viewport, or carried into
+    /// sight by a section opening over it. One that has is drawn again at once rather than at the
+    /// next sample, which used to leave it empty for up to a whole sampling interval — a second at
+    /// the page's default rate, and longer the slower the reader set it.</summary>
+    private bool[] _fedAtDraw = Array.Empty<bool>();
     private readonly QLabel _reconcile;
     /// <summary>The moment every card is drawn up to: the newest observation of the window the page
     /// samples at the reader's rate, and between samples whatever moment the movement of the picture
@@ -403,6 +410,42 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (readings == 0)
             throw new InvalidOperationException(
                 $"Nothing was taken down in the {(until - from).TotalSeconds:0.#} seconds this page's tab was not on show");
+    }
+
+    /// <summary>Runs the heartbeat's return-path step for the smoke run, and answers whether it drew.
+    /// Asking here rather than waiting for a page tick is what makes the check about the fill and
+    /// not about which timer happened to fire first: a sample landing in between fills the cards by
+    /// the ordinary path, and the check would pass either way.</summary>
+    internal bool SmokeFillReturnedCards() => FillReturnedCards();
+
+    /// <summary>Self-check: the trend cards on screen hold the newest reading just after the page
+    /// came back on screen. The run hides the page and lets it sample while it is away, puts it back
+    /// and fills it the way the heartbeat does, then asks here. What it is about is the card a
+    /// reader scrolls back to: skipped by every draw while it was off screen, and left blank until
+    /// the next reading without the fill — up to a whole interval, a second at the page's default
+    /// rate and longer the slower it is set.</summary>
+    internal void VerifyCardsFillWhenShown()
+    {
+        var samples = _history.GetValueOrDefault(_instanceName ?? "") ?? new();
+        if (samples.Count == 0)
+            throw new InvalidOperationException("The page has no readings to fill its cards with");
+        DateTime newest = samples.Max(sample => sample.Time);
+        var shown = _charts.Where(card => card.InSight).ToList();
+        if (shown.Count == 0)
+            throw new InvalidOperationException("The performance page is showing none of its trend cards");
+        foreach (var card in shown)
+        {
+            DateTime drawn = card.Series
+                .SelectMany(series => series.Samples)
+                .Select(sample => sample.Time)
+                .DefaultIfEmpty(DateTime.MinValue)
+                .Max();
+            // A card that has not been filled since it came back draws nothing, or draws what it
+            // held before it left.
+            if (drawn < newest)
+                throw new InvalidOperationException(
+                    $"{card.TitleKey} draws up to {drawn:HH:mm:ss.fff} where the newest reading is {newest:HH:mm:ss.fff}");
+        }
     }
 
     /// <summary>How many process readings the page has taken. One is taken per request, so this is
@@ -920,6 +963,45 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // watching for seconds must have kept every answer it was given.
         if (_accessHistory.Count == 0)
             throw new InvalidOperationException("The access section kept none of the answers it was given");
+    }
+
+    /// <summary>Self-check: the layers are drawn in the mount's own order, whatever the traffic.
+    ///
+    /// Every answer names its layers the way the mount stacks them, top of the chain first, and the
+    /// table, the circle and the four trend cards are read in that order — so a layer keeps its row
+    /// and its band as the traffic moves. The sum ranked them by hits once, and the cards followed:
+    /// a band moved whenever a busier layer overtook it, and the held cards (drawn from the mount's
+    /// provider list) no longer agreed with the trends. This fixture is the case that separates the
+    /// two rules: the window's busiest layer is memory-cache and its second is cache, yet warmup
+    /// sits between them because the chain says so, not because of any count.</summary>
+    internal void VerifyLayerOrder()
+    {
+        var at = new DateTime(2026, 1, 1, 0, 0, 30, DateTimeKind.Utc);
+        static MountMetrics Answer(long memory, long warmup, long cache) => new()
+        {
+            Mount = "m",
+            WindowSeconds = 1,
+            TotalReads = memory + warmup + cache,
+            Layers = new()
+            {
+                new LayerMetric { Name = "memory-cache", Hits = memory },
+                new LayerMetric { Name = "warmup", Hits = warmup },
+                new LayerMetric { Name = "cache", Hits = cache }
+            }
+        };
+        var history = new List<(DateTime At, List<MountMetrics> Entries)>
+        {
+            // Cache carries the older answer and memory-cache the newer one, so the two orders a
+            // window could be drawn in differ in the middle: a ranking has no reason to keep a
+            // layer that served nothing above one that served 902.
+            (at.AddSeconds(-1), new() { Answer(1, 0, 900) }),
+            (at, new() { Answer(1000, 0, 2) })
+        };
+        var sum = AccessTotals.Sum(history, at, 30);
+        string drawn = string.Join(", ", sum[0].Layers.Select(layer => layer.Name));
+        if (drawn != "memory-cache, warmup, cache")
+            throw new InvalidOperationException(
+                $"The layers are drawn in the order {drawn} where the mount stacks them memory-cache, warmup, cache");
     }
 
     /// <summary>The access cards are read two ways and the heading over them is the switch. What is
@@ -1681,6 +1763,35 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // Between two samples the picture moves rather than waiting: the readings are the same
         // ones, a moment of the clock later, which is a frame of the movement the reader sees.
         Animate();
+        FillReturnedCards();
+    }
+
+    /// <summary>Draws the page again when a card has come back into sight since the last draw, and
+    /// answers whether it did.
+    ///
+    /// A card nobody can see is skipped by the draw, and only the sampling draw comes back for it —
+    /// so a card the reader scrolls back to, or one a section opens over, used to stay empty until
+    /// the next sample: up to a whole interval, a second at the page's default rate and longer the
+    /// slower it is set. The heartbeat is already running at ten ticks a second, so the question is
+    /// asked there and the card is filled on the tick it returns rather than on the next reading.
+    /// One draw covers every card that came back at once, which is what a scroll across the page
+    /// brings.
+    ///
+    /// The draw ends at the newest reading, while the picture had moved past it between samples;
+    /// the frame after it puts the cards back where the reader was looking, so a fill does not
+    /// step the whole page sideways.</summary>
+    private bool FillReturnedCards()
+    {
+        // Before the first draw there is nothing to compare against, and that draw fills every
+        // card in sight anyway.
+        if (_fedAtDraw.Length != _cards.Length) return false;
+        bool returned = false;
+        for (int index = 0; index < _cards.Length && !returned; index++)
+            returned = !_fedAtDraw[index] && _cards[index].InSight;
+        if (!returned) return false;
+        Render();
+        Animate();
+        return true;
     }
 
     /// <summary>The movement between two samples. A reader on a slow rate sees the whole picture
@@ -2166,6 +2277,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         }
         if (structureChanged) _table.SetUpdatesEnabled(true);
         FitTable();
+        // What this draw fed, for the heartbeat: a card it skipped because nobody could see it is
+        // filled the moment it comes back, instead of waiting for the next sample. See Tick.
+        _fedAtDraw = _cards.Select(card => card.InSight).ToArray();
     }
 
     /// <summary>What one chart's window adds up to, taken over every observation the page holds

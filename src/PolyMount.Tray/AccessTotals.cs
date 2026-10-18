@@ -28,6 +28,13 @@ internal static class AccessTotals
         var order = new List<string>();
         var sums = new Dictionary<string, MountMetrics>(StringComparer.OrdinalIgnoreCase);
         var layers = new Dictionary<string, Dictionary<string, LayerMetric>>(StringComparer.OrdinalIgnoreCase);
+        // The layers of a mount in the order its answers name them, which is the mount's own chain:
+        // top of the stack first. The table, the circle and the four stacked trend cards are all read
+        // in this order, so a layer keeps its band and its row whatever the traffic does. It was
+        // ranked by hits once, which made a band move every time a busier layer overtook it and left
+        // these cards in an order the mount's own provider list — what the held cards are drawn
+        // from — did not share.
+        var layerOrder = new Dictionary<string, List<LayerMetric>>(StringComparer.OrdinalIgnoreCase);
         var callers = new Dictionary<string, List<ProcessMetric>>(StringComparer.OrdinalIgnoreCase);
         var unattributed = new Dictionary<string, List<ProcessLayerCount>>(StringComparer.OrdinalIgnoreCase);
         var cached = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -54,6 +61,7 @@ internal static class AccessTotals
                     order.Add(entry.Mount);
                     sums[entry.Mount] = sum = new MountMetrics { Mount = entry.Mount };
                     layers[entry.Mount] = new Dictionary<string, LayerMetric>(StringComparer.OrdinalIgnoreCase);
+                    layerOrder[entry.Mount] = new List<LayerMetric>();
                     callers[entry.Mount] = new List<ProcessMetric>();
                     unattributed[entry.Mount] = new List<ProcessLayerCount>();
                     cached[entry.Mount] = 0;
@@ -74,7 +82,10 @@ internal static class AccessTotals
                 foreach (var layer in entry.Layers)
                 {
                     if (!layers[entry.Mount].TryGetValue(layer.Name, out var into))
+                    {
                         layers[entry.Mount][layer.Name] = into = new LayerMetric { Name = layer.Name };
+                        layerOrder[entry.Mount].Add(into);
+                    }
                     into.Hits += layer.Hits;
                     into.Writes += layer.Writes;
                     into.WriteBytes += layer.WriteBytes;
@@ -105,8 +116,7 @@ internal static class AccessTotals
         foreach (string mount in order)
         {
             var sum = sums[mount];
-            var rows = layers[mount].Values.ToList();
-            rows.Sort((left, right) => right.Hits.CompareTo(left.Hits));
+            var rows = layerOrder[mount];
             long events = rows.Sum(layer => layer.Hits + layer.Writes);
             foreach (var layer in rows)
             {

@@ -16,6 +16,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The Explorer context menu is no longer added twice on a machine where the setup registered it:
   the tray only looked under `HKCU`, read the setup's machine-wide entry as "not installed", and
   wrote a second copy beside it.
+- The performance page's layer cards ranked layers by how many requests they had served, so a
+  band moved whenever a busier layer overtook it and the picture disagreed with the mount's own
+  layer order. The trend cards, the layer table and the access circle now all read the layering
+  the mount reports: the layer on top of the stack is the one on top of the chart.
+- A performance chart that was scrolled out of view was left empty when it came back until the
+  next sample arrived — up to a whole refresh interval. A card that returns to the viewport, or
+  that a folded section opens over, is now drawn from the readings the page already holds.
 
 ### Added
 
