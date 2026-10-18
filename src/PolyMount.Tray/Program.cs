@@ -265,6 +265,17 @@ internal static class Program
 
         menu.AddSeparator();
 
+        var credentials = menu.AddAction("");
+        I18n.Bind(credentials.SetText, "credential.menu");
+        credentials.SetIcon(TrayIcons.Get("repository"));
+        credentials.Triggered += _ =>
+        {
+            using var manager = new CredentialManager(_dashboard);
+            manager.Exec();
+        };
+
+        menu.AddSeparator();
+
         // Checking is always available; being told about a version is what "do not remind me"
         // turns off, and the download stays here even then.
         var check = menu.AddAction("");
@@ -465,9 +476,6 @@ internal static class Program
 
     private static int RunUiSmoke(string? capture, HashSet<string>? areas = null)
     {
-        // A sign-in prompt raised by the refresh timer is a modal nobody in a self-check can
-        // answer; the dialog is exercised on its own instead.
-        Dashboard.AutoSignIn = false;
         // Which parts of the run this invocation was asked for. Everything that is only a check,
         // or only the scenario a check needs, is behind one of these; what the run needs whatever
         // it was asked for — the windows, the event loop, the page drawn — is not.

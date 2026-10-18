@@ -287,7 +287,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("authentication-guidance", () =>
         {
             string anonymous = SvnHttpClient.AuthenticationFailure(false, "https://host/repo", "host");
-            if (!anonymous.Contains("Sign in") || !anonymous.Contains("Windows account"))
+            if (!anonymous.Contains("credential") || !anonymous.Contains("editor"))
                 throw new Exception("the anonymous failure did not say what to do about it: " + anonymous);
             string rejected = SvnHttpClient.AuthenticationFailure(true, "https://host/repo", "host");
             if (!rejected.Contains("rejected"))

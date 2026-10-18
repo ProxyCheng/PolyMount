@@ -654,40 +654,120 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Starts with Windows (registered for all users)</translation>
     </message>
     <message>
-      <source>auth.title</source>
-      <translation>Sign in</translation>
+      <source>credential.title</source>
+      <translation>Credentials</translation>
     </message>
     <message>
-      <source>auth.body</source>
-      <translation>PolyMount needs an account that can read %1.</translation>
+      <source>credential.menu</source>
+      <translation>Credentials...</translation>
     </message>
     <message>
-      <source>auth.username</source>
-      <translation>User name</translation>
+      <source>credential.empty</source>
+      <translation>No credentials yet. Add one, then choose it on the instance's SVN layer.</translation>
     </message>
     <message>
-      <source>auth.password</source>
+      <source>credential.add</source>
+      <translation>Add...</translation>
+    </message>
+    <message>
+      <source>credential.add.title</source>
+      <translation>Add credential</translation>
+    </message>
+    <message>
+      <source>credential.edit</source>
+      <translation>Edit</translation>
+    </message>
+    <message>
+      <source>credential.edit.title</source>
+      <translation>Edit credential</translation>
+    </message>
+    <message>
+      <source>credential.remove</source>
+      <translation>Remove</translation>
+    </message>
+    <message>
+      <source>credential.close</source>
+      <translation>Close</translation>
+    </message>
+    <message>
+      <source>credential.save</source>
+      <translation>Save</translation>
+    </message>
+    <message>
+      <source>credential.forget</source>
+      <translation>Forget</translation>
+    </message>
+    <message>
+      <source>credential.name</source>
+      <translation>Name</translation>
+    </message>
+    <message>
+      <source>credential.username</source>
+      <translation>Username</translation>
+    </message>
+    <message>
+      <source>credential.password</source>
       <translation>Password</translation>
     </message>
     <message>
-      <source>auth.signin</source>
-      <translation>Sign in</translation>
+      <source>credential.password.keep</source>
+      <translation>Leave empty to keep the current password</translation>
     </message>
     <message>
-      <source>auth.need.user</source>
+      <source>credential.used</source>
+      <translation>{0} layer(s) use it</translation>
+    </message>
+    <message>
+      <source>credential.search</source>
+      <translation>Search</translation>
+    </message>
+    <message>
+      <source>credential.noMatch</source>
+      <translation>No matching credentials</translation>
+    </message>
+    <message>
+      <source>credential.automatic</source>
+      <translation>Remembered by address</translation>
+    </message>
+    <message>
+      <source>credential.auto</source>
+      <translation>Automatic (by address)</translation>
+    </message>
+    <message>
+      <source>credential.manage</source>
+      <translation>Manage...</translation>
+    </message>
+    <message>
+      <source>credential.offline</source>
+      <translation>Service not connected:</translation>
+    </message>
+    <message>
+      <source>credential.failed</source>
+      <translation>Could not save: {0}</translation>
+    </message>
+    <message>
+      <source>credential.delete.confirm</source>
+      <translation>{0} layer(s) use it; they go back to automatic.</translation>
+    </message>
+    <message>
+      <source>credential.delete.plain</source>
+      <translation>Remove this credential?</translation>
+    </message>
+    <message>
+      <source>credential.delete.origin</source>
+      <translation>Forget the account remembered for this address?</translation>
+    </message>
+    <message>
+      <source>credential.name.required</source>
+      <translation>Enter a name.</translation>
+    </message>
+    <message>
+      <source>credential.username.required</source>
       <translation>Enter a user name.</translation>
     </message>
     <message>
-      <source>auth.failed</source>
-      <translation>Sign-in failed.</translation>
-    </message>
-    <message>
-      <source>auth.button</source>
-      <translation>Sign in...</translation>
-    </message>
-    <message>
-      <source>auth.done</source>
-      <translation>Signed in. Reconnecting the instance.</translation>
+      <source>credential.password.required</source>
+      <translation>Enter a password.</translation>
     </message>
     <message>
       <source>tray.exit</source>

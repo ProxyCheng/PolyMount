@@ -13,6 +13,11 @@
   "svn.field.trust": { "en": "Trusted certificate failures", "zh-CN": "信任的证书错误" },
   "svn.field.username": { "en": "Username", "zh-CN": "用户名" },
   "svn.field.password": { "en": "Password", "zh-CN": "密码" },
+  "svn.field.credential": { "en": "Credential", "zh-CN": "凭据" },
+  "svn.field.credential.description": {
+    "en": "Which account this repository uses. Automatic matches by address and falls back to the Subversion client's cache; a named credential is used exactly as chosen.",
+    "zh-CN": "这个仓库用哪个账号。「自动」按地址匹配并使用 Subversion 客户端的缓存；选定的凭据则严格按选定使用。"
+  },
   "svn.field.prefetch.concurrency": { "en": "Listing read-ahead workers", "zh-CN": "目录预取并发数" },
   "svn.field.prefetch.concurrency.description": {
     "en": "Directories fetched ahead of demand; 0 disables read-ahead. How many of them reach the source at once is the read-ahead share below.",

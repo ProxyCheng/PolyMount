@@ -30,6 +30,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private AppConfig _config = new();
     private List<string> _sourceTypes = new();
     private List<LayerDescriptor> _layerDescriptors = new();
+    private List<CredentialRecord> _credentials = new();
+    private readonly Dictionary<QComboBox, List<string>> _credentialIds = new();
     private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
@@ -327,7 +329,15 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         if (_pending != null) return;
         _saving = false;
-        _pending = Task.Run(SupervisorClient.Default.GetConfig);
+        _pending = Task.Run(() =>
+        {
+            var response = SupervisorClient.Default.GetConfig();
+            // The layer panel offers these by name; a service that cannot answer leaves the list
+            // empty rather than failing the whole load.
+            try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+            catch (Exception) { _credentials = new(); }
+            return response;
+        });
         _save.SetEnabled(false);
         _status.SetText(T("connecting"));
     }
@@ -530,12 +540,50 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private LayerDescriptor Descriptor(string type) => _layerDescriptors.FirstOrDefault(d => d.Type.Equals(type, StringComparison.OrdinalIgnoreCase))
         ?? new LayerDescriptor { Type = type, Title = new(type, type) };
 
-    private static string PropertyValue(LayerFieldDescriptor field, QWidget editor) => field.Kind switch
+    private string PropertyValue(LayerFieldDescriptor field, QWidget editor) => field.Kind switch
     {
         LayerFieldKind.Boolean => ((QCheckBox)editor).IsChecked().ToString(),
         LayerFieldKind.Choice => ((QComboBox)editor).CurrentIndex is var index && index >= 0 && index < field.Choices.Count ? field.Choices[index].Value : "",
+        LayerFieldKind.Credential => CredentialValue((QComboBox)editor),
         _ => ((QLineEdit)editor).Text
     };
+
+    /// <summary>The id behind the combo's current row. Empty is "automatic", which is index 0.</summary>
+    private string CredentialValue(QComboBox combo) =>
+        _credentialIds.TryGetValue(combo, out var ids) && combo.CurrentIndex >= 0 && combo.CurrentIndex < ids.Count
+            ? ids[combo.CurrentIndex]
+            : string.Empty;
+
+    /// <summary>Fills a credential combo in place. The first row is the automatic path; the names
+    /// follow. Rebuilding rather than recreating keeps the widget the panel already holds.</summary>
+    private void FillCredentialCombo(QComboBox combo, string? selected)
+    {
+        var ids = new List<string> { string.Empty };
+        combo.BlockSignals(true);
+        combo.Clear();
+        combo.AddItem(T("credential.auto"));
+        foreach (var credential in _credentials)
+        {
+            combo.AddItem(credential.Name + " · " + credential.Username);
+            ids.Add(credential.Id);
+        }
+        int index = ids.IndexOf(selected ?? string.Empty);
+        combo.SetCurrentIndex(index >= 0 ? index : 0);
+        combo.BlockSignals(false);
+        _credentialIds[combo] = ids;
+    }
+
+    /// <summary>Opens the manager, then re-reads the list and refreshes every combo in place, so a
+    /// credential added there can be chosen here without reopening the editor.</summary>
+    private void ManageCredentials()
+    {
+        using (var manager = new CredentialManager(this)) manager.Exec();
+        try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+        catch (Exception) { }
+        foreach (var (field, editor, _) in _propertyEditors)
+            if (field.Kind == LayerFieldKind.Credential && editor is QComboBox combo)
+                FillCredentialCombo(combo, CredentialValue(combo));
+    }
 
     private void BuildProperties()
     {
@@ -569,7 +617,14 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         {
             string value = LayerProperties.Read(_layer, field);
             QWidget editor;
-            if (field.Kind == LayerFieldKind.Boolean)
+            if (field.Kind == LayerFieldKind.Credential)
+            {
+                var combo = ContinuousScrolling.Combo();
+                FillCredentialCombo(combo, value);
+                combo.CurrentIndexChanged += _ => Dirty();
+                editor = combo;
+            }
+            else if (field.Kind == LayerFieldKind.Boolean)
             {
                 var check = new QCheckBox();
                 check.SetChecked(bool.TryParse(value, out bool flag) && flag);
@@ -596,6 +651,17 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             var label = Plain(field.Title.Resolve(I18n.Language), "muted");
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
             QWidget row = editor;
+            if (field.Kind == LayerFieldKind.Credential)
+            {
+                var widget = new QWidget();
+                var rowLayout = new QHBoxLayout(widget);
+                rowLayout.SetContentsMargins(0, 0, 0, 0);
+                rowLayout.AddWidget(editor, 1);
+                var manage = new QPushButton(T("credential.manage"));
+                manage.Clicked += _ => ManageCredentials();
+                rowLayout.AddWidget(manage);
+                row = widget;
+            }
             if (inline.TryGetValue(field.Path, out var actions))
             {
                 var widget = new QWidget();
@@ -633,6 +699,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
             if (editor is QComboBox combo)
             {
+                if (field.Kind == LayerFieldKind.Credential)
+                {
+                    FillCredentialCombo(combo, CredentialValue(combo));
+                    continue;
+                }
                 int index = combo.CurrentIndex;
                 combo.BlockSignals(true);
                 combo.Clear();

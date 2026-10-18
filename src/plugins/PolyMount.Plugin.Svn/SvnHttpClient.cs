@@ -186,7 +186,7 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// them the same advice would be wrong. Internal so the wording is checked by a test.</summary>
     internal static string AuthenticationFailure(bool hasCredentials, string url, string host) => hasCredentials
         ? $"the repository at '{host}' rejected the credentials it was given"
-        : $"'{url}' requires an account that PolyMount does not have yet. Sign in from the dashboard, or let the service run as the Windows account whose Subversion client already saved them.";
+        : $"'{url}' needs an account that PolyMount does not have. Open this instance in the editor, choose or add a credential for the SVN layer, and save.";
 
     /// <summary>Turns a Depth:1 multistatus listing into child entries.</summary>
     internal static List<SvnEntry> ParseListing(XDocument document, string requestPath, string selfName)

@@ -20,18 +20,9 @@ internal sealed class Dashboard : QWidget
     /// usually covered by whichever tab was opened over it.</summary>
     private readonly QWidget _detailPanel;
     private readonly QPushButton _refresh, _start, _stop, _create;
-    private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect, _signIn;
+    private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect;
     private readonly QTimer _timer;
     private readonly List<MountStatus> _mounts = new();
-    /// <summary>Instances already offered a sign-in prompt this run. Static because the window
-    /// itself is destroyed when it is closed and built anew when it is opened again — an instance
-    /// field would ask the same question on every reopening. In memory on purpose: a reader who
-    /// cancelled and then restarted the tray is entitled to be asked again.</summary>
-    private static readonly HashSet<string> Prompted = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>Off while the self-check runs: a modal opened from the refresh timer would leave
-    /// `--ui-smoke` waiting on a dialog nobody can answer.</summary>
-    internal static bool AutoSignIn { get; set; } = true;
     private List<MountStatus> _visible = new();
     private Task<Result>? _pending;
     private bool _connected, _filling, _wasVisible;
@@ -238,8 +229,6 @@ internal sealed class Dashboard : QWidget
         body.AddWidget(_disable);
         _clearCache = Button("cache.clear", ClearSelectedCache, icon: "disk-cache");
         body.AddWidget(_clearCache);
-        _signIn = Button("auth.button", () => { if (Selected is { } selected) SignIn(selected); }, icon: "repository");
-        body.AddWidget(_signIn);
 
         _mountPath = DetailField(body, "mount.location");
         // The service publishes this sentence in both languages, the same way provider
@@ -478,7 +467,6 @@ internal sealed class Dashboard : QWidget
                     _mounts.AddRange(response.Mounts);
                     UpdateOverview();
                     FillTable();
-                    PromptForSignIn();
                     _updated.SetText(I18n.F("updated", DateTime.Now.ToString("HH:mm:ss")));
                     if (!result.Quiet) Feedback(T(result.Message ?? "refreshed"));
                     else if (_feedback.Text.StartsWith(T("connection.failed"), StringComparison.Ordinal)) Feedback(T("connected"));
@@ -654,10 +642,6 @@ internal sealed class Dashboard : QWidget
         _disable.SetEnabled(ready);
         _disable.SetToolTip(T("disable.tip"));
         _clearCache.SetEnabled(ready && m!.Mounted);
-        // Only when the source itself said the trouble is an account: any other failure has
-        // nothing to sign in to.
-        _signIn.SetVisible(m?.ErrorKind == "auth");
-        _signIn.SetEnabled(ready);
         _open.SetEnabled(ready && m!.Mounted);
         _edit.SetEnabled(ready);
         _performance.SetEnabled(ready);
@@ -735,29 +719,6 @@ internal sealed class Dashboard : QWidget
         if (Selected is not { Mounted: true } m || !_connected || (_pending != null && !_quietPending)) return;
         try { Process.Start(new ProcessStartInfo(m.MountPoint) { UseShellExecute = true }); }
         catch (Exception ex) { Feedback(T("folder.failed") + " " + ex.Message, true); }
-    }
-
-    /// <summary>Offers to sign in to an instance whose source reported that it needs an account:
-    /// once per instance per run, and only while this window is on screen — a modal prompt on a
-    /// window nobody is looking at is an interruption with no reader.</summary>
-    private void PromptForSignIn()
-    {
-        if (!AutoSignIn || !IsVisible()) return;
-        foreach (var mount in _mounts)
-        {
-            if (mount.ErrorKind != "auth" || !Prompted.Add(mount.Name)) continue;
-            SignIn(mount);
-            return;
-        }
-    }
-
-    private void SignIn(MountStatus mount)
-    {
-        string origin = mount.Url.Split('\n', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? mount.Name;
-        using var prompt = new CredentialPrompt(this, mount.Name, origin);
-        if (prompt.Exec() != 1) return;
-        Feedback(T("auth.done"));
-        Refresh(quiet: true);
     }
 
     internal ConfigEditor? OpenEditor(string? name = null, bool create = false)

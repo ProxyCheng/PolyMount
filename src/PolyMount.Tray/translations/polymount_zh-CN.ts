@@ -657,40 +657,120 @@
       <translation>开机自启（已为所有用户注册）</translation>
     </message>
     <message>
-      <source>auth.title</source>
-      <translation>登录</translation>
+      <source>credential.title</source>
+      <translation>凭据</translation>
     </message>
     <message>
-      <source>auth.body</source>
-      <translation>PolyMount 需要一个能读取 %1 的账号。</translation>
+      <source>credential.menu</source>
+      <translation>凭据…</translation>
     </message>
     <message>
-      <source>auth.username</source>
+      <source>credential.empty</source>
+      <translation>还没有凭据。新增一个，然后在实例的 SVN 层里选它。</translation>
+    </message>
+    <message>
+      <source>credential.add</source>
+      <translation>新增…</translation>
+    </message>
+    <message>
+      <source>credential.add.title</source>
+      <translation>新增凭据</translation>
+    </message>
+    <message>
+      <source>credential.edit</source>
+      <translation>编辑</translation>
+    </message>
+    <message>
+      <source>credential.edit.title</source>
+      <translation>编辑凭据</translation>
+    </message>
+    <message>
+      <source>credential.remove</source>
+      <translation>删除</translation>
+    </message>
+    <message>
+      <source>credential.close</source>
+      <translation>关闭</translation>
+    </message>
+    <message>
+      <source>credential.save</source>
+      <translation>保存</translation>
+    </message>
+    <message>
+      <source>credential.forget</source>
+      <translation>忘记</translation>
+    </message>
+    <message>
+      <source>credential.name</source>
+      <translation>名称</translation>
+    </message>
+    <message>
+      <source>credential.username</source>
       <translation>用户名</translation>
     </message>
     <message>
-      <source>auth.password</source>
+      <source>credential.password</source>
       <translation>密码</translation>
     </message>
     <message>
-      <source>auth.signin</source>
-      <translation>登录</translation>
+      <source>credential.password.keep</source>
+      <translation>留空表示不修改</translation>
     </message>
     <message>
-      <source>auth.need.user</source>
-      <translation>请输入用户名。</translation>
+      <source>credential.used</source>
+      <translation>{0} 个层在用</translation>
     </message>
     <message>
-      <source>auth.failed</source>
-      <translation>登录失败。</translation>
+      <source>credential.search</source>
+      <translation>搜索</translation>
     </message>
     <message>
-      <source>auth.button</source>
-      <translation>登录...</translation>
+      <source>credential.noMatch</source>
+      <translation>没有匹配的凭据</translation>
     </message>
     <message>
-      <source>auth.done</source>
-      <translation>已登录，正在重新连接实例。</translation>
+      <source>credential.automatic</source>
+      <translation>按地址记住的账号</translation>
+    </message>
+    <message>
+      <source>credential.auto</source>
+      <translation>自动（按地址）</translation>
+    </message>
+    <message>
+      <source>credential.manage</source>
+      <translation>管理…</translation>
+    </message>
+    <message>
+      <source>credential.offline</source>
+      <translation>服务未连接：</translation>
+    </message>
+    <message>
+      <source>credential.failed</source>
+      <translation>保存失败：{0}</translation>
+    </message>
+    <message>
+      <source>credential.delete.confirm</source>
+      <translation>有 {0} 个层正在用它；删除后它们回到自动。</translation>
+    </message>
+    <message>
+      <source>credential.delete.plain</source>
+      <translation>删除这个凭据？</translation>
+    </message>
+    <message>
+      <source>credential.delete.origin</source>
+      <translation>忘记这个地址记住的账号？</translation>
+    </message>
+    <message>
+      <source>credential.name.required</source>
+      <translation>请填写名称。</translation>
+    </message>
+    <message>
+      <source>credential.username.required</source>
+      <translation>请填写用户名。</translation>
+    </message>
+    <message>
+      <source>credential.password.required</source>
+      <translation>请填写密码。</translation>
     </message>
     <message>
       <source>tray.exit</source>

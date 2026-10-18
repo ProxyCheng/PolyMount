@@ -55,6 +55,9 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     new() { Path = "Source.PinnedRevision", Kind = LayerFieldKind.Integer, Minimum = 0,
                         Title = SvnTexts.Get("svn.field.revision") },
                     new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
+                    new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
+                        Title = SvnTexts.Get("svn.field.credential"),
+                        Description = SvnTexts.Get("svn.field.credential.description") },
                     // No username or password field: the transport reads the credentials the
                     // Subversion client already cached for this Windows user, which is the only
                     // place they exist without somebody typing them into a configuration file.
