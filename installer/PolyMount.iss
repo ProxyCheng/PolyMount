@@ -116,7 +116,6 @@ english.ServiceFailure=PolyMount service setup failed. See the installer log and
 english.WinFspFailure=WinFsp installation failed.
 english.RuntimeFailure=Visual C++ runtime installation failed.
 english.RestartExplorer=Restart Explorer now so the source-layer colour dots appear
-english.SvnMissing=The Subversion command-line client (svn.exe) is not on this computer's PATH. SVN mounts will not work until it is installed; directory mounts are unaffected.
 english.RemoveData=Also delete the PolyMount configuration and every layer's cached data?%n%nAnswer No to keep them for a later installation.
 chinesesimplified.AutoStart=登录 Windows 时启动托盘
 chinesesimplified.OriginDots=在资源管理器显示来源层彩色圆点
@@ -125,7 +124,6 @@ chinesesimplified.ServiceFailure=PolyMount 服务安装失败，请查看安装�
 chinesesimplified.WinFspFailure=WinFsp 安装失败。
 chinesesimplified.RuntimeFailure=Visual C++ 运行库安装失败。
 chinesesimplified.RestartExplorer=立即重启资源管理器，让来源层彩色圆点生效
-chinesesimplified.SvnMissing=本机 PATH 上找不到 Subversion 命令行客户端（svn.exe）。在装上它之前 SVN 挂载不可用；本地目录源不受影响。
 chinesesimplified.RemoveData=同时删除 PolyMount 的配置与所有层的缓存数据？%n%n选择「否」会保留它们，以便日后重新安装。
 
 [Code]
@@ -212,49 +210,6 @@ begin
     if not HostAction('Check', True) then RaiseException(CustomMessage('ServiceFailure'));
     if not HostAction('Install', True) then RaiseException(CustomMessage('ServiceFailure'));
   end;
-end;
-
-{ Whether the Subversion client is reachable through the machine's PATH, which is the one the
-  service resolves svn.exe against: a LocalService account does not inherit a user's PATH. }
-function PathContainsSvn(PathValue: String): Boolean;
-var
-  Rest, Entry: String;
-  Cut: Integer;
-begin
-  Result := False;
-  Rest := PathValue;
-  while Rest <> '' do
-  begin
-    Cut := Pos(';', Rest);
-    if Cut = 0 then begin Entry := Rest; Rest := ''; end
-    else begin Entry := Copy(Rest, 1, Cut - 1); Rest := Copy(Rest, Cut + 1, Length(Rest)); end;
-    Entry := Trim(Entry);
-    { The registry keeps these quoted when they contain a space; the quotes are not the directory. }
-    if (Length(Entry) >= 2) and (Entry[1] = '"') and (Entry[Length(Entry)] = '"') then
-      Entry := Copy(Entry, 2, Length(Entry) - 2);
-    if Entry <> '' then
-    begin
-      if Copy(Entry, Length(Entry), 1) <> '\' then Entry := Entry + '\';
-      if FileExists(Entry + 'svn.exe') then begin Result := True; exit; end;
-    end;
-  end;
-end;
-
-function SvnCliMissing: Boolean;
-var MachinePath: String;
-begin
-  Result := not RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', MachinePath)
-    or not PathContainsSvn(MachinePath);
-end;
-
-{ A prerequisite the setup can neither satisfy nor refuse over: only an SVN source needs it, and a
-  directory source works without it. Said here, before anything is written, it is the difference
-  between "the product is broken" and "I have to install Subversion first". }
-function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
-  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
-begin
-  Result := MemoDirInfo + MemoGroupInfo + MemoTasksInfo;
-  if SvnCliMissing then Result := Result + NewLine + NewLine + Space + CustomMessage('SvnMissing');
 end;
 
 function InitializeUninstall(): Boolean;

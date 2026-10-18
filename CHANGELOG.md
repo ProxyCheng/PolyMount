@@ -19,9 +19,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The wizard lets the operator choose which bundled plugins to enable, and reconciles the
   configuration to that choice. Other plugin entries are left alone.
 - One application icon, shared by the tray, the service and the setup, instead of none.
-- The setup reports a missing `svn.exe` on the ready page, offers to restart Explorer when the
-  source-colour dots were requested, and asks before deleting configuration and cached data on
-  uninstall.
+- The setup offers to restart Explorer when the source-colour dots were requested, and asks before
+  deleting configuration and cached data on uninstall.
+- The SVN source reads repositories over HTTP/WebDAV in-process; the `svn.exe` dependency is gone.
+  Cached Subversion credentials are read directly (DPAPI), and `svn://` repositories are no longer
+  supported.
 - Third-party notices, including the Qt Charts licensing consequence.
 - CI: build, unit tests, plugin tests, two self-contained mount smoke tests, and an installer
   artifact.
