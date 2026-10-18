@@ -305,12 +305,14 @@ public sealed class MountManager : IControlHost, IDisposable
             throw new ArgumentException("a user name is required");
         var profile = Config.Mounts.FirstOrDefault(m => string.Equals(m.Name, request.Name, StringComparison.OrdinalIgnoreCase))
             ?? throw new ArgumentException("no such mount: " + request.Name);
-        var source = profile.GetLayers()
-            .Where(layer => layer.Enabled)
-            .Select(layer => layer.Source)
-            .FirstOrDefault(candidate => SourceRegistry.CredentialHandler(candidate.Type) != null)
+        // The layer's own type says what it is; its Source block is a defaulted object on every
+        // layer and would otherwise match on the storage layers too.
+        var layer = profile.GetLayers().FirstOrDefault(candidate =>
+            candidate.Enabled && SourceRegistry.Contains(candidate.Type) &&
+            SourceRegistry.CredentialHandler(candidate.Type) != null &&
+            !string.IsNullOrWhiteSpace(candidate.Source.Url))
             ?? throw new InvalidOperationException("this instance has no source that can be signed in");
-        SourceRegistry.CredentialHandler(source.Type)!.SignIn(source, request.Username, request.Password ?? string.Empty);
+        SourceRegistry.CredentialHandler(layer.Type)!.SignIn(layer.Source, request.Username, request.Password ?? string.Empty);
         // The layer resolved its credentials when it was built, so a new one only takes effect
         // in a new process.
         _workers.Stop(profile.Name);

@@ -83,7 +83,14 @@ public static class InstanceView
         worker.Pipe = supervisor.Pipe;
         worker.WorkerPid = supervisor.WorkerPid;
         worker.Restarts = supervisor.Restarts;
-        worker.Error ??= supervisor.Error;
+        // The supervisor's error describes a process that ended. A worker that is serving now is a
+        // different process and has said what it makes of itself; carrying the old failure onto a
+        // mounted instance would show an error for a minute after a sign-in repaired it.
+        if (!worker.Mounted)
+        {
+            worker.Error ??= supervisor.Error;
+            worker.ErrorKind ??= supervisor.ErrorKind;
+        }
         return worker;
     }
 }
