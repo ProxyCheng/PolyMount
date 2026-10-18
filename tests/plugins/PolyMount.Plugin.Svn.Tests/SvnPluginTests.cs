@@ -76,14 +76,14 @@ public sealed class SvnPluginTests : IPluginTestProvider
     /// <summary>A Depth:1 response carrying the SVN property the cache keys on.</summary>
     private const string ListingWithRevision = """
         <?xml version="1.0" encoding="utf-8"?>
-        <D:multistatus xmlns:D="DAV:" xmlns:S="http://subversion.tigris.org/xmlns/dav/">
+        <D:multistatus xmlns:D="DAV:">
         <D:response>
         <D:href>/svn/!svn/rvr/9/trunk/a.txt</D:href>
         <D:propstat>
         <D:prop>
         <D:resourcetype/>
         <D:getcontentlength>3</D:getcontentlength>
-        <S:committed-rev>7</S:committed-rev>
+        <D:version-name>7</D:version-name>
         </D:prop>
         <D:status>HTTP/1.1 200 OK</D:status>
         </D:propstat>
@@ -240,6 +240,22 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (SvnCredentials.Unprotect(blob) != "secret") throw new Exception("a blob protected by this user was not opened");
             if (SvnCredentials.Unprotect(blob[..(blob.Length / 2)]) != null) throw new Exception("a truncated blob was accepted");
         });
+        Check("credential-cache-selection", () =>
+        {
+            string directory = Path.Combine(context.WorkingDirectory, "cache-selection");
+            Directory.CreateDirectory(directory);
+            WriteCacheFile(Path.Combine(directory, "http"), "wincrypt", "alice",
+                Convert.ToBase64String(Protect("secret")), "<http://example.invalid:80> realm");
+            WriteCacheFile(Path.Combine(directory, "https"), "wincrypt", "bob",
+                Convert.ToBase64String(Protect("secret")), "<https://example.invalid:443> realm");
+
+            var chosen = SvnCredentials.FromCache(new Uri("https://example.invalid/repo"), directory, SvnCredentials.Unprotect);
+            if (chosen is not { Username: "bob" }) throw new Exception("the entry for another scheme was chosen");
+            if (SvnCredentials.FromCache(new Uri("https://other.invalid/repo"), directory, SvnCredentials.Unprotect) != null)
+                throw new Exception("an entry was chosen for another host");
+            if (SvnCredentials.FromCache(new Uri("https://example.invalid/repo"), directory, _ => null) != null)
+                throw new Exception("an entry that could not be decrypted was used");
+        });
         Check("credential-realm-match", () =>
         {
             var repository = new Uri("https://svn.example.invalid/repo/trunk");
@@ -249,6 +265,12 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("a realm on another port was accepted");
             if (SvnCredentials.RealmMatches("<https://elsewhere.invalid:443> Authenticate your account.", repository))
                 throw new Exception("a realm on another host was accepted");
+            if (SvnCredentials.RealmMatches("<http://svn.example.invalid:443> Authenticate your account.", repository))
+                throw new Exception("a realm over another scheme was accepted");
+            if (SvnCredentials.RealmMatches("<https://svn.example.invalid.evil:443> Authenticate your account.", repository))
+                throw new Exception("a realm whose host merely starts with ours was accepted");
+            if (SvnCredentials.RealmMatches("<svn://svn.example.invalid:3690> Authenticate your account.", repository))
+                throw new Exception("an svnserve realm was accepted");
         });
         Check("listing-carries-the-revision", () =>
         {
@@ -659,6 +681,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Pair("password", password);
         Pair("svn:realmstring", realm);
         Pair("username", username);
+        stream.Write(Encoding.ASCII.GetBytes("END\n"));
     }
 
     /// <summary>Protects a value the way the Subversion client does, so the reader in the plugin

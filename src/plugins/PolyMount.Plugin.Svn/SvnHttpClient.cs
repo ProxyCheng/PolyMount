@@ -32,15 +32,14 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// drift apart.</summary>
     internal const int MaxConnections = 16;
     private const string ListingBody =
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\" xmlns:S=\"http://subversion.tigris.org/xmlns/dav/\"><prop>" +
-        "<resourcetype/><getcontentlength/><getlastmodified/><S:committed-rev/></prop></propfind>";
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop>" +
+        "<resourcetype/><getcontentlength/><getlastmodified/><version-name/></prop></propfind>";
     private const string VersionNameBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-name/></prop></propfind>";
     private const string ConfigurationBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-controlled-configuration/></prop></propfind>";
 
     private static readonly XNamespace Dav = "DAV:";
-    private static readonly XNamespace Svn = "http://subversion.tigris.org/xmlns/dav/";
     private readonly Uri _base;
     private readonly HttpClient _client;
     private readonly object _gate = new();
@@ -251,10 +250,14 @@ internal sealed class SvnHttpClient : ISvnBackend
             if (!string.IsNullOrEmpty(modified) && DateTimeOffset.TryParse(modified, CultureInfo.InvariantCulture,
                     DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
                 time = parsed.UtcDateTime;
-            // The revision this path last changed in, which is what a cache compares across global
-            // revisions. Without it every entry is keyed by the repository's generation and a new
-            // revision invalidates the whole tree.
-            contentVersion = prop.Element(Svn + "committed-rev")?.Value?.Trim() ?? string.Empty;
+            // The revision this entry last changed in, which is what a cache compares across
+            // global revisions. On a !svn/rvr listing each child's version-name is its own
+            // last-changed revision -- the same number libsvn_ra_serf reads for
+            // SVN_PROP_ENTRY_COMMITTED_REV. Without it every entry is keyed by the repository's
+            // generation and one new revision invalidates the whole tree. A value that is not a
+            // number would poison the cache key, so it is only kept when it parses.
+            var version = prop.Element(Dav + "version-name")?.Value?.Trim();
+            contentVersion = long.TryParse(version, out _) ? version! : string.Empty;
         }
     }
 

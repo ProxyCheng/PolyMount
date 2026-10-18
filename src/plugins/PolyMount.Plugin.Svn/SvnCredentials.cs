@@ -34,16 +34,25 @@ internal static class SvnCredentials
     /// a host; a realm that names the repository's own path is preferred, and otherwise the most
     /// recently written file wins, which is the one a person would have just authenticated with.
     /// </summary>
-    internal static SvnCredential? FromCache(Uri repository)
+    internal static SvnCredential? FromCache(Uri repository) => FromCache(repository, CacheDirectory(), Unprotect);
+
+    /// <summary>The same lookup over a given directory and decryptor, so the whole path — the file
+    /// format, the base64 blob and the realm match — can be exercised without a real credential
+    /// store.</summary>
+    internal static SvnCredential? FromCache(Uri repository, string directory, Func<byte[], string?> unprotect)
     {
-        string directory = CacheDirectory();
         if (!Directory.Exists(directory)) return null;
 
         SvnCredential? best = null;
         int bestScore = 0;
         DateTime bestWritten = DateTime.MinValue;
 
-        foreach (string file in Directory.EnumerateFiles(directory))
+        string[] files;
+        try { files = Directory.GetFiles(directory); }
+        catch (IOException) { return null; }
+        catch (UnauthorizedAccessException) { return null; }
+
+        foreach (string file in files)
         {
             Dictionary<string, byte[]>? values;
             try { values = Read(file); }
@@ -62,7 +71,10 @@ internal static class SvnCredentials
             string realm = Encoding.UTF8.GetString(realmBytes);
             if (!RealmMatches(realm, repository)) continue;
 
-            string? password = Unprotect(Convert.FromBase64String(Encoding.ASCII.GetString(passwordBytes)));
+            byte[] blob;
+            try { blob = Convert.FromBase64String(Encoding.ASCII.GetString(passwordBytes)); }
+            catch (FormatException) { continue; }
+            string? password = unprotect(blob);
             if (password == null) continue;
 
             int score = realm.Contains(repository.AbsolutePath.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) ? 2 : 1;
@@ -80,21 +92,20 @@ internal static class SvnCredentials
         return best;
     }
 
-    /// <summary>Whether a realm string names the repository's host, and its port when it says one.
-    /// The realm's own spelling is not ours to change: it is written by the server.</summary>
+    /// <summary>Whether a realm belongs to a repository. The cache key is the whole
+    /// <c>&lt;scheme://host:port&gt;</c> prefix the client builds, followed by the server's realm
+    /// text: the prefix is parsed and compared field by field, never searched for as a substring,
+    /// because a host name that merely appears inside another one — or the same host over a
+    /// different scheme — would otherwise be handed credentials meant for someone else.</summary>
     internal static bool RealmMatches(string realm, Uri repository)
     {
-        int at = realm.IndexOf(repository.Host, StringComparison.OrdinalIgnoreCase);
-        if (at < 0) return false;
-        int after = at + repository.Host.Length;
-        if (after < realm.Length && realm[after] == ':')
-        {
-            int end = after + 1;
-            while (end < realm.Length && char.IsAsciiDigit(realm[end])) end++;
-            if (end > after + 1 && int.TryParse(realm.AsSpan(after + 1, end - after - 1), out int port) && port != repository.Port)
-                return false;
-        }
-        return true;
+        if (!realm.StartsWith('<')) return false;
+        int close = realm.IndexOf('>');
+        if (close < 4) return false;
+        if (!Uri.TryCreate(realm[1..close], UriKind.Absolute, out var origin)) return false;
+        return string.Equals(origin.Scheme, repository.Scheme, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(origin.Host, repository.Host, StringComparison.OrdinalIgnoreCase)
+            && origin.Port == repository.Port;
     }
 
     /// <summary>The Subversion credential store for the current user.</summary>
@@ -111,6 +122,7 @@ internal static class SvnCredentials
         byte[] data = File.ReadAllBytes(path);
         var values = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         string? key = null;
+        bool terminated = false;
         int i = 0;
         while (i < data.Length)
         {
@@ -119,6 +131,10 @@ internal static class SvnCredentials
             string line = Encoding.ASCII.GetString(data, i, lineEnd - i);
             i = lineEnd + 1;
             if (line.Length == 0) continue;
+            // Subversion terminates the document with END, and its absence is how a file that was
+            // cut short looks. Requiring it is what turns "the last pair happened to end at the
+            // end of the file" into a rejected file.
+            if (line == "END") { terminated = true; break; }
             int space = line.IndexOf(' ');
             if (space != 1 || !int.TryParse(line.AsSpan(2), out int length) || length < 0) return null;
             if (i + length > data.Length) return null;
@@ -127,7 +143,7 @@ internal static class SvnCredentials
             if (line[0] == 'K') key = Encoding.UTF8.GetString(value);
             else if (line[0] == 'V' && key != null) values[key] = value;
         }
-        return values;
+        return terminated ? values : null;
     }
 
     /// <summary>Opens a DPAPI blob protected by this user. Null when it belongs to someone else or
