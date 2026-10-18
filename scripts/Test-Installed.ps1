@@ -90,10 +90,12 @@ if ($registered) {
     Check 'service account' ($registered.StartName -ne '') $registered.StartName
 } else { Check 'service registration readable' $false }
 
-# When the service is missing, the installer's own log is the only thing that says why.
-if ($null -eq (Get-Service -Name PolyMount -ErrorAction SilentlyContinue)) {
+# When the service is missing or is not running, the only things that say why are the installer's
+# log and the host's own.
+if (-not $service -or $service.Status -ne 'Running') {
     Write-Host '--- sc.exe query PolyMount ---'
     & sc.exe query PolyMount 2>&1 | Write-Host
+    if ($service) { & sc.exe qc PolyMount 2>&1 | Write-Host }
     if (Test-Path -LiteralPath $setupLog) {
         Write-Host "--- tail of $setupLog ---"
         Get-Content -LiteralPath $setupLog -Tail 40 | Write-Host
@@ -104,6 +106,18 @@ if ($null -eq (Get-Service -Name PolyMount -ErrorAction SilentlyContinue)) {
             Get-Content -LiteralPath $hostLog -Tail 30 | Write-Host
         }
     }
+    $logs = Join-Path $data 'logs'
+    if (Test-Path -LiteralPath $logs) {
+        foreach ($file in Get-ChildItem -LiteralPath $logs -File | Select-Object -First 3) {
+            Write-Host "--- tail of $($file.Name) ---"
+            Get-Content -LiteralPath $file.FullName -Tail 30 | Write-Host
+        }
+    } else { Write-Host "no host logs at $logs" }
+    Write-Host '--- Application event log, recent failures ---'
+    Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-10) } -ErrorAction SilentlyContinue |
+        Where-Object { $_.LevelDisplayName -in 'Error', 'Warning' } |
+        Select-Object -First 8 |
+        ForEach-Object { Write-Host ("  " + $_.TimeCreated.ToString('HH:mm:ss') + ' ' + $_.ProviderName + ': ' + ($_.Message -split "`n")[0]) }
 }
 
 $running = @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue)
