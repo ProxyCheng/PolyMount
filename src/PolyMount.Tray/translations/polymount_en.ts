@@ -646,6 +646,14 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Explorer context menu (registered for all users)</translation>
     </message>
     <message>
+      <source>tray.autostart</source>
+      <translation>Start with Windows</translation>
+    </message>
+    <message>
+      <source>tray.autostart.allusers</source>
+      <translation>Starts with Windows (registered for all users)</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>Exit PolyMount</translation>
     </message>

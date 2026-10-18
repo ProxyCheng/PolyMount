@@ -243,6 +243,26 @@ internal static class Program
             shell.SetChecked(ShellMenuInstaller.IsInstalled());
         };
 
+        // The tray starts with the reader's session; the service is the part that starts with the
+        // machine. An entry the setup wrote for every user is reported rather than offered, for the
+        // same reason as the menu above it.
+        var autostart = menu.AddAction("");
+        bool autoForEveryone = TrayAutostart.IsMachineWide;
+        I18n.Bind(autostart.SetText, autoForEveryone ? "tray.autostart.allusers" : "tray.autostart");
+        autostart.SetCheckable(!autoForEveryone);
+        autostart.SetChecked(TrayAutostart.IsEnabled);
+        autostart.SetEnabled(!autoForEveryone);
+        autostart.Triggered += _ =>
+        {
+            try
+            {
+                if (TrayAutostart.IsEnabled) TrayAutostart.Disable();
+                else TrayAutostart.Enable();
+            }
+            catch { /* ignore */ }
+            autostart.SetChecked(TrayAutostart.IsEnabled);
+        };
+
         menu.AddSeparator();
 
         // Checking is always available; being told about a version is what "do not remind me"

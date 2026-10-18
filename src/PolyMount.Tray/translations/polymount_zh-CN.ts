@@ -649,6 +649,14 @@
       <translation>资源管理器右键菜单（已为所有用户注册）</translation>
     </message>
     <message>
+      <source>tray.autostart</source>
+      <translation>开机自启</translation>
+    </message>
+    <message>
+      <source>tray.autostart.allusers</source>
+      <translation>开机自启（已为所有用户注册）</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>退出 PolyMount</translation>
     </message>
