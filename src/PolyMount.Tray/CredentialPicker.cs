@@ -22,7 +22,7 @@ internal sealed class CredentialPicker : QDialog
     public string SelectedId => _selectedId;
 
     public CredentialPicker(QWidget? parent, List<CredentialRecord> items, string selectedId,
-        string defaultText, string defaultDetail) : base(parent)
+        string defaultText, string defaultDetail, bool refresh = true) : base(parent)
     {
         _items = items;
         _selectedId = selectedId;
@@ -30,12 +30,15 @@ internal sealed class CredentialPicker : QDialog
         _defaultDetail = defaultDetail;
         // The store can change while the editor that opened this is idle (a credential deleted
         // from the tray manager, say). Read it now so no row offers something that is already gone.
-        try
+        if (refresh)
         {
-            var current = SupervisorClient.Default.Credentials();
-            if (current.Ok) _items = current.Credentials;
+            try
+            {
+                var current = SupervisorClient.Default.Credentials();
+                if (current.Ok) _items = current.Credentials;
+            }
+            catch (Exception) { }
         }
-        catch (Exception) { }
 
         SetObjectName("credentialPicker");
         SetWindowTitle(I18n.T("credential.pick.title"));
@@ -202,5 +205,52 @@ internal sealed class CredentialPicker : QDialog
         }
         catch (Exception) { }
         Rebuild();
+    }
+
+    /// <summary>Builds the picker with fixtures and checks that every row is one complete, visible
+    /// line. The rows were once widget items whose height the list did not derive, so they rendered
+    /// as clipped slivers while the build stayed green; this is that failure, made visible.</summary>
+    internal static void Smoke(QWidget parent, string? capture = null)
+    {
+        var items = new List<CredentialRecord>
+        {
+            new("a", "Work SVN", "alice"),
+            new("b", "Personal", "bob")
+        };
+        var picker = new CredentialPicker(parent, items, "a", "None",
+            "The source provides its own account.", refresh: false);
+        picker.Show();
+        try
+        {
+            if (picker._list.Count != items.Count + 1)
+                throw new InvalidOperationException(
+                    $"Credential picker shows {picker._list.Count} rows, expected {items.Count + 1}");
+            int line = picker._list.FontMetrics().Height();
+            for (int i = 0; i < picker._list.Count; i++)
+            {
+                var item = picker._list.Item(i)!;
+                if (string.IsNullOrWhiteSpace(item.Text()))
+                    throw new InvalidOperationException($"Credential row {i} has no text");
+                int height = picker._list.VisualItemRect(item).Height();
+                if (height < line)
+                    throw new InvalidOperationException(
+                        $"Credential row {i} is {height}px tall, shorter than its {line}px line");
+            }
+            picker._list.SetCurrentRow(1);
+            QCoreApplication.ProcessEvents();
+            if (!picker._remove.IsEnabled())
+                throw new InvalidOperationException("A saved credential row cannot be removed");
+            picker._list.SetCurrentRow(0);
+            QCoreApplication.ProcessEvents();
+            if (picker._remove.IsEnabled())
+                throw new InvalidOperationException("The 'none' row can be removed");
+            picker._list.SetCurrentRow(1);
+            QCoreApplication.ProcessEvents();
+            if (capture != null) { using var image = picker.Grab(); image.Save(capture); }
+            picker.UseSelected();
+            if (picker.Result() != 1 || picker.SelectedId != "a")
+                throw new InvalidOperationException("Credential selection was not accepted");
+        }
+        finally { picker.Hide(); picker.DeleteLater(); }
     }
 }

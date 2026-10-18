@@ -67,3 +67,8 @@ config.json
 /.claude/
 /scripts/Test-WarmPackage.py
 /scripts/Test-EngineStartup.ps1
+# The publication guard names the internal tokens it looks for; it stays local.
+/scripts/Check-PublicSafe.ps1
+
+# A smoke run's screenshots are looked at, not kept.
+/.capture/

@@ -131,6 +131,18 @@ function Stop-HostProcesses {
         }
     }
     Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    # Everything else that runs out of the installation directory holds the files this setup has
+    # to replace: an MCP server an agent started, a probe window, a worker whose supervisor is
+    # already gone. Setup's own Restart Manager step runs after this one and turns a survivor into
+    # "Setup was unable to automatically close all applications", so nothing that lives in this
+    # directory is left running.
+    foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
+        $path = $null
+        try { $path = $process.Path } catch { continue }
+        if (-not $path) { continue }
+        if (-not $path.StartsWith($InstallDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch { }
+    }
 }
 try {
     switch ($Action) {
@@ -139,7 +151,14 @@ try {
             if (-not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin\winfsp-x64.dll'))) { throw 'WinFsp is missing.' }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'))) { throw 'Service executable is missing.' }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Tray\platforms\qwindows.dll'))) { throw 'Qt Windows platform plugin is missing.' }
-            if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Service\plugins\PolyMount.Plugin.Svn.dll'))) { throw 'The bundled source plugin is missing.' }
+            # One entry per bundled plugin, as in the setup's table: a plugin that is copied but
+            # never named in the configuration is installed and inert, which is not what the
+            # wizard's checkboxes promised.
+            foreach ($plugin in 'PolyMount.Plugin.Svn.dll', 'PolyMount.Plugin.GameEngine.dll') {
+                if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory ('Service\plugins\' + $plugin)))) {
+                    throw "The bundled plugin $plugin is missing."
+                }
+            }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Mcp\PolyMount.Mcp.exe'))) { throw 'The MCP server executable is missing.' }
         }
         'Install' {

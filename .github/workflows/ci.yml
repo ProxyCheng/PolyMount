@@ -109,6 +109,37 @@ jobs:
         shell: pwsh
         run: ./scripts/Fetch-QtSharp.ps1
 
+      # Signing is optional: without the secret the build is the same as before. The certificate
+      # travels as a base64 PFX so the workflow never needs a hardware token; an EV token cannot
+      # be used from a hosted runner, which is why those use a cloud signing service instead.
+      # The test is in the script, not in `if:`: the secrets context is not available to a step
+      # conditional.
+      - name: Prepare signing certificate
+        shell: pwsh
+        env:
+          SIGNING_PFX_B64: ${{ secrets.SIGNING_PFX_B64 }}
+          SIGNING_PFX_PASSWORD: ${{ secrets.SIGNING_PFX_PASSWORD }}
+        run: |
+          if (-not $env:SIGNING_PFX_B64) {
+            Write-Host 'No signing certificate is configured; the setup will be unsigned.'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_B64))
+          $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          # The build verifies the setup it signed. A self-signed certificate verifies only where
+          # it is trusted, and every hosted runner is a fresh machine.
+          $cer = Join-Path $env:RUNNER_TEMP 'signing.cer'
+          Export-Certificate -Cert $cert -FilePath $cer | Out-Null
+          certutil -addstore -f Root $cer | Out-Null
+          certutil -addstore -f TrustedPublisher $cer | Out-Null
+          "POLYMOUNT_SIGN_THUMBPRINT=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Shipped beside the setup: a self-signed signature is verifiable only where this
+          # certificate is trusted, and whoever installs the package needs the certificate.
+          New-Item -ItemType Directory -Path artifacts -Force | Out-Null
+          Copy-Item $cer artifacts/PolyMount-Signing.cer -Force
+
       - name: Build installer
         shell: pwsh
         run: |
@@ -127,6 +158,7 @@ jobs:
           path: |
             artifacts/PolyMount-*-Setup.exe
             artifacts/PolyMount-*-Setup.exe.sha256
+            artifacts/PolyMount-Signing.cer
           if-no-files-found: error
 
   # The one check that uses the product the way a reader does: a machine that has never seen it,
@@ -177,7 +209,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            artifacts/PolyMount-*-Setup.exe \
-            artifacts/PolyMount-*-Setup.exe.sha256 \
+          assets=(artifacts/PolyMount-*-Setup.exe artifacts/PolyMount-*-Setup.exe.sha256)
+          if [ -f artifacts/PolyMount-Signing.cer ]; then assets+=(artifacts/PolyMount-Signing.cer); fi
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --title "$GITHUB_REF_NAME" --generate-notes

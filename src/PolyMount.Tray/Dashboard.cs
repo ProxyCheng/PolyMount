@@ -15,26 +15,75 @@ internal sealed class Dashboard : QWidget
     private readonly QLabel _listCount, _empty, _feedback, _updated;
     private readonly QLabel _detailName, _detailState, _mountPath, _layers, _warmup, _detailError;
     private readonly QWidget _detailBody;
+    /// <summary>The body's scroll area, kept so that it can go away with the body: a scroll area
+    /// whose widget is hidden still draws a scrollbar for it, which is an empty panel offering to
+    /// scroll nothing.</summary>
+    private readonly QScrollArea _detailScroll;
     /// <summary>The panel the selected instance's details are in, kept because a smoke run
     /// photographs it: it is the part of the workspace a reader acts on, and in a workspace it is
     /// usually covered by whichever tab was opened over it.</summary>
     private readonly QWidget _detailPanel;
+    /// <summary>The parts a smoke run measures to check that a short window gives its height to the
+    /// panels rather than to a scrollbar around the whole page: the page's scroll area, the splitter
+    /// the two panels are in, the overview page itself, and the sidebar with the column inside it
+    /// (whose own height is the reason the last two are measured apart).</summary>
+    private readonly QScrollArea _overviewScroll;
+    private readonly QSplitter _workspace;
+    private readonly QWidget _overviewPage;
+    private readonly QWidget _sidebar, _sidebarBody;
     private readonly QPushButton _refresh, _start, _stop, _create;
     private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect;
     private readonly QTimer _timer;
+    private readonly BusyLine _busy;
     private readonly List<MountStatus> _mounts = new();
     private List<MountStatus> _visible = new();
     private Task<Result>? _pending;
     private bool _connected, _filling, _wasVisible;
+    /// <summary>What the last status said the supervisor itself was doing. It goes on answering
+    /// while it takes its instances down, so "reachable" alone would call a stopping service
+    /// connected.</summary>
+    private ServiceState _serviceState = ServiceState.Running;
     private string? _selectedName;
     private DateTime _nextRefresh;
     private readonly TabWorkspace _tabs;
     private bool _quietPending;
+    /// <summary>A command went out and the state that proves it took effect has not come back yet.
+    ///
+    /// A command's own answer is not that state: "disabled" says the configuration was written, not
+    /// that the instance is down, and the refresh that follows is what turns it into what the
+    /// buttons and the panel show. Until it arrives the buttons stay flat, or a second press sends
+    /// the same command again — which is how "disable this instance" could be asked for over and
+    /// over, each press opening its own confirmation.</summary>
+    private bool _settle;
+    /// <summary>For a service command, the state that has to come back before <see cref="_settle"/>
+    /// may be cleared: true = reachable, false = gone. Null for every other command, which any
+    /// status settles.
+    ///
+    /// Stopping is the case where a status is not the state yet. The supervisor replies to a stop
+    /// and then takes its workers down — each is given ten seconds to unmount — and it goes on
+    /// answering "status" the whole time. A reply that still finds it reachable is therefore the
+    /// state before the command took effect, and clearing the wait on it put the stop button back
+    /// while the service was still there, with the list still saying so until the next status ten
+    /// seconds later.</summary>
+    private bool? _expectService;
+    /// <summary>When to stop waiting for that state and offer the buttons again. A command that was
+    /// never going to take effect must not leave the window flat forever.</summary>
+    private DateTime _expectServiceUntil;
+    /// <summary>How long a service command may take to show its state. Starting is one process
+    /// coming up; stopping is that process letting every worker unmount first, each of which is
+    /// allowed ten seconds before it is killed.</summary>
+    private static readonly TimeSpan StartWait = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan StopWait = TimeSpan.FromSeconds(45);
     private Action? _queued;
     /// <summary>Whether the window has been told it may go: the answer to the pages it asked, kept
     /// so that closing it again does not ask them twice.</summary>
     private bool _allowClose;
-    private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet, bool ServiceAction = false);
+    // Connection says this result was asked for to find out whether the service can be reached,
+    // so a refusal means it cannot: the merged status answers "unreachable" as a response of its
+    // own rather than throwing, and without this a window kept offering actions that could only
+    // fail ("Access to the path is denied." under "Operation failed").
+    private sealed record Result(ControlResponse? Response, string? Message, string? Error, bool Quiet,
+        bool ServiceAction = false, bool Connection = false);
     /// <summary>The theme picker's items, in the order the modes are numbered: its index is the mode
     /// the reader chose, which is why they are read by position and re-lettered where they stand
     /// rather than added again when the language changes.</summary>
@@ -55,22 +104,39 @@ internal sealed class Dashboard : QWidget
         shell.AddWidget(_tabs);
         var overviewPage = new QWidget();
         _tabs.Open("overview", () => overviewPage, () => T("overview"), pinned: true);
-        var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080));
+        var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080, out _overviewScroll));
+        _overviewPage = overviewPage;
         overviewPage.SetMinimumSize(0, 0);
         overviewPage.SetSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored);
         root.SetContentsMargins(0, 0, 0, 0);
         root.SetSpacing(0);
 
+        // The sidebar scrolls inside itself rather than being part of what the page needs room
+        // for. What is in it is a column of controls whose own height comes to more than the
+        // shortest window the workspace allows, and the page's minimum height is the largest thing
+        // it holds — so leaving the sidebar as ordinary content made every window shorter than the
+        // sidebar show a scrollbar for the whole workspace, with the instance panels pushed out of
+        // sight behind it. Fixed width, own scroll: the panels get the height, and only a sidebar
+        // too short for its own controls scrolls.
         var sidebar = Panel("sidebar");
+        _sidebar = sidebar;
         sidebar.SetFixedWidth(204);
-        var nav = new QVBoxLayout(sidebar);
-        nav.SetContentsMargins(18, 28, 18, 22);
-        nav.SetSpacing(12);
+        var sidebarScroll = new QScrollArea(sidebar);
+        sidebarScroll.SetObjectName("sidebarScroll");
+        sidebarScroll.SetWidgetResizable(true);
+        sidebarScroll.SetFrameShape(QFrame.Shape.NoFrame);
+        sidebarScroll.SetHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff);
+        var sidebarBody = new QWidget();
+        sidebarBody.SetObjectName("sidebarBody");
+        _sidebarBody = sidebarBody;
+        var nav = new QVBoxLayout(sidebarBody);
+        nav.SetContentsMargins(16, 20, 16, 16);
+        nav.SetSpacing(10);
         var brand = new QLabel();
         brand.SetPixmap(TrayIcons.BrandPixmap);
         nav.AddWidget(brand);
         nav.AddWidget(Label("brand.subtitle", "sidebarMuted"));
-        nav.AddSpacing(28);
+        nav.AddSpacing(16);
         nav.AddWidget(Label("workspace", "sidebarMuted"));
         nav.AddWidget(Label("overview", "navActive"));
         nav.AddStretch(1);
@@ -81,7 +147,7 @@ internal sealed class Dashboard : QWidget
         _stop = Button("service.stop", () => RunService(false), "navButton", "stop");
         nav.AddWidget(_start);
         nav.AddWidget(_stop);
-        nav.AddSpacing(12);
+        nav.AddSpacing(10);
         _language = ContinuousScrolling.Combo();
         // A language picker names each language in its own language, so both entries read
         // the same whichever catalog is active; the platform supplies the endonym instead
@@ -101,8 +167,8 @@ internal sealed class Dashboard : QWidget
         // its longest item — "跟随系统", "Follow system" — at fifty-two and eighty-five: it drew the
         // name as far as it fitted and left the last character standing in half, which a combo box
         // does without saying anything, having no ellipsis. A row of its own is what makes them
-        // readable, at about thirty pixels of the sidebar's height — which it pays for by scrolling,
-        // being taller than the shortest window the workspace can be shrunk to either way.
+        // readable, at about thirty pixels of the sidebar's height — which the sidebar now pays for
+        // by scrolling itself rather than by making the whole page taller.
         foreach (var (key, combo) in new (string Key, QComboBox Combo)[] { ("language", _language), ("theme", _theme) })
         {
             var column = new QVBoxLayout();
@@ -112,11 +178,19 @@ internal sealed class Dashboard : QWidget
             nav.AddLayout(column);
         }
         nav.AddWidget(Label("tray.keepRunning", "sidebarMuted"));
+        sidebarScroll.SetWidget(sidebarBody);
+        var sidebarFrame = new QVBoxLayout(sidebar);
+        sidebarFrame.SetContentsMargins(0, 0, 0, 0);
+        sidebarFrame.AddWidget(sidebarScroll);
         root.AddWidget(sidebar);
 
         var content = new QVBoxLayout();
-        content.SetContentsMargins(26, 24, 26, 18);
-        content.SetSpacing(18);
+        content.SetContentsMargins(24, 20, 24, 14);
+        // Twelve rather than eighteen between the heading, the metrics, the panels and the two
+        // status lines: those gaps are part of the page's minimum height, and the panels are what a
+        // reader came for. The panels still get every pixel the window has left over — this only
+        // decides how small a window can get before the page has to scroll.
+        content.SetSpacing(12);
         root.AddLayout(content, 1);
         var heading = new QHBoxLayout();
         var title = new QVBoxLayout();
@@ -141,12 +215,13 @@ internal sealed class Dashboard : QWidget
         content.AddLayout(overview);
 
         var workspace = new QSplitter();
+        _workspace = workspace;
         workspace.SetHandleWidth(14);
         workspace.SetChildrenCollapsible(false);
         var listPanel = Panel("surface");
         var list = new QVBoxLayout(listPanel);
-        list.SetContentsMargins(18, 18, 18, 16);
-        list.SetSpacing(14);
+        list.SetContentsMargins(16, 14, 16, 12);
+        list.SetSpacing(10);
         var listHeading = new QHBoxLayout();
         listHeading.AddWidget(Label("mount.instances", "sectionTitle"));
         listHeading.AddStretch(1);
@@ -189,7 +264,7 @@ internal sealed class Dashboard : QWidget
         details.SetMinimumWidth(306);
         details.SetMaximumWidth(390);
         var detail = new QVBoxLayout(details);
-        detail.SetContentsMargins(20, 20, 20, 20);
+        detail.SetContentsMargins(16, 16, 16, 14);
         detail.SetSpacing(12);
         detail.AddWidget(Label("detail", "eyebrow"));
         _detailName = PlainLabel("", "detailTitle");
@@ -197,6 +272,7 @@ internal sealed class Dashboard : QWidget
         _detailState = PlainLabel("", "muted");
         detail.AddWidget(_detailState);
         var scroll = new QScrollArea();
+        _detailScroll = scroll;
         scroll.SetWidgetResizable(true);
         scroll.SetFrameShape(QFrame.Shape.NoFrame);
         _detailBody = new QWidget();
@@ -249,6 +325,10 @@ internal sealed class Dashboard : QWidget
         content.AddWidget(workspace, 1);
         _feedback = PlainLabel(T("connecting"), "feedback");
         content.AddWidget(_feedback);
+        // The line that says the window is waiting for the service: under the message that says
+        // what it is waiting for, and above the footer's own two lines.
+        _busy = new BusyLine();
+        content.AddWidget(_busy);
         var footer = new QHBoxLayout();
         var footerHint = Label("dashboard.footer", "muted");
         footerHint.SetWordWrap(false);
@@ -315,6 +395,118 @@ internal sealed class Dashboard : QWidget
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>Self-check for what a short window does with the workspace: the instance list and
+    /// the detail panel take the height that is left, and the page around them scrolls only once
+    /// they are at their own minimum and cannot give up any more.
+    ///
+    /// This is what a short window used to get wrong, in two ways. The page asked for the height
+    /// its wrapped labels would like rather than what it needed, so it was laid out taller than the
+    /// window with blank space to spare and scrolled for the difference; and what it held at its
+    /// tallest was the sidebar — a fixed-width column of controls whose own height comes to more
+    /// than a laptop's window has to give. The page now asks for its minimum (see the page surface
+    /// in <see cref="WindowScrollArea"/>), and the sidebar scrolls inside itself rather than making
+    /// the page taller. What the check does is measure both, then ask for a window with exactly
+    /// what the page needs and one with a little less.</summary>
+    internal void VerifyPanelsTakeTheHeight()
+    {
+        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
+        Resize(1280, 820);
+        QCoreApplication.ProcessEvents();
+        int sidebarMinimum = _sidebar.MinimumSizeHint().Height();
+        int sidebarContent = _sidebarBody.MinimumSizeHint().Height();
+        if (sidebarMinimum > 100)
+            throw new InvalidOperationException(
+                $"The sidebar still asks the page for {sidebarMinimum} px of height instead of scrolling inside itself");
+        if (sidebarContent < sidebarMinimum * 3)
+            throw new InvalidOperationException(
+                $"The sidebar's own column is only {sidebarContent} px tall, so this check would pass without measuring anything");
+        int roomy = _workspace.Height;
+        if (roomy <= _workspace.MinimumSizeHint().Height())
+            throw new InvalidOperationException(
+                $"The panels stopped at their minimum ({_workspace.MinimumSizeHint().Height()} px) in a window with {roomy} px to give them");
+        if (_overviewScroll.VerticalScrollBar().IsVisible())
+            throw new InvalidOperationException(
+                $"A window with room to spare scrolled the whole page: {Width}x{Height}, viewport "
+                + $"{_overviewScroll.Viewport().Width}x{_overviewScroll.Viewport().Height}, page "
+                + $"{_overviewScroll.Widget().Width}x{_overviewScroll.Widget().Height}");
+        // What the page needs at least, and how much of the window is not the page (the tabs above
+        // it). The window is then asked for exactly that much and a little less.
+        int needed = _overviewScroll.Widget().MinimumSizeHint().Height();
+        int overhead = Height - _overviewScroll.Viewport().Height;
+        Console.WriteLine($"Workspace: the page needs {needed} px; the panels take every pixel above that.");
+        Resize(1280, needed + overhead + 40);
+        QCoreApplication.ProcessEvents();
+        if (_overviewScroll.VerticalScrollBar().IsVisible())
+            throw new InvalidOperationException(
+                $"A window 40 px taller than what the page needs ({needed} px) still scrolled the whole page");
+        Resize(1280, needed + overhead - 80);
+        QCoreApplication.ProcessEvents();
+        if (!_overviewScroll.VerticalScrollBar().IsVisible())
+            throw new InvalidOperationException(
+                $"A window shorter than what the page needs ({needed} px) did not scroll: the panels were clipped instead of scrolled to");
+        Resize(1280, 820);
+        QCoreApplication.ProcessEvents();
+        // The waiting line is the window's answer to a click that went out to another process:
+        // hidden at rest, moving while a request is out.
+        if (_busy.IsVisible())
+            throw new InvalidOperationException("The waiting line was drawn with nothing to wait for");
+        _busy.SetBusy(true);
+        if (!_busy.IsVisible())
+            throw new InvalidOperationException("The waiting line did not appear while a request was out");
+        _busy.SetBusy(false);
+        if (_busy.IsVisible())
+            throw new InvalidOperationException("The waiting line stayed after the request was answered");
+    }
+
+    /// <summary>Self-check for the buttons a reader presses: while a command is out — and, which
+    /// is the part that was missing, while the status that proves it took effect is still on its
+    /// way — none of them can be pressed again. A command's answer says nothing about the
+    /// instance's state, so the window used to put its buttons back with the state it had before
+    /// the command, and a second press re-sent the same thing: "disable this instance" could be
+    /// asked for over and over, each press opening its own confirmation.</summary>
+    internal void VerifyActionsWaitForTheState()
+    {
+        if (!_connected || _pending != null) return;
+        // The instance's half needs an instance to be selected; the service's half is about the
+        // window's own waiting and holds with an empty list.
+        if (Selected is { })
+        {
+            _settle = true;
+            UpdateActions();
+            if (_toggleMount.IsEnabled())
+                throw new InvalidOperationException("The instance's button was live while the state it changed was still on its way");
+            if (!_busy.IsVisible())
+                throw new InvalidOperationException("The window was waiting for that state without saying so");
+            _settle = false;
+            UpdateActions();
+            if (!_toggleMount.IsEnabled())
+                throw new InvalidOperationException("The instance's button stayed flat after the state had arrived");
+            Console.WriteLine("Actions: the buttons wait for the state a command changed.");
+        }
+        else Console.WriteLine("Actions: no instance is selected, so only the service's own wait is checked.");
+        // The state a service command waits for is not "any status": a stop is answered by the
+        // supervisor before it takes its workers down, so a status that still finds the service
+        // reachable is the state from before the command. Only one that finds it gone settles the
+        // window — and the deadline hands the buttons back if that status never comes.
+        bool wasConnected = _connected;
+        try
+        {
+            _expectService = false;
+            _expectServiceUntil = DateTime.UtcNow + StopWait;
+            if (!StillWaiting(DateTime.UtcNow))
+                throw new InvalidOperationException("A stop settled on a status that still found the service answering");
+            _connected = false;
+            if (StillWaiting(DateTime.UtcNow))
+                throw new InvalidOperationException("A stop the status found gone was still being waited on");
+            _connected = wasConnected;
+            _expectService = true;
+            _expectServiceUntil = DateTime.UtcNow.AddSeconds(-1);
+            if (StillWaiting(DateTime.UtcNow))
+                throw new InvalidOperationException("A service command kept the buttons flat past its deadline");
+        }
+        finally { _connected = wasConnected; _expectService = null; }
+    }
 
     /// <summary>Self-check for closing the dashboard, in two steps because the interesting half of
     /// it is asynchronous: closing a window makes it disappear now and deletes it when the event
@@ -419,30 +611,31 @@ internal sealed class Dashboard : QWidget
     }
 
     private MountStatus? Selected => _mounts.FirstOrDefault(m => m.Name == _selectedName);
-    private void Refresh(bool quiet = false) => Run(InstanceView.Status, null, quiet);
+    private void Refresh(bool quiet = false) => Run(InstanceView.Status, null, quiet, connection: true);
 
-    private void Run(Func<ControlResponse> call, string? successKey, bool quiet = false)
+    private void Run(Func<ControlResponse> call, string? successKey, bool quiet = false, bool connection = false)
     {
         if (_pending != null)
         {
             if (_quietPending && !quiet)
             {
-                _queued = () => Run(call, successKey);
+                _queued = () => Run(call, successKey, connection: connection);
                 _quietPending = false;
                 UpdateActions();
             }
             return;
         }
         _quietPending = quiet;
+        if (!quiet) _settle = true;
         if (!quiet) Feedback(T(successKey == null ? "refreshing" : "working"));
         _pending = Task.Run(() =>
         {
             try
             {
                 var response = call();
-                return new Result(response, successKey, response.Ok ? null : response.Error ?? "Unknown error", quiet);
+                return new Result(response, successKey, response.Ok ? null : response.Error ?? "Unknown error", quiet, Connection: connection);
             }
-            catch (Exception ex) { return new Result(null, null, ex.Message, quiet); }
+            catch (Exception ex) { return new Result(null, null, ex.Message, quiet, Connection: connection); }
         });
         UpdateActions();
     }
@@ -456,13 +649,20 @@ internal sealed class Dashboard : QWidget
             if (result.ServiceAction)
             {
                 Feedback(result.Message ?? result.Error ?? "", result.Error != null);
+                // A request that never went out is not one to wait on: whatever the service is
+                // doing, it is not what this command would have changed.
+                if (result.Error != null) { _settle = false; _expectService = null; }
                 _nextRefresh = DateTime.UtcNow.AddSeconds(1);
             }
             else
             {
-                _connected = result.Response != null;
+                // A status refresh that came back refused means the service cannot be reached:
+                // the merged view reports an unreachable supervisor as a response of its own, so
+                // "there is a response" is not the same question as "the service answered".
+                _connected = result.Connection ? result.Response is { Ok: true } : result.Response != null;
                 if (result.Response is { Ok: true } response)
                 {
+                    if (result.Connection) _serviceState = response.State;
                     _mounts.Clear();
                     _mounts.AddRange(response.Mounts);
                     UpdateOverview();
@@ -472,7 +672,7 @@ internal sealed class Dashboard : QWidget
                     else if (_feedback.Text.StartsWith(T("connection.failed"), StringComparison.Ordinal)) Feedback(T("connected"));
                 }
                 else if (result.Error != null)
-                    Feedback(T(result.Response == null ? "connection.failed" : "operation.failed") + " " + result.Error, true);
+                    Feedback(T(result.Response == null || result.Connection ? "connection.failed" : "operation.failed") + " " + result.Error, true);
                 if (!_connected)
                 {
                     foreach (var value in new[] { _total, _active, _issues, _layerTotal }) value.SetText("—");
@@ -481,6 +681,21 @@ internal sealed class Dashboard : QWidget
                 }
                 _nextRefresh = DateTime.UtcNow.AddSeconds(10);
             }
+            // What the answer to a command proves, and what it does not: a status is the state
+            // itself and settles the window; anything else leaves the buttons flat and asks for
+            // the state at once, which is the refresh the reader would otherwise wait up to ten
+            // seconds for with the old state still on screen.
+            //
+            // A service command is the one case where a status is not yet that state (see
+            // _expectService), so it keeps the window waiting until a status says what was asked
+            // for — and is asked again a second later rather than ten, so the wait ends when the
+            // service does rather than when the slow poll comes round.
+            if (result.Connection)
+            {
+                _settle = StillWaiting(DateTime.UtcNow);
+                if (_settle) _nextRefresh = DateTime.UtcNow.AddSeconds(1);
+            }
+            else if (!result.Quiet) _nextRefresh = DateTime.UtcNow;
             UpdateConnection();
             UpdateActions();
             if (_queued is { } queued) { _queued = null; queued(); }
@@ -488,6 +703,19 @@ internal sealed class Dashboard : QWidget
         bool visible = IsVisible();
         if (visible && _pending == null && (!_wasVisible || DateTime.UtcNow >= _nextRefresh)) Refresh(quiet: true);
         _wasVisible = visible;
+    }
+
+    /// <summary>Whether a command is still waiting for the state it changed, now that a status has
+    /// come back. Any status settles an instance's own command — the supervisor carries it out
+    /// before it answers, so the next status is already the result. A service command is settled
+    /// only by the reachability it asked for, and gives up at its deadline: a command that never
+    /// takes effect must hand the buttons back rather than hold them flat.</summary>
+    private bool StillWaiting(DateTime now)
+    {
+        if (_expectService is not { } reachable) return false;
+        if (reachable != _connected && now < _expectServiceUntil) return true;
+        _expectService = null;
+        return false;
     }
 
     private void Translate()
@@ -525,10 +753,30 @@ internal sealed class Dashboard : QWidget
         _filter.BlockSignals(false);
     }
 
+    /// <summary>The service as the window shows it. Two of these four are the backend's own to
+    /// say — running, and stopping while it takes its instances down — and two are the absence of
+    /// an answer: a service that has not come up yet and one that has gone cannot report anything
+    /// about themselves, so the window adds what it itself asked for.</summary>
+    private enum ServiceView { Stopped, Starting, Running, Stopping }
+    private ServiceView Service =>
+        !_connected
+            ? (_expectService == true ? ServiceView.Starting : ServiceView.Stopped)
+            : _serviceState == ServiceState.Stopping || _expectService == false
+                ? ServiceView.Stopping
+                : ServiceView.Running;
+
     private void UpdateConnection()
     {
-        SetText(_service, "●  " + T(_connected ? "service.online" : "service.offline"));
-        string style = _connected ? "color: #6ee7b7;" : "color: #fbbf24;";
+        var state = Service;
+        string key = state switch
+        {
+            ServiceView.Starting => "service.starting",
+            ServiceView.Stopping => "service.stopping",
+            ServiceView.Running => "service.online",
+            _ => "service.offline"
+        };
+        SetText(_service, "●  " + T(key));
+        string style = state == ServiceView.Running ? "color: #6ee7b7;" : "color: #fbbf24;";
         if (_service.StyleSheet != style) _service.SetStyleSheet(style);
     }
 
@@ -593,6 +841,7 @@ internal sealed class Dashboard : QWidget
     {
         var m = Selected;
         _detailBody.SetVisible(m != null);
+        _detailScroll.SetVisible(m != null);
         SetText(_detailName, m?.Name ?? T("detail.select"));
         SetText(_detailState, m == null ? T("detail.hint") : (_connected ? StateText(m) : T("detail.offline")));
         string style = m == null || !_connected ? "color: " + TrayTheme.Tokens.Muted + ";" : $"color: {StateColor(m)};";
@@ -613,15 +862,23 @@ internal sealed class Dashboard : QWidget
 
     private void UpdateActions()
     {
-        bool idle = _pending == null || _quietPending;
+        bool idle = (_pending == null || _quietPending) && !_settle;
+        // An automatic refresh is not something a reader asked for and must not flash a waiting
+        // line every ten seconds; a button press is.
+        _busy.SetBusy(_settle || (_pending != null && !_quietPending));
         var m = Selected;
         bool ready = idle && _connected && m != null;
         _refresh.SetEnabled(idle);
         string refreshText = T(idle ? "refresh" : "working.short");
         if (_refresh.Text != refreshText) _refresh.SetText(refreshText);
-        _start.SetEnabled(idle && !_connected);
-        _stop.SetEnabled(idle && _connected);
-        _create.SetEnabled(idle && _connected);
+        // A service that has said it is stopping is not one to ask again: the command is already
+        // out and being carried out where nothing here can see its progress. Without this a
+        // window opened during the shutdown (or one that never asked) offers "stop" for as long
+        // as the supervisor is still answering — which is exactly the window this all began with.
+        bool stopping = _connected && _serviceState == ServiceState.Stopping;
+        _start.SetEnabled(idle && !_connected && !stopping);
+        _stop.SetEnabled(idle && _connected && !stopping);
+        _create.SetEnabled(idle && _connected && !stopping);
         // One button over the instance's three states. The disabled one is the case that used to be
         // out of reach from here: an instance switched off in the configuration has no process, so
         // there was nothing to mount, and the button was greyed out with a tooltip telling the
@@ -657,7 +914,10 @@ internal sealed class Dashboard : QWidget
 
     private void ToggleSelected()
     {
-        if (Selected is not { } m) return;
+        // A second press while the first is still being carried out — or while the state it changed
+        // is on its way back — would send the same command again. The button is drawn flat for
+        // that window, and this is the same rule where the press lands.
+        if (_settle || (_pending != null && !_quietPending) || Selected is not { } m) return;
         // Mounting and unmounting are the supervisor's: it is the one that runs an instance's
         // process. They are also what changes which instances have one, so the addresses the front
         // end holds are asked for again afterwards rather than waited out.
@@ -687,7 +947,7 @@ internal sealed class Dashboard : QWidget
     /// unless they were told.</summary>
     private void ToggleEnabled()
     {
-        if (Selected is not { Enabled: true } m) return;
+        if (_settle || (_pending != null && !_quietPending) || Selected is not { Enabled: true } m) return;
         if (!Confirm("disable", I18n.F("confirm.disable", m.Name))) return;
         Run(() => Lifecycle(SupervisorClient.Default.SetEnabled(m.Name, false)), "disable.done");
     }
@@ -698,7 +958,7 @@ internal sealed class Dashboard : QWidget
     /// reader asked for it from.</summary>
     private void ClearSelectedCache()
     {
-        if (Selected is not { Mounted: true } m || _pending != null) return;
+        if (Selected is not { Mounted: true } m || _pending != null || _settle) return;
         long bytes = m.Providers.Where(p => p.StorageUsage is { CacheCapacity: > 0 })
             .Sum(p => p.StorageUsage!.CacheBytes);
         if (!Confirm("cache", I18n.F("confirm.cache", m.Name, FormatBytes(bytes)))) return;
@@ -717,6 +977,14 @@ internal sealed class Dashboard : QWidget
     private void OpenSelected()
     {
         if (Selected is not { Mounted: true } m || !_connected || (_pending != null && !_quietPending)) return;
+        // The supervisor calls a running worker "mounted"; a worker that has not got its mount
+        // up yet — or one that has just gone away — leaves nothing at this path, and the raw
+        // process error ("cannot find the file") does not say why.
+        if (!Directory.Exists(m.MountPoint))
+        {
+            Feedback(T("folder.failed") + " " + T("state.unmounted") + " · " + m.MountPoint, true);
+            return;
+        }
         try { Process.Start(new ProcessStartInfo(m.MountPoint) { UseShellExecute = true }); }
         catch (Exception ex) { Feedback(T("folder.failed") + " " + ex.Message, true); }
     }
@@ -742,8 +1010,12 @@ internal sealed class Dashboard : QWidget
         () => new StatsWindow(name), () => I18n.F("stats.instance", name));
 
 
-    internal void SmokeTabs(string statsInstance) =>
-        _tabs.SmokeInteractions("editor:demo", "stats:" + statsInstance, () => new StatsWindow(statsInstance));
+    /// <summary>The tab interactions are driven against the instance the run is looking at, which is
+    /// the live one when there is one: the editor's key carries its name, so a name written here
+    /// that the run did not open is a key that is not there — which is what a machine with an
+    /// instance other than the one this used to say hit.</summary>
+    internal void SmokeTabs(string instance) =>
+        _tabs.SmokeInteractions("editor:" + instance, "stats:" + instance, () => new StatsWindow(instance));
 
     private void OnConfigSaved() => Refresh();
 
@@ -757,14 +1029,23 @@ internal sealed class Dashboard : QWidget
         if (!start && !Confirm("service.stop", T("confirm.service"))) return;
         Feedback(T("working"));
         _quietPending = false;
+        // Starting or stopping the service changes what can be pressed next: the window waits for
+        // a status that says whether it is reachable before it offers its buttons again — and, for
+        // a stop, for one that says it is actually gone.
+        _settle = true;
+        _expectService = start;
+        _expectServiceUntil = DateTime.UtcNow + (start ? StartWait : StopWait);
+        UpdateConnection();
         _pending = Task.Run(() =>
         {
             try
             {
-                string message = start ? ServiceControl.Start() : ServiceControl.Stop();
-                return new Result(null, message, null, false, true);
+                var outcome = start ? ServiceControl.Start() : ServiceControl.Stop();
+                return outcome.Ok
+                    ? new Result(null, outcome.Message, null, false, ServiceAction: true)
+                    : new Result(null, null, outcome.Message, false, ServiceAction: true);
             }
-            catch (Exception ex) { return new Result(null, null, ex.Message, false, true); }
+            catch (Exception ex) { return new Result(null, null, ex.Message, false, ServiceAction: true); }
         });
         UpdateActions();
     }
@@ -780,8 +1061,8 @@ internal sealed class Dashboard : QWidget
         if (error) Serilog.Log.Warning("workspace: {Message}", text);
         _feedback.SetText(text);
         _feedback.SetStyleSheet(error
-            ? $"background: {TrayTheme.Tokens.DangerSoft}; color: {TrayTheme.Tokens.Danger}; border: 1px solid {TrayTheme.Tokens.DangerBorder}; border-radius: 8px; padding: 10px 14px;"
-            : $"background: {TrayTheme.Tokens.InfoSoft}; color: {TrayTheme.Tokens.Info}; border: 1px solid {TrayTheme.Tokens.InfoBorder}; border-radius: 8px; padding: 10px 14px;");
+            ? $"background: {TrayTheme.Tokens.DangerSoft}; color: {TrayTheme.Tokens.Danger}; border: 1px solid {TrayTheme.Tokens.DangerBorder}; border-radius: 8px; padding: 6px 14px;"
+            : $"background: {TrayTheme.Tokens.InfoSoft}; color: {TrayTheme.Tokens.Info}; border: 1px solid {TrayTheme.Tokens.InfoBorder}; border-radius: 8px; padding: 6px 14px;");
     }
 
     private QTableWidgetItem Cell(int row, int col, string text)
@@ -834,8 +1115,10 @@ internal sealed class Dashboard : QWidget
     {
         var card = Panel("surface");
         var layout = new QVBoxLayout(card);
-        layout.SetContentsMargins(16, 15, 16, 15);
-        layout.SetSpacing(6);
+        // Ten of padding rather than fifteen, and a tighter gap: the card's own height is part of
+        // what the page needs before its panels get any, and a metric card is three short lines.
+        layout.SetContentsMargins(16, 10, 16, 10);
+        layout.SetSpacing(4);
         var header = new QHBoxLayout();
         header.AddWidget(Label(title, "muted"));
         header.AddStretch(1);

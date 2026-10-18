@@ -33,6 +33,7 @@
     <message><source>tabs.top</source><translation>分栏 · 上方</translation></message>
     <message><source>tabs.bottom</source><translation>分栏 · 下方</translation></message>
     <message><source>tabs.float</source><translation>松开成为独立窗口 · Esc 取消</translation></message>
+    <message><source>tabs.stay</source><translation>固定页签 · 保留在主窗口 · 松开取消</translation></message>
     <message><source>tabs.release</source><translation>松开停靠到此处 · Esc 取消</translation></message>
     <message>
       <source>tabs.hint</source>
@@ -939,6 +940,10 @@
     <message>
       <source>load.failed</source>
       <translation>加载失败：</translation>
+    </message>
+    <message>
+      <source>editor.offline</source>
+      <translation>服务未响应，没有可选的层类型或预设。</translation>
     </message>
     <message>
       <source>save.failed</source>

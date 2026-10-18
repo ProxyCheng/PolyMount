@@ -47,6 +47,9 @@ public static class InstanceView
         {
             Ok = supervisor.Ok,
             Error = supervisor.Error,
+            // The supervisor is the only one that can be on its way out, and this is the answer
+            // that has to carry it: the merged view is what the windows read.
+            State = supervisor.State,
             Mounts = supervisor.Mounts.Select(row => live.TryGetValue(row.Name, out var own) ? Combine(row, own) : row).ToList()
         };
     }

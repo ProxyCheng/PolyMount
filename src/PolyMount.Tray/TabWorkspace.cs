@@ -43,6 +43,9 @@ internal sealed class TabWorkspace : QWidget
     private int _pressX, _pressY;
     private bool _dragging;
     private enum Zone { Center, Left, Right, Top, Bottom }
+    /// <summary>A pinned page is the workspace's home: it has no close button, and it stays in the
+    /// main window — it may be reordered among the tabs and dropped into a split of that window,
+    /// but pulling it outside the window leaves it where it was (see Detach and MovePage).</summary>
     private sealed class Page(string key, QWidget widget, Func<string> title, bool pinned)
     {
         public string Key { get; } = key;
@@ -247,6 +250,9 @@ internal sealed class TabWorkspace : QWidget
 
     private void MovePage(Page page, Group target, Zone zone, int index = -1)
     {
+        // A pinned page never leaves the main window: a group with a host is a page in a floating
+        // window, and dropping the home page there would be the same thing as pulling it out.
+        if (page.Pinned && target.Host != null) return;
         var source = page.Group!;
         if (source == target && zone != Zone.Center && source.Count == 1) return;
         if (source == target && zone == Zone.Center)
@@ -328,6 +334,10 @@ internal sealed class TabWorkspace : QWidget
 
     private void Detach(Page page, int x, int y)
     {
+        // The home page has nowhere to go: dropping it outside the window is how a tab floats, and
+        // a floating home page is the one thing pinning is for. It is still a tab among the others
+        // — reordering and splitting happen inside this window (see MovePage).
+        if (page.Pinned) return;
         var source = page.Group!;
         if (source.Host != null && source.Count == 1 && ParentSplitter(source) == null)
         { source.Host.Move(x - 80, y - 16); return; }
@@ -373,8 +383,12 @@ internal sealed class TabWorkspace : QWidget
     private void Preview(int x, int y)
     {
         var (group, zone, _) = Target(x, y);
-        _visuals.Move(x, y, group == null);
-        if (group == null) { _visuals.ClearTarget(); return; }
+        // Outside every group a page would float; on a floating window's tab bar it would join that
+        // window. A pinned page does neither, and the card says so rather than promising a drop
+        // that will not happen when the button is released.
+        bool stays = _pressed is { Pinned: true } && (group == null || group.Host != null);
+        _visuals.Move(x, y, I18n.T(stays ? "tabs.stay" : group == null ? "tabs.float" : "tabs.release"));
+        if (stays || group == null) { _visuals.ClearTarget(); return; }
         var zero = new QPoint(0, 0);
         var origin = group.MapToGlobal(zero);
         int left = origin.X(), top = origin.Y(), width = group.Width, height = group.Height;
@@ -509,10 +523,26 @@ internal sealed class TabWorkspace : QWidget
             if (_splitters.Count != 0 || _groups.Count != 1)
                 throw new InvalidOperationException($"Empty tab groups/splitters were not collapsed: {zone}, groups={_groups.Count}, splits={_splitters.Count}");
         }
+        // The home page is pinned, which is two things: it is still one tab among the others, so
+        // the strip reorders it like any of them, and it never leaves the window — dropping it
+        // outside one, or onto a window of its own, leaves it where it was.
+        var homeGroup = home.Group!;
+        int homeAt = homeGroup.IndexOf(home.Widget);
+        int homeTo = homeAt == homeGroup.Count - 1 ? 0 : homeGroup.Count - 1;
+        homeGroup.TabBar().MoveTab(homeAt, homeTo);
+        if (homeGroup.IndexOf(home.Widget) != homeTo)
+            throw new InvalidOperationException("The pinned home tab could not be reordered among the tabs");
+        homeGroup.TabBar().MoveTab(homeTo, homeAt);
+        Detach(home, 120, 120);
+        if (_windows.Count != 0 || home.Group != homeGroup || homeGroup.Host != null)
+            throw new InvalidOperationException("The pinned home page was pulled out of the window");
         // A page pulled out into a window of its own gets back by being dragged back — the page
         // itself never left. Closing that window is the other thing a reader can do to it, and that
         // closes what is in it (see CloseWindow), which is checked just below.
         Detach(editor, 120, 120);
+        MovePage(home, editor.Group!, Zone.Center);
+        if (home.Group != homeGroup)
+            throw new InvalidOperationException("The pinned home page was dropped into a floating window");
         MovePage(stats, editor.Group!, Zone.Bottom);
         MovePage(editor, home.Group!, Zone.Center);
         MovePage(stats, home.Group!, Zone.Center);

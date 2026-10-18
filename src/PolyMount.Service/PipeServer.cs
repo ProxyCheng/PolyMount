@@ -20,12 +20,11 @@ public sealed class PipeServer
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var pipe = new NamedPipeServerStream(
-                _pipeName,
-                PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
-                PipeTransmissionMode.Byte,
-                PipeOptions.Asynchronous);
+            // The descriptor matters as much as the name: a service running under an account of
+            // its own and a tray running under the signed-in user share nothing by default, and
+            // the default pipe descriptor gives that user read access but not the write a duplex
+            // client needs. See ControlPipe for the rules and why they are those.
+            var pipe = ControlPipe.CreateServer(_pipeName);
 
             try
             {

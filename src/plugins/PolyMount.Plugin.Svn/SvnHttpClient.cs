@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
+using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Xml;
@@ -36,6 +37,8 @@ internal sealed class SvnHttpClient : ISvnBackend
         "<resourcetype/><getcontentlength/><getlastmodified/><version-name/></prop></propfind>";
     private const string VersionNameBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-name/></prop></propfind>";
+    private const string CheckedInBody =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><checked-in/></prop></propfind>";
     private const string ConfigurationBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-controlled-configuration/></prop></propfind>";
 
@@ -44,7 +47,9 @@ internal sealed class SvnHttpClient : ISvnBackend
     private readonly HttpClient _client;
     private readonly object _gate = new();
     private readonly bool _hasCredentials;
+    private readonly bool _hasClientCertificate;
     private string? _repositoryRoot;
+    private string? _vcc;
     private string _pathPrefix = string.Empty;
 
     public SvnHttpClient(string url, string trustFailures, string? username, string? password)
@@ -57,6 +62,17 @@ internal sealed class SvnHttpClient : ISvnBackend
             ServerCertificateCustomValidationCallback = (_, certificate, chain, errors) =>
                 TrustsCertificateFailures(trustFailures, certificate, chain, errors)
         };
+        // A repository behind mutual TLS asks for a client certificate as part of the handshake;
+        // the Subversion command line found one in the user's personal store on its own, while a
+        // .NET client has to offer the store and let Schannel answer the server's certificate
+        // request. Without this the handshake fails before any credential is asked for, which is
+        // what the demo server does: the alert says "handshake failure", not "certificate needed".
+        var clientCertificates = PersonalCertificates();
+        if (clientCertificates != null)
+        {
+            handler.ClientCertificates.AddRange(clientCertificates);
+            _hasClientCertificate = true;
+        }
         // No account means anonymous, which is enough for a repository that does not ask. The
         // caller resolves the cached Subversion credentials before constructing this; a challenge
         // that still arrives is reported as such rather than retried.
@@ -73,11 +89,34 @@ internal sealed class SvnHttpClient : ISvnBackend
     {
         var (root, _) = Repository();
         using var request = RequestDiagnostics.Begin("SVN.info", root, diagnostics);
+        // The youngest revision belongs to the repository's baseline, which the version-
+        // controlled configuration points at (`!svn/bln/<rev>`). Asking the plain root for its
+        // version-name — what this used to do — asks the wrong resource: a server may forbid the
+        // root path altogether (demo answers 403 there), and the root's own version-name is the
+        // revision it last changed at, not the youngest one.
+        if (YoungestRevision() is { } youngest) return youngest;
         var document = PropFind(root, "0", VersionNameBody);
         var value = document.Descendants(Dav + "version-name").FirstOrDefault()?.Value;
         if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision))
             throw new SvnTransportException($"repository '{root}' did not report a youngest revision");
         return revision;
+    }
+
+    /// <summary>The revision named by the baseline (`!svn/bln/&lt;rev&gt;`) the version-controlled
+    /// configuration points at, or null when the server does not advertise one.</summary>
+    private long? YoungestRevision()
+    {
+        Repository();
+        if (_vcc is not { } vcc) return null;
+        XDocument document;
+        try { document = PropFind(vcc, "0", CheckedInBody); }
+        catch (SvnTransportException) { return null; }
+        var href = document.Descendants(Dav + "checked-in").Elements(Dav + "href").FirstOrDefault()?.Value;
+        if (string.IsNullOrEmpty(href)) return null;
+        int slash = href.LastIndexOf('/');
+        return slash >= 0 && long.TryParse(href[(slash + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var revision)
+            ? revision
+            : null;
     }
 
     public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
@@ -162,7 +201,13 @@ internal sealed class SvnHttpClient : ISvnBackend
         }
         catch (HttpRequestException ex)
         {
-            throw new SvnTransportException($"request to '{url}' failed: {ex.Message}", ex);
+            string failure = $"request to '{url}' failed: {ex.Message}";
+            // A server that wants a client certificate answers the handshake with a bare
+            // "handshake failure". Saying so is the difference between a mystery and a step.
+            if (!_hasClientCertificate && ex.InnerException is AuthenticationException)
+                failure += " — the server may require a client certificate, and this account has none"
+                    + " (a certificate in a user's personal store is visible only when the service runs as that user)";
+            throw new SvnTransportException(failure, ex);
         }
         catch (TaskCanceledException ex) when (!ex.CancellationToken.IsCancellationRequested)
         {
@@ -276,6 +321,7 @@ internal sealed class SvnHttpClient : ISvnBackend
             var absolute = new Uri(_base, href).AbsoluteUri;
             var marker = absolute.IndexOf("/!svn/", StringComparison.Ordinal);
             if (marker <= 0) throw new SvnTransportException($"unexpected version-controlled-configuration '{href}'");
+            _vcc = absolute;
 
             var root = absolute[..marker];
             var rootPath = new Uri(root).AbsolutePath.TrimEnd('/');
@@ -311,6 +357,49 @@ internal sealed class SvnHttpClient : ISvnBackend
     }
 
     /// <summary>Mirrors <c>svn --trust-server-cert-failures</c>.</summary>
+    /// <summary>The certificates this account could present to a server that asks for one. Read
+    /// once per client. A service account has a personal store of its own, so a certificate the
+    /// signed-in user owns is only reachable when the service runs as that user.</summary>
+    private static X509Certificate2Collection? PersonalCertificates()
+    {
+        try
+        {
+            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
+            store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
+            var usable = new X509Certificate2Collection();
+            DateTime now = DateTime.Now;
+            foreach (var certificate in store.Certificates)
+            {
+                if (!certificate.HasPrivateKey) continue;
+                if (certificate.NotBefore > now || certificate.NotAfter <= now) continue;
+                if (!AllowsClientAuthentication(certificate)) continue;
+                usable.Add(certificate);
+            }
+            return usable.Count > 0 ? usable : null;
+        }
+        catch (Exception)
+        {
+            // A store that cannot be read is the same as an empty one for this purpose: the
+            // handshake says what the server wanted, and Send() adds the explanation.
+            return null;
+        }
+    }
+
+    /// <summary>Whether a certificate may be used to authenticate to a server. No EKU means the
+    /// certificate is unrestricted; an EKU that names other uses only (a development server
+    /// certificate, say) is not something to offer.</summary>
+    private static bool AllowsClientAuthentication(X509Certificate2 certificate)
+    {
+        bool restricted = false;
+        foreach (var extension in certificate.Extensions.OfType<X509EnhancedKeyUsageExtension>())
+        {
+            restricted = true;
+            foreach (var usage in extension.EnhancedKeyUsages)
+                if (usage.Value == "1.3.6.1.5.5.7.3.2") return true; // clientAuth
+        }
+        return !restricted;
+    }
+
     internal static bool TrustsCertificateFailures(string trustFailures, X509Certificate2? certificate,
         X509Chain? chain, SslPolicyErrors errors)
     {

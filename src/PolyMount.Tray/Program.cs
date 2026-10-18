@@ -560,7 +560,12 @@ internal static class Program
             }
             if (ticks == 20)
             {
-                if (Runs("dashboard")) dashboard.VerifyPickers();
+                if (Runs("dashboard"))
+                {
+                    dashboard.VerifyPickers();
+                    try { dashboard.VerifyPanelsTakeTheHeight(); } catch (Exception ex) { failure = ex.ToString(); }
+                    try { dashboard.VerifyActionsWaitForTheState(); } catch (Exception ex) { failure = ex.ToString(); }
+                }
                 if (Runs("object"))
                 {
                     try { LayerVisualizer.SmokeBoundary(); } catch (Exception ex) { failure = ex.ToString(); }
@@ -571,7 +576,12 @@ internal static class Program
                     catch (Exception ex) { failure = ex.ToString(); }
                     try { editor.SmokePresetPicker(capture == null ? null : Path.Combine(capture, "preset-picker.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }
+                    try { CredentialPicker.Smoke(editor, capture == null ? null : Path.Combine(capture, "credential-picker.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
+                    try { CredentialManager.Smoke(editor, capture == null ? null : Path.Combine(capture, "credentials.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
                     editor.SmokeInteractions();
+                    try { editor.VerifyPageFits(); } catch (Exception ex) { failure = ex.ToString(); }
                 }
                 if (Runs("dashboard")) dashboard.SmokeSilentUpdate();
                 if (Runs("locale")) I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
@@ -622,6 +632,7 @@ internal static class Program
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
                     "preset.title", "preset.subtitle", "preset.apply", "preset.layers",
                     "preset.preview", "preset.preview.summary", "preset.preview.same",
+                    "editor.offline",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.unit.cores",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",

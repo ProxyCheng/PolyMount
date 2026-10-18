@@ -22,7 +22,7 @@ internal sealed class CredentialManager : QDialog
 
     private static string T(string key) => I18n.T(key);
 
-    public CredentialManager(QWidget? parent) : base(parent)
+    public CredentialManager(QWidget? parent, bool load = true) : base(parent)
     {
         SetObjectName("credentialManager");
         SetWindowTitle(T("credential.title"));
@@ -85,7 +85,7 @@ internal sealed class CredentialManager : QDialog
         buttons.AddWidget(_close);
         root.AddLayout(buttons);
 
-        LoadAll();
+        if (load) LoadAll();
     }
 
     private void LoadAll()
@@ -204,6 +204,45 @@ internal sealed class CredentialManager : QDialog
         foreach (var (key, value) in usage)
             _usedBy[key] = Enumerable.Range(1, value).Select(n => "instance / layer " + n).ToList();
         Rebuild();
+    }
+
+    /// <summary>Builds the manager with fixtures and checks that each row is one complete line and
+    /// that the actions follow the selection; a capture can be taken when one is asked for.</summary>
+    internal static void Smoke(QWidget parent, string? capture = null)
+    {
+        var items = new List<CredentialRecord>
+        {
+            new("a", "Work SVN", "alice"),
+            new("b", "Personal", "bob")
+        };
+        var usage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["a"] = 2 };
+        var manager = new CredentialManager(parent, load: false);
+        manager.ShowForCheck(items, usage);
+        manager.Show();
+        QCoreApplication.ProcessEvents();
+        try
+        {
+            if (manager._list.Count != items.Count)
+                throw new InvalidOperationException(
+                    $"Credential manager shows {manager._list.Count} rows, expected {items.Count}");
+            int line = manager._list.FontMetrics().Height();
+            for (int i = 0; i < manager._list.Count; i++)
+            {
+                var item = manager._list.Item(i)!;
+                if (string.IsNullOrWhiteSpace(item.Text()))
+                    throw new InvalidOperationException($"Credential manager row {i} has no text");
+                int height = manager._list.VisualItemRect(item).Height();
+                if (height < line)
+                    throw new InvalidOperationException(
+                        $"Credential manager row {i} is {height}px tall, shorter than its {line}px line");
+            }
+            manager._list.SetCurrentRow(0);
+            QCoreApplication.ProcessEvents();
+            if (!manager._edit.IsEnabled() || !manager._remove.IsEnabled())
+                throw new InvalidOperationException("A selected credential cannot be edited or removed");
+            if (capture != null) { using var image = manager.Grab(); image.Save(capture); }
+        }
+        finally { manager.Hide(); manager.DeleteLater(); }
     }
 }
 

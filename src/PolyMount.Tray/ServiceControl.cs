@@ -4,6 +4,11 @@ using PolyMount.Core.Ipc;
 
 namespace PolyMount.Tray;
 
+/// <summary>What became of a start or a stop: the line to show, and whether the request was ever
+/// made. A refusal — nothing to stop, or a launch that failed — is not something a window can wait
+/// on, and saying so is what keeps it from staying flat for the state that would never come.</summary>
+internal readonly record struct ServiceOutcome(bool Ok, string Message);
+
 /// <summary>Starts/stops the PolyMount service from the tray.</summary>
 internal static class ServiceControl
 {
@@ -14,9 +19,9 @@ internal static class ServiceControl
         catch { return false; }
     }
 
-    public static string Start()
+    public static ServiceOutcome Start()
     {
-        if (IsRunning()) return I18n.T("service.already");
+        if (IsRunning()) return new(true, I18n.T("service.already"));
 
         // Installed layout uses the SCM account and ProgramData configuration, never a
         // second interactive service process beside the packaged tray executable.
@@ -27,9 +32,11 @@ internal static class ServiceControl
                 using var process = Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount")
                     { UseShellExecute = false, CreateNoWindow = true })!;
                 process.WaitForExit(5000);
-                return process.HasExited && process.ExitCode == 0 ? I18n.T("service.startRequested") : I18n.T("operation.failed") + "sc.exe start PolyMount";
+                return process.HasExited && process.ExitCode == 0
+                    ? new(true, I18n.T("service.startRequested"))
+                    : new(false, I18n.T("operation.failed") + "sc.exe start PolyMount");
             }
-            catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
+            catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
         }
 
         var exe = ServiceExePath();
@@ -43,29 +50,29 @@ internal static class ServiceControl
                     CreateNoWindow = true,
                     WorkingDirectory = Path.GetDirectoryName(exe)!
                 });
-                return I18n.T("service.starting");
+                return new(true, I18n.T("service.starting"));
             }
-            catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
+            catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
         }
 
         // Fall back to an installed Windows service.
         try
         {
             Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount") { UseShellExecute = false, CreateNoWindow = true });
-            return I18n.T("service.startRequested");
+            return new(true, I18n.T("service.startRequested"));
         }
-        catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
+        catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
     }
 
-    public static string Stop()
+    public static ServiceOutcome Stop()
     {
-        if (!IsRunning()) return I18n.T("service.notRunning");
+        if (!IsRunning()) return new(true, I18n.T("service.notRunning"));
         try
         {
             SupervisorClient.Default.Shutdown();
-            return I18n.T("service.stopping");
+            return new(true, I18n.T("service.stopping"));
         }
-        catch (Exception ex) { return I18n.T("operation.failed") + ex.Message; }
+        catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
     }
 
     // In the dev layout the tray and service live in sibling bin dirs; derive one path from the

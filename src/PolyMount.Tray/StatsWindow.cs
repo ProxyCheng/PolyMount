@@ -180,7 +180,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         Resize(1180, 960);
         // The page itself, kept because it is what a capture of the whole page is taken of: the
         // window shows the part of it that fits, and the scroll area is what shows the rest.
-        _page = WindowScrollArea.Create(this, 900);
+        _page = WindowScrollArea.Create(this, 900, out _);
         var root = new QVBoxLayout(_page);
         root.SetContentsMargins(24, 22, 24, 20);
         root.SetSpacing(16);

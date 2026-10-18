@@ -19,7 +19,7 @@ $published = @{
     # carries Qt6Charts.dll, which the charts package links against). A machine whose NuGet
     # cache still holds an earlier build of the same version keeps those bytes until the cache
     # entry is cleared - `dotnet nuget locals global-packages --list` says where.
-    '0.1.0' = '201963c631d0a74e3723fb58fa4f7f8924a792a68a20d4030ab614244a0def40'   # republished 2026-10-18 again; the release asset moves, the version does not
+    '0.1.0' = '1ad8ea330c7f96ce17a8b24ba160baf6fc2697187fe97865464a70bef4a96d0e'   # republished again 2026-10-18 10:55Z; the release asset moves, the version does not
 }
 
 # QtSharp.Charts is a separate release repository with its own checksums file.

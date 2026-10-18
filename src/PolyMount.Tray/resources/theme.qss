@@ -38,7 +38,7 @@ QLabel#metricValue { font-size: 28px; font-weight: 700; color: @Text; }
 QLabel#eyebrow { color: @Muted; font-size: 11px; font-weight: 600; padding-top: 7px; }
 QLabel#detailValue { color: @Body; font-size: 13px; }
 QLabel#layerChain { background: @SurfaceAlt; border: 1px solid @Border; border-radius: 8px; padding: 12px; color: @Body; }
-QLabel#emptyState { color: @Muted; padding: 28px 12px; font-size: 14px; }
+QLabel#emptyState { color: @Muted; padding: 12px; font-size: 14px; }
 QLabel#errorBox { color: @Danger; background: @DangerSoft; border-radius: 8px; padding: 12px; }
 QPushButton { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 9px 13px; font-weight: 600; color: @Text; }
 QPushButton:hover { background: @HoverSoft; border-color: @AccentBorder; }
@@ -71,6 +71,10 @@ QTableWidget::item:hover { background: @SurfaceAlt; }
 QTableWidget::item:selected { background: @PrimarySoft; color: @SelectedText; }
 QHeaderView::section { background: @SurfaceAlt; color: @Muted; border: none; border-bottom: 1px solid @Border; padding: 11px 10px; font-size: 12px; font-weight: 600; }
 QScrollArea, QScrollArea > QWidget > QWidget { background: @Surface; border: none; }
+/* The sidebar's own scroll is a window onto a fixed-width column of controls, not a surface of its
+   own: the column's background is the sidebar's, so the scroll area and the viewport it puts the
+   column in have to let that colour through. */
+QScrollArea#sidebarScroll, QScrollArea#sidebarScroll > QWidget, QScrollArea#sidebarScroll > QWidget > QWidget { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
 QScrollBar::handle:vertical { background: @Scrollbar; border-radius: 4px; min-height: 28px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }

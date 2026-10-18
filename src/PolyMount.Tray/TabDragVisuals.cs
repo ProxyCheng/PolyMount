@@ -30,10 +30,10 @@ internal sealed class TabDragVisuals : QObject
         _timer.Start(16);
     }
 
-    public void Move(int x, int y, bool floating)
+    public void Move(int x, int y, string hint)
     {
         _card.Move(x - 72, y - 24);
-        _card.Hint = I18n.T(floating ? "tabs.float" : "tabs.release");
+        _card.Hint = hint;
         _card.Update();
         _card.Raise();
     }

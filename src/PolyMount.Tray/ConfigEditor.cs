@@ -15,9 +15,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private readonly List<(QPushButton Button, LayerActionDescriptor Action)> _propertyActions = new();
     private readonly QListWidget _mountList, _layerList;
     private readonly QLineEdit _name, _mountPoint, _color, _layerName;
-    private readonly QCheckBox _enabled, _layerEnabled;
+    private readonly QCheckBox _layerEnabled;
     private readonly QPushButton _colorPreview;
     private readonly QLabel _status, _layerTitle, _layerDescription;
+    private readonly BusyLine _busy;
     private readonly QPushButton _save, _removeLayer, _clearCache;
     private readonly QTimer _timer;
     private readonly QLabel _overlayUsage, _cacheUsage;
@@ -62,6 +63,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private long _editVersion, _saveVersion;
     private Action? _closeAfterSave;
     private bool _allowClose;
+    private readonly QWidget _page;
     private readonly QLabel _heading;
     internal bool IsDirty => _dirty;
     public event Action? Saved;
@@ -76,9 +78,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         
         SetWindowIcon(TrayIcons.App);
         Resize(1000, 820);
-        var root = new QVBoxLayout(WindowScrollArea.Create(this, 900));
-        root.SetContentsMargins(24, 22, 24, 20);
-        root.SetSpacing(16);
+        _page = WindowScrollArea.Create(this, 900, out _);
+        var root = new QVBoxLayout(_page);
+        root.SetContentsMargins(24, 18, 24, 14);
+        root.SetSpacing(12);
         _heading = Plain("", "pageTitle");
         UpdateDocumentTitle();
         root.AddWidget(_heading);
@@ -96,14 +99,15 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         middle.SetMinimumWidth(360);
         var center = new QVBoxLayout(middle);
         center.SetContentsMargins(8, 0, 16, 0);
-        center.SetSpacing(12);
+        center.SetSpacing(10);
         var mountForm = new QFormLayout();
         _name = Edit(mountForm, "name");
         _mountPoint = Edit(mountForm, "mount.location");
-        _enabled = new QCheckBox();
-        I18n.Bind(_enabled.SetText, "enabled");
-        _enabled.Toggled += _ => Dirty();
-        mountForm.AddRow("", _enabled);
+        // Whether the instance runs is the workspace's to say, not this page's: the detail panel
+        // has one button over the three states (switched off in the configuration, enabled but not
+        // running, mounted), and it can reach all of them. A checkbox here was a third way to set
+        // the same field, and the only one that had to go through a whole configuration save to
+        // do it.
         mountForm.SetRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows);
         center.AddLayout(mountForm);
         center.AddWidget(Label("layer.stack", "sectionTitle"));
@@ -115,8 +119,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _layerList.SetAutoScrollMargin(36);
         _layerList.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
         _layerList.SetSpacing(8);
-        _layerList.SetMinimumHeight(285);
-        _layerList.SetStyleSheet("QListWidget::item { background: " + TrayTheme.Tokens.SurfaceAlt + "; border: 1px solid " + TrayTheme.Tokens.Border + "; padding: 15px 12px; } QListWidget::item:selected { background: #eaf1ff; border-color: #7ba3e5; color: #1e40af; }");
+        // The list shows three or four layers and scrolls for the rest; it used to ask for nearly
+        // six rows' worth of height, which was part of what made the page taller than the window
+        // and pushed its own buttons out of sight.
+        _layerList.SetMinimumHeight(150);
+        _layerList.SetStyleSheet("QListWidget::item { background: " + TrayTheme.Tokens.SurfaceAlt + "; border: 1px solid " + TrayTheme.Tokens.Border + "; padding: 10px 12px; } QListWidget::item:selected { background: #eaf1ff; border-color: #7ba3e5; color: #1e40af; }");
         _layerList.CurrentRowChanged += _ => OnLayerSelected();
         _layerList.ItemClicked += _ => OnLayerSelected();
         _layerList.Model().RowsMoved += (_, _, _, _, _) => ReorderLayers();
@@ -138,8 +145,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         scroll.SetFrameShape(QFrame.Shape.NoFrame);
         _fields = new QWidget();
         var right = new QVBoxLayout(_fields);
-        right.SetContentsMargins(18, 18, 18, 18);
-        right.SetSpacing(12);
+        right.SetContentsMargins(16, 14, 16, 14);
+        right.SetSpacing(10);
         right.AddWidget(Label("layer.parameters", "eyebrow"));
         _layerTitle = Plain("", "detailTitle");
         right.AddWidget(_layerTitle);
@@ -193,6 +200,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         split.SetStretchFactor(0, 2);
         split.SetStretchFactor(1, 2);
         root.AddWidget(split, 1);
+        // Saving reloads the instance the page is about, and the answer can take seconds; the line
+        // says the window is waiting for it, under the status line that says what for.
+        _busy = new BusyLine();
+        root.AddWidget(_busy);
         var footer = new QHBoxLayout();
         _status = Plain("", "muted");
         footer.AddWidget(_status, 1);
@@ -206,7 +217,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         footer.AddWidget(_save);
         root.AddLayout(footer);
         _timer = new QTimer(this);
-        _timer.Timeout += () => { CompleteRequest(); UpdateUsageRequest(); };
+        _timer.Timeout += () => { _busy.SetBusy(_pending != null); CompleteRequest(); UpdateUsageRequest(); };
         _timer.Start(100);
         Translate();
         ShowLayer();
@@ -226,6 +237,23 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     }
 
     internal void Capture(string path) { using var image = Grab(); image.Save(path); }
+
+    /// <summary>Self-check for the page's own height: a window 700 pixels tall — a laptop's, with
+    /// the tab bar above it — has to show the whole editor without a scrollbar around the page.
+    /// The layout is what the page asks for at least, and the smoke opens the editor in a tab that
+    /// is not on screen at the time, where a resize is not laid out at all; so this compares what
+    /// the layout asks for against the budget rather than against a window nobody sized.</summary>
+    internal void VerifyPageFits()
+    {
+        int needed = _page.MinimumSizeHint().Height();
+        if (needed > 650)
+            throw new InvalidOperationException(
+                $"The editor asks for {needed} px of height where a 700 px window has about 650 for it");
+        // The waiting line is shown by the page's own tick while a request is out; at rest it is
+        // not there, and a line that stayed would be a window claiming to still be working.
+        if (_busy.IsVisible())
+            throw new InvalidOperationException("The waiting line was drawn with nothing to wait for");
+    }
 
     /// <summary>The instance actions sit below what a window shot reaches - the content scrolls -
     /// so the smoke grabs this button on its own to check its label and icon in both languages.</summary>
@@ -409,13 +437,21 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         }
         catch (Exception ex)
         {
-            if (_saving) _dirty = true;
+            // Read before the flags are cleared: a save that failed said "load failed" because
+            // this branch used to look at _saving after setting it to false.
+            bool saving = _saving;
+            bool operation = _layerOperation || _clearingCache;
+            if (saving) _dirty = true;
             _saving = false;
             _closeAfterSave = null;
             UpdateDocumentTitle();
-            _status.SetText(T(_layerOperation || _clearingCache ? "operation.failed" : _saving ? "save.failed" : "load.failed") + ex.Message);
+            _status.SetText(T(operation ? "operation.failed" : saving ? "save.failed" : "load.failed") + ex.Message);
             _layerOperation = false;
             _clearingCache = false;
+            // The status line sits at the bottom of a window that scrolls; an action started
+            // beside a field near the top can fail where the reader never looks. An action the
+            // reader asked for and that failed says so where they are.
+            if (operation) QMessageBox.Information(this, T("operation.failed"), ex.Message, T("close"));
         }
     }
 
@@ -446,7 +482,6 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var m = Current;
         _name.SetText(m?.Name ?? "");
         _mountPoint.SetText(m?.MountPoint ?? "");
-        _enabled.SetChecked(m?.Enabled == true);
         _loading = false;
         RebuildLayers();
         if (m?.Layers?.Count > 0) _layerList.SetCurrentRow(0);
@@ -462,7 +497,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         // the name here is what let two instances share one store and take each other's pin.
         m.Name = _name.Text.Trim();
         m.MountPoint = _mountPoint.Text.Trim();
-        m.Enabled = _enabled.IsChecked();
+        // Whether the instance is switched on is left as the configuration has it; see the note
+        // where the checkbox used to be.
         // Compatibility fields remain useful to older clients and service error status.
         var source = m.Layers!.FirstOrDefault(l => _sourceTypes.Contains(l.Type, StringComparer.OrdinalIgnoreCase));
         if (source != null) m.Source = source.Source;
@@ -724,6 +760,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private void ChooseLayer()
     {
         if (Current == null) return;
+        // The list comes from the service's answer. A service that did not answer leaves it
+        // empty, and an empty picker is indistinguishable from a button that does nothing.
+        if (_layerDescriptors.Count == 0) { _status.SetText(T("editor.offline")); return; }
         try { CommitLayer(); }
         catch (ArgumentException ex) { _status.SetText(ex.Message); return; }
         string insertion = _layer == null ? T("picker.atEnd") : I18n.F("picker.after", string.IsNullOrEmpty(_layer.Name) ? Descriptor(_layer.Type).Title.Resolve(I18n.Language) : _layer.Name);
@@ -806,7 +845,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     /// named the layers and their order, and that is what the confirmation used to say.</summary>
     private void ChoosePreset()
     {
-        if (Current == null || _presetDefinitions.Count == 0) return;
+        if (Current == null) return;
+        // Same source, same silence: presets arrive with the configuration, and a service that
+        // did not answer leaves none. Say so instead of returning as if the click were nothing.
+        if (_presetDefinitions.Count == 0) { _status.SetText(T("editor.offline")); return; }
         try { CommitLayer(); }
         catch (ArgumentException ex) { _status.SetText(ex.Message); return; }
         var dialog = new PresetPicker(this, _presetDefinitions, Current.GetLayers(), _layerDescriptors.Count > 0 ? _layerDescriptors : LayerRegistry.Descriptors);
@@ -917,7 +959,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
 
     private void LayerOperation(LayerActionDescriptor action)
     {
-        if (_pending != null || _layer == null || OriginalName == null || !_layer.Enabled) return;
+        if (_pending != null || _layer == null) return;
+        // A button that returns without a word reads as a broken button. Each of these cases has
+        // an answer, and the status line is where the reader already looks after clicking it.
+        if (OriginalName == null) { _status.SetText(T("layer.operation.saveFirst")); return; }
+        if (!_layer.Enabled) { _status.SetText(T("state.disabled")); return; }
         string id = _layer.Id;
         if (_dirty) { _status.SetText(T("layer.operation.saveFirst")); return; }
         if (action.Confirmation.Resolve(I18n.Language) is { Length: > 0 } confirmation &&

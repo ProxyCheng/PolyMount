@@ -129,6 +129,7 @@ if ($running.Count -eq 1) {
 foreach ($relative in 'Service\PolyMount.Service.exe', 'Tray\PolyMount.Tray.exe', 'Tray\platforms\qwindows.dll',
                         'Mcp\PolyMount.Mcp.exe',
                         'Shell\PolyMount.Shell.dll', 'Service\plugins\PolyMount.Plugin.Svn.dll',
+                        'Service\plugins\PolyMount.Plugin.GameEngine.dll',
                         'installer\Install-Host.ps1', 'install.json', 'THIRD-PARTY-NOTICES.txt') {
     Check "installed $relative" (Test-Path -LiteralPath (Join-Path $app $relative))
 }
@@ -151,7 +152,11 @@ Check 'uninstall entry present' ($null -ne $entry) $(if ($entry) { $entry.Displa
 Check 'configuration written' (Test-Path -LiteralPath $config)
 if (Test-Path -LiteralPath $config) {
     $plugins = @((Read-Config).Plugins)
-    Check 'SVN plugin configured once' (($plugins.Count -eq 1) -and ($plugins[0].AssemblyPath -eq 'plugins/PolyMount.Plugin.Svn.dll')) "$($plugins.Count) plugin(s)"
+    $paths = @($plugins.AssemblyPath | Sort-Object)
+    Check 'both bundled plugins configured once' (
+        ($paths.Count -eq 2) -and
+        ($paths[0] -eq 'plugins/PolyMount.Plugin.GameEngine.dll') -and
+        ($paths[1] -eq 'plugins/PolyMount.Plugin.Svn.dll')) ($paths -join ', ')
 }
 
 $reply = Wait-Supervisor
@@ -159,6 +164,8 @@ Check 'supervisor answers' ($null -ne $reply)
 if ($reply) {
     $configReply = Ask-Supervisor 'getConfig'
     Check 'SVN source is offered' ($configReply.SourceTypes -contains 'svn') ($configReply.SourceTypes -join ', ')
+    $presets = @($configReply.Presets.Id)
+    Check 'game engine preset is offered' ($presets -contains 'game-engine-workspace') ($presets -join ', ')
 }
 
 Write-Host ''

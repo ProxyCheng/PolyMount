@@ -1,5 +1,27 @@
 namespace PolyMount.Core.Ipc;
 
+/// <summary>What the process answering a control request is doing, as far as it can say.
+///
+/// It is the responder's own state, and only two of its lifecycle are states a process can report
+/// about itself: it is up, or it has accepted a shutdown and is on its way out. The two a window
+/// also shows — starting and stopped — are the absence of an answer, because a process that has
+/// not come up yet and one that has gone cannot say anything about themselves. A front-end that
+/// wants all four reads this together with whether the pipe answered at all.
+///
+/// Written to the wire as its name: these payloads are also read by an agent over MCP, and
+/// "Stopping" says what 1 does only to whoever holds this file.</summary>
+[System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<ServiceState>))]
+public enum ServiceState
+{
+    /// <summary>Up and taking commands. The default, so every answer that has nothing to say
+    /// about a shutdown says what is true of the process that sent it.</summary>
+    Running = 0,
+    /// <summary>A shutdown was accepted and the instances are being taken down before the process
+    /// exits. It keeps answering while that happens — a worker is given ten seconds to unmount —
+    /// so an answer on its own is not proof that the service is still there for ordinary use.</summary>
+    Stopping = 1,
+}
+
 public sealed class ProviderInfo
 {
     public string Name { get; set; } = "";
@@ -189,6 +211,10 @@ public sealed class ControlResponse
 {
     public bool Ok { get; set; } = true;
     public string? Error { get; set; }
+    /// <summary>What the answering process is doing. Only the supervisor ever answers
+    /// <see cref="ServiceState.Stopping"/>: a worker does not report that it is stopping, it stops
+    /// answering.</summary>
+    public ServiceState State { get; set; }
     public List<MountStatus> Mounts { get; set; } = new();
     public List<string> SourceTypes { get; set; } = new();
     public List<LayerDescriptor> LayerDescriptors { get; set; } = new();

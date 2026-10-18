@@ -33,6 +33,7 @@
     <message><source>tabs.top</source><translation>Split · above</translation></message>
     <message><source>tabs.bottom</source><translation>Split · below</translation></message>
     <message><source>tabs.float</source><translation>Release to float · Esc to cancel</translation></message>
+    <message><source>tabs.stay</source><translation>Pinned tab · stays in the main window</translation></message>
     <message><source>tabs.release</source><translation>Release to dock · Esc to cancel</translation></message>
     <message>
       <source>tabs.hint</source>
@@ -936,6 +937,10 @@ The remote view changes. Local modifications are kept.</translation>
     <message>
       <source>load.failed</source>
       <translation>Load failed:</translation>
+    </message>
+    <message>
+      <source>editor.offline</source>
+      <translation>The service did not answer, so there are no layer types or presets to choose from.</translation>
     </message>
     <message>
       <source>save.failed</source>

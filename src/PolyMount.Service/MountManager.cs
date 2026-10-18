@@ -25,6 +25,10 @@ public sealed class MountManager : IControlHost, IDisposable
     /// without this a write from one could land between the read and the write of the other and
     /// take the change back. Re-entrant, because both of them write the file and then reload it.</summary>
     private readonly object _configGate = new();
+    /// <summary>A shutdown has been accepted and this process is on its way out. It goes on
+    /// answering the control pipe while its workers unmount, so this is what says that the stop
+    /// is happening rather than that it was asked for.</summary>
+    private volatile bool _stopping;
 
     private readonly ILogger<MountManager> _logger;
     public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
@@ -242,6 +246,10 @@ public sealed class MountManager : IControlHost, IDisposable
                     response.Credentials = CredentialStore.List();
                     break;
                 case ControlCommands.Shutdown:
+                    // From here on the status says so: the supervisor answers for a moment while
+                    // its workers unmount, and a caller must be able to tell that answer from the
+                    // service still being there for ordinary use.
+                    _stopping = true;
                     // Respond first, then stop the workers and the host shortly after so the reply
                     // flushes: a worker that is told to stop unmounts in order.
                     System.Threading.Tasks.Task.Run(async () =>
@@ -270,6 +278,7 @@ public sealed class MountManager : IControlHost, IDisposable
         }
 
         response.Mounts = Statuses();
+        response.State = _stopping ? ServiceState.Stopping : ServiceState.Running;
         return response;
     }
 
