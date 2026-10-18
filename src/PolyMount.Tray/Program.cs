@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using PolyMount.Core.Ipc;
 using QtSharp.Api;
@@ -179,7 +180,45 @@ internal static class Program
                 QSystemTrayIcon.MessageIcon.Information, 4000);
 
         ShowDashboard();
+        RestartExplorerIfTheInstallerReplacedTheShellExtension();
         return _app.Exec();
+    }
+
+    /// <summary>The installer replaces a shell-extension DLL that Explorer has loaded by renaming
+    /// the old file (a loaded image cannot be overwritten, but it can be renamed) and leaves a
+    /// marker asking for the Explorer restart it cannot perform itself: Setup runs with
+    /// RedirectionGuard, every process it starts inherits it, and an enforcing Explorer cannot
+    /// follow the junctions this product mounts. This process was started through Explorer, so
+    /// the Explorer it starts is not mitigated. A marker older than ten minutes is ignored and
+    /// only removed, so one left by an install whose tray never ran does not restart the desktop
+    /// at some later sign-in.</summary>
+    private static void RestartExplorerIfTheInstallerReplacedTheShellExtension()
+    {
+        string shell = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Shell"));
+        string marker = Path.Combine(shell, "restart-explorer");
+        bool recent = false;
+        try
+        {
+            if (File.Exists(marker)) recent = DateTime.Now - File.GetLastWriteTime(marker) < TimeSpan.FromMinutes(10);
+            if (File.Exists(marker)) File.Delete(marker);
+        }
+        catch (Exception) { }
+        if (!recent) return;
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(2000);
+            try
+            {
+                using (var kill = Process.Start(new ProcessStartInfo("taskkill", "/f /im explorer.exe")
+                    { UseShellExecute = false, CreateNoWindow = true }))
+                    kill?.WaitForExit(5000);
+                await Task.Delay(800);
+                try { File.Delete(Path.Combine(shell, "PolyMount.Shell.dll.old")); } catch (Exception) { }
+                Process.Start(new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "explorer.exe"))
+                    { UseShellExecute = true });
+            }
+            catch (Exception ex) { Serilog.Log.Warning(ex, "Explorer was not restarted after the shell extension was replaced"); }
+        });
     }
 
     private delegate void CrashTracerInstall();

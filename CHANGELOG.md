@@ -15,9 +15,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   non-administrator (the service account) counts as untrusted to an enforcing process, so the
   tray Setup launched, and the Explorer Setup restarted, answered "The path cannot be traversed
   because it contains an untrusted mount point" until the user signed out. The tray is now
-  started through Explorer — a process of its own, not a child of Setup — and Setup no longer
-  restarts Explorer; the finished page explains how to restart it, which also brings the source
-  colours back.
+  started through Explorer — a process of its own, not a child of Setup — and Explorer is
+  restarted only when it actually holds the old shell-extension DLL: Setup renames the loaded
+  file so the new one can be written, and the tray, which is not mitigated, restarts Explorer so
+  the new overlay loads. Otherwise nothing restarts the desktop, and the finished page says how
+  to make the source colours appear.
 
 ## [0.4.8] - 2026-10-18
 

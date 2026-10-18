@@ -120,11 +120,11 @@ english.PluginGameEngine=Game engine projects
 chinesesimplified.ManageObject=管理缓存分界线...
 chinesesimplified.PluginSvn=Subversion (SVN) 仓库
 chinesesimplified.PluginGameEngine=游戏引擎项目
-english.PluginPageCaption=Data sources
-english.PluginPageDescription=Choose what PolyMount can open.
+english.PluginPageCaption=Plugins
+english.PluginPageDescription=Choose which of PolyMount's bundled plugins to install.
 english.PluginPageSubCaption=
-chinesesimplified.PluginPageCaption=数据源
-chinesesimplified.PluginPageDescription=选择 PolyMount 可以访问的内容。
+chinesesimplified.PluginPageCaption=插件
+chinesesimplified.PluginPageDescription=选择要安装的 PolyMount 插件。
 chinesesimplified.PluginPageSubCaption=
 english.AutoStart=Start the tray at Windows sign-in
 english.OriginDots=Show source colours in Explorer
@@ -132,7 +132,7 @@ english.UserAccount=Run the service as this Windows account (reuses your saved S
 english.ServiceFailure=PolyMount service setup failed. See the installer log and retry setup.
 english.WinFspFailure=WinFsp installation failed.
 english.RuntimeFailure=Visual C++ runtime installation failed.
-english.RestartExplorerHint=To see the source colours, restart Explorer from Task Manager (right-click Windows Explorer and choose Restart) or sign out and back in. Do not start it from this installer: the new Explorer would inherit a security mitigation and could not open the mounts.
+english.RestartExplorerHint=If the source colours do not appear, restart Explorer from Task Manager (right-click Windows Explorer and choose Restart) or sign out and back in.
 english.RemoveData=Also delete the PolyMount configuration and cached data?%n%nAnswer No to keep them for a later installation.
 chinesesimplified.AutoStart=登录 Windows 时启动托盘
 chinesesimplified.OriginDots=在资源管理器中显示来源颜色
@@ -140,7 +140,7 @@ chinesesimplified.UserAccount=以当前 Windows 账户运行服务（复用已�
 chinesesimplified.ServiceFailure=PolyMount 服务安装失败，请查看安装日志并重新安装。
 chinesesimplified.WinFspFailure=WinFsp 安装失败。
 chinesesimplified.RuntimeFailure=Visual C++ 运行库安装失败。
-chinesesimplified.RestartExplorerHint=要看到来源颜色，请在任务管理器里重启资源管理器（右键「Windows 资源管理器」→「重新启动」），或注销后重新登录。不要从这个安装程序里重启：新的资源管理器会继承一项安全缓解策略，从而无法打开挂载点。
+chinesesimplified.RestartExplorerHint=如果来源颜色没有出现，请在任务管理器里重启资源管理器（右键「Windows 资源管理器」→「重新启动」），或注销后重新登录。
 chinesesimplified.RemoveData=同时删除 PolyMount 的配置与缓存的数据？%n%n选择「否」会保留它们，以便日后重新安装。
 
 [Code]
@@ -153,6 +153,38 @@ const
 
 var
   PluginPage: TInputOptionWizardPage;
+  RestartExplorerAfterInstall: Boolean;
+
+{ The shell extension DLL is loaded by Explorer once the overlay handlers are registered. A loaded
+  image cannot be overwritten, so on an upgrade the new DLL is put in place by renaming the old
+  one; Explorer keeps running the renamed file until it restarts. The restart is left to the tray:
+  Setup runs with RedirectionGuard and every process it starts inherits it, and an enforcing
+  Explorer cannot follow the junctions this product mounts. Nothing is restarted when no handler
+  was registered (a fresh install) -- the finished page says how to make the colours appear. }
+function OverlayRegistered(): Boolean;
+begin
+  Result := RegValueExists(HKLM,
+    'Software\Classes\CLSID\{7d619ac0-dbe2-4f33-9a11-6cc2c8329001}\InprocServer32', '');
+end;
+
+procedure PrepareShellExtensionDll();
+var
+  dll, previous, marker: String;
+begin
+  RestartExplorerAfterInstall := False;
+  if WizardSilent() then exit;
+  if not WizardIsTaskSelected('overlays') then exit;
+  if not OverlayRegistered() then exit;
+  dll := ExpandConstant('{app}\Shell\PolyMount.Shell.dll');
+  if not FileExists(dll) then exit;
+  previous := dll + '.old';
+  DeleteFile(previous);
+  if not RenameFile(dll, previous) then exit;
+  marker := ExpandConstant('{app}\Shell\restart-explorer');
+  ForceDirectories(ExtractFileDir(marker));
+  SaveStringToFile(marker, 'replaced', False);
+  RestartExplorerAfterInstall := True;
+end;
 
 function PluginLabel(Index: Integer): String;
 begin
@@ -188,7 +220,7 @@ procedure CurPageChanged(CurPageID: Integer);
 begin
   { The colours appear only after Explorer has read the overlay list, and this installer must not
     restart it itself (see [Run]); the finished page says what to do instead. }
-  if (CurPageID = wpFinished) and WizardIsTaskSelected('overlays') then
+  if (CurPageID = wpFinished) and WizardIsTaskSelected('overlays') and not RestartExplorerAfterInstall then
     WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
       CustomMessage('RestartExplorerHint');
 end;
@@ -249,6 +281,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var Code: Integer;
 begin
   Result := '';
+  PrepareShellExtensionDll();
   ExtractTemporaryFile('Install-Host.ps1');
   if not HostAction('Stop', False) then begin Result := CustomMessage('ServiceFailure'); exit; end;
   if not FileExists(ExpandConstant('{pf32}\WinFsp\bin\winfsp-x64.dll')) then begin

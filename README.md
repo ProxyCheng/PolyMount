@@ -40,8 +40,9 @@ with `Writable = false`, so a write never stops in it. The local-directory prese
 cache.
 
 - **Reads** walk down until a layer has the path. A hit below a cache layer is copied back up
-  into it, so the next read is local. A cache with a writable layer between it and the layer that
-  answered is not filled: the writable layer owns that path from then on.
+  into it, so the next read is local. A cache that cannot follow writes is not filled when a
+  writable layer sits between it and the layer that answered. The memory and disk caches can
+  follow writes, so they are filled and then told which paths changed.
 - **Listings** come from whichever layer holds the directory, as a complete manifest — the layers
   are never unioned. A deleted file is simply absent from its parent's manifest, so it stays gone
   without leaving a tombstone behind.
@@ -68,9 +69,9 @@ restarting, crashing, or being reconfigured cannot take another with it.
 
 Download `PolyMount-<version>-win-x64-Setup.exe` from
 [Releases](https://github.com/ProxyCheng/PolyMount/releases) and run it. The wizard asks which
-bundled data sources to enable (SVN and the game-engine preset), whether the tray should start at
-sign-in, whether Explorer should show source-colour dots, and optionally whether to run the
-service under your Windows account so it can use the SVN sign-ins saved there.
+bundled plugins to enable (the SVN source and the game-engine preset), whether the tray should
+start at sign-in, whether Explorer should show source-colour dots, and optionally whether to run
+the service under your Windows account so it can use the SVN sign-ins saved there.
 
 Uninstalling asks before deleting your configuration and cached data; answering **No** keeps them
 for a later installation.
@@ -98,7 +99,7 @@ Run the service and the tray from a build:
 Build the installer (needs Inno Setup 6):
 
 ```powershell
-.\Build-Installer.bat 0.4.8
+.\Build-Installer.bat 0.4.9
 ```
 
 The version becomes the setup's file name and the app version.
@@ -150,25 +151,25 @@ file; it is ordinary JSON and can be edited by hand. A service started from a bu
 }
 ```
 
-The chain above follows the `svn-workspace` preset. A mount is legal with no source, with only a
-source, or with several sources. A cache with a writable layer between it and the layer that
-answered a read is not filled, because the writable layer owns that path from then on and a copy
-below it would only be shadowed.
+The chain above is the layer order of the `svn-workspace` preset. A mount is legal with no source,
+with only a source, or with several sources.
 
 ## Plugins
 
-A data source is a plugin: an assembly with a class implementing `ILayerPlugin`. Its
-`Register(IPluginContext)` adds source types, layer types, presets, prediction strategies, control
-commands and control operations. The service loads **only** the assemblies its configuration
-names — nothing is discovered by scanning a directory — so an installation starts with exactly
-the plugins its operator chose.
+Plugins are the extension point, and a data source is one thing they can add. A plugin is an
+assembly with a class implementing `ILayerPlugin`; the `IPluginContext` it is given registers layer
+types (ordinary and cache), source types, presets, prediction strategies, control commands and
+control operations. A layer can also implement `ILayerActionHandler` to answer the actions its own
+descriptor declares. The service loads **only** the assemblies its configuration names — nothing
+is discovered by scanning a directory — so an installation starts with exactly the plugins its
+operator chose.
 
 The bundled SVN plugin adds the `svn` source type and the `svn-workspace` preset. The game-engine
 plugin adds a `manifests` prediction strategy and the `game-engine-workspace` preset. Local
-directories are built in (`dir`). Writing another source means referencing `PolyMount.Core`,
-implementing `ILayerPlugin`, and shipping a DLL. `PolyMount.Plugin.Testing` is the test contract a
-plugin can ship its own tests against; those test assemblies are published under `tests/plugins`,
-not with the production plugin.
+directories are built in (`dir`). Writing another source means writing a plugin that registers a
+source type: reference `PolyMount.Core`, implement `ILayerPlugin`, and ship a DLL.
+`PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests against; the test
+projects live under `tests/plugins` and are not shipped with the production plugin.
 
 ## Architecture
 
@@ -187,8 +188,8 @@ PolyMount.Plugin.Testing              test contract for plugin assemblies
   supervisor where each instance is served and then connect to that instance's own pipe.
 - Each mount's state — pin, cache, overlay — lives under one store directory, named by the
   instance's stable `Id`, so renaming an instance keeps its cache.
-- The tray draws its charts with **Qt Charts** (through the `QtSharp` bindings). See the licensing
-  note below.
+- The tray draws its charts with **Qt Charts**, through the `QtSharp.Charts` bindings. See the
+  licensing note below.
 
 ## MCP
 
