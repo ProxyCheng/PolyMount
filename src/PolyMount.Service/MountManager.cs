@@ -222,6 +222,35 @@ public sealed class MountManager : IControlHost, IDisposable
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
                     break;
+                case ControlCommands.Credentials:
+                    response.Credentials = CredentialStore.List();
+                    response.SavedOrigins = CredentialStore.Origins();
+                    break;
+                case ControlCommands.SaveCredential:
+                {
+                    var payload = request.Credential ?? throw new InvalidOperationException("saveCredential requires a credential payload");
+                    if (string.IsNullOrWhiteSpace(payload.Id))
+                        CredentialStore.Add(payload.Name, payload.Username, payload.Password ?? string.Empty);
+                    else
+                        CredentialStore.Update(payload.Id, payload.Name, payload.Username, payload.Password);
+                    response.Credentials = CredentialStore.List();
+                    response.SavedOrigins = CredentialStore.Origins();
+                    break;
+                }
+                case ControlCommands.DeleteCredential:
+                    if (string.IsNullOrWhiteSpace(request.CredentialId))
+                        throw new InvalidOperationException("deleteCredential requires the credential it is about");
+                    CredentialStore.RemoveCredential(request.CredentialId);
+                    response.Credentials = CredentialStore.List();
+                    response.SavedOrigins = CredentialStore.Origins();
+                    break;
+                case ControlCommands.ForgetOrigin:
+                    if (string.IsNullOrWhiteSpace(request.CredentialId))
+                        throw new InvalidOperationException("forgetOrigin requires the origin it is about");
+                    CredentialStore.Remove(request.CredentialId);
+                    response.Credentials = CredentialStore.List();
+                    response.SavedOrigins = CredentialStore.Origins();
+                    break;
                 case ControlCommands.Authenticate:
                     Authenticate(request);
                     break;

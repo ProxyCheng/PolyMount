@@ -50,10 +50,15 @@ public abstract class CredentialedSource
     /// <summary>The credential to present, or null to try anonymously.</summary>
     public Credential? Resolve()
     {
+        // A named credential is a decision, not a hint: it is used as it stands, and one that has
+        // been deleted is reported rather than quietly replaced by another account.
+        if (!string.IsNullOrWhiteSpace(Source.CredentialId))
+            return CredentialStore.FindById(Source.CredentialId)
+                ?? throw new InvalidOperationException("the credential this layer names no longer exists: " + Source.CredentialId);
         // What the reader entered here wins over a hand-edited configuration pair: a sign-in is the
         // newer statement, and a stale pair in the file would otherwise make signing in appear to
         // do nothing at all.
-        if (CredentialStore.Find(Origin) is { } entered) return entered;
+        if (CredentialStore.FindByOrigin(Origin) is { } entered) return entered;
         if (!string.IsNullOrWhiteSpace(Source.Username)) return new Credential(Source.Username, Source.Password ?? string.Empty);
         return ResolveProtocolCredential();
     }

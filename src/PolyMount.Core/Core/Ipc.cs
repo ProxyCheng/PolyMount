@@ -109,6 +109,16 @@ public sealed class MountStatus
     public string? RecordingStartedUtc { get; set; }
 }
 
+/// <summary>One named credential as the interface submits it. A null password on an update means
+/// "keep the one already stored", so the interface never has to read a secret back.</summary>
+public sealed class CredentialPayload
+{
+    public string? Id { get; set; }
+    public string Name { get; set; } = "";
+    public string Username { get; set; } = "";
+    public string? Password { get; set; }
+}
+
 public sealed class ControlRequest
 {
     public string Cmd { get; set; } = "";
@@ -125,6 +135,12 @@ public sealed class ControlRequest
     // keep. Only the request carries it; no reply ever echoes it back.
     public string? Username { get; set; }
     public string? Password { get; set; }
+
+    // Populated by "saveCredential".
+    public CredentialPayload? Credential { get; set; }
+
+    // Populated by "deleteCredential".
+    public string? CredentialId { get; set; }
     public string? Action { get; set; }
     public int Boundary { get; set; }
     public List<string> ExpectedLayers { get; set; } = new();
@@ -204,6 +220,11 @@ public sealed class ControlResponse
 
     // Populated by the "recording*" commands.
     public RecordingSessionInfo? Recording { get; set; }
+
+    // Populated by "credentials": the named accounts, and the ones remembered by origin. Neither
+    // carries a secret — the interface never sees one, so it can neither leak nor echo it.
+    public List<CredentialRecord> Credentials { get; set; } = new();
+    public List<OriginRecord> SavedOrigins { get; set; } = new();
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -274,6 +295,15 @@ public static class ControlCommands
     public const string RecordingStatus = "recordingStatus";
     public const string RecordingStop = "recordingStop";
     public const string Shutdown = "shutdown";
+
+    /// <summary>The named accounts and the ones remembered by origin. Answered by the supervisor,
+    /// which is the process that owns the file and the only one that can decrypt it.</summary>
+    public const string Credentials = "credentials";
+    /// <summary>Adds or changes a named credential. A missing password keeps the stored one.</summary>
+    public const string SaveCredential = "saveCredential";
+    public const string DeleteCredential = "deleteCredential";
+    /// <summary>Forgets the account remembered for one origin (the automatic path).</summary>
+    public const string ForgetOrigin = "forgetOrigin";
     /// <summary>Checks an account against an instance's source and stores it. Answered by the
     /// supervisor, which holds the configuration and can restart the instance afterwards.</summary>
     public const string Authenticate = "authenticate";

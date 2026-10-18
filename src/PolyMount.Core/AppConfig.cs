@@ -247,5 +247,10 @@ public sealed class SourceConfig
 
     // Used by the "dir" source: allow writing straight through to the backing directory.
     public bool Writable { get; set; } = false;
+
+    /// <summary>The named credential this source uses, or empty for the automatic path. A name
+    /// that no longer exists is an error rather than a reason to try another account: which
+    /// account a layer uses should never be a guess.</summary>
+    public string CredentialId { get; set; } = "";
     public Dictionary<string, JsonElement> Parameters { get; set; } = new();
 }

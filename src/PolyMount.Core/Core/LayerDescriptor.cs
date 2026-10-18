@@ -13,7 +13,7 @@ public sealed class LocalizedText
     public string Resolve(string language) => Values.GetValueOrDefault(language) ?? Values.GetValueOrDefault("en") ?? Values.Values.FirstOrDefault() ?? "";
 }
 
-public enum LayerFieldKind { Text, Secret, Integer, Boolean, Choice }
+public enum LayerFieldKind { Text, Secret, Integer, Boolean, Choice, Credential }
 
 public sealed class LayerFieldChoice
 {

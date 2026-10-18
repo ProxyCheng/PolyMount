@@ -30,6 +30,21 @@ public sealed class SupervisorClient : ControlClient
     public ControlResponse SaveConfig(string json)
         => Send(new ControlRequest { Cmd = ControlCommands.SaveConfig, Config = json });
 
+    /// <summary>The named accounts and the ones remembered by origin, without secrets. The
+    /// supervisor owns that file and is the only process that can open it.</summary>
+    public ControlResponse Credentials()
+        => Send(new ControlRequest { Cmd = ControlCommands.Credentials });
+
+    public ControlResponse SaveCredential(CredentialPayload credential)
+        => Send(new ControlRequest { Cmd = ControlCommands.SaveCredential, Credential = credential });
+
+    public ControlResponse DeleteCredential(string id)
+        => Send(new ControlRequest { Cmd = ControlCommands.DeleteCredential, CredentialId = id });
+
+    /// <summary>Forgets the account remembered for one origin — the automatic path's entry.</summary>
+    public ControlResponse ForgetOrigin(string origin)
+        => Send(new ControlRequest { Cmd = ControlCommands.ForgetOrigin, CredentialId = origin });
+
     /// <summary>Checks an account against the named instance's source and, if the server accepts
     /// it, keeps it and restarts the instance. The supervisor answers this rather than the
     /// instance, because the instance may not be running — that is usually why it is being asked.</summary>
