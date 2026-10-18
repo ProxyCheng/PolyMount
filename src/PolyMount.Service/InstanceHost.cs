@@ -21,6 +21,7 @@ public sealed class InstanceHost : IControlHost
     private readonly CancellationTokenSource _stop = new();
     private readonly ILogger _logger;
     private string? _error;
+    private string? _errorKind;
 
     private InstanceHost(AppConfig config, MountProfile profile, ILogger logger)
     {
@@ -52,6 +53,9 @@ public sealed class InstanceHost : IControlHost
         }
         catch (Exception ex)
         {
+            // Left where the supervisor can read it: without this, every startup failure reaches
+            // the reader as an exit code, including the one that means "sign in".
+            InstanceFailure.Record(instanceId, InstanceFailure.KindOf(ex), ex.Message);
             logger.LogError(ex, "Instance {Instance} could not start", instanceId);
             return 2;
         }
@@ -63,6 +67,7 @@ public sealed class InstanceHost : IControlHost
         catch (Exception ex)
         {
             _error = ex.Message;
+            _errorKind = InstanceFailure.KindOf(ex);
             _logger.LogError(ex, "Mounting {Instance} failed", Instance.Name);
         }
 
@@ -129,6 +134,7 @@ public sealed class InstanceHost : IControlHost
         {
             var status = Instance.GetStatus();
             status.Error ??= _error;
+            status.ErrorKind ??= _errorKind;
             response.Mounts = new List<MountStatus> { status };
         }
         // The layer registries go to the commands that open a window on a path - a probe is a

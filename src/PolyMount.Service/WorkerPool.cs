@@ -10,7 +10,7 @@ namespace PolyMount.Service;
 /// facts, and nothing else. Whether the mount came up, and what its layers are serving, is the
 /// worker's own answer — the supervisor does not ask it and does not answer for it, so a status
 /// call here costs no round trips at all.</summary>
-public sealed record WorkerState(string Id, string Name, bool Running, int Pid, string Pipe, string StartedUtc, int Restarts, string? Error);
+public sealed record WorkerState(string Id, string Name, bool Running, int Pid, string Pipe, string StartedUtc, int Restarts, string? Error, string? ErrorKind = null);
 
 /// <summary>
 /// The worker processes the supervisor is running: one per enabled instance, each in a job object
@@ -43,6 +43,9 @@ public sealed class WorkerPool : IDisposable
         public bool Stopping;
         public int Restarts;
         public string? Error;
+
+        /// <summary>What kind of failure the error is, when the worker said.</summary>
+        public string? ErrorKind;
     }
 
     private readonly List<Worker> _workers = new();
@@ -82,7 +85,7 @@ public sealed class WorkerPool : IDisposable
     {
         lock (_gate)
             return _workers.Select(worker => new WorkerState(worker.Id, worker.Name, IsRunning(worker),
-                PidOf(worker), worker.Pipe, worker.StartedUtc, worker.Restarts, worker.Error)).ToList();
+                PidOf(worker), worker.Pipe, worker.StartedUtc, worker.Restarts, worker.Error, worker.ErrorKind)).ToList();
     }
 
     /// <summary>Brings the running set in line with the configuration: an instance that was added
@@ -177,7 +180,15 @@ public sealed class WorkerPool : IDisposable
             foreach (var worker in _workers)
             {
                 if (worker.Stopping) continue;
-                if (IsRunning(worker)) continue;
+                if (IsRunning(worker))
+                {
+                    if (worker.Error != null && DateTime.UtcNow - worker.StartedAtUtc >= HealthyUptime)
+                    {
+                        worker.Error = null;
+                        worker.ErrorKind = null;
+                    }
+                    continue;
+                }
 
                 if (worker.Process != null)
                 {
@@ -185,7 +196,11 @@ public sealed class WorkerPool : IDisposable
                     int exitCode = ExitCode(process);
                     bool healthy = DateTime.UtcNow - worker.StartedAtUtc >= HealthyUptime;
                     worker.Restarts = healthy ? 1 : worker.Restarts + 1;
-                    worker.Error = "the worker exited with code " + exitCode;
+                    // The worker leaves its own reason behind when it can; the exit code is what is
+                    // left when it could not.
+                    var failure = InstanceFailure.Take(worker.Id);
+                    worker.Error = failure?.Message ?? "the worker exited with code " + exitCode;
+                    worker.ErrorKind = failure?.Kind;
                     _logger.LogWarning("The worker for {Instance} exited with code {Code}; restarting it", worker.Name, exitCode);
                     worker.Job?.Dispose();
                     worker.Job = null;
@@ -236,7 +251,9 @@ public sealed class WorkerPool : IDisposable
             worker.StartedAtUtc = DateTime.UtcNow;
             worker.StartedUtc = ProcessStartedUtc(process);
             worker.NextStartUtc = DateTime.MinValue;
-            worker.Error = null;
+            // The previous failure stays on the row while this attempt is young: a supervisor row
+            // that forgets why an instance keeps dying, and shows only a fresh process, is how the
+            // reader ends up never seeing the reason. It is cleared once the worker stays up.
             _logger.LogInformation("Started the worker for {Instance} ({Id}) as pid {Pid} on {Pipe}",
                 worker.Name, worker.Id, process.Id, worker.Pipe);
         }
@@ -281,6 +298,7 @@ public sealed class WorkerPool : IDisposable
             worker.Process = null;
             worker.StartedUtc = "";
             worker.Error = null;
+            worker.ErrorKind = null;
         }
     }
 

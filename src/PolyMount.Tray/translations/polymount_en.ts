@@ -654,6 +654,42 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Starts with Windows (registered for all users)</translation>
     </message>
     <message>
+      <source>auth.title</source>
+      <translation>Sign in</translation>
+    </message>
+    <message>
+      <source>auth.body</source>
+      <translation>PolyMount needs an account that can read %1.</translation>
+    </message>
+    <message>
+      <source>auth.username</source>
+      <translation>User name</translation>
+    </message>
+    <message>
+      <source>auth.password</source>
+      <translation>Password</translation>
+    </message>
+    <message>
+      <source>auth.signin</source>
+      <translation>Sign in</translation>
+    </message>
+    <message>
+      <source>auth.need.user</source>
+      <translation>Enter a user name.</translation>
+    </message>
+    <message>
+      <source>auth.failed</source>
+      <translation>Sign-in failed.</translation>
+    </message>
+    <message>
+      <source>auth.button</source>
+      <translation>Sign in...</translation>
+    </message>
+    <message>
+      <source>auth.done</source>
+      <translation>Signed in. Reconnecting the instance.</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>Exit PolyMount</translation>
     </message>

@@ -222,6 +222,9 @@ public sealed class MountManager : IControlHost, IDisposable
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
                     break;
+                case ControlCommands.Authenticate:
+                    Authenticate(request);
+                    break;
                 case ControlCommands.Shutdown:
                     // Respond first, then stop the workers and the host shortly after so the reply
                     // flushes: a worker that is told to stop unmounts in order.
@@ -284,10 +287,34 @@ public sealed class MountManager : IControlHost, IDisposable
                 Pipe = state?.Running == true ? state.Pipe : "",
                 WorkerPid = state?.Pid ?? 0,
                 Restarts = state?.Restarts ?? 0,
-                Error = state?.Error
+                Error = state?.Error,
+                ErrorKind = state?.ErrorKind
             });
         }
         return rows;
+    }
+
+    /// <summary>Checks an account against the instance source and, if the server accepts it,
+    /// keeps it; then restarts the instance so the new credential is used. The check belongs to
+    /// the plugin, which is the only thing that knows how to speak to its server.</summary>
+    private void Authenticate(ControlRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Name))
+            throw new InvalidOperationException("authenticate needs the instance it is about");
+        if (string.IsNullOrWhiteSpace(request.Username))
+            throw new ArgumentException("a user name is required");
+        var profile = Config.Mounts.FirstOrDefault(m => string.Equals(m.Name, request.Name, StringComparison.OrdinalIgnoreCase))
+            ?? throw new ArgumentException("no such mount: " + request.Name);
+        var source = profile.GetLayers()
+            .Where(layer => layer.Enabled)
+            .Select(layer => layer.Source)
+            .FirstOrDefault(candidate => SourceRegistry.CredentialHandler(candidate.Type) != null)
+            ?? throw new InvalidOperationException("this instance has no source that can be signed in");
+        SourceRegistry.CredentialHandler(source.Type)!.SignIn(source, request.Username, request.Password ?? string.Empty);
+        // The layer resolved its credentials when it was built, so a new one only takes effect
+        // in a new process.
+        _workers.Stop(profile.Name);
+        _workers.Start(profile.Name);
     }
 
     private string WorkerPipe(string? name) => _workers.States()

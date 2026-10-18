@@ -24,6 +24,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - The SVN source reads repositories over HTTP/WebDAV in-process; the `svn.exe` dependency is gone.
   Cached Subversion credentials are read directly (DPAPI), and `svn://` repositories are no longer
   supported.
+- When no credential is available, the dashboard asks the reader to sign in once, checks the account
+  against the server and keeps it (DPAPI, for the service account). The prompt is generic — a Git or
+  SSH plugin can reuse the store, the prompt and the resolution order.
 - Third-party notices, including the Qt Charts licensing consequence.
 - CI: build, unit tests, plugin tests, two self-contained mount smoke tests, and an installer
   artifact.

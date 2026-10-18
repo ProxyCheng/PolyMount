@@ -657,6 +657,42 @@
       <translation>开机自启（已为所有用户注册）</translation>
     </message>
     <message>
+      <source>auth.title</source>
+      <translation>登录</translation>
+    </message>
+    <message>
+      <source>auth.body</source>
+      <translation>PolyMount 需要一个能读取 %1 的账号。</translation>
+    </message>
+    <message>
+      <source>auth.username</source>
+      <translation>用户名</translation>
+    </message>
+    <message>
+      <source>auth.password</source>
+      <translation>密码</translation>
+    </message>
+    <message>
+      <source>auth.signin</source>
+      <translation>登录</translation>
+    </message>
+    <message>
+      <source>auth.need.user</source>
+      <translation>请输入用户名。</translation>
+    </message>
+    <message>
+      <source>auth.failed</source>
+      <translation>登录失败。</translation>
+    </message>
+    <message>
+      <source>auth.button</source>
+      <translation>登录...</translation>
+    </message>
+    <message>
+      <source>auth.done</source>
+      <translation>已登录，正在重新连接实例。</translation>
+    </message>
+    <message>
       <source>tray.exit</source>
       <translation>退出 PolyMount</translation>
     </message>

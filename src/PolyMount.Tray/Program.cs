@@ -465,6 +465,9 @@ internal static class Program
 
     private static int RunUiSmoke(string? capture, HashSet<string>? areas = null)
     {
+        // A sign-in prompt raised by the refresh timer is a modal nobody in a self-check can
+        // answer; the dialog is exercised on its own instead.
+        Dashboard.AutoSignIn = false;
         // Which parts of the run this invocation was asked for. Everything that is only a check,
         // or only the scenario a check needs, is behind one of these; what the run needs whatever
         // it was asked for — the windows, the event loop, the page drawn — is not.
