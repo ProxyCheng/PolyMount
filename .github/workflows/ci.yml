@@ -63,8 +63,8 @@ jobs:
           }
           if ($failed) { exit 1 }
 
-      # Both are self-contained: their own configuration, their own store, a dir source and a
-      # mount point under %TEMP%. What they need from the runner is the built service and WinFsp.
+      # All three are self-contained: their own configuration, their own store, a dir source and
+      # a mount point under %TEMP%. What they need from the runner is the built service and WinFsp.
       - name: Smoke - one instance, its own pipe
         shell: pwsh
         run: ./scripts/Test-InstanceWorker.ps1 -ServiceExecutable src/PolyMount.Service/bin/Release/net10.0-windows/PolyMount.Service.exe
