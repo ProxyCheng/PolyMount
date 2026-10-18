@@ -29,15 +29,21 @@ $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 $serviceProject = Join-Path $repo 'src\PolyMount.Service\PolyMount.Service.csproj'
 $trayProject = Join-Path $repo 'src\PolyMount.Tray\PolyMount.Tray.csproj'
+$mcpProject = Join-Path $repo 'src\PolyMount.Mcp\PolyMount.Mcp.csproj'
 $serviceDir = Join-Path $repo "src\PolyMount.Service\bin\$Configuration\net10.0-windows"
 $trayDir = Join-Path $repo "src\PolyMount.Tray\bin\$Configuration\net10.0-windows"
+$mcpDir = Join-Path $repo "src\PolyMount.Mcp\bin\$Configuration\net10.0-windows"
 $serviceExe = Join-Path $serviceDir 'PolyMount.Service.exe'
 $trayExe = Join-Path $trayDir 'PolyMount.Tray.exe'
+$mcpExe = Join-Path $mcpDir 'PolyMount.Mcp.exe'
 # What the two deployments are built from. A file added, removed or edited anywhere under these
 # is a deployment; a build that comes out the same is not, and neither is a file touched and put
 # back.
 $backendRoots = @('src\PolyMount.Core', 'src\PolyMount.Service', 'src\plugins')
 $trayRoots = @('src\PolyMount.Tray')
+# The MCP server is built from Core and its own sources. It is pulled up on demand by an agent,
+# so there is no running process to compare against.
+$mcpRoots = @('src\PolyMount.Core', 'src\PolyMount.Mcp')
 $installed = Get-Service -Name 'PolyMount' -ErrorAction SilentlyContinue
 
 function Send-Control([string]$Command, [string]$TargetPipe = $PipeName) {
@@ -230,21 +236,39 @@ try {
     Write-Host "[1/3] Comparing the sources with what is deployed ($Configuration)..."
     $backendState = "{0} {1}" -f $Configuration, (Get-SourceState $backendRoots)
     $trayState = "{0} {1}" -f $Configuration, (Get-SourceState $trayRoots)
+    $mcpState = "{0} {1}" -f $Configuration, (Get-SourceState $mcpRoots)
     $backendChanged = $Force -or -not (Test-Path -LiteralPath $serviceExe) -or (Get-DeployedState $serviceDir) -ne $backendState
     $trayChanged = $Force -or -not (Test-Path -LiteralPath $trayExe) -or (Get-DeployedState $trayDir) -ne $trayState
+    $mcpChanged = $Force -or -not (Test-Path -LiteralPath $mcpExe) -or (Get-DeployedState $mcpDir) -ne $mcpState
     # A process that is not running is work to do whatever the sources say: what is deployed is
-    # not what is being served.
+    # not what is being served. The MCP server is not that kind of process - an agent starts one
+    # when it needs it and it exits with the session - so it is compared on its sources alone.
     if (-not (ServiceRunning)) { $backendChanged = $true }
     if (-not (TrayRunning)) { $trayChanged = $true }
     Write-Host ("  service, core and plugins: {0}" -f $(if ($backendChanged) { 'to deploy' } else { 'unchanged, left running' }))
     Write-Host ("  tray:                      {0}" -f $(if ($trayChanged) { 'to deploy' } else { 'unchanged, left running' }))
-    if (-not $backendChanged -and -not $trayChanged) {
+    Write-Host ("  MCP server:                {0}" -f $(if ($mcpChanged) { 'to publish' } else { 'unchanged' }))
+    if (-not $backendChanged -and -not $trayChanged -and -not $mcpChanged) {
         Write-Host 'Nothing to deploy: every process is already running what the sources build.' -ForegroundColor Green
         exit 0
     }
     if ($backendChanged -and $installed) { Assert-Administrator }
 
     Write-Host '[2/3] Publishing and restarting what changed...'
+    if ($mcpChanged) {
+        # Published before anything is stopped: an agent session can hold the exe open, and that
+        # failure must not leave the service stopped. The next run picks it up again.
+        Write-Host '  publishing the MCP server (nothing to restart)...'
+        try {
+            Publish-Project $mcpProject $mcpDir
+            if (-not (Test-Path -LiteralPath $mcpExe)) { throw 'Published MCP executable was not found.' }
+            Set-DeployedState $mcpDir $mcpState
+        }
+        catch {
+            Write-Warning ("  the MCP server was not updated: {0}" -f $_.Exception.Message)
+            Write-Warning '  close the agent session using PolyMount.Mcp, then run this again.'
+        }
+    }
     if ($backendChanged) {
         # The supervisor and its workers are stopped together: the workers are the service's own
         # children, and the files being replaced are held open by the processes that loaded them.

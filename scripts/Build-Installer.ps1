@@ -15,7 +15,7 @@ if (-not $Compiler) { throw 'Install Inno Setup 6 (winget install JRSoftware.Inn
 # still be in the installer.
 if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurse -Force }
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
-foreach ($project in @('Service','Tray')) {
+foreach ($project in @('Service','Tray','Mcp')) {
     $output = Join-Path $payload $project
     & dotnet publish (Join-Path $repo "src\PolyMount.$project\PolyMount.$project.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $output --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw "$project publish failed." }

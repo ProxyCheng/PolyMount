@@ -7,6 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed
 
+- A path under a mount point nested inside another was routed to the outer instance: the directory
+  took the first mount point that matched instead of the longest. The Explorer overlay already used
+  the longest match; the directory now does too.
 - The setup now names the bundled source plugin in the configuration it writes. An empty plugin
   list means the host loads no plugins, so a fresh installation had no SVN source to choose from
   at all — the plugin was installed and inert.
@@ -16,6 +19,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added
 
+- **MCP server** (`PolyMount.Mcp.exe`): the control plane as a stdio MCP server, so an agent can
+  list instances, probe paths, read metrics, mount and unmount, and manage recordings. The
+  operation surface is defined once in `ControlOperations` — 22 operations with JSON schemas and
+  read/write/destructive annotations — and is meant to be shared by later front-ends;
+  `--read-only` offers the 8 read operations alone. Stored passwords are redacted from
+  `get_config` and refused as tool arguments; `authenticate` is not exposed. See `docs/mcp.md`.
 - The wizard lets the operator choose which bundled plugins to enable, and reconciles the
   configuration to that choice. Other plugin entries are left alone.
 - One application icon, shared by the tray, the service and the setup, instead of none.

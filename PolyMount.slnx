@@ -4,6 +4,7 @@
     <Project Path="src/PolyMount.Plugin.Testing/PolyMount.Plugin.Testing.csproj" />
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
+    <Project Path="src/PolyMount.Mcp/PolyMount.Mcp.csproj" />
   </Folder>
   <Folder Name="/src/plugins/">
     <Project Path="src/plugins/PolyMount.Plugin.Svn/PolyMount.Plugin.Svn.csproj" />

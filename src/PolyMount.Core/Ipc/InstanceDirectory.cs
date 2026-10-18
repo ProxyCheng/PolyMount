@@ -46,9 +46,23 @@ public static class InstanceDirectory
     /// supervisor, which is where such a path's "not under any PolyMount mount point" belongs.</summary>
     public static InstanceClient ClientForPath(string? fullPath)
     {
-        if (string.IsNullOrEmpty(fullPath)) return Unnamed();
-        var endpoint = Search(list => list.FirstOrDefault(entry => entry.MountPoint.Length > 0 && IsUnder(fullPath, entry.MountPoint)));
+        var endpoint = EndpointForPath(fullPath);
         return endpoint is null ? Unnamed() : Bound(endpoint.Name, endpoint);
+    }
+
+    /// <summary>The instance whose mount point contains the path, for a caller that needs to know
+    /// whose it is rather than only how to reach it. The longest mount point wins: one mount can
+    /// sit inside another, and the innermost one is the process that actually serves the file.
+    ///
+    /// It is the same rule the Explorer overlay applies to the same question, so a probe routed
+    /// from a window and one routed from the shell cannot disagree about who owns a path.</summary>
+    public static InstanceEndpoint? EndpointForPath(string? fullPath)
+    {
+        if (string.IsNullOrEmpty(fullPath)) return null;
+        return Search(list => list
+            .Where(entry => entry.MountPoint.Length > 0 && IsUnder(fullPath, entry.MountPoint))
+            .OrderByDescending(entry => entry.MountPoint.TrimEnd('\\').Length)
+            .FirstOrDefault());
     }
 
     /// <summary>Every instance the supervisor knows about, as it reports them. Empty when the
@@ -131,7 +145,10 @@ public static class InstanceDirectory
         }
     }
 
-    private static bool IsUnder(string fullPath, string mountPoint)
+    /// <summary>Whether a local path is a mount point or inside it. Lexical only: nothing here
+    /// touches the file system, so a path that does not exist yet is still under the mount that
+    /// would hold it.</summary>
+    public static bool IsUnder(string fullPath, string mountPoint)
     {
         string full = Path.GetFullPath(fullPath).TrimEnd('\\');
         string root = Path.GetFullPath(mountPoint).TrimEnd('\\');

@@ -60,6 +60,9 @@ Name: "plugins_svn"; Description: "{cm:PluginSvn}"
 [Files]
 Source: "{#PayloadDir}\Service\*"; DestDir: "{app}\Service"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\Tray\*"; DestDir: "{app}\Tray"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The MCP server is started by an agent rather than by Windows, so there is no service, shortcut
+; or run entry for it - only the executable and the runtime it carries.
+Source: "{#PayloadDir}\Mcp\*"; DestDir: "{app}\Mcp"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#PayloadDir}\Shell\PolyMount.Shell.dll"; DestDir: "{app}\Shell"; Flags: ignoreversion restartreplace
 Source: "{#PayloadDir}\Shell\icons\palette-dot-*.ico"; DestDir: "{app}\Shell\icons"; Flags: ignoreversion
 Source: "Install-Host.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion

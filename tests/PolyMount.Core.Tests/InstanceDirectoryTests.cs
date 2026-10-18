@@ -53,6 +53,36 @@ public sealed class InstanceDirectoryTests
         Assert.AreEqual(name, client.Instance);
     }
 
+    [TestMethod]
+    public void The_innermost_mount_point_owns_a_path()
+    {
+        // One mount inside another is legal, and the installed one is not always listed first.
+        // Whichever order the supervisor reports them in, the process that actually serves the
+        // file is the one whose mount point is the longest match.
+        using var outer = new FakeControlService("PolyMount-outer-" + Guid.NewGuid().ToString("N"),
+            _ => new ControlResponse { Mounts = { new MountStatus { Name = "outer", SourceType = "outer-process" } } });
+        using var inner = new FakeControlService("PolyMount-inner-" + Guid.NewGuid().ToString("N"),
+            _ => new ControlResponse { Mounts = { new MountStatus { Name = "inner", SourceType = "inner-process" } } });
+        using var supervisor = new FakeControlService("PolyMount-supervisor-" + Guid.NewGuid().ToString("N"),
+            request => request.Cmd == ControlCommands.Instances
+                ? new ControlResponse
+                {
+                    Instances =
+                    {
+                        new InstanceEndpoint { Id = "outer-id", Name = "outer", MountPoint = @"D:\alpha", Pipe = outer.Pipe, WorkerPid = 1 },
+                        new InstanceEndpoint { Id = "inner-id", Name = "inner", MountPoint = @"D:\alpha\nested", Pipe = inner.Pipe, WorkerPid = 2 }
+                    }
+                }
+                : new ControlResponse());
+        using var restore = new SupervisorPipe(supervisor.Pipe);
+
+        Assert.AreEqual("inner", InstanceDirectory.EndpointForPath(@"D:\alpha\nested\file.txt")?.Name);
+        Assert.AreEqual("inner-process", InstanceDirectory.ClientForPath(@"D:\alpha\nested\file.txt").Status().Mounts.Single().SourceType);
+        Assert.AreEqual("outer", InstanceDirectory.EndpointForPath(@"D:\alpha\other.txt")?.Name);
+        Assert.AreEqual("outer-process", InstanceDirectory.ClientForPath(@"D:\alpha\other.txt").Status().Mounts.Single().SourceType);
+        Assert.IsNull(InstanceDirectory.EndpointForPath(@"C:\elsewhere\file.txt"));
+    }
+
     /// <summary>Points the directory at a test's own supervisor, and puts back what it found.</summary>
     private sealed class SupervisorPipe : IDisposable
     {

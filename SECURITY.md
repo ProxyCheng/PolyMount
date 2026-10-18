@@ -4,6 +4,15 @@ PolyMount runs a Windows service that mounts virtual drives, and it loads plugin
 in its configuration. Treat both as privileged: the service account can read whatever the mounted
 sources expose, and a plugin assembly runs with the service's rights.
 
+## The MCP server
+
+`PolyMount.Mcp.exe` is an MCP front-end to the same named pipes the tray uses. It listens on
+nothing and authenticates nobody: it inherits the trust boundary the pipes already have, so a local
+process able to open `PolyMount.Control` gains no authority by going through it. Two deliberate
+restrictions apply to what it offers: stored passwords are redacted from `get_config` and refused as
+tool arguments, and `authenticate` has no tool at all — a password typed into a conversation is a
+password in a transcript.
+
 ## Reporting a vulnerability
 
 Please **do not open a public issue**. Use GitHub's private vulnerability reporting on this
