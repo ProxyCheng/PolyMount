@@ -164,6 +164,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # gh reads the repository context from the working tree; without a checkout it fails with
+      # "fatal: not a git repository" before it ever calls the API.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: PolyMount-Setup
