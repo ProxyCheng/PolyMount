@@ -149,10 +149,15 @@ try {
             if (Test-Path -LiteralPath $config) { Sync-BundledPlugins } else { Write-FreshConfig }
             $exe = Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'
             $binary = '"' + $exe + '" --config "' + $config + '"'
+            # sc.exe is not used to set a binary path here: handed a binPath containing quotes from
+            # PowerShell it answers 1639 (invalid command line) and creates nothing, because
+            # PowerShell escapes the inner quotes in a way sc does not parse. The service provider
+            # takes the string exactly as given, which is what the service control manager wants.
             if ($service) {
-                & sc.exe config PolyMount binPath= $binary start= auto
-                if ($LASTEXITCODE -ne 0) { throw 'Failed to update service registration.' }
-                $account = (Get-CimInstance Win32_Service -Filter "Name='PolyMount'").StartName
+                $current = Get-CimInstance Win32_Service -Filter "Name='PolyMount'"
+                $changed = Invoke-CimMethod -InputObject $current -MethodName Change -Arguments @{ PathName = $binary; StartMode = 'Automatic' }
+                if ($changed.ReturnValue -ne 0) { throw "Failed to update service registration (service provider returned $($changed.ReturnValue))." }
+                $account = $current.StartName
                 if ($account -eq 'LocalSystem') { $account = 'NT AUTHORITY\SYSTEM' }
             } elseif ($UserAccount) {
                 # Credentials never enter installer arguments, logs or files.
@@ -161,8 +166,12 @@ try {
                 New-Service -Name PolyMount -DisplayName 'PolyMount Virtual Mount Service' -BinaryPathName $binary -StartupType Automatic -Credential $credential | Out-Null
                 $account = $credential.UserName
             } else {
-                & sc.exe create PolyMount binPath= $binary start= auto obj= 'NT AUTHORITY\LocalService' DisplayName= 'PolyMount Virtual Mount Service'
-                if ($LASTEXITCODE -ne 0) { throw 'Failed to create service.' }
+                New-Service -Name PolyMount -DisplayName 'PolyMount Virtual Mount Service' -BinaryPathName $binary -StartupType Automatic | Out-Null
+                # Created as LocalSystem and moved to LocalService: the provider cannot set an
+                # account without a password, and LocalService needs none.
+                $created = Get-CimInstance Win32_Service -Filter "Name='PolyMount'"
+                $changed = Invoke-CimMethod -InputObject $created -MethodName Change -Arguments @{ StartName = 'NT AUTHORITY\LocalService' }
+                if ($changed.ReturnValue -ne 0) { throw "Failed to set the service account (service provider returned $($changed.ReturnValue))." }
                 $account = 'NT AUTHORITY\LOCAL SERVICE'
             }
             $acl = Get-Acl -LiteralPath $data
