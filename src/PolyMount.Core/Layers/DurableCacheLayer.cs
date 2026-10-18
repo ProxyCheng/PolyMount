@@ -9,7 +9,7 @@ namespace PolyMount.Layers;
 /// index. Admission publishes into the index immediately and a single background worker
 /// flushes the write, so a read never waits on the disk.
 /// </summary>
-public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IDisposable
+public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache, IQuietProbe, IDisposable
 {
     // Members that mention ObjectDatabase are private protected: the store is an
     // assembly-internal detail, and only the caches in this assembly derive from here.
@@ -18,6 +18,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         public VirtualObject Value = value;
         public long Bytes = bytes;
         public long Access = Stopwatch.GetTimestamp();
+        /// <summary>Position in the recency list; null while not resident.</summary>
+        public LinkedListNode<Item>? Node;
         public ObjectDatabase.Record? Record = record;
         public long Reservation = bytes;
         public long Metadata;
@@ -142,8 +144,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     /// <summary>Whether this index entry is still backed by its durable record.</summary>
     private protected virtual bool IsBacked(Item item) => true;
 
-    /// <summary>Keys the store should delete once this batch is written. The base never deletes.</summary>
-    private protected virtual string[] ObsoleteKeys(IReadOnlyList<ObjectDatabase.Record> written) => [];
+    /// <summary>Keys the store should delete once this batch is written: content the index
+    /// dropped since the last batch and has not re-admitted. The base never deletes.</summary>
+    private protected virtual string[] ObsoleteKeys(IReadOnlyCollection<string> evicted) => [];
 
     private protected CacheKey ResidentKey(string path) => new(path, Generation);
     /// <summary>The composite a record is stored under. Built only when a record is written
@@ -160,6 +163,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     /// <summary>Whether a stored record's row is resident. A plain lookup on the key the
     /// entry was admitted under.</summary>
     private protected bool Contains(ObjectDatabase.Record record) => _residentStoreKeys.Contains(record.Path);
+    /// <summary>Whether a store key is resident. Called with the index lock held.</summary>
+    private protected bool IsResidentStoreKey(string storeKey) => _residentStoreKeys.Contains(storeKey);
 
     /// <summary>Resident lookup with the recency update a hit performs.</summary>
     private protected bool TryGetResident(CacheKey key, out Item item) { lock (_gate) return TryGet(key, out item); }
@@ -199,6 +204,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         item.Key = key;
         item.StoreKey = record.Path;
         _items[key] = item;
+        item.Node = _order.AddLast(item);
         _residentStoreKeys.Add(record.Path);
         IndexContent(item);
         _metadataBytes += metadata;
@@ -208,12 +214,20 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private void Remove(CacheKey key)
     {
         if (!_items.Remove(key, out var item)) return;
+        if (item.Node != null) { _order.Remove(item.Node); item.Node = null; }
         _residentStoreKeys.Remove(item.StoreKey);
         _bytes -= item.Bytes;
         _metadataBytes -= item.Metadata;
+        // Content that leaves the index is what the store may reclaim next batch; namespace
+        // records never are (see LruCacheLayer.ObsoleteKeys), so they are not remembered.
+        if (!item.Value.Header.IsDir && !_disposed && item.StoreKey.Length > 0) _evicted.Add(item.StoreKey);
         ForgetContent(item);
         ReleaseItem(item);
     }
+    /// <summary>Store keys of content dropped from the index since the last persist batch.
+    /// Used to be found by copying every resident store record per batch and asking which ones
+    /// the index no longer held - a full-index copy for a batch of at most 64 writes.</summary>
+    private readonly HashSet<string> _evicted = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Publishes a durable record under its source-declared content version. Records
     /// without one — a directory, or a file from a source that cannot name a version — are
@@ -242,7 +256,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
             {
                 // Serving it is a read of this entry too, so its recency has to move or the
                 // eviction that keeps the working set would drop what is still being opened.
-                item.Access = Stopwatch.GetTimestamp();
+                Touch(item);
                 record = found;
                 return true;
             }
@@ -260,7 +274,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     {
         item = null!;
         if (!_items.TryGetValue(key, out var found)) return false;
-        found.Access = Stopwatch.GetTimestamp();
+        Touch(found);
         OnTouch(found);
         item = found;
         return true;
@@ -272,6 +286,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     /// asks a null record for its blob.</summary>
     private void Reindex(CacheKey key, string storeKey, VirtualObject value, ObjectDatabase.Record? record)
     {
+        // Two misses on one key can both read the row back; the second must not count it twice
+        // or drop the first one's handles on the floor.
+        if (_items.ContainsKey(key)) return;
         long bytes = record?.StoredBytes ?? value.Content.PersistenceEstimate;
         long metadata = CacheBudgets.Estimate(key.Path, value);
         var item = NewItem(value, bytes, record);
@@ -279,6 +296,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         item.Key = key;
         item.StoreKey = storeKey;
         _items[key] = item;
+        item.Node = _order.AddFirst(item);
         _residentStoreKeys.Add(storeKey);
         IndexContent(item);
         _bytes += bytes;
@@ -297,16 +315,21 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     /// </summary>
     private CacheKey? OldestEvictableKey(bool pending)
     {
-        CacheKey? oldest = null;
-        long oldestAccess = long.MaxValue;
-        foreach (var pair in _items)
-        {
-            if (pair.Value.Pending != pending || pair.Value.Access >= oldestAccess) continue;
-            oldestAccess = pair.Value.Access;
-            oldest = pair.Key;
-        }
-        return oldest;
+        // From the least recent end of the recency list. Durable entries are nearly all of it,
+        // so this is a step or two; queued ones are bounded by the write queue. It used to scan
+        // the whole index once per evicted entry.
+        for (var node = _order.Last; node != null; node = node.Previous)
+            if (node.Value.Pending == pending) return node.Value.Key;
+        return null;
     }
+
+    private void Touch(Item item)
+    {
+        item.Access = Stopwatch.GetTimestamp();
+        if (item.Node != null && _order.First != item.Node) { _order.Remove(item.Node); _order.AddFirst(item.Node); }
+    }
+
+    private readonly LinkedList<Item> _order = new();
 
     private void Trim()
     {
@@ -332,6 +355,18 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         if (!_store.TryGet(storeKey, out value, out var record) || !KeepIndexed(value)) { value = null!; return false; }
         lock (_gate) Reindex(key, storeKey, value, record);
         return true;
+    }
+
+    /// <summary>Resident index only: inspection neither moves recency nor reads the store back.</summary>
+    public bool TryPeekEntry(string path, out VfsEntry entry)
+    {
+        lock (_gate)
+        {
+            bool found = _items.TryGetValue(ResidentKey(path), out var item);
+            entry = found ? item!.Value.Header : null!;
+            if (found) return true;
+        }
+        return TryGetEntry(path, out entry);
     }
 
     public void TouchObject(string path)
@@ -367,6 +402,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 if (!Prepare(item, value, content)) { ReleaseItem(item); return; }
                 if (!_queue.Writer.TryWrite((key, storeKey, item))) { ReleaseItem(item); return; }
                 _items[key] = item;
+                item.Node = _order.AddFirst(item);
                 item.Pending = true;
                 item.Key = key;
                 item.StoreKey = storeKey;
@@ -438,7 +474,6 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                     BeforePersist?.Invoke();
                     request?.Stage($"writing records={changes.Count}");
                     _store.Apply(changes);
-                    var records = _store.Records;
                     var published = changes.ToDictionary(c => c.Path, c => _store.GetPublishedRecord(c.Path), StringComparer.OrdinalIgnoreCase);
                     lock (_gate)
                     {
@@ -459,7 +494,8 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                     lock (_gate)
                     {
                         Trim();
-                        obsolete = ObsoleteKeys(records);
+                        obsolete = _evicted.Count == 0 ? [] : ObsoleteKeys(_evicted);
+                        _evicted.Clear();
                     }
                     if (obsolete.Length > 0) _store.Apply(obsolete.Select(k => new ObjectChange(k, null)).ToArray());
                 }
@@ -547,26 +583,39 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
                 }
                 _pendingBytes -= dropped;
                 foreach (var key in _items.Keys.ToArray()) Remove(key);
+                // The table is about to be emptied, so nothing is left to reclaim one by one.
+                _evicted.Clear();
             }
             _store.Clear();
         }
     }
 
-    public void InvalidateEntry(string path)
+    public void InvalidateEntry(string path) => InvalidateEntries(new[] { path });
+
+    /// <summary>Drops several paths in one store transaction. A save carries the file and its
+    /// parent, a directory rename carries every path below it; one commit each was one fsync
+    /// each, all inside the resolver's cache-update gate.</summary>
+    public void InvalidateEntries(IReadOnlyCollection<string> paths)
     {
-        var key = ResidentKey(path);
-        string storeKey = StoreKey(key);
+        if (paths.Count == 0) return;
+        var storeKeys = new List<string>(paths.Count);
         lock (_persistGate)
         {
             lock (_gate)
             {
-                // The store row goes now, so a write still queued for this key has to be
+                // The store rows go now, so a write still queued for one of these keys has to be
                 // retired or it would put the entry back after the eviction.
                 if (_retired.Count > 8192) _retired.Clear();
-                _retired.Add(storeKey);
-                Remove(key);
+                foreach (var path in paths)
+                {
+                    var key = ResidentKey(path);
+                    string storeKey = StoreKey(key);
+                    storeKeys.Add(storeKey);
+                    _retired.Add(storeKey);
+                    Remove(key);
+                }
             }
-            _store.Apply(new[] { new ObjectChange(storeKey, null) });
+            _store.Apply(storeKeys.Select(k => new ObjectChange(k, null)).ToArray());
         }
     }
 

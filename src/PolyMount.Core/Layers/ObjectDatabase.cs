@@ -68,13 +68,62 @@ internal sealed class ObjectDatabase
             if (_recoverable && (_records.Count >= CacheBudgets.MaxObjects || metadata + size > _metadataBudget)) continue;
             _records[record.Path] = record; metadata += size;
             _recordSizes[record.Path] = size;
+            Track(record);
+            _lru.AddLast(_positions[record.Path] = new LinkedListNode<string>(record.Path));
         }
         _metadataBytes = metadata;
+    }
+
+    /// <summary>Running totals over the resident index, so a status poll does not walk it.
+    /// A quarter of a million records, three sums each, every second, under the metadata lock.</summary>
+    private long _residentBytes;
+    private int _residentFiles, _residentDirectories;
+    private readonly LinkedList<string> _lru = new();
+    private readonly Dictionary<string, LinkedListNode<string>> _positions = new(StringComparer.OrdinalIgnoreCase);
+    private void Track(Record record)
+    {
+        _residentBytes += record.StoredBytes;
+        if (record.Value.Header.IsDir) _residentDirectories++; else _residentFiles++;
+    }
+    private void Untrack(Record record)
+    {
+        _residentBytes -= record.StoredBytes;
+        if (record.Value.Header.IsDir) _residentDirectories--; else _residentFiles--;
+    }
+    /// <summary>Adds or replaces a resident record, keeping the totals and the recency order.</summary>
+    private void Put(Record record)
+    {
+        if (_records.TryGetValue(record.Path, out var previous))
+        {
+            if (_recordSizes.TryGetValue(record.Path, out var size)) _metadataBytes -= size;
+            Untrack(previous);
+            if (_positions.TryGetValue(record.Path, out var node)) _lru.Remove(node);
+        }
+        long estimate = CacheBudgets.Estimate(record.Path, record.Value);
+        _recordSizes[record.Path] = estimate; _metadataBytes += estimate;
+        _records[record.Path] = record;
+        Track(record);
+        _lru.AddFirst(_positions[record.Path] = new LinkedListNode<string>(record.Path));
+    }
+    private void RemoveRecord(string key)
+    {
+        if (!_records.Remove(key, out var record)) return;
+        Untrack(record);
+        if (_recordSizes.Remove(key, out var size)) _metadataBytes -= size;
+        if (_positions.Remove(key, out var node)) _lru.Remove(node);
+    }
+    private void MoveToFront(string key)
+    {
+        if (!_positions.TryGetValue(key, out var node) || _lru.First == node) return;
+        _lru.Remove(node); _lru.AddFirst(node);
     }
     private SqliteConnection Connect()
     {
         var connection = new SqliteConnection(_connectionString); connection.Open();
-        using var command = connection.CreateCommand(); command.CommandText = "PRAGMA synchronous=FULL;"; command.ExecuteNonQuery();
+        // A recoverable store is a cache: losing its last transactions to a power cut costs a
+        // re-read from the source, so WAL's NORMAL (no fsync per commit) is the right trade.
+        // User data keeps FULL.
+        using var command = connection.CreateCommand(); command.CommandText = _recoverable ? "PRAGMA synchronous=NORMAL;" : "PRAGMA synchronous=FULL;"; command.ExecuteNonQuery();
         return connection;
     }
     /// <summary>Every stored key at or below <paramref name="path"/>, from the table rather than
@@ -103,6 +152,9 @@ internal sealed class ObjectDatabase
     }
     /// <summary>Resident records, counted without copying the index.</summary>
     public int Count { get { lock (_gate) { VerifyStorage(); return _records.Count; } } }
+    /// <summary>Releases the pooled connections so the store's files can be deleted or moved
+    /// (clearing an instance's cache, removing its store directory).</summary>
+    public void Dispose() => SqliteConnection.ClearAllPools();
     public IReadOnlyList<Record> Records { get { lock (_gate) { EnsureAvailable(); return _records.Values.ToArray(); } } }
     internal LayerStorageUsage GetStorageUsage()
     {
@@ -123,8 +175,8 @@ internal sealed class ObjectDatabase
         }
         lock (_gate)
         {
-            return new(Interlocked.Read(ref _diskBytes), _records.Values.Sum(r => r.StoredBytes),
-                _records.Values.Count(r => !r.Value.Header.IsDir), _records.Values.Count(r => r.Value.Header.IsDir),
+            return new(Interlocked.Read(ref _diskBytes), _residentBytes,
+                _residentFiles, _residentDirectories,
                 Lookups: new LookupProfile(_lookupCalls, _lookupTotalUs, _lookupGateUs, _lookupExistsUs,
                     _lookupExistsChecks, _lookupLoadUs, _lookupMaxUs));
         }
@@ -140,7 +192,7 @@ internal sealed class ObjectDatabase
     {
         if (File.Exists(Path.Combine(_root, "objects.db"))) return;
         if (_records.Count > 0 && !_recoverable) throw new IOException("Persistent layer storage was removed: " + _root);
-        if (_recoverable) { _records.Clear(); _recordSizes.Clear(); _metadataBytes = 0; }
+        if (_recoverable) { _records.Clear(); _recordSizes.Clear(); _positions.Clear(); _lru.Clear(); _metadataBytes = 0; _residentBytes = 0; _residentFiles = 0; _residentDirectories = 0; }
         Directory.CreateDirectory(_root);
         SqliteConnection.ClearAllPools();
         using var connection = Connect();
@@ -224,7 +276,7 @@ internal sealed class ObjectDatabase
                 if (!resident || now - found.Access >= RecencyStampTicks)
                 {
                     found = found with { Access = now };
-                    if (_records.ContainsKey(key)) _records[key] = found;
+                    if (_records.ContainsKey(key)) { _records[key] = found; MoveToFront(key); }
                     else Admit(found);
                 }
                 value = found.Value;
@@ -261,10 +313,24 @@ internal sealed class ObjectDatabase
         return true;
     }
 
+    /// <summary>Blob names of rows the resident index does not hold, read in one query.</summary>
+    private void StoredBlobs(HashSet<string> keys, HashSet<string> into)
+    {
+        using var connection = new SqliteConnection(_connectionString);
+        connection.Open();
+        using var command = connection.CreateCommand();
+        var names = new List<string>(keys.Count);
+        int n = 0;
+        foreach (var key in keys) { string name = "$k" + n++; names.Add(name); command.Parameters.AddWithValue(name, key); }
+        command.CommandText = "SELECT record FROM objects WHERE path IN (" + string.Join(",", names) + ")";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+            if (JsonSerializer.Deserialize<Record>(reader.GetString(0))?.Blob is { } blob) into.Add(blob);
+    }
+
     /// <summary>Reads one row. Called only on a resident-index miss, where a pooled
     /// connection open costs far less than the source fetch it avoids.</summary>
-    private Record? LoadRecord(string key)
-    {
+    private Record? LoadRecord(string key)    {
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using var command = connection.CreateCommand();
@@ -276,11 +342,7 @@ internal sealed class ObjectDatabase
     /// <summary>Adds a record to the resident index and re-applies its bound.</summary>
     private void Admit(Record record)
     {
-        if (_recordSizes.TryGetValue(record.Path, out var previous)) _metadataBytes -= previous;
-        long size = CacheBudgets.Estimate(record.Path, record.Value);
-        _recordSizes[record.Path] = size;
-        _metadataBytes += size;
-        _records[record.Path] = record;
+        Put(record);
         EvictResident();
     }
 
@@ -289,12 +351,9 @@ internal sealed class ObjectDatabase
     {
         if (!_recoverable) return;
         if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) return;
-        foreach (var record in _records.Values.OrderBy(r => r.Access).ToArray())
-        {
-            if (_records.Count <= CacheBudgets.MaxObjects && _metadataBytes <= _metadataBudget) break;
-            _records.Remove(record.Path);
-            if (_recordSizes.Remove(record.Path, out var size)) _metadataBytes -= size;
-        }
+        // Least recent first, from the recency list: one step per record dropped, where sorting
+        // the whole index per admission was the cost of every read-back once it was full.
+        while (_lru.Last is { } tail && (_records.Count > CacheBudgets.MaxObjects || _metadataBytes > _metadataBudget)) RemoveRecord(tail.Value);
     }
     public bool TryOpen(string key, out VirtualObject value, out Stream stream)
     {
@@ -379,8 +438,17 @@ internal sealed class ObjectDatabase
                 lock (_gate)
                 {
                 EnsureAvailable();
+                // The blob a row is about to stop naming. A resident record knows it; one the
+                // index dropped (or never loaded, in a recoverable store) does not, and reading
+                // it back here is the only thing that keeps those blobs from staying on disk
+                // forever - a bound on the index is not a bound on what was published.
+                HashSet<string>? ask = null;
                 foreach (var change in changes)
-                    if (_records.TryGetValue(change.Path, out var old) && old.Blob != null) obsolete.Add(old.Blob);
+                {
+                    if (_records.TryGetValue(change.Path, out var old)) { if (old.Blob != null) obsolete.Add(old.Blob); }
+                    else if (_recoverable) (ask ??= new(StringComparer.OrdinalIgnoreCase)).Add(change.Path);
+                }
+                if (ask is { Count: > 0 }) StoredBlobs(ask, obsolete);
                 using (var connection = Connect())
                 using (var transaction = connection.BeginTransaction())
                 {
@@ -398,18 +466,8 @@ internal sealed class ObjectDatabase
                     }
                     transaction.Commit();
                 }
-                foreach (var key in removed)
-                {
-                    _records.Remove(key);
-                    if (_recordSizes.Remove(key, out var size)) _metadataBytes -= size;
-                }
-                foreach (var update in updates)
-                {
-                    if (_recordSizes.TryGetValue(update.Key, out var oldSize)) _metadataBytes -= oldSize;
-                    long size = CacheBudgets.Estimate(update.Key, update.Value.Value);
-                    _recordSizes[update.Key] = size; _metadataBytes += size;
-                    _records[update.Key] = update.Value;
-                }
+                foreach (var key in removed) RemoveRecord(key);
+                foreach (var update in updates) Put(update.Value);
                 if (_recoverable) EvictResident();
                 }
             }

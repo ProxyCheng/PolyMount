@@ -681,15 +681,24 @@ public sealed class VirtualFileSystem
         using var request = RequestDiagnostics.Begin("VFS.Probe", path, Diagnostics);
         request?.Stage("resolving origins");
         path = VfsPath.Normalize(path);
-        // Source inspection must not populate caches or change the origin it observes.
+        // Source inspection must not populate caches or change the origin it observes - nor
+        // count as a read: a peek is not a hit, and it must not keep an entry warm.
         bool visible = Visible(path, false);
-        ResolveHeader(path, out _, out int effective);
-        return _layers.Select((layer, index) =>
+        var answers = new (bool Exists, VfsEntry? Header)[_layers.Count];
+        int effective = _layers.Count;
+        for (int index = 0; index < _layers.Count; index++)
         {
             using var layerRequest = RequestDiagnostics.Begin(_probe[index], path);
-            bool exists = layer.TryGetEntry(path, out var header);
-            return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header.IsDir,
-                Size = exists ? header.Size : 0, Effective = visible && exists && index == effective,
+            var layer = _layers[index];
+            bool exists = layer is IQuietProbe quiet ? quiet.TryPeekEntry(path, out var header) : layer.TryGetEntry(path, out header);
+            answers[index] = (exists, exists ? header : null);
+            if (exists && effective == _layers.Count) effective = index;
+        }
+        return _layers.Select((layer, index) =>
+        {
+            var (exists, header) = answers[index];
+            return new LayerProbe { Name = layer.Name, Writable = layer.Writable, Exists = exists, IsDir = exists && header!.IsDir,
+                Size = exists ? header!.Size : 0, Effective = visible && exists && index == effective,
                 Shadowed = exists && (!visible || index != effective), Generation = layer.Generation };
         }).ToList();
     }

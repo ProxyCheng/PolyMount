@@ -3,7 +3,7 @@ using PolyMount.Core;
 namespace PolyMount.Layers;
 
 /// <summary>Bounded LRU of directory snapshots and file blocks. Dirty blocks belong to a live staging stream.</summary>
-public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IDisposable
+public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache, IFileStreamLayer, ILayerStorageUsage, IObjectManagement, IQuietProbe, IDisposable
 {
     private sealed class Page(string key, string path, long offset, byte[] bytes, Session session)
     {
@@ -132,6 +132,18 @@ public sealed class MemoryCacheLayer : CacheLayer, ICacheLayer, IWriteAwareCache
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (TryGetDirectory(path, out var directory)) { entry = directory.Value.Header; return true; }
             if (TryGetHeaderRecord(path, out var header)) { entry = header.Value.Header; return true; }
+            entry = null!; return false;
+        }
+    }
+    public bool TryPeekEntry(string path, out VfsEntry entry)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            CheckDirectoryGeneration();
+            string key = Normalize(path);
+            if (_directories.TryGetValue(key, out var directory)) { entry = directory.Value.Header; return true; }
+            if (_headers.TryGetValue(key, out var header)) { entry = header.Value.Header; return true; }
             entry = null!; return false;
         }
     }

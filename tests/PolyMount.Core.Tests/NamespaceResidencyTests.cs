@@ -53,6 +53,23 @@ public sealed class NamespaceResidencyTests
     }
 
     [TestMethod]
+    public void Overwriting_a_row_the_index_does_not_hold_reclaims_its_old_blob()
+    {
+        using var temp = new TempDir();
+        var root = temp.Sub("db");
+        var seed = new ObjectDatabase(root, false, recoverable: true);
+        using (var content = new MemoryStream(new byte[64]))
+            seed.Apply(new[] { new ObjectChange("file", new VirtualObject(FileEntry("file", 64)), content) });
+        // Reopened with an index too small to hold the row: the old blob is known only to the table.
+        var bounded = new ObjectDatabase(root, false, recoverable: true, metadataBudget: 1);
+        Assert.AreEqual(0, bounded.Records.Count, "this test needs an index that does not hold the row");
+        using (var content = new MemoryStream(new byte[32]))
+            bounded.Apply(new[] { new ObjectChange("file", new VirtualObject(FileEntry("file", 32)), content) });
+        Assert.AreEqual(1, Directory.GetFiles(Path.Combine(root, "objects-v2"), "*.blob").Length,
+            "the overwritten row's blob must not stay on disk");
+    }
+
+    [TestMethod]
     public void Store_answers_from_disk_when_the_resident_index_is_bounded()
     {
         using var temp = new TempDir();

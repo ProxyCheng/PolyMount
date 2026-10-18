@@ -91,8 +91,8 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
     /// directory costs a source fetch for every path beneath it. Dropping them from the
     /// index alone is free because TryReadObject reads them back from the store.
     /// </summary>
-    private protected override string[] ObsoleteKeys(IReadOnlyList<ObjectDatabase.Record> written) =>
-        written.Where(r => !r.Value.Header.IsDir && !Contains(r)).Select(r => r.Path).ToArray();
+    private protected override string[] ObsoleteKeys(IReadOnlyCollection<string> evicted) =>
+        evicted.Where(key => !IsResidentStoreKey(key)).ToArray();
 
     private void ReleaseOpen(ContentItem content)
     {
@@ -109,10 +109,8 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
 
     /// <summary>A lower layer accepted a write, so this cache's copy of the changed paths is
     /// stale. Only those paths are dropped; the rest of the read cache survives a save.</summary>
-    public void UpdateAfterWrite(IReadOnlyList<ObjectChange> changes)
-    {
-        foreach (var change in changes) InvalidateEntry(change.Path);
-    }
+    public void UpdateAfterWrite(IReadOnlyList<ObjectChange> changes) =>
+        InvalidateEntries(changes.Select(change => change.Path).Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
 
     public override bool TryOpenRead(string path, out VfsEntry entry, out Stream stream)
     {

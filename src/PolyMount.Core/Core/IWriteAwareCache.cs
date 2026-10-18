@@ -13,3 +13,11 @@ public interface IWriteInvalidation
 {
     void InvalidateAfterWrite(IReadOnlyList<ObjectChange> changes);
 }
+
+/// <summary>A layer that can say whether it holds a path without that counting as a use of it.
+/// Inspection (the layer view, Explorer's origin badges every few seconds) must not raise a
+/// read-ahead layer's hit rate or keep an entry warm that nobody is reading.</summary>
+public interface IQuietProbe
+{
+    bool TryPeekEntry(string path, out VfsEntry entry);
+}

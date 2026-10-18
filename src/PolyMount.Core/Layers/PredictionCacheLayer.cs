@@ -14,7 +14,7 @@ namespace PolyMount.Layers;
 /// wasted. Both are counters only — neither feeds back into the learned model.
 /// </para>
 /// </summary>
-public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWriteInvalidation, IDisposable
+public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWriteInvalidation, IQuietProbe, IDisposable
 {
     private sealed class Entry(VirtualObject value, byte[]? content, long bytes, PreloadOrigin origin, long stream)
     {
@@ -168,6 +168,17 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
 
     public override IReadOnlyList<VfsEntry> ListOwn(string path) =>
         TryReadObject(path, out var value) ? value.Children ?? Array.Empty<VfsEntry>() : Array.Empty<VfsEntry>();
+
+    public bool TryPeekEntry(string path, out VfsEntry entry)
+    {
+        lock (_gate)
+        {
+            CheckGeneration();
+            bool found = _entries.TryGetValue(path, out var held);
+            entry = found ? held!.Value.Header : null!;
+            return found;
+        }
+    }
 
     public override bool TryReadObject(string path, out VirtualObject value)
     {

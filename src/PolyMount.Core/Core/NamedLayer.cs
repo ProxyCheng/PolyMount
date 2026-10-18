@@ -1,9 +1,11 @@
 namespace PolyMount.Core;
 
 /// <summary>Stable instance identity for multiple providers of the same type.</summary>
-internal class NamedLayer(string name, ILayer inner) : ILayer
+internal class NamedLayer(string name, ILayer inner) : ILayer, IQuietProbe
 {
     internal ILayer Inner => inner;
+    public bool TryPeekEntry(string path, out VfsEntry entry) =>
+        inner is IQuietProbe quiet ? quiet.TryPeekEntry(path, out entry) : inner.TryGetEntry(path, out entry);
     public string Name => name;
     public string Generation => inner.Generation;
     public bool Writable => inner.Writable;
