@@ -8,8 +8,8 @@
 Large repositories are painful to browse: a full checkout is slow, it eats the disk, and most of
 it is never opened. PolyMount presents a repository as a normal Windows drive instead — Explorer
 opens it, your editor opens it, `grep` runs over it — and every file is fetched the first time
-something reads it. What you have read is cached; what you write stays local, layered on top of
-the remote view without touching it.
+something reads it. What you have read is cached; what you write stays local, layered over the
+remote view without touching it.
 
 ```
 D:\                                  mounted from a source of your choosing
@@ -24,20 +24,29 @@ A drive is not one filesystem. PolyMount is a **stack of layers**, and each path
 the top down:
 
 ```
-overlay  (writable)  ── local changes, copy-on-write
+memory cache
+listing warm-up   ┐  layers above the write layer. Reads are answered by the
+prediction        │  caches in this group; warm-up fills listings in the
+disk cache        ┘  background; a write invalidates the paths it touched.
    ↓
-cache    (read-through, on disk, LRU)  ── what has been read, keyed by content generation
+overlay  (writable)  ── local changes, copy-on-write
    ↓
 source   (plugin: SVN, local directory, …)  ── the thing that actually has the bytes
 ```
 
-- **Reads** walk down until a layer has the path. A hit below any cache layer is copied back up
-  into it, so the next read is local.
+In the bundled presets the layers above the overlay are optional and read-only. In the SVN preset
+the overlay sits directly above the source, and the durable cache sits directly above the overlay
+with `Writable = false`, so a write never stops in it. The local-directory preset has no durable
+cache.
+
+- **Reads** walk down until a layer has the path. A hit below a cache layer is copied back up
+  into it, so the next read is local. A cache with a writable layer between it and the layer that
+  answered is not filled: the writable layer owns that path from then on.
 - **Listings** come from whichever layer holds the directory, as a complete manifest — the layers
   are never unioned. A deleted file is simply absent from its parent's manifest, so it stays gone
   without leaving a tombstone behind.
 - **Writes** go to the first writable layer, doing a *copy-up* from below first if the file only
-  exists remotely.
+  exists remotely. After a successful write, the caches above it drop the paths that changed.
 - **Generations**: a source's content generation (for SVN, the revision) is part of every cache
   key, so a new revision invalidates by itself instead of being flushed by hand.
 - **Pinning**: a mount can stay on a fixed revision even as the repository moves.
@@ -51,16 +60,17 @@ restarting, crashing, or being reconfigured cannot take another with it.
 |---|---|
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
-| Runtime | None. The installer ships a self-contained .NET runtime and Qt. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed — add a credential in the tray's credential manager, choose it on the layer, and it is kept for the service account |
+| Runtime | None to install by hand. The setup ships a self-contained .NET runtime, the Qt runtime and the Visual C++ runtime. |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension), Inno Setup 6 |
 
 ## Install
 
 Download `PolyMount-<version>-win-x64-Setup.exe` from
 [Releases](https://github.com/ProxyCheng/PolyMount/releases) and run it. The wizard asks which
-plugins to enable, whether the tray should start at sign-in, and whether Explorer should show
-source-colour dots.
+bundled data sources to enable (SVN and the game-engine preset), whether the tray should start at
+sign-in, whether Explorer should show source-colour dots, and optionally whether to run the
+service under your Windows account so it can use the SVN sign-ins saved there.
 
 Uninstalling asks before deleting your configuration and cached data; answering **No** keeps them
 for a later installation.
@@ -88,22 +98,27 @@ Run the service and the tray from a build:
 Build the installer (needs Inno Setup 6):
 
 ```powershell
-.\Build-Installer.bat 0.3.0
+.\Build-Installer.bat 0.4.8
 ```
+
+The version becomes the setup's file name and the app version.
 
 ### Checks worth running while changing something
 
 | Script | What it proves |
 |---|---|
 | `scripts\Test-InstanceWorker.ps1` | one instance mounts and answers on its own pipe; self-contained (`dir` source, temp dirs) |
+| `scripts\Test-InstanceIsolation.ps1` | killing one instance's worker leaves the other instance mounted, and the supervisor restarts the dead one |
 | `scripts\Test-ObjectMount.ps1` | copy-up, delete, rename, persistence and compression, with the source left untouched |
+| `scripts\Test-Mcp.ps1` | the stdio MCP handshake, tool catalog, read calls and error paths; `-Full` also enables, mounts and unmounts an instance |
 | `PolyMount.Tray.exe --ui-smoke` | the windows, the language switch, the chart cards, the recording bar |
 | `PolyMount.Tray.exe --render <dir>` | draws the chart fixtures and prints the plot-area geometry; no service needed |
 
 ## Configuration
 
-Instances live in `%PROGRAMDATA%\PolyMount\config.json`. The tray's editor writes this file; it is
-ordinary JSON and can be edited by hand.
+Installed instances live in `%PROGRAMDATA%\PolyMount\config.json`. The tray's editor writes this
+file; it is ordinary JSON and can be edited by hand. A service started from a build uses
+`config.json` beside its executable unless `--config` names another file.
 
 ```jsonc
 {
@@ -120,10 +135,14 @@ ordinary JSON and can be edited by hand.
       "MountPoint": "D:\\project",
       "StoreRoot": "",                    // empty = %PROGRAMDATA%\PolyMount\stores\<Id>
       "Layers": [
-        { "Id": "overlay", "Type": "overlay", "Enabled": true },
-        { "Id": "cache",   "Type": "cache",   "Enabled": true,
-          "CacheCapacityBytes": 4294967296 },
-        { "Id": "svn",     "Type": "svn",     "Enabled": true,
+        { "Id": "memory-cache", "Type": "memory-cache", "Enabled": true },
+        { "Id": "warmup",       "Type": "warmup",       "Enabled": true },
+        { "Id": "predict",      "Type": "prediction-cache", "Enabled": true },
+        { "Id": "cache",        "Type": "cache",        "Enabled": true,
+          "CacheCapacityBytes": 4294967296,
+          "Parameters": { "Writable": false } },
+        { "Id": "overlay",      "Type": "overlay",      "Enabled": true },
+        { "Id": "svn",          "Type": "svn",          "Enabled": true,
           "Source": { "Type": "svn", "Url": "https://svn.example.com/repo/trunk" } }
       ]
     }
@@ -131,30 +150,37 @@ ordinary JSON and can be edited by hand.
 }
 ```
 
-A mount is legal with no source, with only a source, or with several sources; a cache layer
-crossed by a writable layer above it is not backfilled, because local edits must not be written
-into a cache shared with the remote.
+The chain above follows the `svn-workspace` preset. A mount is legal with no source, with only a
+source, or with several sources. A cache with a writable layer between it and the layer that
+answered a read is not filled, because the writable layer owns that path from then on and a copy
+below it would only be shadowed.
 
 ## Plugins
 
-A data source is a plugin: an assembly implementing the `ILayer` contracts from `PolyMount.Core`
-and registering itself. The service loads **only** what its configuration names — nothing is
-discovered by scanning a directory — so an installation starts with exactly the sources its
-operator chose.
+A data source is a plugin: an assembly with a class implementing `ILayerPlugin`. Its
+`Register(IPluginContext)` adds source types, layer types, presets, prediction strategies, control
+commands and control operations. The service loads **only** the assemblies its configuration
+names — nothing is discovered by scanning a directory — so an installation starts with exactly
+the plugins its operator chose.
 
-The bundled SVN plugin adds the `svn` source type and a ready-made layer preset. Local directories
-are built in (`dir`). Writing another source means referencing `PolyMount.Core`, implementing
-`ILayer`, and shipping a DLL — the test contract package (`PolyMount.Plugin.Testing`) lets a plugin
-bring its own tests without depending on any test framework.
+The bundled SVN plugin adds the `svn` source type and the `svn-workspace` preset. The game-engine
+plugin adds a `manifests` prediction strategy and the `game-engine-workspace` preset. Local
+directories are built in (`dir`). Writing another source means referencing `PolyMount.Core`,
+implementing `ILayerPlugin`, and shipping a DLL. `PolyMount.Plugin.Testing` is the test contract a
+plugin can ship its own tests against; those test assemblies are published under `tests/plugins`,
+not with the production plugin.
 
 ## Architecture
 
 ```
-PolyMount.Core      the layering engine, WinFsp adapter, IPC contracts, plugin loading
-PolyMount.Service   supervisor (one per machine) + one worker process per mount instance
-PolyMount.Tray      Qt tray and windows, drawn charts, config editor, recording UI
-PolyMount.Shell     native Explorer overlay handler (source-colour dots)
-plugins/Svn         the Subversion source plugin
+PolyMount.Core                        layering engine, WinFsp adapter, IPC contracts, plugin loading
+PolyMount.Service                     supervisor (one per machine) + one worker process per mount instance
+PolyMount.Tray                        Qt tray and windows, charts, config editor, recording UI
+PolyMount.Mcp                         stdio MCP server over the control pipe
+PolyMount.Shell                       native Explorer overlay handler (source-colour dots)
+plugins/PolyMount.Plugin.Svn          Subversion source and svn-workspace preset
+plugins/PolyMount.Plugin.GameEngine   manifests prediction and game-engine-workspace preset
+PolyMount.Plugin.Testing              test contract for plugin assemblies
 ```
 
 - The service and the tray talk over **named pipes**, line-delimited JSON. Front-ends ask the
@@ -163,6 +189,30 @@ plugins/Svn         the Subversion source plugin
   instance's stable `Id`, so renaming an instance keeps its cache.
 - The tray draws its charts with **Qt Charts** (through the `QtSharp` bindings). See the licensing
   note below.
+
+## MCP
+
+`PolyMount.Mcp.exe` is a stdio MCP server an agent starts. It speaks the control protocol over the
+same named pipe the tray uses, so it adds a caller, not a listening port: an agent can list
+instances, inspect a path across the layers, read metrics, mount or unmount, pin a revision, start
+a recording, and edit the configuration. The setup installs it under `{app}\Mcp`; nothing starts
+it automatically.
+
+The catalog is `PolyMount.Core`'s control operations: 22 built in, plus whatever enabled plugins
+contribute (the SVN plugin adds `get_svn_source` and `list_svn_lanes`, the game-engine plugin adds
+`list_manifest_families`). `--describe` prints it without a service.
+
+- `--pipe <name>` or `POLYMOUNT_PIPE` selects the control pipe.
+- `--read-only` registers only operations with `effect: read` (eight built in, plus plugin reads).
+- Destructive operations (`clear_cache`, `clear_local_changes`, `apply_layer_action`,
+  `release_above`, `shutdown_service`) carry `destructiveHint`.
+- `get_config` replaces stored passwords with `[redacted]`; `save_config` refuses a plaintext
+  password, so it cannot be used to set one.
+- `--config <path>` and `--plugin <dll>` load the same plugins as the service, so their operations
+  become tools.
+
+`scripts\Test-Mcp.ps1` drives the handshake and the error paths against a supervisor of its own;
+`-Full` also exercises enable → mount → unmount.
 
 ## Update checks
 
@@ -191,8 +241,9 @@ pointing it at a file server needs no code change. Tags are compared as versions
 ## Status
 
 Early, but functional end to end: layered reads and writes, SVN and directory sources, pinning,
-cache management, per-instance processes, a tray UI, performance instrumentation, and a recording
-bundle for diagnosing slow reads. Interfaces may still move.
+cache management, per-instance processes, a plugin API, a tray UI, performance instrumentation, a
+recording bundle for diagnosing slow reads, and an MCP server for agents. Interfaces may still
+move.
 
 ## Contributing
 

@@ -125,8 +125,11 @@ jobs:
             exit 0
           }
           $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGNING_PFX_B64))
-          $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD -AsPlainText -Force
+          # Secrets travel as text and may carry the newline an editor or a shell added; neither
+          # the base64 nor the password tolerates one.
+          $b64 = $env:SIGNING_PFX_B64 -replace '\s', ''
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($b64))
+          $password = ConvertTo-SecureString $env:SIGNING_PFX_PASSWORD.Trim() -AsPlainText -Force
           $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
           # The build verifies the setup it signed. A self-signed certificate verifies only where
           # it is trusted, and every hosted runner is a fresh machine.

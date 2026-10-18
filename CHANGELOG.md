@@ -5,6 +5,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-18
+
+### Fixed
+
+- A directory mount point could be unusable in Explorer and in the tray right after installing:
+  Inno Setup 6.3+ runs with RedirectionGuard, and every process Setup starts inherits that
+  mitigation — measured, whatever the documentation says. A junction created by a
+  non-administrator (the service account) counts as untrusted to an enforcing process, so the
+  tray Setup launched, and the Explorer Setup restarted, answered "The path cannot be traversed
+  because it contains an untrusted mount point" until the user signed out. The tray is now
+  started through Explorer — a process of its own, not a child of Setup — and Setup no longer
+  restarts Explorer; the finished page explains how to restart it, which also brings the source
+  colours back.
+
 ## [0.4.8] - 2026-10-18
 
 ### Fixed

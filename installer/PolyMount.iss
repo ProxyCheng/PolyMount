@@ -105,10 +105,13 @@ Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIco
 #for {Index = 0; Index < 7; Index++} OverlayEntry
 
 [Run]
-Filename: "{app}\Tray\PolyMount.Tray.exe"; Description: "{cm:LaunchProgram,PolyMount}"; Flags: nowait postinstall skipifsilent runasoriginaluser
-; Shell reads the overlay handler list once per Explorer session, so the dots do not appear until
-; Explorer is restarted -- the task says so, and this makes it one click rather than a chore.
-Filename: "{cmd}"; Parameters: "/c taskkill /f /im explorer.exe >nul 2>&1 & start explorer.exe"; Description: "{cm:RestartExplorer}"; Flags: postinstall skipifsilent runasoriginaluser runhidden; Tasks: overlays
+; Started through Explorer rather than as a child of Setup. Setup runs with RedirectionGuard (the
+; Inno 6.3+ default) and every process it starts inherits that mitigation; an enforcing process
+; cannot follow a junction created by the service account, so a tray started here would be unable
+; to open the mount points it manages until the next sign-in. Explorer is not mitigated.
+Filename: "{win}\explorer.exe"; Parameters: """{app}\Tray\PolyMount.Tray.exe"""; Description: "{cm:LaunchProgram,PolyMount}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Explorer is deliberately not restarted from here: the new Explorer would inherit the same
+; mitigation and could not open the mounts. The finished page says how to restart it.
 
 [CustomMessages]
 english.ManageObject=Manage cache boundary...
@@ -129,7 +132,7 @@ english.UserAccount=Run the service as this Windows account (reuses your saved S
 english.ServiceFailure=PolyMount service setup failed. See the installer log and retry setup.
 english.WinFspFailure=WinFsp installation failed.
 english.RuntimeFailure=Visual C++ runtime installation failed.
-english.RestartExplorer=Restart Explorer now so the source-layer colour dots appear
+english.RestartExplorerHint=To see the source colours, restart Explorer from Task Manager (right-click Windows Explorer and choose Restart) or sign out and back in. Do not start it from this installer: the new Explorer would inherit a security mitigation and could not open the mounts.
 english.RemoveData=Also delete the PolyMount configuration and cached data?%n%nAnswer No to keep them for a later installation.
 chinesesimplified.AutoStart=登录 Windows 时启动托盘
 chinesesimplified.OriginDots=在资源管理器中显示来源颜色
@@ -137,7 +140,7 @@ chinesesimplified.UserAccount=以当前 Windows 账户运行服务（复用已�
 chinesesimplified.ServiceFailure=PolyMount 服务安装失败，请查看安装日志并重新安装。
 chinesesimplified.WinFspFailure=WinFsp 安装失败。
 chinesesimplified.RuntimeFailure=Visual C++ 运行库安装失败。
-chinesesimplified.RestartExplorer=立即重启资源管理器，让来源层彩色圆点生效
+chinesesimplified.RestartExplorerHint=要看到来源颜色，请在任务管理器里重启资源管理器（右键「Windows 资源管理器」→「重新启动」），或注销后重新登录。不要从这个安装程序里重启：新的资源管理器会继承一项安全缓解策略，从而无法打开挂载点。
 chinesesimplified.RemoveData=同时删除 PolyMount 的配置与缓存的数据？%n%n选择「否」会保留它们，以便日后重新安装。
 
 [Code]
@@ -179,6 +182,15 @@ begin
     PluginPage.Add(PluginLabel(I));
     PluginPage.Values[I] := True;
   end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  { The colours appear only after Explorer has read the overlay list, and this installer must not
+    restart it itself (see [Run]); the finished page says what to do instead. }
+  if (CurPageID = wpFinished) and WizardIsTaskSelected('overlays') then
+    WizardForm.FinishedLabel.Caption := WizardForm.FinishedLabel.Caption + #13#10#13#10 +
+      CustomMessage('RestartExplorerHint');
 end;
 
 function PluginFile(Index: Integer): String;
