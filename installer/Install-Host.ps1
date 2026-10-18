@@ -174,10 +174,18 @@ try {
                 if ($changed.ReturnValue -ne 0) { throw "Failed to set the service account (service provider returned $($changed.ReturnValue))." }
                 $account = 'NT AUTHORITY\LOCAL SERVICE'
             }
-            $acl = Get-Acl -LiteralPath $data
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($account,'Modify','ContainerInherit,ObjectInherit','None','Allow')
-            $acl.SetAccessRule($rule)
-            Set-Acl -LiteralPath $data -AclObject $acl
+            # The account is given access with icacls rather than Get-Acl/Set-Acl: those two live in
+            # a module that Windows PowerShell failed to autoload on a build runner, and the install
+            # stopped there -- after creating the service, so the service existed and had never been
+            # started. icacls is an executable and cannot fail that way. Well-known accounts are
+            # named by SID, which needs no lookup and no translation on a non-English system.
+            $grantee = switch ($account) {
+                'NT AUTHORITY\SYSTEM' { '*S-1-5-18' }
+                'NT AUTHORITY\LOCAL SERVICE' { '*S-1-5-19' }
+                default { '"' + $account + '"' }
+            }
+            & icacls.exe $data /grant ($grantee + ':(OI)(CI)M') /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to grant the service account access to '$data' (icacls exit $LASTEXITCODE)." }
             & sc.exe description PolyMount 'Layered virtual drives, on-demand file access.' | Out-Null
             Start-Service PolyMount
             (Get-Service PolyMount).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30))
