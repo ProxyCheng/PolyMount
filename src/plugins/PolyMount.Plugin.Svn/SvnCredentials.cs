@@ -1,32 +1,35 @@
-using System.Runtime.InteropServices;
 using System.Text;
+using PolyMount.Core;
 
 namespace PolyMount.Plugins.Svn;
 
-/// <summary>A username and password to present to a repository.</summary>
-internal sealed record SvnCredential(string Username, string Password);
-
 /// <summary>
-/// Where the credentials for a repository come from, now that the command-line client is gone.
+/// How the SVN source finds credentials and what it accepts as one.
 ///
-/// The command line brought one thing the HTTP transport could not: it read the credentials the
-/// Subversion client had cached for this user. That cache is still there and is readable — a small
-/// key/value file per realm under <c>%APPDATA%\Subversion\auth\svn.simple</c>, with the password
-/// stored as base64 of a DPAPI blob. This class reads it directly, so a mount keeps working the
-/// way it did without a process in between.
-///
-/// What the layer is configured with wins over the cache: an operator who typed a username means
-/// it. The cache is then tried, and finally anonymous, which is enough for a repository that
-/// serves its content without asking.
+/// The order is the one Core fixes for every source: what the configuration says, then what the
+/// user entered in this product, then whatever the Subversion client cached for this Windows user,
+/// then anonymous. Only the third step is SVN's own; the rest comes from
+/// <see cref="CredentialedSource"/>.
 /// </summary>
-internal static class SvnCredentials
+internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedSource(source.Url, source)
 {
-    /// <summary>The credential for <paramref name="url"/>, or null to try anonymously.</summary>
-    public static SvnCredential? Resolve(string url, string? username, string? password)
+    /// <inheritdoc/>
+    protected override Credential? ResolveProtocolCredential() =>
+        FromCache(new Uri(Source.Url, UriKind.Absolute)) is { } cached
+            ? new Credential(cached.Username, cached.Password)
+            : null;
+
+    /// <summary>One request proves the account: the youngest revision, which is what a mount asks
+    /// for first anyway.</summary>
+    protected override void Verify(Credential credential)
     {
-        if (!string.IsNullOrWhiteSpace(username)) return new SvnCredential(username, password ?? string.Empty);
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var repository)) return null;
-        return FromCache(repository);
+        using var client = new SvnHttpClient(Source.Url, Source.TrustServerCertFailures, credential.Username, credential.Secret);
+        try { client.GetHeadRevision(); }
+        catch (AuthRequiredException) { throw; }
+        catch (SvnTransportException ex)
+        {
+            throw new InvalidOperationException("could not reach " + Origin + ": " + ex.Message, ex);
+        }
     }
 
     /// <summary>
@@ -34,16 +37,16 @@ internal static class SvnCredentials
     /// a host; a realm that names the repository's own path is preferred, and otherwise the most
     /// recently written file wins, which is the one a person would have just authenticated with.
     /// </summary>
-    internal static SvnCredential? FromCache(Uri repository) => FromCache(repository, CacheDirectory(), Unprotect);
+    internal static CachedCredential? FromCache(Uri repository) => FromCache(repository, CacheDirectory(), CredentialStore.Unprotect);
 
     /// <summary>The same lookup over a given directory and decryptor, so the whole path — the file
     /// format, the base64 blob and the realm match — can be exercised without a real credential
     /// store.</summary>
-    internal static SvnCredential? FromCache(Uri repository, string directory, Func<byte[], string?> unprotect)
+    internal static CachedCredential? FromCache(Uri repository, string directory, Func<byte[], string?> unprotect)
     {
         if (!Directory.Exists(directory)) return null;
 
-        SvnCredential? best = null;
+        CachedCredential? best = null;
         int bestScore = 0;
         DateTime bestWritten = DateTime.MinValue;
 
@@ -84,7 +87,7 @@ internal static class SvnCredentials
 
             if (score > bestScore || (score == bestScore && written > bestWritten))
             {
-                best = new SvnCredential(Encoding.UTF8.GetString(userBytes), password);
+                best = new CachedCredential(Encoding.UTF8.GetString(userBytes), password);
                 bestScore = score;
                 bestWritten = written;
             }
@@ -114,8 +117,9 @@ internal static class SvnCredentials
 
     /// <summary>
     /// Parses one cache file: repeated <c>K &lt;length&gt;\n&lt;key&gt;\nV &lt;length&gt;\n&lt;value&gt;\n</c>
-    /// pairs, lengths in bytes. Returns null for anything that is not that shape, because a file
-    /// half-written by another program is not a credential.
+    /// pairs, lengths in bytes, terminated by a line reading <c>END</c>. Returns null for anything
+    /// that is not that shape — including a file without the terminator, which is what a file cut
+    /// short looks like.
     /// </summary>
     internal static Dictionary<string, byte[]>? Read(string path)
     {
@@ -131,9 +135,6 @@ internal static class SvnCredentials
             string line = Encoding.ASCII.GetString(data, i, lineEnd - i);
             i = lineEnd + 1;
             if (line.Length == 0) continue;
-            // Subversion terminates the document with END, and its absence is how a file that was
-            // cut short looks. Requiring it is what turns "the last pair happened to end at the
-            // end of the file" into a rejected file.
             if (line == "END") { terminated = true; break; }
             int space = line.IndexOf(' ');
             if (space != 1 || !int.TryParse(line.AsSpan(2), out int length) || length < 0) return null;
@@ -145,44 +146,19 @@ internal static class SvnCredentials
         }
         return terminated ? values : null;
     }
+}
 
-    /// <summary>Opens a DPAPI blob protected by this user. Null when it belongs to someone else or
-    /// the machine, which is what a service running under a different account will see.</summary>
-    internal static string? Unprotect(byte[] blob)
-    {
-        var input = new DataBlob { Size = blob.Length, Data = Marshal.AllocHGlobal(blob.Length) };
-        var output = new DataBlob();
-        try
-        {
-            Marshal.Copy(blob, 0, input.Data, blob.Length);
-            // UI forbidden: this runs in a service, where a prompt would hang forever.
-            if (!CryptUnprotectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, UiForbidden, ref output))
-                return null;
-            var bytes = new byte[output.Size];
-            Marshal.Copy(output.Data, bytes, 0, output.Size);
-            return Encoding.UTF8.GetString(bytes);
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(input.Data);
-            if (output.Data != IntPtr.Zero) LocalFree(output.Data);
-        }
-    }
+/// <summary>A credential read from the Subversion client's own store.</summary>
+internal sealed record CachedCredential(string Username, string Password);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct DataBlob
-    {
-        public int Size;
-        public IntPtr Data;
-    }
+/// <summary>What the product calls to sign an SVN repository in: check the account, then keep it.</summary>
+internal sealed class SvnCredentialHandler : ICredentialHandler
+{
+    public string OriginOf(SourceConfig source) =>
+        Uri.TryCreate(source.Url, UriKind.Absolute, out var uri)
+            ? CredentialStore.OriginOf(uri)
+            : source.Url;
 
-    private const int UiForbidden = 0x1;
-
-    [DllImport("crypt32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CryptUnprotectData(ref DataBlob dataIn, IntPtr description, IntPtr entropy,
-        IntPtr reserved, IntPtr prompt, int flags, ref DataBlob dataOut);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr LocalFree(IntPtr handle);
+    public void SignIn(SourceConfig source, string username, string password) =>
+        new SvnCredentialedSource(source).SignIn(username, password);
 }

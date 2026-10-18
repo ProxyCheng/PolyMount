@@ -90,6 +90,10 @@ public sealed class MountStatus
     /// <summary>Warm-up progress in the reader's language, formatted with the two counts above.</summary>
     public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
+    /// <summary>What kind of failure <see cref="Error"/> is, when the producer can say. "auth"
+    /// means the source asked for credentials the machine did not have; anything else is empty and
+    /// is only a message.</summary>
+    public string? ErrorKind { get; set; }
 
     // What the supervisor knows about the process running this instance: the pipe it answers on
     // (empty when nothing is running it), which process it is (0 when none is), and how many times
@@ -116,6 +120,11 @@ public sealed class ControlRequest
 
     // Used by "layerAction": which layer to mutate and what to do.
     public string? Layer { get; set; }
+
+    // Populated by "authenticate": the account to check against the source and, if it works, to
+    // keep. Only the request carries it; no reply ever echoes it back.
+    public string? Username { get; set; }
+    public string? Password { get; set; }
     public string? Action { get; set; }
     public int Boundary { get; set; }
     public List<string> ExpectedLayers { get; set; } = new();
@@ -265,6 +274,9 @@ public static class ControlCommands
     public const string RecordingStatus = "recordingStatus";
     public const string RecordingStop = "recordingStop";
     public const string Shutdown = "shutdown";
+    /// <summary>Checks an account against an instance's source and stores it. Answered by the
+    /// supervisor, which holds the configuration and can restart the instance afterwards.</summary>
+    public const string Authenticate = "authenticate";
 }
 
 /// <summary>One recording on the service: whether it is running, and what it has counted.

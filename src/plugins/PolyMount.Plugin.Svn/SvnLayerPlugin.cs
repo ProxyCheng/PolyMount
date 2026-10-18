@@ -85,6 +85,6 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     Field = "Source.PinnedRevision",
                     Title = SvnTexts.Get("svn.action.refreshHead"),
                     Confirmation = SvnTexts.Get("svn.action.refreshHead.confirmation") } }
-            });
+            }, new SvnCredentialHandler());
     }
 }

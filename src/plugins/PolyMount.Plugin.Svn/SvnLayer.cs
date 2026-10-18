@@ -108,8 +108,10 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         if (!Uri.TryCreate(url, UriKind.Absolute, out var repository) ||
             (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps))
             throw new ArgumentException("SVN layers read http(s) repositories; '" + url + "' is not one.", nameof(url));
-        var credential = SvnCredentials.Resolve(url, username, password);
-        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Password), pinPath, prefetch);
+        var source = new SourceConfig { Type = "svn", Url = url, TrustServerCertFailures = trustFailures,
+            Username = username, Password = password };
+        var credential = new SvnCredentialedSource(source).Resolve();
+        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Secret), pinPath, prefetch);
     }
 
     public void Dispose()

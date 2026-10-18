@@ -227,21 +227,21 @@ public sealed class SvnPluginTests : IPluginTestProvider
         {
             string file = Path.Combine(context.WorkingDirectory, "write-cache");
             WriteCacheFile(file, "wincrypt", "user", Convert.ToBase64String(Protect("secret")), "<https://example.invalid:443> realm");
-            var values = SvnCredentials.Read(file);
+            var values = SvnCredentialedSource.Read(file);
             if (values == null) throw new Exception("a well-formed cache file was rejected");
             if (Encoding.UTF8.GetString(values["username"]) != "user") throw new Exception("the username did not survive the format");
-            if (!SvnCredentials.RealmMatches(Encoding.UTF8.GetString(values["svn:realmstring"]), new Uri("https://example.invalid/repo")))
+            if (!SvnCredentialedSource.RealmMatches(Encoding.UTF8.GetString(values["svn:realmstring"]), new Uri("https://example.invalid/repo")))
                 throw new Exception("the parsed realm did not match its own repository");
 
             string truncated = Path.Combine(context.WorkingDirectory, "write-cache-truncated");
             File.WriteAllBytes(truncated, File.ReadAllBytes(file)[..^12]);
-            if (SvnCredentials.Read(truncated) != null) throw new Exception("a truncated cache file was accepted");
+            if (SvnCredentialedSource.Read(truncated) != null) throw new Exception("a truncated cache file was accepted");
         });
         Check("credential-unprotect", () =>
         {
             byte[] blob = Protect("secret");
-            if (SvnCredentials.Unprotect(blob) != "secret") throw new Exception("a blob protected by this user was not opened");
-            if (SvnCredentials.Unprotect(blob[..(blob.Length / 2)]) != null) throw new Exception("a truncated blob was accepted");
+            if (CredentialStore.Unprotect(blob) != "secret") throw new Exception("a blob protected by this user was not opened");
+            if (CredentialStore.Unprotect(blob[..(blob.Length / 2)]) != null) throw new Exception("a truncated blob was accepted");
         });
         Check("credential-cache-selection", () =>
         {
@@ -252,27 +252,27 @@ public sealed class SvnPluginTests : IPluginTestProvider
             WriteCacheFile(Path.Combine(directory, "https"), "wincrypt", "bob",
                 Convert.ToBase64String(Protect("secret")), "<https://example.invalid:443> realm");
 
-            var chosen = SvnCredentials.FromCache(new Uri("https://example.invalid/repo"), directory, SvnCredentials.Unprotect);
+            var chosen = SvnCredentialedSource.FromCache(new Uri("https://example.invalid/repo"), directory, CredentialStore.Unprotect);
             if (chosen is not { Username: "bob" }) throw new Exception("the entry for another scheme was chosen");
-            if (SvnCredentials.FromCache(new Uri("https://other.invalid/repo"), directory, SvnCredentials.Unprotect) != null)
+            if (SvnCredentialedSource.FromCache(new Uri("https://other.invalid/repo"), directory, CredentialStore.Unprotect) != null)
                 throw new Exception("an entry was chosen for another host");
-            if (SvnCredentials.FromCache(new Uri("https://example.invalid/repo"), directory, _ => null) != null)
+            if (SvnCredentialedSource.FromCache(new Uri("https://example.invalid/repo"), directory, _ => null) != null)
                 throw new Exception("an entry that could not be decrypted was used");
         });
         Check("credential-realm-match", () =>
         {
             var repository = new Uri("https://svn.example.invalid/repo/trunk");
-            if (!SvnCredentials.RealmMatches("<https://svn.example.invalid:443> Authenticate your account.", repository))
+            if (!SvnCredentialedSource.RealmMatches("<https://svn.example.invalid:443> Authenticate your account.", repository))
                 throw new Exception("a matching realm was rejected");
-            if (SvnCredentials.RealmMatches("<https://svn.example.invalid:8443> Authenticate your account.", repository))
+            if (SvnCredentialedSource.RealmMatches("<https://svn.example.invalid:8443> Authenticate your account.", repository))
                 throw new Exception("a realm on another port was accepted");
-            if (SvnCredentials.RealmMatches("<https://elsewhere.invalid:443> Authenticate your account.", repository))
+            if (SvnCredentialedSource.RealmMatches("<https://elsewhere.invalid:443> Authenticate your account.", repository))
                 throw new Exception("a realm on another host was accepted");
-            if (SvnCredentials.RealmMatches("<http://svn.example.invalid:443> Authenticate your account.", repository))
+            if (SvnCredentialedSource.RealmMatches("<http://svn.example.invalid:443> Authenticate your account.", repository))
                 throw new Exception("a realm over another scheme was accepted");
-            if (SvnCredentials.RealmMatches("<https://svn.example.invalid.evil:443> Authenticate your account.", repository))
+            if (SvnCredentialedSource.RealmMatches("<https://svn.example.invalid.evil:443> Authenticate your account.", repository))
                 throw new Exception("a realm whose host merely starts with ours was accepted");
-            if (SvnCredentials.RealmMatches("<svn://svn.example.invalid:3690> Authenticate your account.", repository))
+            if (SvnCredentialedSource.RealmMatches("<svn://svn.example.invalid:3690> Authenticate your account.", repository))
                 throw new Exception("an svnserve realm was accepted");
         });
         Check("listing-carries-the-revision", () =>
@@ -287,8 +287,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("authentication-guidance", () =>
         {
             string anonymous = SvnHttpClient.AuthenticationFailure(false, "https://host/repo", "host");
-            if (!anonymous.Contains("Windows account") || !anonymous.Contains("cached credentials"))
-                throw new Exception("the anonymous failure did not say where credentials come from: " + anonymous);
+            if (!anonymous.Contains("Sign in") || !anonymous.Contains("Windows account"))
+                throw new Exception("the anonymous failure did not say what to do about it: " + anonymous);
             string rejected = SvnHttpClient.AuthenticationFailure(true, "https://host/repo", "host");
             if (!rejected.Contains("rejected"))
                 throw new Exception("a rejected credential was not reported as such: " + rejected);

@@ -175,7 +175,7 @@ internal sealed class SvnHttpClient : ISvnBackend
         response.Dispose();
         if (statusCode == HttpStatusCode.NotFound) throw new SvnNotFoundException($"'{rel}' does not exist at this revision: {url}");
         if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            throw new SvnTransportException(AuthenticationFailure(_hasCredentials, url, _base.Host));
+            throw new AuthRequiredException(AuthenticationFailure(_hasCredentials, url, _base.Host));
         // Everything else is the server or a proxy refusing the request itself; this transport has
         // no second way to ask.
         throw new SvnTransportException($"'{url}' returned HTTP {status}");
@@ -186,7 +186,7 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// them the same advice would be wrong. Internal so the wording is checked by a test.</summary>
     internal static string AuthenticationFailure(bool hasCredentials, string url, string host) => hasCredentials
         ? $"the repository at '{host}' rejected the credentials it was given"
-        : $"'{url}' requires authentication and no cached credentials were available. Run the service as your own Windows account so it can read the credentials the Subversion client saved.";
+        : $"'{url}' requires an account that PolyMount does not have yet. Sign in from the dashboard, or let the service run as the Windows account whose Subversion client already saved them.";
 
     /// <summary>Turns a Depth:1 multistatus listing into child entries.</summary>
     internal static List<SvnEntry> ParseListing(XDocument document, string requestPath, string selfName)
