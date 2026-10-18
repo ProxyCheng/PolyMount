@@ -966,7 +966,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private void RenderUsage()
     {
         var provider = _layer == null ? null : _runtimeProviders.FirstOrDefault(p => p.Name == _layer.Id);
-        if (provider?.Type is "prediction-cache" or "prediction-burst")
+        if (provider?.Type == "prediction-cache")
         {
             // This layer never serves a read — it warms the cache below — so its hit count
             // is zero by design. Show what actually moves: the model it learned and the

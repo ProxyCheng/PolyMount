@@ -101,4 +101,29 @@ public sealed class CoReadPredictionTests
         CollectionAssert.Contains(loaded.ToList(), "p1");
         CollectionAssert.Contains(loaded.ToList(), "p2");
     }
+
+    [TestMethod]
+    public async Task All_four_strategies_share_one_layer()
+    {
+        using var temp = new TempDir();
+        var source = new FakeSourceLayer();
+        foreach (var name in new[] { "m", "p1", "p2" }) source.AddFile(name, name);
+        var options = ReadPredictionProfiles.EagerOptions();
+        options.SpatialEnabled = true;
+        var coRead = new CoReadOptions { BurstGapMs = 10, MinCoReadCount = 1, MinConfidence = 0, TickIntervalMs = 10 };
+        using var layer = new PredictionCacheLayer(1 << 20, () => "v1", options, coRead,
+            new[] { "successor", "stride", "spatial", "co-read" }, temp.Sub("prediction.json"));
+        layer.Attach(new VirtualFileSystem(new ILayer[] { source }));
+        var vfs = new VirtualFileSystem(new ILayer[] { layer, source });
+        foreach (var path in new[] { "m", "p1", "p2" })
+            using (var read = vfs.OpenRead(path, out _)) read.CopyTo(Stream.Null);
+        await Task.Delay(40);
+        using (var read = vfs.OpenRead("m", out _)) read.CopyTo(Stream.Null);
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (DateTime.UtcNow < deadline && layer.BurstCompleted < 2) await Task.Delay(20);
+        Assert.IsTrue(layer.BurstPreloads >= 2, "co-read participates in the same layer");
+        Assert.IsTrue(layer.LearnedTransitions > 0, "the successor strategy still learns");
+        Assert.IsTrue(layer.ActiveStreams > 0);
+    }
+
 }

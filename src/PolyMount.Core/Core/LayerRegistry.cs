@@ -60,45 +60,6 @@ public static class LayerRegistry
                             "Comma-separated: successor, stride, spatial, co-read",
                             "逗号分隔：successor、stride、spatial、co-read") }
                 } });
-        RegisterCache("prediction-burst", (c, ctx) => new CoReadPredictionLayer(PredictionCapacity(c), ctx.LowerGeneration,
-                CoReadOptionsFor(c), Path.Combine(ctx.State, "co-read.json")),
-            c =>
-            {
-                if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576)
-                    throw new ArgumentException("Prediction capacity exceeds 256 MiB");
-                _ = CoReadOptionsFor(c);
-            },
-            new LayerDescriptor
-            {
-                Type = "prediction-burst", Title = new LocalizedText("Burst prefetch", "突发共读预取"),
-                Icon = "predict-path",
-                Description = new LocalizedText(
-                    "Learns files read together in a short burst and preloads the set when its first path is read again; shares the prediction cache, quota and write invalidation.",
-                    "学习同一时间窗内一起被读的文件；首路径再次被读时预取整组。复用预测缓存、配额与写失效。"),
-                Fields = new()
-                {
-                    new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576,
-                        Minimum = 1, Maximum = 256, DefaultValue = "256", Title = LayerTexts.Get("prediction.capacity") },
-                    new() { Path = "Parameters.CoRead.TickIntervalMs", Kind = LayerFieldKind.Integer, Minimum = 10, Maximum = 10000,
-                        DefaultValue = "50", Title = new LocalizedText("Tick (ms)", "调度间隔（毫秒）") },
-                    new() { Path = "Parameters.CoRead.WindowMs", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 600000,
-                        DefaultValue = "1000", Title = new LocalizedText("Burst window (ms)", "突发窗口（毫秒）") },
-                    new() { Path = "Parameters.CoRead.BurstGapMs", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 60000,
-                        DefaultValue = "50", Title = new LocalizedText("Burst gap (ms)", "突发间隔（毫秒）") },
-                    new() { Path = "Parameters.CoRead.MaxPaths", Kind = LayerFieldKind.Integer, Minimum = 2, Maximum = 4096,
-                        DefaultValue = "64", Title = new LocalizedText("Paths per burst", "每次突发最多路径数") },
-                    new() { Path = "Parameters.CoRead.MaxPerPath", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 64,
-                        DefaultValue = "8", Title = new LocalizedText("Co-reads per path", "每路径共读候选数") },
-                    new() { Path = "Parameters.CoRead.MinCount", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 10000,
-                        DefaultValue = "2", Title = new LocalizedText("Minimum observations", "最少观测次数") },
-                    new() { Path = "Parameters.CoRead.MinConfidencePercent", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 100,
-                        DefaultValue = "50", Title = new LocalizedText("Minimum confidence (%)", "最低置信度（%）") },
-                    new() { Path = "Parameters.CoRead.MaxInFlight", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 64,
-                        DefaultValue = "2", Title = new LocalizedText("In-flight preloads", "并发预载数") },
-                    new() { Path = "Parameters.CoRead.MaxFileBytes", Kind = LayerFieldKind.Integer, Scale = 1048576, Minimum = 1, Maximum = 256,
-                        DefaultValue = "8", Title = new LocalizedText("Preload file budget (MiB)", "预载文件预算（MiB）") }
-                }
-            });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes,
                 c.Compression, writable: Bool(c, "Writable", true)),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));

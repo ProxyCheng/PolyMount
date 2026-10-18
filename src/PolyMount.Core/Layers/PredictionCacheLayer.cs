@@ -514,24 +514,3 @@ public sealed class PredictionCacheLayer : PredictionLayerBase
             Math.Max(options.FeedbackSamples, co?.FeedbackSamples ?? 0));
     }
 }
-
-/// <summary>The co-read/burst strategy on its own. The configurable <see cref="PredictionCacheLayer"/>
-/// can combine it with the successor/stride/spatial strategies; this type is the shortcut for
-/// "burst only".</summary>
-public sealed class CoReadPredictionLayer : PredictionLayerBase
-{
-    private readonly CoReadOptions _options;
-
-    public CoReadPredictionLayer(long capacity, Func<string> generation, CoReadOptions options, string model)
-        : base(capacity, generation,
-            new PredictionTuning(options.MaxFileBytes, options.FeedbackWindowMs, options.FeedbackSamples), model)
-    {
-        _options = options;
-    }
-
-    protected override string TypeName => "prediction-burst";
-
-    protected override IPredictionModel CreateModel(VirtualFileSystem lower, string modelPath) =>
-        new CoReadPrediction(lower, _options, modelPath,
-            (path, stream, origin) => Preload(lower, path, stream, origin));
-}
