@@ -29,7 +29,7 @@ public sealed class GameEnginePluginTests : IPluginTestProvider
 
         Check("registration-and-preset", () =>
         {
-            var path = typeof(GameEngineLayerPlugin).Assembly.Location;
+            var path = typeof(GameEnginePlugin).Assembly.Location;
             var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!PredictionStrategyRegistry.Names.Contains("manifests", StringComparer.OrdinalIgnoreCase))
@@ -73,7 +73,7 @@ public sealed class GameEnginePluginTests : IPluginTestProvider
             var arguments = new ToolArguments(JsonSerializer.SerializeToElement(
                 new Dictionary<string, JsonElement> { ["instance"] = JsonSerializer.SerializeToElement("Project") }));
             var response = operation.Invoke(link, arguments);
-            if (link.InstanceName != "Project" || link.Request?.Cmd != GameEngineLayerPlugin.FamiliesCommand)
+            if (link.InstanceName != "Project" || link.Request?.Cmd != GameEnginePlugin.FamiliesCommand)
                 throw new Exception("The tool did not ask the instance for its families");
             var presented = operation.Present(response) as System.Text.Json.Nodes.JsonNode
                 ?? throw new Exception("The tool did not project the plugin's payload");

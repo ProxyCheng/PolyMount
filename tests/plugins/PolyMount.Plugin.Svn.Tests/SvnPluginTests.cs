@@ -208,7 +208,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         }
         Check("configured-loading-and-preset", () =>
         {
-            var path = typeof(SvnLayerPlugin).Assembly.Location;
+            var path = typeof(SvnPlugin).Assembly.Location;
             var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Missing plugin preset");
@@ -259,7 +259,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 ["layer"] = JsonSerializer.SerializeToElement("svn")
             }));
             source.Invoke(link, arguments);
-            if (link.InstanceName != "Project" || link.Request?.Cmd != SvnLayerPlugin.SourceCommand || link.Request?.Layer != "svn")
+            if (link.InstanceName != "Project" || link.Request?.Cmd != SvnPlugin.SourceCommand || link.Request?.Layer != "svn")
                 throw new Exception("get_svn_source did not ask the instance for its source");
             var presented = source.Present(link.LastResponse) as JsonNode
                 ?? throw new Exception("get_svn_source did not project the payload");
@@ -267,7 +267,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("The source payload did not reach the caller");
 
             lanes.Invoke(link, arguments);
-            if (link.Request?.Cmd != SvnLayerPlugin.LanesCommand)
+            if (link.Request?.Cmd != SvnPlugin.LanesCommand)
                 throw new Exception("list_svn_lanes did not ask the instance for its lanes");
             if (lanes.Present(new ControlResponse()) is not JsonObject empty || empty.Count != 0)
                 throw new Exception("An empty result should project as an empty object");

@@ -42,13 +42,13 @@ public class LayerActionTests
         using var mount = new MountInstance(profile);
         mount.Vfs.List("");
         mount.Vfs.List("sub");
-        Assert.IsTrue(mount.Cache!.TryReadObject("", out _));
-        Assert.IsTrue(mount.Cache.TryReadObject("sub", out _));
+        Assert.IsTrue(mount.DiskCache!.TryReadObject("", out _));
+        Assert.IsTrue(mount.DiskCache.TryReadObject("sub", out _));
 
         mount.ApplyLayerAction("cache", "sub", LayerActions.EvictCache);
 
-        Assert.IsFalse(mount.Cache.TryReadObject("sub", out _), "the evicted path should be gone");
-        Assert.IsTrue(mount.Cache.TryReadObject("", out _),
+        Assert.IsFalse(mount.DiskCache.TryReadObject("sub", out _), "the evicted path should be gone");
+        Assert.IsTrue(mount.DiskCache.TryReadObject("", out _),
             "a cached path is not visible state, so evicting one says nothing about the others");
     }
 }

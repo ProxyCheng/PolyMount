@@ -5,8 +5,14 @@ namespace PolyMount.Core;
 
 /// <summary>The entry point of a plugin assembly. Everything a plugin contributes is added
 /// through the context it is given — layers, sources, presets, prediction strategies and
-/// commands — so a plugin is not constrained to being a data source.</summary>
-public interface ILayerPlugin { void Register(IPluginContext context); }
+/// commands — so a plugin is not constrained to being a data source or a layer.</summary>
+public interface IPolyMountPlugin { void Register(IPluginContext context); }
+
+/// <summary>The old name of <see cref="IPolyMountPlugin"/>. A plugin no longer has to provide a
+/// layer, so the name no longer describes the contract. This alias is kept only so an assembly
+/// built against an earlier release still loads; new plugins implement the new interface.</summary>
+[Obsolete("Implement IPolyMountPlugin; this alias exists only so older plugin assemblies still load.")]
+public interface ILayerPlugin : IPolyMountPlugin { }
 
 /// <summary>Only assemblies explicitly enabled in configuration are loaded.</summary>
 public static class PluginLoader
@@ -49,9 +55,9 @@ public static class PluginLoader
                 };
                 var assembly = AppDomain.CurrentDomain.GetAssemblies().FirstOrDefault(a => !a.IsDynamic && a.Location == path)
                     ?? AssemblyLoadContext.Default.LoadFromAssemblyPath(path);
-                var types = assembly.GetTypes().Where(t => !t.IsAbstract && typeof(ILayerPlugin).IsAssignableFrom(t)).ToArray();
-                if (types.Length == 0) throw new InvalidOperationException("Assembly exports no ILayerPlugin");
-                foreach (var type in types) ((ILayerPlugin)Activator.CreateInstance(type)!).Register(pluginContext);
+                var types = assembly.GetTypes().Where(t => !t.IsAbstract && typeof(IPolyMountPlugin).IsAssignableFrom(t)).ToArray();
+                if (types.Length == 0) throw new InvalidOperationException("Assembly exports no IPolyMountPlugin");
+                foreach (var type in types) ((IPolyMountPlugin)Activator.CreateInstance(type)!).Register(pluginContext);
             }
             catch (Exception ex) { errors.Add(plugin.AssemblyPath + ": " + ex.Message); }
         }

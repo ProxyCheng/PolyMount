@@ -157,17 +157,18 @@ with only a source, or with several sources.
 ## Plugins
 
 Plugins are the extension point, and a data source is one thing they can add. A plugin is an
-assembly with a class implementing `ILayerPlugin`; the `IPluginContext` it is given registers layer
-types (ordinary and cache), source types, presets, prediction strategies, control commands and
-control operations. A layer can also implement `ILayerActionHandler` to answer the actions its own
-descriptor declares. The service loads **only** the assemblies its configuration names — nothing
-is discovered by scanning a directory — so an installation starts with exactly the plugins its
-operator chose.
+assembly with a class implementing `IPolyMountPlugin`; the `IPluginContext` it is given registers
+layer types (ordinary and cache), source types, presets, prediction strategies, control commands
+and control operations. A layer can also implement `ILayerActionHandler` to answer the actions its
+own descriptor declares. The service loads **only** the assemblies its configuration names —
+nothing is discovered by scanning a directory — so an installation starts with exactly the
+plugins its operator chose. Assemblies built against the older `ILayerPlugin` still load: that
+name remains as an obsolete alias.
 
 The bundled SVN plugin adds the `svn` source type and the `svn-workspace` preset. The game-engine
 plugin adds a `manifests` prediction strategy and the `game-engine-workspace` preset. Local
 directories are built in (`dir`). Writing another source means writing a plugin that registers a
-source type: reference `PolyMount.Core`, implement `ILayerPlugin`, and ship a DLL.
+source type: reference `PolyMount.Core`, implement `IPolyMountPlugin`, and ship a DLL.
 `PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests against; the test
 projects live under `tests/plugins` and are not shipped with the production plugin.
 

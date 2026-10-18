@@ -146,7 +146,7 @@ internal static class AccessGrid
 /// same page. The rows are painted rather than charted: Qt Charts has no label at the end of a bar
 /// and no gap between the pieces of one, and a series rebuilt on every sample is the blink this page
 /// has already paid for twice. Rows of rectangles are a thing QPainter draws exactly.</summary>
-internal sealed class LayerAccessPie : QWidget
+internal sealed class LayerAccessView : QWidget
 {
     /// <summary>Which way a card reads one direction of the traffic.</summary>
     private enum Axis
@@ -174,7 +174,7 @@ internal sealed class LayerAccessPie : QWidget
     private List<AccessRow> _rows = new();
     private bool _aligned = true;
 
-    public LayerAccessPie()
+    public LayerAccessView()
     {
         var row = new QHBoxLayout(this);
         row.SetContentsMargins(0, 0, 0, 0);

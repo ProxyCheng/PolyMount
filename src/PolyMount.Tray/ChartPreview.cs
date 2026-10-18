@@ -37,7 +37,7 @@ internal sealed class ChartPreview : QWidget
         ("cache", "#0891b2"), ("svn", "#f59e0b")
     };
     private readonly List<PerformanceChart> _cards = new();
-    private readonly LayerAccessPie _pie = new();
+    private readonly LayerAccessView _access = new();
     private readonly double _span;
 
     private ChartPreview(int width, int height, double span)
@@ -61,7 +61,7 @@ internal sealed class ChartPreview : QWidget
         grid.AddWidget(_cards[4], 2, 0);
         grid.AddWidget(_cards[5], 2, 1);
         grid.AddWidget(_cards[6], 3, 0, 1, 2);
-        grid.AddWidget(_pie, 4, 0, 1, 2);
+        grid.AddWidget(_access, 4, 0, 1, 2);
         Resize(2 * width + 48 + 16, 4 * height + 42 + 3 * 16 + 240);
     }
 
@@ -89,24 +89,24 @@ internal sealed class ChartPreview : QWidget
         }
         // The pie is set after the cards so its own layout runs with them; a pump here is what
         // gives it the geometry and the legend the chart lays out for itself.
-        preview.PlacePie();
+        preview.PlaceAccess();
         Pump();
-        using (var pie = preview._pie.Grab()) pie.Save(Path.Combine(directory, "chart-pie.png"));
+        using (var pie = preview._access.Grab()) pie.Save(Path.Combine(directory, "chart-pie.png"));
         // The same readings drawn the other way: the rows are a grid of columns by one click and one
         // stacked bar per caller by the next, and both are pictures somebody has to look at.
-        preview._pie.SetAligned(false);
+        preview._access.SetAligned(false);
         Pump();
-        using (var stacked = preview._pie.Grab()) stacked.Save(Path.Combine(directory, "chart-pie-stacked.png"));
-        preview._pie.SetAligned(true);
+        using (var stacked = preview._access.Grab()) stacked.Save(Path.Combine(directory, "chart-pie-stacked.png"));
+        preview._access.SetAligned(true);
         preview.Hide();
         if (language != null) I18n.SetLanguage(original);
         Console.WriteLine($"Rendered {preview._cards.Count} chart cards and the pie to {directory}.");
         return 0;
     }
 
-    private void PlacePie()
+    private void PlaceAccess()
     {
-        _pie.SetSlices(new List<AccessSlice>
+        _access.SetSlices(new List<AccessSlice>
         {
             new("memory-cache", "#2563eb", 48213, 0), new("cache", "#0891b2", 12044, 0),
             new("overlay", "#059669", 3120, 908), new("svn", "#f59e0b", 1402, 0)

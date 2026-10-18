@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-10-18
+
+### Changed
+
+- A plugin implements `IPolyMountPlugin` and registers through it. `ILayerPlugin` remains as an
+  obsolete alias that derives from the new interface, so a plugin assembly built against an
+  earlier release still loads; the name changed because a plugin contributes layers, sources,
+  presets, prediction strategies, commands and control operations, any of which may be none of
+  the layer ones.
+
 ## [0.4.9] - 2026-10-18
 
 ### Fixed

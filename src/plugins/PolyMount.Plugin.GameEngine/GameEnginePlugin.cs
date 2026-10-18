@@ -16,7 +16,7 @@ namespace PolyMount.Plugins.GameEngine;
 /// prefix — is a configuration (see <see cref="ManifestFamilyOptions"/>), so an engine whose
 /// packages are named differently changes parameters rather than writing another plugin.
 /// </summary>
-public sealed class GameEngineLayerPlugin : ILayerPlugin
+public sealed class GameEnginePlugin : IPolyMountPlugin
 {
     /// <summary>The command this plugin answers on the instance's own pipe. The operation below
     /// is the front-end side of the same question; both live here so the pair cannot drift.</summary>
@@ -117,7 +117,7 @@ public sealed class GameEngineLayerPlugin : ILayerPlugin
     /// or the one inside a composite when several strategies share the layer.</summary>
     private static ManifestFamilyPrediction? FindFamilyModel(MountInstance instance)
     {
-        foreach (var layer in instance.Providers.Values.OfType<PredictionLayerBase>())
+        foreach (var layer in instance.Layers.Values.OfType<PredictionLayerBase>())
             if (FindStrategy(layer.Strategy) is { } model) return model;
         return null;
     }

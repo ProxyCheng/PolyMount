@@ -22,7 +22,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private readonly QPushButton _pause;
     private readonly QTableWidget _table;
     private readonly QLabel _status;
-    private readonly LayerAccessPie _accessPie;
+    private readonly LayerAccessView _accessView;
     private readonly QLabel _responseCost;
     private readonly Queue<(double Request, double Dispatch, double Ui, DateTime At)> _responseSamples = new();
     private readonly QComboBox _refresh, _range;
@@ -294,12 +294,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         layerBody.SetContentsMargins(0, 0, 0, 0);
         layerBody.SetSpacing(14);
         var access = new QHBoxLayout();
-        _accessPie = new LayerAccessPie();
-        _accessPie.SetAligned(_accessAligned);
+        _accessView = new LayerAccessView();
+        _accessView.SetAligned(_accessAligned);
         // Switching the drawing is a choice like the refresh rate: written down the moment it is
         // made, so the page opens the way the reader left it.
-        _accessPie.ModeChanged += () => { _accessAligned = _accessPie.Aligned; SaveStats(); };
-        access.AddWidget(_accessPie, 1);
+        _accessView.ModeChanged += () => { _accessAligned = _accessView.Aligned; SaveStats(); };
+        access.AddWidget(_accessView, 1);
         layerBody.AddLayout(access);
         _table = ContinuousScrolling.Table();
         _table.SetColumnCount(8);
@@ -721,7 +721,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // does to them is worse than to a chart: a circle below its own width is one whose legend has
         // been cut, and a row of bars squeezed under its names is one whose numbers have been — so
         // they are two to a row rather than four.
-        foreach (var (title, width, height, minWidth, minHeight) in _accessPie.Cards)
+        foreach (var (title, width, height, minWidth, minHeight) in _accessView.Cards)
             if (width < minWidth || height < minHeight)
                 throw new InvalidOperationException(
                     $"The '{title}' access card is {width}x{height}, under its own {minWidth}x{minHeight} minimum");
@@ -1010,15 +1010,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// the way it came.</summary>
     internal void VerifyAccessModes()
     {
-        bool before = _accessPie.Aligned;
-        _accessPie.SmokeToggle();
-        if (_accessPie.Aligned == before)
+        bool before = _accessView.Aligned;
+        _accessView.SmokeToggle();
+        if (_accessView.Aligned == before)
             throw new InvalidOperationException("The access cards' switch did not change the drawing");
-        if (_accessAligned != _accessPie.Aligned)
+        if (_accessAligned != _accessView.Aligned)
             throw new InvalidOperationException(
-                $"The page kept {_accessAligned} while the cards are drawing {_accessPie.Aligned}");
-        _accessPie.SmokeToggle();
-        if (_accessPie.Aligned != before || _accessAligned != before)
+                $"The page kept {_accessAligned} while the cards are drawing {_accessView.Aligned}");
+        _accessView.SmokeToggle();
+        if (_accessView.Aligned != before || _accessAligned != before)
             throw new InvalidOperationException("Switching the access drawing twice did not come back to where it started");
     }
 
@@ -2241,7 +2241,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             .SelectMany(m => m.Layers.Select(l => (Mount: m.Mount, Layer: l))).ToList();
         long total = accessRows.Sum(r => r.Layer.Hits + r.Layer.Writes);
         var (slices, callers) = AccessSlices(_accessMetrics, selected);
-        _accessPie.SetSlices(slices, callers);
+        _accessView.SetSlices(slices, callers);
         // The line the layer section keeps while it is folded: how many layers there are and what
         // they served between them, which is enough to tell an instance that is working from one
         // that is not, without opening anything. The chart cards carry their own legend — the same

@@ -15,7 +15,7 @@ public sealed class MountInstance : IDisposable
     private bool _unmounting;
     private readonly List<IMountAwareLayer> _background = new();
     private string _lastWinFspBin = "";
-    private readonly Dictionary<string, ILayer> _providers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ILayer> _layers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, LayerConfig> _configs = new(StringComparer.OrdinalIgnoreCase);
 
     public MountInstance(MountProfile profile)
@@ -46,12 +46,12 @@ public sealed class MountInstance : IDisposable
                     if (built.Length - index == 2) return built[index + 1].Generation;
                     return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join("|", lower))));
                 }));
-            _providers.Add(cfg.Id, provider);
+            _layers.Add(cfg.Id, provider);
             built[i] = provider is ICacheLayer cache ? new NamedCacheLayer(cfg.Id, cache) : new NamedLayer(cfg.Id, provider);
         }
-        Overlay = _providers.Values.OfType<OverlayLayer>().FirstOrDefault();
-        Cache = _providers.Values.OfType<LruCacheLayer>().FirstOrDefault();
-        Source = configs.Where(c => SourceRegistry.Contains(c.Type)).Select(c => _providers[c.Id]).FirstOrDefault();
+        Overlay = _layers.Values.OfType<OverlayLayer>().FirstOrDefault();
+        DiskCache = _layers.Values.OfType<LruCacheLayer>().FirstOrDefault();
+        PrimarySource = configs.Where(c => SourceRegistry.Contains(c.Type)).Select(c => _layers[c.Id]).FirstOrDefault();
         var layers = built.ToList();
         Vfs = new VirtualFileSystem(layers);
         Vfs.Metrics = Metrics;
@@ -61,7 +61,7 @@ public sealed class MountInstance : IDisposable
             // request family and its rolled segments stay exactly what they were.
             Channel = new RecordingChannel(Path.Combine(state, "recording"))
         };
-        foreach (var cache in _providers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
+        foreach (var cache in _layers.Values.OfType<LruCacheLayer>()) cache.Diagnostics = Vfs.Diagnostics;
         // Publish this instance to whatever is listening from outside (dotnet-counters). Nothing is
         // published until something asks, so this costs a mount with nobody watching nothing.
         PolyMountEventSource.Log.Register(this);
@@ -70,7 +70,7 @@ public sealed class MountInstance : IDisposable
         // chain's business, so adding a background layer does not change this file.
         for (int i = 0; i < configs.Count; i++)
         {
-            var provider = _providers[configs[i].Id];
+            var provider = _layers[configs[i].Id];
             VirtualFileSystem? lower = null;
             VirtualFileSystem Lower() => lower ??= new VirtualFileSystem(layers.Skip(i + 1)) { Diagnostics = Vfs.Diagnostics };
             if (provider is IMountAwareLayer background)
@@ -88,8 +88,14 @@ public sealed class MountInstance : IDisposable
     public MountProfile Profile { get; }
     public VirtualFileSystem Vfs { get; }
     public OverlayLayer? Overlay { get; }
-    public LruCacheLayer? Cache { get; }
-    public ILayer? Source { get; }
+    public LruCacheLayer? DiskCache { get; }
+    public ILayer? PrimarySource { get; }
+
+    [Obsolete("Use DiskCache.")]
+    public LruCacheLayer? Cache => DiskCache;
+
+    [Obsolete("Use PrimarySource.")]
+    public ILayer? Source => PrimarySource;
     public MetricsCollector Metrics { get; } = new();
 
     // User color overrides (layer name -> "#RRGGBB"); auto color is used for missing keys.
@@ -203,7 +209,7 @@ public sealed class MountInstance : IDisposable
 
     public void SetPin(long revision, string? layer = null)
     {
-        var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
+        var revisions = _layers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         foreach (var rev in revisions) rev.SetRevision(revision);
         // The listings already warmed belong to the version just left; warm the new one.
@@ -215,7 +221,7 @@ public sealed class MountInstance : IDisposable
     /// revision is reported: callers that need a particular one name it.</summary>
     public long RefreshHead(string? layer = null)
     {
-        var revisions = _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
+        var revisions = _layers.Where(p => layer == null || p.Key == layer).Select(p => p.Value).OfType<IRevisionSource>().ToList();
         if (revisions.Count == 0) throw new NotSupportedException("source has no revision");
         long revision = 0;
         foreach (var rev in revisions) { revision = rev.HeadRevision(); rev.SetRevision(revision); }
@@ -225,14 +231,14 @@ public sealed class MountInstance : IDisposable
 
     public void ClearCache(string? layer = null)
     {
-        foreach (var provider in _providers.Where(p => layer == null || p.Key == layer).Select(p => p.Value))
+        foreach (var provider in _layers.Where(p => layer == null || p.Key == layer).Select(p => p.Value))
             if (provider is CacheLayer cache) cache.Clear();
             else if (provider is ICacheLayer legacy) legacy.Invalidate();
     }
 
     public void ClearLocalChanges(string layer, string winFspBin)
     {
-        if (!_providers.TryGetValue(layer, out var provider) || provider is not OverlayLayer overlay)
+        if (!_layers.TryGetValue(layer, out var provider) || provider is not OverlayLayer overlay)
             throw new NotSupportedException($"layer '{layer}' cannot clear local changes");
         bool remount = Mounted;
         Unmount();
@@ -253,7 +259,7 @@ public sealed class MountInstance : IDisposable
         {
             lm.Color = ResolveColor(lm.Name);
             lm.DisplayName = _configs[lm.Name].Name;
-            if (_providers[lm.Name] is PredictionLayerBase readAhead)
+            if (_layers[lm.Name] is PredictionLayerBase readAhead)
             {
                 lm.Predictive = true;
                 lm.HeldUsed = readAhead.Used;
@@ -264,7 +270,7 @@ public sealed class MountInstance : IDisposable
             }
             // The block cache answers no reads of its own, so the only account of its work is
             // the bytes it kept out of the stream underneath.
-            if (_providers[lm.Name] is MemoryCacheLayer memory)
+            if (_layers[lm.Name] is MemoryCacheLayer memory)
             {
                 lm.Accelerating = true;
                 lm.AcceleratedBytes = memory.AcceleratedBytes;
@@ -281,7 +287,7 @@ public sealed class MountInstance : IDisposable
         {
             lp.Color = ResolveColor(lp.Name);
             lp.Type = _configs[lp.Name].Type;
-            lp.Manageable = _providers[lp.Name] is IObjectManagement;
+            lp.Manageable = _layers[lp.Name] is IObjectManagement;
         }
 
         var effective = layers.FirstOrDefault(l => l.Effective);
@@ -308,10 +314,10 @@ public sealed class MountInstance : IDisposable
         try
         {
             foreach (var layer in Vfs.Layers.Take(boundary))
-                if (_providers[layer.Name] is IObjectManagement management) management.ReleaseObject(rel);
+                if (_layers[layer.Name] is IObjectManagement management) management.ReleaseObject(rel);
             // Bottom-up, so each layer's parent listing is reconciled against what is now below it.
             foreach (var layer in Vfs.Layers.Take(boundary).Reverse())
-                if (_providers[layer.Name] is OverlayLayer) Vfs.ReconcileAfterRelease(rel, layer.Name);
+                if (_layers[layer.Name] is OverlayLayer) Vfs.ReconcileAfterRelease(rel, layer.Name);
         }
         finally { if (remount) Mount(_lastWinFspBin); }
         return Probe(rel);
@@ -319,11 +325,14 @@ public sealed class MountInstance : IDisposable
     /// <summary>The layers this instance built, keyed by the configuration id they were built
     /// from. A plugin command that belongs to one of its own layers reaches it through this
     /// without Core learning what that layer is.</summary>
-    public IReadOnlyDictionary<string, ILayer> Providers => _providers;
+    public IReadOnlyDictionary<string, ILayer> Layers => _layers;
+
+    [Obsolete("Use Layers.")]
+    public IReadOnlyDictionary<string, ILayer> Providers => Layers;
 
     public ProbeResult ApplyLayerAction(string layer, string rel, string action)
     {
-        if (!_providers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
+        if (!_layers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
         // A layer that declares actions of its own answers for them; Core only knows the
         // actions of the layer types it ships.
         if (provider is ILayerActionHandler custom && custom.TryApplyAction(rel, action)) return Probe(rel);
@@ -367,9 +376,9 @@ public sealed class MountInstance : IDisposable
             MountPoint = Profile.MountPoint,
             SourceType = string.Join(" + ", _configs.Values.Where(c => SourceRegistry.Contains(c.Type)).Select(c => c.Type).Distinct()),
             Url = string.Join("\n", _configs.Values.Where(c => SourceRegistry.Contains(c.Type)).Select(c => c.Type == "dir" ? c.Source.Path : c.Source.Url)),
-            CacheBytes = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.TotalBytes),
-            CacheCapacity = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Capacity),
-            CacheCount = _providers.Values.OfType<LruCacheLayer>().Sum(c => c.Count),
+            CacheBytes = _layers.Values.OfType<LruCacheLayer>().Sum(c => c.TotalBytes),
+            CacheCapacity = _layers.Values.OfType<LruCacheLayer>().Sum(c => c.Capacity),
+            CacheCount = _layers.Values.OfType<LruCacheLayer>().Sum(c => c.Count),
             WarmedDirectories = progress.Sum(p => p.Completed),
             WarmupLimit = progress.FirstOrDefault()?.Total ?? 0,
             WarmupDetail = progress.FirstOrDefault()?.Detail ?? LayerTexts.Get("warmup.off"),
@@ -382,12 +391,12 @@ public sealed class MountInstance : IDisposable
         foreach (var layer in Vfs.Layers)
         {
             var info = new ProviderInfo { Name = layer.Name, DisplayName = _configs[layer.Name].Name, Type = _configs[layer.Name].Type, Color = ResolveColor(layer.Name), Writable = layer.Writable, Generation = layer.Generation };
-            if (_providers[layer.Name] is MemoryCacheLayer memory)
+            if (_layers[layer.Name] is MemoryCacheLayer memory)
             {
                 info.BlockCacheHits = memory.Hits; info.BlockCacheMisses = memory.Misses; info.BlockWriteBacks = memory.WriteBacks;
                 info.MemoryDetail = LayerTexts.Get("provider.memory");
             }
-            if (_providers[layer.Name] is PredictionLayerBase prediction)
+            if (_layers[layer.Name] is PredictionLayerBase prediction)
             {
                 info.LearnedTransitions = prediction.LearnedTransitions;
                 info.PreloadsStarted = prediction.PreloadsStarted;
@@ -417,8 +426,8 @@ public sealed class MountInstance : IDisposable
             }
             // A source that serves read-ahead at a priority of its own reports what admitting
             // every level cost; one that serves a single priority has nothing to add here.
-            if (_providers[layer.Name] is IReadLaneSource lanes) info.ReadLanes = lanes.Lanes.Snapshot();
-            if (_providers[layer.Name] is ILayerStorageUsage storage)
+            if (_layers[layer.Name] is IReadLaneSource lanes) info.ReadLanes = lanes.Lanes.Snapshot();
+            if (_layers[layer.Name] is ILayerStorageUsage storage)
             {
                 try { info.StorageUsage = storage.GetStorageUsage(); }
                 catch (IOException ex) { info.StorageError = ex.Message; }
@@ -427,7 +436,7 @@ public sealed class MountInstance : IDisposable
             status.Providers.Add(info);
         }
 
-        if (Source is IRevisionSource rev) status.Revision = rev.Revision;
+        if (PrimarySource is IRevisionSource rev) status.Revision = rev.Revision;
         return status;
     }
 
@@ -439,7 +448,7 @@ public sealed class MountInstance : IDisposable
         try { Unmount(); }
         finally
         {
-            foreach (var provider in _providers.Values.OfType<IDisposable>()) provider.Dispose();
+            foreach (var provider in _layers.Values.OfType<IDisposable>()) provider.Dispose();
             Vfs.Diagnostics?.Dispose();
         }
     }

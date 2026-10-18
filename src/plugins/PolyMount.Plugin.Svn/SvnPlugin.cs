@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
@@ -6,7 +6,7 @@ using PolyMount.Core.Ipc;
 namespace PolyMount.Plugins.Svn;
 
 /// <summary>Standalone sample plugin. Only the Core contracts are required.</summary>
-public sealed class SvnLayerPlugin : ILayerPlugin
+public sealed class SvnPlugin : IPolyMountPlugin
 {
     /// <summary>The commands this plugin answers on an instance's own pipe. Each operation below
     /// is the front-end side of one of them; both live here so the pair cannot drift.</summary>
@@ -141,7 +141,7 @@ public sealed class SvnLayerPlugin : ILayerPlugin
     /// an SVN layer of this instance.</summary>
     private static IEnumerable<(string Id, SvnLayer Layer)> SvnLayers(MountInstance instance, string? only)
     {
-        foreach (var pair in instance.Providers)
+        foreach (var pair in instance.Layers)
         {
             if (pair.Value is not SvnLayer layer) continue;
             if (!string.IsNullOrEmpty(only) && !string.Equals(pair.Key, only, StringComparison.OrdinalIgnoreCase)) continue;
