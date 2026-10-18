@@ -14,7 +14,7 @@ namespace PolyMount.Layers;
 /// wasted. Both are counters only — neither feeds back into the learned model.
 /// </para>
 /// </summary>
-public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteInvalidation, IDisposable
+public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWriteInvalidation, IDisposable
 {
     private sealed class Entry(VirtualObject value, byte[]? content, long bytes, PreloadOrigin origin, long stream)
     {
@@ -37,13 +37,13 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
 
     private sealed class Quality
     {
-        public int Paid, Wasted, SpatialPaid, SpatialWasted;
+        public int Paid, Wasted, SpatialPaid, SpatialWasted, BurstPaid, BurstWasted;
     }
 
     private readonly long _capacity;
     private readonly Func<string> _generation;
-    private readonly ReadPredictionOptions _options;
-    private readonly string _model;
+    private readonly PredictionTuning _tuning;
+    private readonly string _modelPath;
     private readonly object _gate = new();
     private readonly Dictionary<string, Entry> _entries = new(StringComparer.OrdinalIgnoreCase);
     private readonly LinkedList<string> _lru = new();
@@ -51,19 +51,21 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     /// another loader's entries out. The map is the set of streams with entries right now.</summary>
     private readonly Dictionary<long, long> _streamBytes = new();
     private readonly Dictionary<long, Quality> _quality = new();
-    private ReadPrediction? _predictor;
+    private IPredictionModel? _modelImpl;
     private string? _generationSnapshot;
     private long _bytes, _hits, _used, _wasted, _wastedBytes, _fetchBytes, _siblingUsed, _siblingWasted;
     private long _spatialUsed, _spatialWasted;
+    private long _burstUsed, _burstWasted;
     private long _lastScored;
 
-    public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
+    protected PredictionLayerBase(long capacity, Func<string> generation, PredictionTuning tuning, string modelPath)
     {
         if (capacity < 1 || capacity > 256L * 1048576) throw new ArgumentException("Prediction temporary capacity must be 1–256 MiB");
-        _capacity = capacity; _generation = generation; _options = options; _model = model;
+        _capacity = capacity; _generation = generation; _tuning = tuning; _modelPath = modelPath;
     }
 
-    public override string Name => "prediction-cache";
+    protected abstract string TypeName { get; }
+    public override string Name => TypeName;
     public override string Generation => _generation();
     public override bool Writable => false;
 
@@ -78,26 +80,32 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     public long Wasted { get { lock (_gate) return _wasted; } }
     /// <summary>Size of everything wasted, so the read-ahead cost is visible in bytes too.</summary>
     public long WastedBytes { get { lock (_gate) return _wastedBytes; } }
-    public long LearnedTransitions => _predictor?.LearnedTransitions ?? 0;
-    public long PreloadsStarted => _predictor?.Predictions ?? 0;
-    public long PreloadsCompleted => _predictor?.Completed ?? 0;
+    private PredictionModelStats ModelStats => _modelImpl?.Stats ?? default;
+    public long LearnedTransitions => ModelStats.Learned;
+    public long PreloadsStarted => ModelStats.Predictions;
+    public long PreloadsCompleted => ModelStats.Completed;
     /// <summary>Preloads the stride issued for a directory walk, and their share of the held
     /// entries read back and evicted unread. Subsets of the totals above and below, so what the
     /// stride contributes can be separated from what the successor table contributes.</summary>
-    public long SiblingPreloads => _predictor?.SiblingPredictions ?? 0;
-    public long SiblingCompleted => _predictor?.SiblingCompleted ?? 0;
+    public long SiblingPreloads => ModelStats.SiblingPredictions;
+    public long SiblingCompleted => ModelStats.SiblingCompleted;
     public long SiblingHits { get { lock (_gate) return _siblingUsed; } }
     public long SiblingWasted { get { lock (_gate) return _siblingWasted; } }
     /// <summary>Preloads a spatial batch issued (the rest of a directory the caller had started
     /// reading), and their share of hits and waste.</summary>
-    public long SpatialPreloads => _predictor?.SpatialPredictions ?? 0;
-    public long SpatialCompleted => _predictor?.SpatialCompleted ?? 0;
+    public long SpatialPreloads => ModelStats.SpatialPredictions;
+    public long SpatialCompleted => ModelStats.SpatialCompleted;
     public long SpatialHits { get { lock (_gate) return _spatialUsed; } }
     public long SpatialWasted { get { lock (_gate) return _spatialWasted; } }
+    /// <summary>Preloads a co-read/burst model issued, and their share of hits and waste.</summary>
+    public long BurstPreloads => ModelStats.BurstPredictions;
+    public long BurstCompleted => ModelStats.BurstCompleted;
+    public long BurstHits { get { lock (_gate) return _burstUsed; } }
+    public long BurstWasted { get { lock (_gate) return _burstWasted; } }
     /// <summary>Directories the stride is currently walking.</summary>
-    public int TrackedDirectories => _predictor?.TrackedDirectories ?? 0;
+    public int TrackedDirectories => ModelStats.TrackedDirectories;
     /// <summary>Runtime caller streams with a history right now.</summary>
-    public int ActiveStreams => _predictor?.ActiveStreams ?? 0;
+    public int ActiveStreams => ModelStats.ActiveStreams;
     /// <summary>Entries dropped because a lower layer accepted a write to their path. They are
     /// not prediction misses: the content they held was correct until the write changed it.</summary>
     public long Invalidated { get { lock (_gate) return _invalidated; } }
@@ -105,12 +113,14 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     /// <summary>Size of the speculative fetch in flight, for the usage panel.</summary>
     public long FetchBytes => Interlocked.Read(ref _fetchBytes);
 
-    public void Attach(VirtualFileSystem lower) =>
-        _predictor = new ReadPrediction(lower, _options, _model,
-            (path, stream, origin) => Preload(lower, path, stream, origin));
+    public void Attach(VirtualFileSystem lower) => _modelImpl = CreateModel(lower, _modelPath);
+
+    /// <summary>The strategy this layer hosts. The cache, eviction, quota, feedback and
+    /// invalidation around it are the layer's; only the learning/issuing differs.</summary>
+    protected abstract IPredictionModel CreateModel(VirtualFileSystem lower, string modelPath);
 
     internal IDisposable? Observe(string path, long streamId, bool listing = false) =>
-        _predictor?.Demand(path, streamId, listing);
+        _modelImpl?.Observe(path, streamId, listing);
 
     /// <summary>Held copies belong to the generation they were fetched at; a source revision
     /// change makes every one of them stale.</summary>
@@ -127,13 +137,13 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     }
 
     /// <summary>Fetches a predicted path through the layers below and keeps it here.</summary>
-    private void Preload(VirtualFileSystem lower, string path, long stream, PreloadOrigin origin)
+    protected void Preload(VirtualFileSystem lower, string path, long stream, PreloadOrigin origin)
     {
         VirtualObject value;
         try { value = lower.LoadObject(path, speculative: true); }
         catch (VfsNotFoundException) { return; }
         // An entry larger than this layer's whole budget is never worth keeping.
-        if (!value.Header.IsDir && value.Header.Size > Math.Min(_capacity, _options.MaxFileBytes)) return;
+        if (!value.Header.IsDir && value.Header.Size > Math.Min(_capacity, _tuning.MaxFileBytes)) return;
 
         if (value.Header.IsDir) { Store(path, value, null, origin, stream); return; }
         Interlocked.Exchange(ref _fetchBytes, value.Header.Size);
@@ -165,7 +175,7 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
         {
             CheckGeneration();
             if (!_entries.TryGetValue(path, out var entry)) { value = null!; return false; }
-            if (entry.Reads++ == 0) { _used++; if (entry.Origin == PreloadOrigin.Sibling) _siblingUsed++; else if (entry.Origin == PreloadOrigin.Spatial) _spatialUsed++; RecordPaid(entry); PublishQuality(entry.Stream); }
+            if (entry.Reads++ == 0) { _used++; if (entry.Origin == PreloadOrigin.Sibling) _siblingUsed++; else if (entry.Origin == PreloadOrigin.Spatial) _spatialUsed++; else if (entry.Origin == PreloadOrigin.Burst) _burstUsed++; RecordPaid(entry); PublishQuality(entry.Stream); }
             _hits++;
             _lru.Remove(entry.Node!);
             _lru.AddFirst(entry.Node!);
@@ -181,7 +191,7 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
             CheckGeneration();
             entry = null!; stream = null!;
             if (!_entries.TryGetValue(path, out var kept) || kept.Content == null) return false;
-            if (kept.Reads++ == 0) { _used++; if (kept.Origin == PreloadOrigin.Sibling) _siblingUsed++; else if (kept.Origin == PreloadOrigin.Spatial) _spatialUsed++; RecordPaid(kept); PublishQuality(kept.Stream); }
+            if (kept.Reads++ == 0) { _used++; if (kept.Origin == PreloadOrigin.Sibling) _siblingUsed++; else if (kept.Origin == PreloadOrigin.Spatial) _spatialUsed++; else if (kept.Origin == PreloadOrigin.Burst) _burstUsed++; RecordPaid(kept); PublishQuality(kept.Stream); }
             _hits++;
             _lru.Remove(kept.Node!);
             _lru.AddFirst(kept.Node!);
@@ -246,11 +256,11 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     /// and costs at most one pass per window.</summary>
     private void ScoreStale()
     {
-        if (_options.FeedbackWindowMs <= 0) return;
+        if (_tuning.FeedbackWindowMs <= 0) return;
         long now = Environment.TickCount64;
-        if (now - _lastScored < _options.FeedbackWindowMs) return;
+        if (now - _lastScored < _tuning.FeedbackWindowMs) return;
         _lastScored = now;
-        long horizon = now - _options.FeedbackWindowMs;
+        long horizon = now - _tuning.FeedbackWindowMs;
         List<long>? touched = null;
         foreach (var entry in _entries.Values)
         {
@@ -258,6 +268,7 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
             entry.Scored = true;
             var quality = QualityOf(entry.Stream);
             if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialWasted++;
+            else if (entry.Origin == PreloadOrigin.Burst) quality.BurstWasted++;
             else quality.Wasted++;
             (touched ??= new()).Add(entry.Stream);
         }
@@ -274,18 +285,25 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     {
         if (!_quality.TryGetValue(stream, out var quality)) return;
         int resolved = quality.Paid + quality.Wasted;
-        if (resolved >= _options.FeedbackSamples)
+        if (resolved >= _tuning.FeedbackSamples)
         {
-            _predictor?.SetThrottle(stream, (double)quality.Paid / resolved);
+            _modelImpl?.SetThrottle(stream, (double)quality.Paid / resolved);
             quality.Paid = 0;
             quality.Wasted = 0;
         }
         int spatial = quality.SpatialPaid + quality.SpatialWasted;
-        if (spatial >= _options.FeedbackSamples)
+        if (spatial >= _tuning.FeedbackSamples)
         {
-            _predictor?.SetSpatialThrottle(stream, (double)quality.SpatialPaid / spatial);
+            _modelImpl?.SetSpatialThrottle(stream, (double)quality.SpatialPaid / spatial);
             quality.SpatialPaid = 0;
             quality.SpatialWasted = 0;
+        }
+        int burst = quality.BurstPaid + quality.BurstWasted;
+        if (burst >= _tuning.FeedbackSamples)
+        {
+            _modelImpl?.SetBurstThrottle(stream, (double)quality.BurstPaid / burst);
+            quality.BurstPaid = 0;
+            quality.BurstWasted = 0;
         }
     }
 
@@ -303,6 +321,7 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     {
         var quality = QualityOf(entry.Stream);
         if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialPaid++;
+        else if (entry.Origin == PreloadOrigin.Burst) quality.BurstPaid++;
         else quality.Paid++;
     }
 
@@ -360,7 +379,9 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
             var quality = QualityOf(entry.Stream);
             if (entry.Origin == PreloadOrigin.Sibling) _siblingWasted++;
             else if (entry.Origin == PreloadOrigin.Spatial) _spatialWasted++;
+            else if (entry.Origin == PreloadOrigin.Burst) _burstWasted++;
             if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialWasted++;
+            else if (entry.Origin == PreloadOrigin.Burst) quality.BurstWasted++;
             else quality.Wasted++;
             PublishQuality(entry.Stream);
         }
@@ -415,9 +436,102 @@ public sealed class PredictionCacheLayer : CacheLayer, ILowerChainLayer, IWriteI
     public void ResetLearning()
     {
         Clear();
-        if (_predictor != null) _predictor.Reset();
-        else if (File.Exists(_model)) File.Delete(_model);
+        if (_modelImpl != null) _modelImpl.Reset();
+        else if (File.Exists(_modelPath)) File.Delete(_modelPath);
     }
 
-    public void Dispose() => _predictor?.Dispose();
+    public void Dispose() => _modelImpl?.Dispose();
+}
+
+/// <summary>The configurable prediction layer: a successor table, a directory stride, a
+/// spatial batch and a co-read/burst model are independent strategies, selected by the
+/// <c>Strategies</c> parameter and combined behind one layer surface. The cache, eviction,
+/// per-stream quota, feedback and write invalidation around them are shared.</summary>
+public sealed class PredictionCacheLayer : PredictionLayerBase
+{
+    private static readonly string[] DefaultStrategies = { "successor", "stride", "spatial" };
+    private readonly ReadPredictionOptions _options;
+    private readonly CoReadOptions? _coRead;
+    private readonly IReadOnlyList<string> _strategies;
+
+    public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
+        : this(capacity, generation, options, null, null, model) { }
+
+    public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options,
+        CoReadOptions? coRead, IReadOnlyList<string>? strategies, string model)
+        : base(capacity, generation, Tuning(options, coRead, strategies), model)
+    {
+        _options = options;
+        _coRead = coRead;
+        _strategies = strategies is { Count: > 0 } ? strategies : DefaultStrategies;
+    }
+
+    protected override string TypeName => "prediction-cache";
+
+    protected override IPredictionModel CreateModel(VirtualFileSystem lower, string modelPath)
+    {
+        var models = new List<IPredictionModel>();
+        bool successor = Has("successor") && _options.SuccessorEnabled;
+        bool sibling = (Has("stride") || Has("sibling")) && _options.SiblingEnabled;
+        bool spatial = Has("spatial") && _options.SpatialEnabled;
+        if (successor || sibling || spatial)
+        {
+            var options = _options.Copy();
+            options.SuccessorEnabled = successor;
+            options.SiblingEnabled = sibling;
+            options.SpatialEnabled = spatial;
+            models.Add(new ReadPrediction(lower, options, modelPath,
+                (path, stream, origin) => Preload(lower, path, stream, origin)));
+        }
+        if (Has("co-read") || Has("burst"))
+        {
+            string directory = Path.GetDirectoryName(modelPath) ?? ".";
+            models.Add(new CoReadPrediction(lower, _coRead ?? new CoReadOptions(),
+                Path.Combine(directory, "co-read.json"),
+                (path, stream, origin) => Preload(lower, path, stream, origin)));
+        }
+        return models.Count switch
+        {
+            0 => new CompositePrediction(Array.Empty<IPredictionModel>()),
+            1 => models[0],
+            _ => new CompositePrediction(models)
+        };
+    }
+
+    private bool Has(string name) =>
+        _strategies.Any(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase));
+
+    private static PredictionTuning Tuning(ReadPredictionOptions options, CoReadOptions? coRead,
+        IReadOnlyList<string>? strategies)
+    {
+        bool useCoRead = strategies != null && strategies.Any(s =>
+            string.Equals(s, "co-read", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(s, "burst", StringComparison.OrdinalIgnoreCase));
+        var co = useCoRead ? coRead ?? new CoReadOptions() : null;
+        return new PredictionTuning(
+            Math.Max(options.MaxFileBytes, co?.MaxFileBytes ?? 0),
+            Math.Max(options.FeedbackWindowMs, co?.FeedbackWindowMs ?? 0),
+            Math.Max(options.FeedbackSamples, co?.FeedbackSamples ?? 0));
+    }
+}
+
+/// <summary>The co-read/burst strategy on its own. The configurable <see cref="PredictionCacheLayer"/>
+/// can combine it with the successor/stride/spatial strategies; this type is the shortcut for
+/// "burst only".</summary>
+public sealed class CoReadPredictionLayer : PredictionLayerBase
+{
+    private readonly CoReadOptions _options;
+
+    public CoReadPredictionLayer(long capacity, Func<string> generation, CoReadOptions options, string model)
+        : base(capacity, generation,
+            new PredictionTuning(options.MaxFileBytes, options.FeedbackWindowMs, options.FeedbackSamples), model)
+    {
+        _options = options;
+    }
+
+    protected override string TypeName => "prediction-burst";
+
+    protected override IPredictionModel CreateModel(VirtualFileSystem lower, string modelPath) =>
+        new CoReadPrediction(lower, _options, modelPath,
+            (path, stream, origin) => Preload(lower, path, stream, origin));
 }

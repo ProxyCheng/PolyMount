@@ -44,6 +44,12 @@ public sealed class ProviderInfo
     public long SpatialCompleted { get; set; }
     public long SpatialHits { get; set; }
     public long SpatialWasted { get; set; }
+    /// <summary>Preloads a co-read/burst model issued, and their share of hits and waste.
+    /// Subsets of the preload and held counters above; the burst model is cross-thread.</summary>
+    public long BurstPreloads { get; set; }
+    public long BurstCompleted { get; set; }
+    public long BurstHits { get; set; }
+    public long BurstWasted { get; set; }
     /// <summary>Caller streams with a history right now. One per process/thread the predictor
     /// has seen recently; a bounded runtime hint, not part of the persisted model.</summary>
     public int PredictionStreams { get; set; }

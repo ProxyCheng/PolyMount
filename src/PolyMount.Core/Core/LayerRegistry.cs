@@ -11,7 +11,8 @@ public static class LayerRegistry
     {
         Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
         RegisterCache("prediction-cache", (c, ctx) => new PredictionCacheLayer(PredictionCapacity(c), ctx.LowerGeneration,
-            ReadPredictionProfiles.Resolve(Text(c, "Profile"), () => CustomPrediction(c)), Path.Combine(ctx.State, "prediction.json")),
+            ReadPredictionProfiles.Resolve(Text(c, "Profile"), () => CustomPrediction(c)),
+            CoReadOptionsFor(c), StrategiesFor(c), Path.Combine(ctx.State, "prediction.json")),
             c => { if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
             new LayerDescriptor { Type = "prediction-cache", Title = LayerTexts.Get("prediction.title"), Icon = "predict-path",
                 Description = LayerTexts.Get("prediction.description"),
@@ -50,8 +51,54 @@ public static class LayerRegistry
                     new() { Path = "Parameters.ContextDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 4,
                         DefaultValue = "2", Title = LayerTexts.Get("prediction.context"), Description = LayerTexts.Get("prediction.context.description") },
                     new() { Path = "Parameters.PrefetchDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 8,
-                        DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") }
+                        DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") },
+                    // The layer itself is the shared cache/queue/feedback; this selects which
+                    // independent strategies feed it. A typo leaves an unknown name ignored.
+                    new() { Path = "Parameters.Strategies", Title = new LocalizedText("Strategies", "策略"),
+                        Placeholder = "successor,stride,spatial,co-read", DefaultValue = "successor,stride,spatial",
+                        Description = new LocalizedText(
+                            "Comma-separated: successor, stride, spatial, co-read",
+                            "逗号分隔：successor、stride、spatial、co-read") }
                 } });
+        RegisterCache("prediction-burst", (c, ctx) => new CoReadPredictionLayer(PredictionCapacity(c), ctx.LowerGeneration,
+                CoReadOptionsFor(c), Path.Combine(ctx.State, "co-read.json")),
+            c =>
+            {
+                if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576)
+                    throw new ArgumentException("Prediction capacity exceeds 256 MiB");
+                _ = CoReadOptionsFor(c);
+            },
+            new LayerDescriptor
+            {
+                Type = "prediction-burst", Title = new LocalizedText("Burst prefetch", "突发共读预取"),
+                Icon = "predict-path",
+                Description = new LocalizedText(
+                    "Learns files read together in a short burst and preloads the set when its first path is read again; shares the prediction cache, quota and write invalidation.",
+                    "学习同一时间窗内一起被读的文件；首路径再次被读时预取整组。复用预测缓存、配额与写失效。"),
+                Fields = new()
+                {
+                    new() { Path = "Parameters.CapacityBytes", Kind = LayerFieldKind.Integer, Scale = 1048576,
+                        Minimum = 1, Maximum = 256, DefaultValue = "256", Title = LayerTexts.Get("prediction.capacity") },
+                    new() { Path = "Parameters.CoRead.TickIntervalMs", Kind = LayerFieldKind.Integer, Minimum = 10, Maximum = 10000,
+                        DefaultValue = "50", Title = new LocalizedText("Tick (ms)", "调度间隔（毫秒）") },
+                    new() { Path = "Parameters.CoRead.WindowMs", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 600000,
+                        DefaultValue = "1000", Title = new LocalizedText("Burst window (ms)", "突发窗口（毫秒）") },
+                    new() { Path = "Parameters.CoRead.BurstGapMs", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 60000,
+                        DefaultValue = "50", Title = new LocalizedText("Burst gap (ms)", "突发间隔（毫秒）") },
+                    new() { Path = "Parameters.CoRead.MaxPaths", Kind = LayerFieldKind.Integer, Minimum = 2, Maximum = 4096,
+                        DefaultValue = "64", Title = new LocalizedText("Paths per burst", "每次突发最多路径数") },
+                    new() { Path = "Parameters.CoRead.MaxPerPath", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 64,
+                        DefaultValue = "8", Title = new LocalizedText("Co-reads per path", "每路径共读候选数") },
+                    new() { Path = "Parameters.CoRead.MinCount", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 10000,
+                        DefaultValue = "2", Title = new LocalizedText("Minimum observations", "最少观测次数") },
+                    new() { Path = "Parameters.CoRead.MinConfidencePercent", Kind = LayerFieldKind.Integer, Minimum = 0, Maximum = 100,
+                        DefaultValue = "50", Title = new LocalizedText("Minimum confidence (%)", "最低置信度（%）") },
+                    new() { Path = "Parameters.CoRead.MaxInFlight", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 64,
+                        DefaultValue = "2", Title = new LocalizedText("In-flight preloads", "并发预载数") },
+                    new() { Path = "Parameters.CoRead.MaxFileBytes", Kind = LayerFieldKind.Integer, Scale = 1048576, Minimum = 1, Maximum = 256,
+                        DefaultValue = "8", Title = new LocalizedText("Preload file budget (MiB)", "预载文件预算（MiB）") }
+                }
+            });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes,
                 c.Compression, writable: Bool(c, "Writable", true)),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
@@ -120,6 +167,43 @@ public static class LayerRegistry
     private static int Number(LayerConfig config, string key, int fallback) =>
         config.Parameters.TryGetValue(key, out var value) &&
         value.ValueKind == System.Text.Json.JsonValueKind.Number ? value.GetInt32() : fallback;
+
+    /// <summary>The independent strategies a prediction layer feeds. The default keeps the
+    /// shipped successor + stride + spatial behaviour; adding co-read selects the burst model.</summary>
+    private static IReadOnlyList<string> StrategiesFor(LayerConfig config)
+    {
+        string[] defaults = { "successor", "stride", "spatial" };
+        if (!config.Parameters.TryGetValue("Strategies", out var value)) return defaults;
+        if (value.ValueKind == System.Text.Json.JsonValueKind.Array)
+            return value.EnumerateArray().Select(e => e.GetString() ?? "")
+                .Where(s => s.Length > 0).ToArray();
+        if (value.ValueKind == System.Text.Json.JsonValueKind.String)
+            return value.GetString()!.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+        return defaults;
+    }
+
+    /// <summary>Co-read budgets. The keys are prefixed so they cannot collide with the
+    /// successor profile's parameters.</summary>
+    private static CoReadOptions CoReadOptionsFor(LayerConfig config)
+    {
+        var options = new CoReadOptions();
+        options.TickIntervalMs = Number(config, "CoRead.TickIntervalMs", options.TickIntervalMs);
+        options.BurstGapMs = Number(config, "CoRead.BurstGapMs", options.BurstGapMs);
+        options.BurstWindowMs = Number(config, "CoRead.WindowMs", options.BurstWindowMs);
+        options.MaxPathsPerBurst = Number(config, "CoRead.MaxPaths", options.MaxPathsPerBurst);
+        options.MaxLinks = Number(config, "CoRead.MaxLinks", options.MaxLinks);
+        options.MaxCoReadsPerPath = Number(config, "CoRead.MaxPerPath", options.MaxCoReadsPerPath);
+        options.MinCoReadCount = Number(config, "CoRead.MinCount", options.MinCoReadCount);
+        options.MinConfidence = Number(config, "CoRead.MinConfidencePercent", (int)Math.Round(options.MinConfidence * 100)) / 100.0;
+        options.MaxInFlight = Number(config, "CoRead.MaxInFlight", options.MaxInFlight);
+        options.FeedbackWindowMs = Number(config, "CoRead.FeedbackWindowMs", options.FeedbackWindowMs);
+        options.FeedbackSamples = Number(config, "CoRead.FeedbackSamples", options.FeedbackSamples);
+        options.RetentionMs = Number(config, "CoRead.RetentionMinutes", options.RetentionMs / 60000) * 60000;
+        if (config.Parameters.TryGetValue("CoRead.MaxFileBytes", out var bytes) &&
+            bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
+            options.MaxFileBytes = bytes.GetInt64() * 1048576;
+        return options;
+    }
 
     internal static ReadPredictionOptions PredictionOptionsForTest(LayerConfig config) => CustomPrediction(config);
 

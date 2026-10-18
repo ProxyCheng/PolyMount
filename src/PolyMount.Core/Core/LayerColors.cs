@@ -25,6 +25,9 @@ public static class LayerColors
         ["svn"] = OriginPalette[2],
         ["dir"] = OriginPalette[3],
         ["prediction-cache"] = OriginPalette[4],
+        // The co-read strategy is another predictor; Explorer can only draw the seven palette
+        // colors, so it shares the prediction family's red rather than hashing elsewhere.
+        ["prediction-burst"] = OriginPalette[4],
         ["memory-cache"] = OriginPalette[5],
         // Without this the layer hashed to slot 0 and showed the overlay's blue.
         ["warmup"] = OriginPalette[6]

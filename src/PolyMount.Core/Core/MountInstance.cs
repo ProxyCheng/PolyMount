@@ -253,7 +253,7 @@ public sealed class MountInstance : IDisposable
         {
             lm.Color = ResolveColor(lm.Name);
             lm.DisplayName = _configs[lm.Name].Name;
-            if (_providers[lm.Name] is PredictionCacheLayer readAhead)
+            if (_providers[lm.Name] is PredictionLayerBase readAhead)
             {
                 lm.Predictive = true;
                 lm.HeldUsed = readAhead.Used;
@@ -375,7 +375,7 @@ public sealed class MountInstance : IDisposable
                 info.BlockCacheHits = memory.Hits; info.BlockCacheMisses = memory.Misses; info.BlockWriteBacks = memory.WriteBacks;
                 info.MemoryDetail = LayerTexts.Get("provider.memory");
             }
-            if (_providers[layer.Name] is PredictionCacheLayer prediction)
+            if (_providers[layer.Name] is PredictionLayerBase prediction)
             {
                 info.LearnedTransitions = prediction.LearnedTransitions;
                 info.PreloadsStarted = prediction.PreloadsStarted;
@@ -393,6 +393,10 @@ public sealed class MountInstance : IDisposable
                 info.SpatialCompleted = prediction.SpatialCompleted;
                 info.SpatialHits = prediction.SpatialHits;
                 info.SpatialWasted = prediction.SpatialWasted;
+                info.BurstPreloads = prediction.BurstPreloads;
+                info.BurstCompleted = prediction.BurstCompleted;
+                info.BurstHits = prediction.BurstHits;
+                info.BurstWasted = prediction.BurstWasted;
                 info.PredictionStreams = prediction.ActiveStreams;
                 info.Invalidated = prediction.Invalidated;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");

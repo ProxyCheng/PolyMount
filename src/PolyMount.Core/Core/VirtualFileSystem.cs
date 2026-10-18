@@ -365,7 +365,7 @@ public sealed class VirtualFileSystem
         // paths, so it survives threads and runs changing underneath it.
         long streamId = RequestDiagnostics.AmbientStreamId;
         var scopes = _layers.Select(l => l is NamedLayer named ? named.Inner : l)
-            .OfType<PolyMount.Layers.PredictionCacheLayer>().Select(l => l.Observe(path, streamId, listing)).ToArray();
+            .OfType<PolyMount.Layers.PredictionLayerBase>().Select(l => l.Observe(path, streamId, listing)).ToArray();
         return new PredictionScopes(scopes);
     }
     private sealed class PredictionScopes(IDisposable?[] scopes) : IDisposable

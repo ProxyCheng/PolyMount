@@ -47,6 +47,11 @@ public sealed class ReadPredictionOptions
     /// says more than one transition per file. Bounded by files, bytes and directory size,
     /// because a reader that only samples a large directory must not trigger it.</summary>
     public bool SpatialEnabled { get; set; }
+    /// <summary>The path-successor table. Off leaves the stream history unused; a spatial-only
+    /// or co-read-only composition does not need it.</summary>
+    public bool SuccessorEnabled { get; set; } = true;
+    /// <summary>The per-directory stride. Off stops the sibling walk from nominating.</summary>
+    public bool SiblingEnabled { get; set; } = true;
     /// <summary>Distinct files from one directory that must be read before the rest is fetched.</summary>
     public int SpatialTriggerFiles { get; set; } = 2;
     /// <summary>Most files one spatial batch may name.</summary>
@@ -68,6 +73,9 @@ public sealed class ReadPredictionOptions
     /// <summary>Runtime histories kept at once (one per caller stream). The learned table is
     /// shared and keyed by paths, so evicting a stream costs its history, not the model.</summary>
     public int MaxStreams { get; set; } = 64;
+
+    /// <summary>A copy, so one layer can enable different strategies on the same tuned profile.</summary>
+    public ReadPredictionOptions Copy() => (ReadPredictionOptions)MemberwiseClone();
 }
 
 /// <summary>Which prediction produced a read-ahead entry. The layer counts hits and waste
@@ -77,7 +85,8 @@ public enum PreloadOrigin : byte
 {
     Table = 0,
     Sibling = 1,
-    Spatial = 2
+    Spatial = 2,
+    Burst = 3
 }
 
 /// <summary>
@@ -119,7 +128,7 @@ public static class ReadPredictionProfiles
 /// <summary>Bounded next-file predictor: a successor table learned from access order, and a
 /// stride that names the next sibling of a directory being walked in order. Both nominate into
 /// one queue and are issued under one budget, one throttle and one epoch.</summary>
-public sealed class ReadPrediction : IDisposable
+public sealed class ReadPrediction : IPredictionModel
 {
     /// <summary>One observed successor of a path, with the evidence behind it.</summary>
     private sealed record Transition(string To, int Hits, long LastSeen);
@@ -280,6 +289,20 @@ public sealed class ReadPrediction : IDisposable
 
     public IDisposable Demand(string path) => Demand(path, RequestDiagnostics.AmbientStreamId);
 
+    IDisposable? IPredictionModel.Observe(string path, long streamId, bool listing) =>
+        Demand(path, streamId, listing);
+
+    PredictionModelStats IPredictionModel.Stats => new(
+        LearnedTransitions, Predictions, Completed,
+        SiblingPredictions, SiblingCompleted,
+        SpatialPredictions, SpatialCompleted,
+        0, 0, ActiveStreams, TrackedDirectories);
+
+    /// <summary>The successor/stride/spatial model has no burst work; the dial is accepted so
+    /// the shared layer can call every model through one interface.</summary>
+    public void SetBurstThrottle(long streamId, double value) { }
+
+
     /// <summary>
     /// One demand from one caller stream. <paramref name="streamId"/> selects which history
     /// forms the context; the successor table itself is shared and keyed by the paths, so a
@@ -302,7 +325,7 @@ public sealed class ReadPrediction : IDisposable
             }
             else
             {
-                if (_siblings.Nominate(path, stream.Id) is { } sibling)
+                if (_options.SiblingEnabled && _siblings.Nominate(path, stream.Id) is { } sibling)
                     Enqueue(new Nomination(stream.Id, null, sibling));
                 if (_options.SpatialEnabled) NominateSpatial(path, stream.Id);
             }
@@ -311,21 +334,24 @@ public sealed class ReadPrediction : IDisposable
         {
             _activeDemand++; _lastDemand = Environment.TickCount64;
             if (path.Length > 4096) return new DemandScope(this);
-            if (stream.Previous != null && !string.Equals(stream.Previous, path, StringComparison.OrdinalIgnoreCase))
+            if (_options.SuccessorEnabled)
             {
-                var observed = ContextOf(stream, stream.Previous);
-                Observe(observed.Key, path);
-                // Also record the last path alone: a longer key needs the pattern to repeat
-                // before it has any evidence, and read-ahead should not go dark until then.
-                if (observed.Paths.Length > 1) Observe(stream.Previous, path);
+                if (stream.Previous != null && !string.Equals(stream.Previous, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    var observed = ContextOf(stream, stream.Previous);
+                    Observe(observed.Key, path);
+                    // Also record the last path alone: a longer key needs the pattern to repeat
+                    // before it has any evidence, and read-ahead should not go dark until then.
+                    if (observed.Paths.Length > 1) Observe(stream.Previous, path);
+                }
+                PushHistory(stream, stream.Previous);
+                stream.Previous = path;
+                // Nominate the context, not the successor it points at: what to fetch is resolved
+                // when read-ahead runs, so a nomination cannot act on evidence that has since been
+                // contradicted. Keep a small queue so a later access does not erase earlier ones.
+                var context = ContextOf(stream, path);
+                if (HasEvidence(context)) Enqueue(new Nomination(stream.Id, context, null));
             }
-            PushHistory(stream, stream.Previous);
-            stream.Previous = path;
-            // Nominate the context, not the successor it points at: what to fetch is resolved
-            // when read-ahead runs, so a nomination cannot act on evidence that has since been
-            // contradicted. Keep a small queue so a later access does not erase earlier ones.
-            var context = ContextOf(stream, path);
-            if (HasEvidence(context)) Enqueue(new Nomination(stream.Id, context, null));
         }
         return new DemandScope(this);
     }
