@@ -136,10 +136,25 @@ function Stop-HostProcesses {
     # already gone. Setup's own Restart Manager step runs after this one and turns a survivor into
     # "Setup was unable to automatically close all applications", so nothing that lives in this
     # directory is left running.
+    #
+    # Except the process that asked for this script: the uninstaller lives here too, and ending
+    # it ends the uninstall half-way (it reports -1). The caller chain and any Inno uninstaller
+    # are kept.
+    $keep = New-Object System.Collections.Generic.HashSet[int]
+    [void]$keep.Add($PID)
+    $probe = $PID
+    for ($hop = 0; $hop -lt 5; $hop++) {
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$probe" -ErrorAction SilentlyContinue
+        if (-not $parent -or -not $parent.ParentProcessId) { break }
+        $probe = [int]$parent.ParentProcessId
+        [void]$keep.Add($probe)
+    }
     foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
         $path = $null
         try { $path = $process.Path } catch { continue }
         if (-not $path) { continue }
+        if ($keep.Contains($process.Id)) { continue }
+        if ([IO.Path]::GetFileNameWithoutExtension($path) -like 'unins*') { continue }
         if (-not $path.StartsWith($InstallDirectory.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { continue }
         try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch { }
     }

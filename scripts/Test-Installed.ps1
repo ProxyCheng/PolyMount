@@ -190,7 +190,11 @@ Check 'the program files were replaced' ((Get-Content -LiteralPath $owned -Raw) 
 Check 'still exactly one service, running' (($null -ne $service) -and ($service.Status -eq 'Running'))
 $after = Read-Config
 Check 'the configuration kept what was not the setup''s' ($after.KeepMe -eq 'from the first install')
-Check 'the plugin is still named once' (@($after.Plugins).Count -eq 1) "$(@($after.Plugins).Count) plugin(s)"
+$pathsAfter = @($after.Plugins.AssemblyPath | Sort-Object)
+Check 'both bundled plugins are still named once' (
+    ($pathsAfter.Count -eq 2) -and
+    ($pathsAfter[0] -eq 'plugins/PolyMount.Plugin.GameEngine.dll') -and
+    ($pathsAfter[1] -eq 'plugins/PolyMount.Plugin.Svn.dll')) ($pathsAfter -join ', ')
 $reply = Wait-Supervisor
 Check 'supervisor still answers' ($null -ne $reply)
 
