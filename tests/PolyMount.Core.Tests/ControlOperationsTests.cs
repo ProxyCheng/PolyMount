@@ -78,17 +78,17 @@ public sealed class ControlOperationsTests
         CollectionAssert.Contains(link.Calls, "status");
 
         link = new RecordingLink();
-        Call(link, "mount_instance", """{"instance":"L10"}""");
+        Call(link, "mount_instance", """{"instance":"demo"}""");
         Assert.AreEqual("supervisor", link.Calls.Single());
         Assert.AreEqual(ControlCommands.Mount, link.Requests.Single().Cmd);
 
         link = new RecordingLink();
-        Call(link, "refresh_head", """{"instance":"L10"}""");
+        Call(link, "refresh_head", """{"instance":"demo"}""");
         Assert.AreEqual("instance", link.Calls.Single());
         Assert.AreEqual(ControlCommands.RefreshHead, link.Requests.Single().Cmd);
 
         link = new RecordingLink();
-        Call(link, "get_metrics", """{"instance":"L10"}""");
+        Call(link, "get_metrics", """{"instance":"demo"}""");
         Assert.AreEqual("metrics", link.Calls.Single());
     }
 
@@ -97,16 +97,16 @@ public sealed class ControlOperationsTests
     {
         foreach (var (name, json) in new[]
         {
-            ("probe_path", """{"path":"D:\\L10\\a"}"""),
-            ("apply_layer_action", """{"path":"D:\\L10\\a","layer":"overlay","action":"dropLocal"}"""),
-            ("release_above", """{"path":"D:\\L10\\a","boundary":1,"expected_layers":["overlay","svn"]}""")
+            ("probe_path", """{"path":"D:\\demo\\a"}"""),
+            ("apply_layer_action", """{"path":"D:\\demo\\a","layer":"overlay","action":"dropLocal"}"""),
+            ("release_above", """{"path":"D:\\demo\\a","boundary":1,"expected_layers":["overlay","svn"]}""")
         })
         {
-            var link = new RecordingLink { Owner = "L10" };
+            var link = new RecordingLink { Owner = "demo" };
             Call(link, name, json);
 
             CollectionAssert.AreEqual(new[] { "owner", "path" }, link.Calls.ToArray(), name);
-            Assert.AreEqual("D:\\L10\\a", link.Requests.Single().Path, name);
+            Assert.AreEqual("D:\\demo\\a", link.Requests.Single().Path, name);
         }
     }
 
@@ -136,7 +136,7 @@ public sealed class ControlOperationsTests
 
         foreach (var operation in ControlOperations.All.Where(o => o.Effect == ControlEffect.Read))
         {
-            var link = new RecordingLink { Owner = "L10" };
+            var link = new RecordingLink { Owner = "demo" };
             operation.Invoke(link, Args(SampleArguments(operation.Name)));
 
             foreach (var request in link.Requests)
@@ -147,34 +147,34 @@ public sealed class ControlOperationsTests
     [TestMethod]
     public void Arguments_that_would_default_to_something_else_are_refused()
     {
-        var link = new RecordingLink { Owner = "L10" };
+        var link = new RecordingLink { Owner = "demo" };
 
         // A missing revision must not become revision zero.
-        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_pin", """{"instance":"L10"}"""));
-        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_pin", """{"instance":"L10","revision":0}"""));
+        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_pin", """{"instance":"demo"}"""));
+        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_pin", """{"instance":"demo","revision":0}"""));
         // A missing "enabled" must not become "disabled".
-        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_instance_enabled", """{"instance":"L10"}"""));
+        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_instance_enabled", """{"instance":"demo"}"""));
         Assert.ThrowsException<ArgumentException>(() => Call(link, "save_config", "{}"));
         Assert.ThrowsException<ArgumentException>(() => Call(link, "get_metrics", """{"window_seconds":0}"""));
         Assert.ThrowsException<ArgumentException>(() =>
-            Call(link, "apply_layer_action", """{"path":"D:\\L10\\a","layer":"cache","action":"delete"}"""));
+            Call(link, "apply_layer_action", """{"path":"D:\\demo\\a","layer":"cache","action":"delete"}"""));
     }
 
     [TestMethod]
     public void A_worker_command_that_falls_through_to_the_supervisor_says_the_instance_is_not_running()
     {
         string explained = ControlOperations.Explain(
-            new ControlResponse { Ok = false, Error = "unknown command: metrics" }, "L10");
+            new ControlResponse { Ok = false, Error = "unknown command: metrics" }, "demo");
 
-        StringAssert.Contains(explained, "instance 'L10' is not running");
+        StringAssert.Contains(explained, "instance 'demo' is not running");
         StringAssert.Contains(explained, "mount_instance");
     }
 
     [TestMethod]
     public void A_refusal_that_is_already_useful_is_passed_through()
     {
-        Assert.AreEqual("no such mount: L10",
-            ControlOperations.Explain(new ControlResponse { Ok = false, Error = "no such mount: L10" }, "L10"));
+        Assert.AreEqual("no such mount: demo",
+            ControlOperations.Explain(new ControlResponse { Ok = false, Error = "no such mount: demo" }, "demo"));
     }
 
     [TestMethod]
@@ -188,7 +188,7 @@ public sealed class ControlOperationsTests
     public void The_config_is_presented_as_a_document_not_as_escaped_text()
     {
         var operation = ControlOperations.Find("get_config")!;
-        var response = new ControlResponse { Config = """{"Mounts":[{"Name":"L10"}]}""" };
+        var response = new ControlResponse { Config = """{"Mounts":[{"Name":"demo"}]}""" };
 
         Assert.IsInstanceOfType(operation.Present(response), typeof(JsonObject));
     }
@@ -203,17 +203,17 @@ public sealed class ControlOperationsTests
             {
                 new MountStatus
                 {
-                    Name = "L10", Enabled = true, Mounted = true, MountPoint = "D:\\L10",
-                    SourceType = "svn", Revision = 795700, CacheBytes = 1024
+                    Name = "demo", Enabled = true, Mounted = true, MountPoint = "D:\\demo",
+                    SourceType = "svn", Revision = 123456, CacheBytes = 1024
                 }
             }
         };
 
         string json = JsonSerializer.Serialize(operation.Present(response), Json);
 
-        StringAssert.Contains(json, "\"name\":\"L10\"");
-        StringAssert.Contains(json, "\"mountPoint\":\"D:\\\\L10\"");
-        StringAssert.Contains(json, "\"revision\":795700");
+        StringAssert.Contains(json, "\"name\":\"demo\"");
+        StringAssert.Contains(json, "\"mountPoint\":\"D:\\\\demo\"");
+        StringAssert.Contains(json, "\"revision\":123456");
         // The per-layer detail is what get_instance is for; a list of instances must stay a list.
         Assert.IsFalse(json.Contains("providers", StringComparison.OrdinalIgnoreCase));
     }
@@ -221,7 +221,7 @@ public sealed class ControlOperationsTests
     [TestMethod]
     public void A_path_given_as_relative_is_refused()
     {
-        var link = new RecordingLink { Owner = "L10" };
+        var link = new RecordingLink { Owner = "demo" };
 
         Assert.ThrowsException<ArgumentException>(() => Call(link, "probe_path", """{"path":"some\\file.txt"}"""));
     }
@@ -232,7 +232,7 @@ public sealed class ControlOperationsTests
         var operation = ControlOperations.Find("get_config")!;
         var response = new ControlResponse
         {
-            Config = """{"Mounts":[{"Id":"a","Name":"L10","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"hunter2"}}]}]}"""
+            Config = """{"Mounts":[{"Id":"a","Name":"demo","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"hunter2"}}]}]}"""
         };
 
         string json = JsonSerializer.Serialize(operation.Present(response), Json);
@@ -248,11 +248,11 @@ public sealed class ControlOperationsTests
         {
             Reply = new ControlResponse
             {
-                Config = """{"Mounts":[{"Id":"a","Name":"L10","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"hunter2"}}]}]}"""
+                Config = """{"Mounts":[{"Id":"a","Name":"demo","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"hunter2"}}]}]}"""
             }
         };
         var operation = ControlOperations.Find("save_config")!;
-        var incoming = """{"Mounts":[{"Id":"a","Name":"L10","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"[redacted]"}}]}]}""";
+        var incoming = """{"Mounts":[{"Id":"a","Name":"demo","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"[redacted]"}}]}]}""";
 
         operation.Invoke(link, Args("{\"config\":" + incoming + "}"));
 
@@ -277,10 +277,10 @@ public sealed class ControlOperationsTests
     {
         var link = new RecordingLink
         {
-            Reply = new ControlResponse { Config = """{"Mounts":[{"Id":"a","Name":"L10","Layers":[{"Id":"svn","Source":{"Type":"svn"}}]}]}""" }
+            Reply = new ControlResponse { Config = """{"Mounts":[{"Id":"a","Name":"demo","Layers":[{"Id":"svn","Source":{"Type":"svn"}}]}]}""" }
         };
         var operation = ControlOperations.Find("save_config")!;
-        var incoming = """{"Mounts":[{"Id":"a","Name":"L10","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"[redacted]"}}]}]}""";
+        var incoming = """{"Mounts":[{"Id":"a","Name":"demo","Layers":[{"Id":"svn","Source":{"Type":"svn","Password":"[redacted]"}}]}]}""";
 
         Assert.ThrowsException<ArgumentException>(() => operation.Invoke(link, Args("{\"config\":" + incoming + "}")));
     }
@@ -297,8 +297,8 @@ public sealed class ControlOperationsTests
 
     private static string SampleArguments(string name) => name switch
     {
-        "get_instance" or "get_recording" => """{"instance":"L10"}""",
-        "probe_path" => """{"path":"D:\\L10\\a"}""",
+        "get_instance" or "get_recording" => """{"instance":"demo"}""",
+        "probe_path" => """{"path":"D:\\demo\\a"}""",
         _ => "{}"
     };
 

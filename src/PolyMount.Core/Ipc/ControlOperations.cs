@@ -108,7 +108,7 @@ public static class ControlOperations
         """;
 
     private const string ProbePathSchema = """
-        {"type":"object","properties":{"path":{"type":"string","description":"Full local path under a mount point, for example D:\\\\L10\\\\some\\\\file."}},"required":["path"]}
+        {"type":"object","properties":{"path":{"type":"string","description":"Full local path under a mount point, for example D:\\\\demo\\\\some\\\\file."}},"required":["path"]}
         """;
 
     private const string MetricsSchema = """
