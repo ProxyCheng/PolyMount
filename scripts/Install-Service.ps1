@@ -8,7 +8,7 @@
 
 .EXAMPLE
   .\Install-Service.ps1
-  .\Install-Service.ps1 -Configuration Release -Account ".\chengziqi"
+  .\Install-Service.ps1 -Configuration Release -Account ".\YourAccount"
 #>
 [CmdletBinding()]
 param(

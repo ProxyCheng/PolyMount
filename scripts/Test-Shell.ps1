@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Path = 'D:\L10')
+param([string]$Path = 'D:\demo')
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;

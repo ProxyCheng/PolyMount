@@ -18,7 +18,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         <?xml version="1.0" encoding="utf-8"?>
         <D:multistatus xmlns:D="DAV:" xmlns:ns0="DAV:">
         <D:response xmlns:lp1="DAV:" xmlns:g0="DAV:">
-        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/</D:href>
+        <D:href>/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local/</D:href>
         <D:propstat>
         <D:prop>
         <lp1:resourcetype><D:collection/></lp1:resourcetype>
@@ -34,7 +34,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         </D:propstat>
         </D:response>
         <D:response xmlns:lp1="DAV:" xmlns:g0="DAV:">
-        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/Character/</D:href>
+        <D:href>/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local/Character/</D:href>
         <D:propstat>
         <D:prop>
         <lp1:resourcetype><D:collection/></lp1:resourcetype>
@@ -50,7 +50,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         </D:propstat>
         </D:response>
         <D:response xmlns:lp1="DAV:">
-        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/resource.repository</D:href>
+        <D:href>/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local/resource.repository</D:href>
         <D:propstat>
         <D:prop>
         <lp1:resourcetype/>
@@ -61,7 +61,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         </D:propstat>
         </D:response>
         <D:response xmlns:lp1="DAV:">
-        <D:href>/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/%D1%82%D0%B5%D1%81%D1%82%20file.bin</D:href>
+        <D:href>/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local/%D1%82%D0%B5%D1%81%D1%82%20file.bin</D:href>
         <D:propstat>
         <D:prop>
         <lp1:resourcetype/>
@@ -295,9 +295,9 @@ public sealed class SvnPluginTests : IPluginTestProvider
         });
         Check("revision-pinned-url", () =>
         {
-            var url = SvnHttpClient.ResourceUrl("https://host/svn", "trunk/src/TX4/Package", 307311,
+            var url = SvnHttpClient.ResourceUrl("https://host/svn", "trunk/src/Project/Package", 123456,
                 "Repository/Shapes.local/resource.repository");
-            if (url != "https://host/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local/resource.repository")
+            if (url != "https://host/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local/resource.repository")
                 throw new Exception("Unexpected revision-pinned URL: " + url);
             if (SvnHttpClient.ResourceUrl("https://host/svn", "", 7, "") != "https://host/svn/!svn/rvr/7")
                 throw new Exception("Unexpected repository root URL");
@@ -310,7 +310,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("listing-parse", () =>
         {
             var entries = SvnHttpClient.ParseListing(XDocument.Parse(Listing),
-                "/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local", "Shapes.local");
+                "/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local", "Shapes.local");
             var names = entries.Select(e => e.Name).ToArray();
             if (!names.SequenceEqual(new[] { "Character", "resource.repository", "тест file.bin" }))
                 throw new Exception("Unexpected names: " + string.Join(", ", names));
@@ -325,8 +325,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
             // Some servers echo the requested URL rather than the baseline one; the
             // collection must still be dropped rather than listing itself as a child.
             var entries = SvnHttpClient.ParseListing(
-                XDocument.Parse(Listing.Replace("/!svn/rvr/307311/trunk/src/TX4/Package", "/trunk-representation")),
-                "/svn/!svn/rvr/307311/trunk/src/TX4/Package/Repository/Shapes.local", "Shapes.local");
+                XDocument.Parse(Listing.Replace("/!svn/rvr/123456/trunk/src/Project/Package", "/trunk-representation")),
+                "/svn/!svn/rvr/123456/trunk/src/Project/Package/Repository/Shapes.local", "Shapes.local");
             if (entries.Any(e => e.Name == "Shapes.local")) throw new Exception("The collection listed itself");
             if (entries.Count != 3) throw new Exception("Unexpected entry count: " + entries.Count);
         });

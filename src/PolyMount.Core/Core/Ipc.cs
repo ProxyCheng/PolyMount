@@ -308,7 +308,7 @@ public sealed class RecordingSessionInfo
 public sealed class LogFile
 {
     /// <summary>Where the file belongs inside an export, relative and slash-separated
-    /// (for example <c>L10/requests.log</c>).</summary>
+    /// (for example <c>demo/requests.log</c>).</summary>
     public string Name { get; set; } = "";
     public string Source { get; set; } = "";
     public long Bytes { get; set; }

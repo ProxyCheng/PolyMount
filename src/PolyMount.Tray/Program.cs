@@ -474,10 +474,10 @@ internal static class Program
         bool Runs(string area) => areas == null || areas.Contains(area);
         TrayActivation.Smoke();
         var dashboard = new Dashboard();
-        var editor = dashboard.OpenEditor("L10")!;
-        string instance = LiveInstance() ?? "L10";
+        var editor = dashboard.OpenEditor("demo")!;
+        string instance = LiveInstance() ?? "demo";
         var stats = dashboard.OpenPerformance(instance);
-        LayerVisualizer.Open("D:\\L10\\20260924");
+        LayerVisualizer.Open("D:\\demo");
         dashboard.ShowWindow();
         var timer = new QTimer();
         int ticks = 0;

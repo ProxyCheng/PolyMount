@@ -52,7 +52,7 @@ public sealed class RequestDiagnosticsTests
         using var mount = new MountInstance(profile);
         string state = Path.Combine(temp.Sub("store"), "state");
         File.WriteAllText(Path.Combine(state, "requests_183.log"), "rolled");
-        File.WriteAllText(Path.Combine(state, "pin.txt"), "795700");
+        File.WriteAllText(Path.Combine(state, "pin.txt"), "123456");
         File.WriteAllText(Path.Combine(state, "listing-cache.log"), "not diagnostics");
 
         var names = mount.GetLogFiles().Select(Path.GetFileName).ToList();

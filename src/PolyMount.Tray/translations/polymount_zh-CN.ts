@@ -630,7 +630,7 @@
     </message>
     <message>
       <source>revision.invalid</source>
-      <translation>请输入正整数 revision，例如 795709。</translation>
+      <translation>请输入正整数 revision，例如 123456。</translation>
     </message>
     <message>
       <source>folder.failed</source>

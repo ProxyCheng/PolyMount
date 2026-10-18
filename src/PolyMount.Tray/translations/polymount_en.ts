@@ -627,7 +627,7 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>revision.invalid</source>
-      <translation>Enter a positive revision number, such as 795709.</translation>
+      <translation>Enter a positive revision number, such as 123456.</translation>
     </message>
     <message>
       <source>folder.failed</source>

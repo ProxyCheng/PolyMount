@@ -782,7 +782,7 @@ internal sealed class Dashboard : QWidget
 
 
     internal void SmokeTabs(string statsInstance) =>
-        _tabs.SmokeInteractions("editor:L10", "stats:" + statsInstance, () => new StatsWindow(statsInstance));
+        _tabs.SmokeInteractions("editor:demo", "stats:" + statsInstance, () => new StatsWindow(statsInstance));
 
     private void OnConfigSaved() => Refresh();
 
