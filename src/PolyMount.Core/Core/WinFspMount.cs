@@ -9,7 +9,8 @@ namespace PolyMount.Core;
 
 internal sealed class FsNode
 {
-    public string Rel = "";
+    /// <summary>Volatile because a rename on one handle moves it while another callback reads it.</summary>
+    public volatile string Rel = "";
     public bool IsDir;
     public string LocalPath;
     public int ProcessId;
@@ -22,14 +23,22 @@ internal sealed class FsHandle : IDisposable
     public Stream Stream;
     public bool Writable;
     public DateTime TimeUtc;
+    /// <summary>A stream has one position, and a handle can be read and written from several
+    /// threads at once (paging I/O, overlapped callers). Seek-then-transfer has to be one step.</summary>
+    public readonly object Gate = new();
+    /// <summary>Releases the stream. A commit that fails here is reported, not swallowed: the
+    /// caller decides whether it can still say so to anyone.</summary>
     public void Dispose()
     {
-        if (Stream is FileStream fs)
+        Stream stream;
+        lock (Gate) { stream = Stream; Stream = null; }
+        if (stream == null) return;
+        if (stream is FileStream fs)
         {
-            try { fs.Flush(true); } catch { }
+            try { fs.Flush(true); }
+            catch { stream.Dispose(); throw; }
         }
-        try { Stream?.Dispose(); } catch { }
-        Stream = null;
+        stream.Dispose();
     }
 }
 
@@ -64,26 +73,73 @@ public sealed class WinFspMount : FileSystemBase
     private void Charge(int processId, bool write, long bytes = 0) =>
         _vfs.Metrics?.RecordProcessAccess(processId, write, bytes);
 
+    private readonly string _storeVolume;
+
     public WinFspMount(VirtualFileSystem vfs, string logPath)
     {
         _vfs = vfs;
+        _storeVolume = string.IsNullOrEmpty(logPath) ? null : Path.GetPathRoot(Path.GetFullPath(logPath));
     }
+
+    /// <summary>The NTSTATUS a failure means to the caller. A collision, a full disk or a refused
+    /// write are answers an application acts on; "unexpected I/O error" is not.</summary>
+    internal static int StatusOf(Exception ex) => ex switch
+    {
+        VfsNotFoundException => NtStatus.ObjectNameNotFound,
+        VfsDirectoryNotEmptyException => NtStatus.DirectoryNotEmpty,
+        VfsNameCollisionException => NtStatus.ObjectNameCollision,
+        UnauthorizedAccessException => NtStatus.AccessDenied,
+        FileNotFoundException => NtStatus.ObjectNameNotFound,
+        DirectoryNotFoundException => NtStatus.ObjectPathNotFound,
+        IOException io when (io.HResult & 0xFFFF) is 0x70 or 0x27 => NtStatus.DiskFull,
+        IOException io when (io.HResult & 0xFFFF) is 0x20 or 0x21 => NtStatus.SharingViolation,
+        _ => NtStatus.UnexpectedIoError
+    };
+
+    /// <summary>Maps a failure and logs it when it was not an answer the caller expects.</summary>
+    private int Fail(string operation, Exception ex)
+    {
+        int status = StatusOf(ex);
+        if (status == NtStatus.UnexpectedIoError || status == NtStatus.DiskFull) Log(operation, ex);
+        return status;
+    }
+
+    private long _volumeCheckedAt = long.MinValue;
+    private ulong _volumeTotal = 1UL << 40, _volumeFree = 1UL << 40;
 
     public override int GetVolumeInfo(out FspVolumeInfo volumeInfo)
     {
-        volumeInfo = new FspVolumeInfo { TotalSize = 1UL << 40, FreeSize = 1UL << 40 };
+        // Writes land in the store, so its volume is the honest answer to "how much fits". Read
+        // at most every few seconds: Explorer asks for this constantly and it changes slowly.
+        long now = Environment.TickCount64;
+        if (_storeVolume != null && now - Interlocked.Read(ref _volumeCheckedAt) >= 5000)
+        {
+            Interlocked.Exchange(ref _volumeCheckedAt, now);
+            try
+            {
+                var drive = new DriveInfo(_storeVolume);
+                _volumeTotal = (ulong)drive.TotalSize;
+                _volumeFree = (ulong)drive.AvailableFreeSpace;
+            }
+            catch (Exception) { }
+        }
+        volumeInfo = new FspVolumeInfo { TotalSize = _volumeTotal, FreeSize = _vfs.Writable ? _volumeFree : 0 };
         return NtStatus.Success;
     }
 
     public override int GetSecurityByName(string fileName, out uint fileAttributes, ref byte[] securityDescriptor)
     {
-        using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
-        Charge(request?.ProcessId ?? 0, write: false);
         fileAttributes = 0;
         securityDescriptor = null;
-        if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
-        fileAttributes = entry.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL;
-        return NtStatus.Success;
+        try
+        {
+            using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
+            Charge(request?.ProcessId ?? 0, write: false);
+            if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
+            fileAttributes = entry.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL;
+            return NtStatus.Success;
+        }
+        catch (Exception ex) { return Fail("GetSecurityByName " + fileName, ex); }
     }
 
     public override int Open(string fileName, uint createOptions, uint grantedAccess,
@@ -140,9 +196,7 @@ public sealed class WinFspMount : FileSystemBase
             fileInfo = BuildStreamInfo(rel, stream, entry.TimeUtc);
             return NtStatus.Success;
         }
-        catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
-        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
-        catch (Exception ex) { Log("Open " + fileName, ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Open " + fileName, ex); }
     }
 
     public override int Create(string fileName, uint createOptions, uint grantedAccess, uint fileAttributes,
@@ -159,27 +213,26 @@ public sealed class WinFspMount : FileSystemBase
         try
         {
             var rel = VfsPath.Normalize(fileName);
+            // WinFsp calls Create only to make something new; the create disposition is not in
+            // createOptions (whose low bits are DIRECTORY_FILE/WRITE_THROUGH/SEQUENTIAL_ONLY).
+            // An existing name is a collision, and the FSD turns that into OPEN_IF/OVERWRITE_IF.
+            if (_vfs.TryLookup(rel, out _)) return NtStatus.ObjectNameCollision;
 
             if ((createOptions & Win32.FILE_DIRECTORY_FILE) != 0)
             {
-                if (_vfs.TryLookup(rel, out _)) return NtStatus.ObjectNameCollision;
                 _vfs.CreateDirectory(rel);
                 fileNode = new FsNode { Rel = rel, IsDir = true, ProcessId = request?.ProcessId ?? 0 };
                 fileInfo = BuildDirInfo(rel);
                 return NtStatus.Success;
             }
 
-            uint disposition = createOptions & 0x7;
-            bool truncate = disposition is 0x0 or 0x4 or 0x5;
-
-            var stream = _vfs.OpenWrite(rel, truncate, out var entry);
+            var stream = _vfs.OpenWrite(rel, truncate: true, out _);
             fileNode = new FsNode { Rel = rel, IsDir = false, ProcessId = request?.ProcessId ?? 0 };
             fileDesc = new FsHandle { Stream = stream, Writable = true };
             fileInfo = BuildStreamInfo(rel, stream);
             return NtStatus.Success;
         }
-        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
-        catch (Exception ex) { Log("Create " + fileName, ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Create " + fileName, ex); }
     }
 
     public override int Overwrite(object fileNode, object fileDesc, uint fileAttributes, bool replaceFileAttributes,
@@ -189,37 +242,44 @@ public sealed class WinFspMount : FileSystemBase
         fileInfo = default;
         var h = fileDesc as FsHandle;
         if (h?.Stream == null) return NtStatus.InvalidParameter;
+        if (!h.Writable) return NtStatus.AccessDenied;
         try
         {
-            h.Stream.SetLength(0);
-            fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", h.Stream);
+            lock (h.Gate)
+            {
+                h.Stream.SetLength(0);
+                fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", h.Stream);
+            }
             return NtStatus.Success;
         }
-        catch (Exception ex) { Log("Overwrite", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Overwrite", ex); }
     }
 
     public override int GetFileInfo(object fileNode, object fileDesc, out FspFileInfo fileInfo)
     {
-        using var request = BeginRequest("WinFsp.GetFileInfo", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
-        Charge(request?.ProcessId ?? 0, write: false);
         fileInfo = default;
-        var node = fileNode as FsNode;
-        if (node == null) return NtStatus.InvalidParameter;
+        try
+        {
+            using var request = BeginRequest("WinFsp.GetFileInfo", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
+            Charge(request?.ProcessId ?? 0, write: false);
+            var node = fileNode as FsNode;
+            if (node == null) return NtStatus.InvalidParameter;
 
-        if ((fileDesc as FsHandle)?.Stream is { } stream)
-        {
-            var handle = fileDesc as FsHandle;
-            fileInfo = BuildStreamInfo(node.Rel, stream, handle?.Writable == false ? handle.TimeUtc : default);
+            if (fileDesc is FsHandle handle && handle.Stream is { } stream)
+            {
+                fileInfo = BuildStreamInfo(node.Rel, stream, handle.Writable == false ? handle.TimeUtc : default);
+                return NtStatus.Success;
+            }
+            if (node.IsDir)
+            {
+                fileInfo = BuildDirInfo(node.Rel);
+                return NtStatus.Success;
+            }
+            if (!_vfs.TryLookup(node.Rel, out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
+            fileInfo = BuildEntryInfo(entry, node.Rel);
             return NtStatus.Success;
         }
-        if (node.IsDir)
-        {
-            fileInfo = BuildDirInfo(node.Rel);
-            return NtStatus.Success;
-        }
-        if (!_vfs.TryLookup(node.Rel, out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
-        fileInfo = BuildEntryInfo(entry, node.Rel);
-        return NtStatus.Success;
+        catch (Exception ex) { return Fail("GetFileInfo", ex); }
     }
 
     public override unsafe int Read(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
@@ -233,20 +293,24 @@ public sealed class WinFspMount : FileSystemBase
 
         try
         {
-            var stream = h.Stream;
-            if ((long)offset != stream.Position) stream.Seek((long)offset, SeekOrigin.Begin);
+            int read;
+            lock (h.Gate)
+            {
+                var stream = h.Stream ?? throw new ObjectDisposedException("handle");
+                if ((long)offset != stream.Position) stream.Seek((long)offset, SeekOrigin.Begin);
 
-            // WinFsp owns this buffer until the synchronous callback returns.
-            // Read directly into it instead of allocating and copying each request.
-            int read = stream.Read(new Span<byte>(buffer.ToPointer(), checked((int)length)));
+                // WinFsp owns this buffer until the synchronous callback returns.
+                // Read directly into it instead of allocating and copying each request.
+                read = stream.Read(new Span<byte>(buffer.ToPointer(), checked((int)length)));
+            }
             bytesTransferred = (uint)read;
             Charge(request?.ProcessId ?? 0, write: false, read);
             return read == 0 && length > 0 ? NtStatus.EndOfFile : NtStatus.Success;
         }
-        catch (Exception ex) { Log("Read", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Read", ex); }
     }
 
-    public override int Write(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
+    public override unsafe int Write(object fileNode, object fileDesc, IntPtr buffer, ulong offset, uint length,
         bool writeToEndOfFile, bool constrainedIo, out uint bytesTransferred, out FspFileInfo fileInfo)
     {
         using var request = BeginRequest("WinFsp.Write", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
@@ -258,20 +322,27 @@ public sealed class WinFspMount : FileSystemBase
 
         try
         {
-            var stream = h.Stream;
-            long pos = writeToEndOfFile ? stream.Length : (long)offset;
-            stream.Seek(pos, SeekOrigin.Begin);
-
-            var temp = new byte[length];
-            Marshal.Copy(buffer, temp, 0, (int)length);
-            stream.Write(temp, 0, (int)length);
-            bytesTransferred = length;
-            Charge(request?.ProcessId ?? 0, write: true, length);
-
-            fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", stream);
+            lock (h.Gate)
+            {
+                var stream = h.Stream ?? throw new ObjectDisposedException("handle");
+                long size = stream.Length;
+                long pos = writeToEndOfFile ? size : (long)offset;
+                int count = checked((int)length);
+                // Paging I/O must not grow the file: past the end it is ignored, across it truncated.
+                if (constrainedIo)
+                {
+                    if (pos >= size) { fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", stream); return NtStatus.Success; }
+                    count = (int)Math.Min(count, size - pos);
+                }
+                stream.Seek(pos, SeekOrigin.Begin);
+                stream.Write(new ReadOnlySpan<byte>(buffer.ToPointer(), count));
+                bytesTransferred = (uint)count;
+                fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", stream);
+            }
+            Charge(request?.ProcessId ?? 0, write: true, bytesTransferred);
             return NtStatus.Success;
         }
-        catch (Exception ex) { Log("Write", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Write", ex); }
     }
 
     public override int SetFileSize(object fileNode, object fileDesc, ulong newSize, bool setAllocationSize,
@@ -283,11 +354,17 @@ public sealed class WinFspMount : FileSystemBase
         if (h?.Stream == null || !h.Writable) return NtStatus.AccessDenied;
         try
         {
-            h.Stream.SetLength((long)newSize);
-            fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", h.Stream);
+            lock (h.Gate)
+            {
+                var stream = h.Stream ?? throw new ObjectDisposedException("handle");
+                // An allocation request reserves space; it changes the size only when the
+                // reservation is smaller than the file, which truncates it.
+                if (!setAllocationSize || (long)newSize < stream.Length) stream.SetLength((long)newSize);
+                fileInfo = BuildStreamInfo((fileNode as FsNode)?.Rel ?? "", stream);
+            }
             return NtStatus.Success;
         }
-        catch (Exception ex) { Log("SetFileSize", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("SetFileSize", ex); }
     }
 
     public override int SetBasicInfo(object fileNode, object fileDesc, uint fileAttributes, ulong creationTime,
@@ -295,35 +372,31 @@ public sealed class WinFspMount : FileSystemBase
     {
         Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
         fileInfo = default;
-        var node = fileNode as FsNode;
-        if (node == null) return NtStatus.InvalidParameter;
-        try
-        {
-            if ((fileDesc as FsHandle)?.Stream is FileStream fs && lastWriteTime != 0 && !node.IsDir)
-            {
-                try { File.SetLastWriteTimeUtc(fs.Name, DateTime.FromFileTimeUtc((long)lastWriteTime)); } catch { }
-            }
-            return GetFileInfo(fileNode, fileDesc, out fileInfo);
-        }
-        catch (Exception ex) { Log("SetBasicInfo", ex); return NtStatus.UnexpectedIoError; }
+        if (fileNode is not FsNode) return NtStatus.InvalidParameter;
+        // Objects carry no attributes or caller-set timestamps: a timestamp is the time the
+        // object was committed. Accepted (copy tools set them on every file and treat a refusal
+        // as a failed copy), and answered with what the file actually reports.
+        return GetFileInfo(fileNode, fileDesc, out fileInfo);
     }
 
-    public override int CanDelete(object fileNode, object fileDesc, string fileName) => _vfs.Writable ? NtStatus.Success : NtStatus.AccessDenied;
+    public override int CanDelete(object fileNode, object fileDesc, string fileName)
+    {
+        try
+        {
+            _vfs.CheckDelete(VfsPath.Normalize(fileName));
+            return NtStatus.Success;
+        }
+        catch (Exception ex) { return Fail("CanDelete " + fileName, ex); }
+    }
 
+    /// <summary>Marks or unmarks delete-on-close. Nothing is deleted here: the name stays until
+    /// the last handle is cleaned up (see <see cref="Cleanup"/>), and a caller may still change
+    /// its mind - which is what a delete disposition is.</summary>
     public override int SetDelete(object fileNode, object fileDesc, string fileName, bool deleteFile)
     {
         if (!deleteFile) return NtStatus.Success;
         Charge((fileNode as FsNode)?.ProcessId ?? 0, write: true);
-        try
-        {
-            var rel = VfsPath.Normalize(fileName);
-            if (rel.Length == 0) return NtStatus.AccessDenied;
-            _vfs.Delete(rel);
-            return NtStatus.Success;
-        }
-        catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
-        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
-        catch (Exception ex) { Log("SetDelete " + fileName, ex); return NtStatus.UnexpectedIoError; }
+        return CanDelete(fileNode, fileDesc, fileName);
     }
 
     public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists)
@@ -336,11 +409,11 @@ public sealed class WinFspMount : FileSystemBase
             var to = VfsPath.Normalize(newFileName);
             if (from.Length == 0 || to.Length == 0) return NtStatus.AccessDenied;
             _vfs.Rename(from, to, replaceIfExists);
+            // The handle that renamed keeps working under its new name.
+            if (fileNode is FsNode node) { node.Rel = to; node.DirectoryItems = null; }
             return NtStatus.Success;
         }
-        catch (VfsNotFoundException) { return NtStatus.ObjectNameNotFound; }
-        catch (UnauthorizedAccessException) { return NtStatus.AccessDenied; }
-        catch (Exception ex) { Log("Rename", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Rename", ex); }
     }
 
     public override bool ReadDirectoryEntry(object fileNode, object fileDesc, string pattern, string marker,
@@ -441,15 +514,43 @@ public sealed class WinFspMount : FileSystemBase
         fileInfo = default;
         try
         {
-            if ((fileDesc as FsHandle)?.Stream is { } stream) stream.Flush();
+            if (fileDesc is FsHandle handle)
+                lock (handle.Gate) handle.Stream?.Flush();
             return GetFileInfo(fileNode, fileDesc, out fileInfo);
         }
-        catch (Exception ex) { Log("Flush", ex); return NtStatus.UnexpectedIoError; }
+        catch (Exception ex) { return Fail("Flush", ex); }
     }
 
-    public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags) { }
+    /// <summary>The caller's last handle is gone. This is where a delete disposition takes
+    /// effect, and where a written file is committed: CloseHandle waits for this callback, so
+    /// the bytes are durable when the caller's close returns, rather than whenever the system
+    /// finally drops its last reference (Close). Cleanup cannot fail a close, so a commit that
+    /// fails is logged; Close tries once more.</summary>
+    public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags)
+    {
+        try
+        {
+            if ((flags & CleanupDelete) != 0 && fileName != null)
+            {
+                var rel = VfsPath.Normalize(fileName);
+                if (rel.Length > 0)
+                {
+                    try { _vfs.Delete(rel); }
+                    catch (VfsNotFoundException) { }
+                }
+                return;
+            }
+            if (fileDesc is FsHandle { Writable: true } handle)
+                lock (handle.Gate) handle.Stream?.Flush();
+        }
+        catch (Exception ex) { Log("Cleanup " + fileName, ex); }
+    }
 
-    public override void Close(object fileNode, object fileDesc) => (fileDesc as FsHandle)?.Dispose();
+    public override void Close(object fileNode, object fileDesc)
+    {
+        try { (fileDesc as FsHandle)?.Dispose(); }
+        catch (Exception ex) { Log("Close " + (fileNode as FsNode)?.Rel, ex); }
+    }
 
     public override int GetSecurity(object fileNode, object fileDesc, ref byte[] securityDescriptor)
     {

@@ -15,7 +15,7 @@ internal static class NtStatus
     public const int FileIsADirectory = unchecked((int)0xC00000BA);
     public const int DirectoryNotEmpty = unchecked((int)0xC0000101);
     public const int NotSupported = unchecked((int)0xC00000BB);
-    public const int ResourceInUse = unchecked((int)0xC0000043);
+    public const int SharingViolation = unchecked((int)0xC0000043);
     public const int UnexpectedIoError = unchecked((int)0xC00000E9);
 }
 

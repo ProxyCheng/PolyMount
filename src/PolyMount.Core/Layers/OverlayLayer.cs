@@ -22,7 +22,16 @@ public sealed class OverlayLayer : ILayer, IObjectManagement, ILayerStorageUsage
         bool found = _database.TryOpen(rel, out var value, out stream); entry = found ? value.Header : null!; return found;
     }
     public void ClearLocalChanges() => _database.Clear();
-    public void DropObject(string path) => _database.Apply(new[] { new ObjectChange(path, null) });
+    /// <summary>Forgets this layer's record of a path and of everything below it: a directory
+    /// whose own record went but whose children's stayed would keep serving those children
+    /// over whatever the layers below now show there. The parent's listing is the chain's to
+    /// reconcile (see <see cref="VirtualFileSystem.ReconcileAfterRelease"/>), because only the
+    /// chain knows what is underneath.</summary>
+    public void DropObject(string path)
+    {
+        var keys = _database.KeysAtOrBelow(VfsPath.Normalize(path));
+        if (keys.Count > 0) _database.Apply(keys.Select(key => new ObjectChange(key, null)).ToArray());
+    }
     public void ReleaseObject(string path) => DropObject(path);
     public LayerStorageUsage GetStorageUsage()
     {

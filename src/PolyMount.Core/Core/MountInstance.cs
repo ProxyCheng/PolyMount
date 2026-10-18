@@ -309,6 +309,9 @@ public sealed class MountInstance : IDisposable
         {
             foreach (var layer in Vfs.Layers.Take(boundary))
                 if (_providers[layer.Name] is IObjectManagement management) management.ReleaseObject(rel);
+            // Bottom-up, so each layer's parent listing is reconciled against what is now below it.
+            foreach (var layer in Vfs.Layers.Take(boundary).Reverse())
+                if (_providers[layer.Name] is OverlayLayer) Vfs.ReconcileAfterRelease(rel, layer.Name);
         }
         finally { if (remount) Mount(_lastWinFspBin); }
         return Probe(rel);
@@ -323,6 +326,7 @@ public sealed class MountInstance : IDisposable
                 // Discarding a local copy changes what is visible beneath it, so anything
                 // cached above the overlay for this tree is now stale.
                 overlay.DropObject(rel);
+                Vfs.ReconcileAfterRelease(rel, layer);
                 Vfs.InvalidateCaches();
                 break;
 

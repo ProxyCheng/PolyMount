@@ -1,4 +1,4 @@
-using Microsoft.VisualStudio.TestTools.UnitTesting;
+﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
 using PolyMount.Core;
 
 namespace PolyMount.Core.Tests;
@@ -11,7 +11,7 @@ public sealed class WriteCommitTests
     {
         SharedObjectFile file = null!;
         bool closed = false;
-        file = new SharedObjectFile(new MemoryStream(new byte[3]), "test", _ => { }, _ => { }, () =>
+        file = new SharedObjectFile("f", new MemoryStream(new byte[3]), "test", _ => { }, _ => { }, () =>
         {
             closed = true;
             Assert.IsFalse(file.TryGetHeader("file", out _));
@@ -27,7 +27,7 @@ public sealed class WriteCommitTests
     [TestMethod]
     public void Small_dirty_commit_uses_memory_snapshot_and_persists_content()
     {
-        var file = new SharedObjectFile(new MemoryStream(), "test", _ => { }, snapshot =>
+        var file = new SharedObjectFile("f", new MemoryStream(), "test", _ => { }, snapshot =>
         {
             Assert.IsInstanceOfType<MemoryStream>(snapshot);
             using var reader = new StreamReader(snapshot, leaveOpen: true);
@@ -41,7 +41,7 @@ public sealed class WriteCommitTests
     public void Clean_flush_close_and_noop_writes_do_not_allocate_or_commit_snapshots()
     {
         int snapshots = 0, commits = 0;
-        var file = new SharedObjectFile(new MemoryStream(), "test", _ => { }, snapshot =>
+        var file = new SharedObjectFile("f", new MemoryStream(), "test", _ => { }, snapshot =>
         {
             commits++;
             Assert.AreEqual(3L, snapshot.Length);
@@ -66,7 +66,7 @@ public sealed class WriteCommitTests
     public void Failed_commit_remains_dirty_and_can_be_retried()
     {
         int attempts = 0;
-        var file = new SharedObjectFile(new MemoryStream(), "test", _ => { }, snapshot =>
+        var file = new SharedObjectFile("f", new MemoryStream(), "test", _ => { }, snapshot =>
         {
             if (++attempts == 1) throw new IOException("failure");
             Assert.AreEqual(3L, snapshot.Length);

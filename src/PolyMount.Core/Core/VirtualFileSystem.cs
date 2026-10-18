@@ -48,21 +48,21 @@ public sealed class VirtualFileSystem
         get
         {
             string key = _layers[^1].Generation;
-            string? kept = Volatile.Read(ref _generation);
-            if (kept != null && (ReferenceEquals(key, _generationKey) || string.Equals(key, _generationKey, StringComparison.Ordinal)))
-                return kept;
+            // Key and hash are published together: two fields written one after the other let a
+            // reader pair the new key with the previous hash and hand out the old generation.
+            var kept = Volatile.Read(ref _generation);
+            if (kept != null && (ReferenceEquals(key, kept.Key) || string.Equals(key, kept.Key, StringComparison.Ordinal)))
+                return kept.Hash;
             string computed = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(string.Join("|", _layers.Select(l => l.Name + ":" + l.Generation)))));
-            _generationKey = key;
-            Volatile.Write(ref _generation, computed);
+            Volatile.Write(ref _generation, new GenerationStamp(key, computed));
             return computed;
         }
     }
 
-    /// <summary>The generation last handed out, and the bottom layer's generation it was computed
-    /// from.</summary>
-    private string? _generation;
-    private string? _generationKey;
+    private sealed record GenerationStamp(string Key, string Hash);
+    /// <summary>The generation last handed out, with the bottom layer's generation it was computed from.</summary>
+    private GenerationStamp? _generation;
 
     /// <summary>Compares resolution keys the way the mount does: paths case-insensitively.
     /// This is a comparer rather than upper-casing the path at the call site because that
@@ -104,9 +104,21 @@ public sealed class VirtualFileSystem
                 .Remove(new(key, pending));
         }
     }
+    /// <summary>What a fill has to still be true when it is published: no write landed and the
+    /// source did not move since the read began. Two reads, no allocation.</summary>
+    private readonly record struct FillToken(long Epoch, string? Generation);
+    private FillToken BeginFill() => new(Interlocked.Read(ref _resolutionEpoch), _layers.Count == 0 ? null : _layers[^1].Generation);
+    private bool StillCurrent(FillToken token)
+    {
+        if (token.Epoch != Interlocked.Read(ref _resolutionEpoch)) return false;
+        if (_layers.Count == 0) return true;
+        string? now = _layers[^1].Generation;
+        return ReferenceEquals(now, token.Generation) || string.Equals(now, token.Generation, StringComparison.Ordinal);
+    }
+
     private bool ResolveOwn(string path, out VirtualObject value, out int index, bool fill)
     {
-        long epoch = Interlocked.Read(ref _resolutionEpoch);
+        var token = BeginFill();
         for (index = 0; index < _layers.Count; index++)
         {
             using var request = RequestDiagnostics.Begin(_readObject[index], path);
@@ -114,7 +126,7 @@ public sealed class VirtualFileSystem
             TouchBelow(path, index);
             if (fill && value.Header.IsDir)
                 lock (_cacheUpdateGate)
-                    if (epoch == Interlocked.Read(ref _resolutionEpoch)) Fill(path, value, null, index);
+                    if (StillCurrent(token)) Fill(path, value, null, index);
             return true;
         }
         value = null!;
@@ -184,7 +196,7 @@ public sealed class VirtualFileSystem
         entry = null!;
         // A lookup no layer answered has no layer to charge, and is left out.
         int index = _layers.Count;
-        long epoch = Interlocked.Read(ref _resolutionEpoch);
+        var token = BeginFill();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         bool found = Visible(path) && ResolveHeader(path, out entry, out index);
         // Counted exactly where a layer would have been charged, so what is left over when the two
@@ -197,7 +209,7 @@ public sealed class VirtualFileSystem
             lock (_cacheUpdateGate)
                 // A write that landed while this was resolving already told the caches what
                 // changed; publishing the older answer over it would undo that.
-                if (epoch == Interlocked.Read(ref _resolutionEpoch)) FillHeader(path, entry, index);
+                if (StillCurrent(token)) FillHeader(path, entry, index);
         return found;
     }
     /// <summary>Read either payload kind through the same object-loading boundary.
@@ -265,6 +277,7 @@ public sealed class VirtualFileSystem
                 }
                 contentHeader = visibleHeader;
             }
+            var token = BeginFill();
             var watch = System.Diagnostics.Stopwatch.StartNew();
             for (int i = 0; i < _layers.Count; i++)
             {
@@ -288,7 +301,15 @@ public sealed class VirtualFileSystem
                 Metrics?.RecordRequest(watch.Elapsed);
                 try
                 {
+                    // Content is copied outside the gate - holding it across a large file's copy
+                    // would stall every other fill and every write's invalidation behind it. The
+                    // check comes after the copy instead: a write or a source move that happened
+                    // since this read began means the bytes just published may predate it, and
+                    // they are taken back out rather than served until the next generation.
                     Fill(path, new(entry), stream, i);
+                    if (i > 0)
+                        lock (_cacheUpdateGate)
+                            if (!StillCurrent(token)) Unfill(path, i);
                     return WrapContent(path, stream, i, false, ContentIdentity(entry));
                 }
                 catch { stream.Dispose(); throw; }
@@ -316,6 +337,20 @@ public sealed class VirtualFileSystem
             if (inner is IFileStreamLayer accelerator) stream = accelerator.WrapStream(path, version, stream, writable);
         }
         return stream;
+    }
+    /// <summary>Takes back what <see cref="Fill"/> just published for one path, because the read
+    /// that produced it raced a write or a source move. Rare by construction; the caches
+    /// treat it as the deletion of that path, which is the conservative reading.</summary>
+    private void Unfill(string path, int hit)
+    {
+        var removal = new[] { new ObjectChange(path, null) };
+        for (int i = hit - 1; i >= 0; i--)
+        {
+            var inner = _layers[i] is NamedLayer named ? named.Inner : _layers[i];
+            if (inner is IWriteAwareCache tracking) tracking.UpdateAfterWrite(removal);
+            else if (inner is IWriteInvalidation invalidating) invalidating.InvalidateAfterWrite(removal);
+            else if (inner is ICacheLayer cache) cache.Invalidate();
+        }
     }
     private void Fill(string path, VirtualObject value, Stream? content, int hit)
     {
@@ -355,7 +390,9 @@ public sealed class VirtualFileSystem
         var inner = _layers[index] is NamedLayer wrapper ? wrapper.Inner : _layers[index];
         // Durable writes and read-through caches expose separate capabilities.
         if (inner is IWriteAwareCache) return true;
-        return !_layers.Skip(index + 1).Take(hit - index).Any(l =>
+        // Only the layers strictly between the cache and the answer: the answering layer being
+        // writable is what the write-invalidation path already covers.
+        return !_layers.Skip(index + 1).Take(hit - index - 1).Any(l =>
             (l is NamedLayer named ? named.Inner : l) is PolyMount.Layers.LruCacheLayer lru ? lru.HasDurableWrites : l.Writable);
     }
     private IDisposable ObservePredictions(string path, bool listing = false)
@@ -438,17 +475,22 @@ public sealed class VirtualFileSystem
                 scratch.Position = 0;
                 scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
                 SharedObjectFile file = null!;
-                file = new SharedObjectFile(scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
+                file = new SharedObjectFile(path, scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
                 {
                     lock (_mutationGate)
                     {
-                        var current = new VfsEntry { Name = VfsPath.Name(path), Size = snapshot.Length, TimeUtc = DateTime.UtcNow };
+                        // Deletion and replacement detach under this same lock, so a commit that
+                        // was already on its way cannot put a removed name back into its parent.
+                        // A rename moves the file instead, so the path is read here, not captured.
+                        if (file.Detached) return;
+                        string current = file.Path;
+                        var header = new VfsEntry { Name = VfsPath.Name(current), Size = snapshot.Length, TimeUtc = DateTime.UtcNow };
                         // Parent changes are merged at each commit; concurrent siblings are retained.
-                        var list = ParentChildren(path);
-                        ReplaceChild(list, current);
-                        Apply(new ObjectChange[] { new(path, new(current), snapshot), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), list)) }, target);
+                        var list = ParentChildren(current);
+                        ReplaceChild(list, header);
+                        Apply(new ObjectChange[] { new(current, new(header), snapshot), new(VfsPath.Parent(current), VirtualObject.Directory(VfsPath.Parent(current), list)) }, target);
                     }
-                }, () => ((ICollection<KeyValuePair<string, SharedObjectFile>>)_openFiles).Remove(new(path, file)));
+                }, () => ((ICollection<KeyValuePair<string, SharedObjectFile>>)_openFiles).Remove(new(file.Path, file)));
                 _openFiles[path] = file;
                 file.TryAcquire(true, out var firstHandle);
                 return firstHandle;
@@ -468,50 +510,99 @@ public sealed class VirtualFileSystem
             Apply(new ObjectChange[] { new(path, value), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
         }
     }
+    private static bool SameOrBelow(string candidate, string root) =>
+        candidate.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+        (candidate.Length > root.Length && candidate[root.Length] == '/' && candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase));
+    /// <summary>Detaches the open files at or below <paramref name="root"/>: what they still hold
+    /// belongs to a name that no longer exists. Called under the mutation gate, which is the lock
+    /// their commit checks the flag under.</summary>
+    private void DetachOpen(string root)
+    {
+        foreach (var key in _openFiles.Keys.Where(p => SameOrBelow(p, root)))
+            if (_openFiles.TryRemove(key, out var opened)) opened.Detach();
+    }
     public void Delete(string path)
     {
         lock (_mutationGate)
         {
             path = VfsPath.Normalize(path);
             if (path.Length == 0) throw new UnauthorizedAccessException("Cannot delete the root");
-            foreach (var key in _openFiles.Keys.Where(p => p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase)))
-                if (_openFiles.TryRemove(key, out var opened)) opened.Detach();
             if (!TryLookup(path, out _)) throw new VfsNotFoundException(path);
+            // Deleting a directory here takes its subtree with it (it leaves the parent's
+            // listing, so nothing below is reachable). The mount refuses a non-empty one
+            // before it gets this far, through CheckDelete, which is Windows' rule.
+            DetachOpen(path);
             var children = ParentChildren(path);
             children.RemoveAll(c => string.Equals(c.Name, VfsPath.Name(path), StringComparison.OrdinalIgnoreCase));
             Apply(new ObjectChange[] { new(path, null), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
         }
     }
+    /// <summary>Whether <paramref name="path"/> could be deleted now. The mount asks this when
+    /// a caller sets delete-on-close, so the refusal reaches the caller instead of the close.</summary>
+    public void CheckDelete(string path)
+    {
+        path = VfsPath.Normalize(path);
+        if (path.Length == 0) throw new UnauthorizedAccessException("Cannot delete the root");
+        if (!Writable) throw new UnauthorizedAccessException("No provider accepts this write operation");
+        if (!TryLookup(path, out var existing)) throw new VfsNotFoundException(path);
+        if (existing.IsDir && List(path, recordAccess: false).Count > 0) throw new VfsDirectoryNotEmptyException(path);
+    }
     public void Rename(string path, string destination, bool replace)
     {
-        lock (_mutationGate)
+        var streams = new List<Stream>();
+        try
         {
-            path = VfsPath.Normalize(path); destination = VfsPath.Normalize(destination);
-            if (path.Length == 0 || destination.Length == 0 || destination.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase))
-                throw new IOException("Invalid rename destination");
-            if (string.Equals(path, destination, StringComparison.Ordinal)) return;
-            if (!TryLookup(path, out _)) throw new VfsNotFoundException(path);
-            if (!replace && !string.Equals(path, destination, StringComparison.OrdinalIgnoreCase) && TryLookup(destination, out _)) throw new IOException("Destination exists");
-            var changes = new List<ObjectChange>();
-            var streams = new List<Stream>();
-            try
-            {
-                CopyTree(path, destination, changes, streams);
-                foreach (var key in _openFiles.Keys.Where(p => p.Equals(path, StringComparison.OrdinalIgnoreCase) || p.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase)))
-                    if (_openFiles.TryRemove(key, out var opened)) opened.Detach();
-                string fromParent = VfsPath.Parent(path), toParent = VfsPath.Parent(destination);
-                var from = ParentChildren(path);
-                var to = string.Equals(fromParent, toParent, StringComparison.OrdinalIgnoreCase) ? from : ParentChildren(destination);
-                from.RemoveAll(c => string.Equals(c.Name, VfsPath.Name(path), StringComparison.OrdinalIgnoreCase));
-                ReplaceChild(to, changes[0].Object!.Header);
-                // Case-only rename is the same KV key; removing it would delete the new value.
-                if (!string.Equals(path, destination, StringComparison.OrdinalIgnoreCase)) changes.Add(new(path, null));
-                changes.Add(new(fromParent, VirtualObject.Directory(fromParent, from)));
-                if (!ReferenceEquals(from, to)) changes.Add(new(toParent, VirtualObject.Directory(toParent, to)));
-                Apply(changes);
-            }
-            finally { foreach (var stream in streams) stream.Dispose(); }
+            lock (_mutationGate) RenameLocked(path, destination, replace, streams);
         }
+        finally
+        {
+            // Released outside the gate: releasing a handle can flush, and a flush takes the
+            // file's commit lock before this gate - in the other order that is a deadlock.
+            foreach (var stream in streams) stream.Dispose();
+        }
+    }
+    private void RenameLocked(string path, string destination, bool replace, List<Stream> streams)
+    {
+        path = VfsPath.Normalize(path); destination = VfsPath.Normalize(destination);
+        if (path.Length == 0 || destination.Length == 0 ||
+            destination.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase) ||
+            // Onto one of its own ancestors: the copy would replace the listing that holds it.
+            path.StartsWith(destination + "/", StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Invalid rename destination");
+        if (string.Equals(path, destination, StringComparison.Ordinal)) return;
+        if (!TryLookup(path, out var source)) throw new VfsNotFoundException(path);
+        bool caseOnly = string.Equals(path, destination, StringComparison.OrdinalIgnoreCase);
+        if (!caseOnly && TryLookup(destination, out var existing))
+        {
+            if (!replace) throw new VfsNameCollisionException(destination);
+            // Windows never replaces a directory by rename, and replacing one here would orphan
+            // everything stored beneath it.
+            if (existing.IsDir) throw new UnauthorizedAccessException("Cannot replace a directory");
+            if (source.IsDir) throw new UnauthorizedAccessException("Cannot replace a file with a directory");
+        }
+        var changes = new List<ObjectChange>();
+        CopyTree(path, destination, changes, streams);
+        // What was open at the destination belonged to the name being replaced.
+        if (!caseOnly) DetachOpen(destination);
+        // What is open under the source moves with it: later writes through those handles
+        // belong to the new name, not to a name that no longer exists.
+        foreach (var key in _openFiles.Keys.Where(p => SameOrBelow(p, path)).ToList())
+        {
+            if (!_openFiles.TryRemove(key, out var opened)) continue;
+            string moved = destination + key[path.Length..];
+            opened.Path = moved;
+            _openFiles[moved] = opened;
+        }
+        string fromParent = VfsPath.Parent(path), toParent = VfsPath.Parent(destination);
+        var from = ParentChildren(path);
+        var to = string.Equals(fromParent, toParent, StringComparison.OrdinalIgnoreCase) ? from : ParentChildren(destination);
+        from.RemoveAll(c => string.Equals(c.Name, VfsPath.Name(path), StringComparison.OrdinalIgnoreCase));
+        ReplaceChild(to, changes[0].Object!.Header);
+        // Case-only rename is the same KV key; removing it would delete the new value.
+        if (!caseOnly) changes.Add(new(path, null));
+        changes.Add(new(fromParent, VirtualObject.Directory(fromParent, from)));
+        if (!ReferenceEquals(from, to)) changes.Add(new(toParent, VirtualObject.Directory(toParent, to)));
+        Apply(changes);
     }
     private void CopyTree(string source, string destination, List<ObjectChange> changes, List<Stream> streams)
     {
@@ -524,6 +615,36 @@ public sealed class VirtualFileSystem
         var children = List(source);
         changes.Add(new(destination, new(renamed, children)));
         foreach (var child in children) CopyTree(VfsPath.Child(source, child.Name), VfsPath.Child(destination, child.Name), changes, streams);
+    }
+    /// <summary>
+    /// After <paramref name="owner"/> forgot its record of <paramref name="path"/>, makes its
+    /// listing of the parent agree: the name stays with the header of the first layer below that
+    /// still has it, and leaves the listing when none does. Without this a released local file
+    /// stays listed as a name nothing can open, and a released edit keeps listing the edited size.
+    /// Only a layer that holds the parent's listing has anything to reconcile.
+    /// </summary>
+    public void ReconcileAfterRelease(string path, string ownerName)
+    {
+        lock (_mutationGate)
+        {
+            path = VfsPath.Normalize(path);
+            if (path.Length == 0) return;
+            int at = _layers.FindIndex(l => string.Equals(l.Name, ownerName, StringComparison.OrdinalIgnoreCase));
+            if (at < 0) return;
+            var owner = _layers[at];
+            string parent = VfsPath.Parent(path), name = VfsPath.Name(path);
+            if (!((IObjectLayer)owner).TryReadObject(parent, out var directory) || !directory.Header.IsDir || directory.Children == null) return;
+            VfsEntry? below = null;
+            for (int i = at + 1; i < _layers.Count && below == null; i++)
+                if (_layers[i].TryGetEntry(path, out var found)) below = found;
+            var children = directory.Children.ToList();
+            children.RemoveAll(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (below != null)
+                children.Add(new VfsEntry { Name = name, IsDir = below.IsDir, Size = below.Size, TimeUtc = below.TimeUtc, ContentVersion = below.ContentVersion });
+            var changes = new[] { new ObjectChange(parent, VirtualObject.Directory(parent, children)) };
+            if (!((IObjectLayer)owner).TryApply(changes)) return;
+            UpdateCachesAfterWrite(changes, owner);
+        }
     }
     public void InvalidateCaches()
     {
@@ -575,7 +696,7 @@ public sealed class VirtualFileSystem
 }
 
 /// <summary>Seekable staging handle; flush persists the complete file object and parent metadata.</summary>
-internal sealed class SharedObjectFile(Stream data, string layerName, Action<long> recordWrite, Action<Stream> commit, Action closed,
+internal sealed class SharedObjectFile(string path, Stream data, string layerName, Action<long> recordWrite, Action<Stream> commit, Action closed,
     Func<Stream>? createSnapshot = null)
 {
     private static readonly SemaphoreSlim MemorySnapshots = new(32, 32);
@@ -586,9 +707,14 @@ internal sealed class SharedObjectFile(Stream data, string layerName, Action<lon
     private int _references;
     private bool _closed;
     private bool _detached;
+    private string _path = path;
     private DateTime _lastWriteTimeUtc = DateTime.UtcNow;
     public DateTime LastWriteTimeUtc { get { lock (_gate) return _lastWriteTimeUtc; } }
+    /// <summary>The name this file commits to. A rename moves it; set under the resolver's
+    /// mutation gate, which is also where every commit reads it.</summary>
+    public string Path { get { lock (_gate) return _path; } set { lock (_gate) _path = value; } }
     public void Detach() { lock (_gate) _detached = true; }
+    public bool Detached { get { lock (_gate) return _detached; } }
     private long _version, _persisted;
     public bool TryAcquire(bool writable, out Stream handle)
     {

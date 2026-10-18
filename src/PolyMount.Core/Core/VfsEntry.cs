@@ -21,6 +21,18 @@ public sealed class VfsNotFoundException : Exception
     public string Rel { get; }
 }
 
+/// <summary>A directory that still lists something was asked to go away.</summary>
+public sealed class VfsDirectoryNotEmptyException(string rel) : IOException("directory not empty: " + rel)
+{
+    public string Rel { get; } = rel;
+}
+
+/// <summary>A name that already exists was asked for without permission to replace it.</summary>
+public sealed class VfsNameCollisionException(string rel) : IOException("destination exists: " + rel)
+{
+    public string Rel { get; } = rel;
+}
+
 public static class VfsPath
 {
     public static string Normalize(string fileName)

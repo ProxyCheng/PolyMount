@@ -77,6 +77,32 @@ internal sealed class ObjectDatabase
         using var command = connection.CreateCommand(); command.CommandText = "PRAGMA synchronous=FULL;"; command.ExecuteNonQuery();
         return connection;
     }
+    /// <summary>Every stored key at or below <paramref name="path"/>, from the table rather than
+    /// the resident index (which may be a bounded subset). A key range over the primary key:
+    /// '/' is 0x2F and '0' is 0x30, so [path/, path0) is exactly the keys below path.</summary>
+    internal IReadOnlyList<string> KeysAtOrBelow(string path)
+    {
+        var keys = new List<string>();
+        lock (_gate)
+        {
+            EnsureAvailable();
+            using var connection = Connect();
+            using var command = connection.CreateCommand();
+            if (path.Length == 0) command.CommandText = "SELECT path FROM objects";
+            else
+            {
+                command.CommandText = "SELECT path FROM objects WHERE path=$path OR (path>=$low AND path<$high)";
+                command.Parameters.AddWithValue("$path", path);
+                command.Parameters.AddWithValue("$low", path + "/");
+                command.Parameters.AddWithValue("$high", path + "0");
+            }
+            using var reader = command.ExecuteReader();
+            while (reader.Read()) keys.Add(reader.GetString(0));
+        }
+        return keys;
+    }
+    /// <summary>Resident records, counted without copying the index.</summary>
+    public int Count { get { lock (_gate) { VerifyStorage(); return _records.Count; } } }
     public IReadOnlyList<Record> Records { get { lock (_gate) { EnsureAvailable(); return _records.Values.ToArray(); } } }
     internal LayerStorageUsage GetStorageUsage()
     {

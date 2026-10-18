@@ -41,7 +41,7 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
     /// placed above an overlay is not: the overlay owns writes, and accepting one here would
     /// keep it from ever reaching the overlay.</summary>
     public override bool Writable => _writable;
-    public bool HasDurableWrites => _writable && _writes.Records.Count > 0;
+    public bool HasDurableWrites => _writable && _writes.Count > 0;
     public int RetainedReadHandles { get { lock (Gate) return _openCount; } }
 
     private protected override Item NewItem(VirtualObject value, long bytes, ObjectDatabase.Record? record = null) =>

@@ -43,7 +43,10 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
     public bool TryApply(IReadOnlyList<ObjectChange> changes)
     {
         if (!_writable) return false;
-        // This provider writes the physical tree. Directory objects remove absent children.
+        // This provider writes the physical tree. Only explicit removals delete anything: a
+        // directory object is the resolver's view of that directory, which may be a cached or
+        // a slightly older one, and deleting whatever on disk it does not name would take files
+        // another process just created with it.
         foreach (var change in changes.Where(c => c.Object != null))
         {
             var value = change.Object!;
@@ -54,13 +57,6 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
                 using var file = File.Create(LocalPath(change.Path));
                 change.Content!.CopyTo(file);
             }
-        }
-        foreach (var change in changes.Where(c => c.Object?.Header.IsDir == true))
-        {
-            var members = change.Object!.Children!.Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in Directory.EnumerateFileSystemEntries(LocalPath(change.Path)))
-                if (!members.Contains(Path.GetFileName(entry)))
-                { if (Directory.Exists(entry)) Directory.Delete(entry, true); else File.Delete(entry); }
         }
         foreach (var change in changes.Where(c => c.Object == null))
         { var path = LocalPath(change.Path); if (Directory.Exists(path)) Directory.Delete(path, true); else if (File.Exists(path)) File.Delete(path); }
