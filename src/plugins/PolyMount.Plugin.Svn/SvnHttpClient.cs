@@ -186,7 +186,7 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// them the same advice would be wrong. Internal so the wording is checked by a test.</summary>
     internal static string AuthenticationFailure(bool hasCredentials, string url, string host) => hasCredentials
         ? $"the repository at '{host}' rejected the credentials it was given"
-        : $"'{url}' requires authentication and no credentials were available. Run the service as your own Windows account so it can read the cached Subversion credentials, or fill in the username and password on this layer.";
+        : $"'{url}' requires authentication and no cached credentials were available. Run the service as your own Windows account so it can read the credentials the Subversion client saved.";
 
     /// <summary>Turns a Depth:1 multistatus listing into child entries.</summary>
     internal static List<SvnEntry> ParseListing(XDocument document, string requestPath, string selfName)

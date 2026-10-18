@@ -196,8 +196,11 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 writable.ValueKind != System.Text.Json.JsonValueKind.False)
                 throw new Exception("The read cache above the overlay must not accept writes");
             var descriptor = LayerRegistry.Describe("svn");
-            if (!descriptor.Fields.Any(f => f.Path == "Source.Password" && f.Kind == LayerFieldKind.Secret) ||
-                !descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");
+            if (!descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");
+            // Credentials are not asked for: they come from the store the Subversion client already
+            // filled for this Windows account, and a field here would invite a password into a file.
+            if (descriptor.Fields.Any(f => f.Path is "Source.Username" or "Source.Password"))
+                throw new Exception("The property panel still asks for credentials");
             // Refresh HEAD writes its result into the pin field, so the editor draws it beside
             // that field rather than at the bottom of the panel.
             var refresh = descriptor.Actions.Single(a => a.Command == ControlCommands.RefreshHead);
@@ -284,8 +287,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("authentication-guidance", () =>
         {
             string anonymous = SvnHttpClient.AuthenticationFailure(false, "https://host/repo", "host");
-            if (!anonymous.Contains("Windows account") || !anonymous.Contains("username and password"))
-                throw new Exception("the anonymous failure did not name both ways out: " + anonymous);
+            if (!anonymous.Contains("Windows account") || !anonymous.Contains("cached credentials"))
+                throw new Exception("the anonymous failure did not say where credentials come from: " + anonymous);
             string rejected = SvnHttpClient.AuthenticationFailure(true, "https://host/repo", "host");
             if (!rejected.Contains("rejected"))
                 throw new Exception("a rejected credential was not reported as such: " + rejected);

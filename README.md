@@ -52,7 +52,7 @@ restarting, crashing, or being reconfigured cannot take another with it.
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None. The installer ships a self-contained .NET runtime and Qt. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed — credentials come from the layer's settings or from the Subversion client's own cache |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed — credentials come from the cache the Subversion client saved for your Windows account |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension), Inno Setup 6 |
 
 ## Install

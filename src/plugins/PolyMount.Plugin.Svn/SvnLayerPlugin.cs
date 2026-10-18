@@ -55,9 +55,12 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     new() { Path = "Source.PinnedRevision", Kind = LayerFieldKind.Integer, Minimum = 0,
                         Title = SvnTexts.Get("svn.field.revision") },
                     new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
-                    new() { Path = "Source.Username", Title = SvnTexts.Get("svn.field.username"), EmptyIsNull = true },
-                    new() { Path = "Source.Password", Kind = LayerFieldKind.Secret, Title = SvnTexts.Get("svn.field.password"),
-                        Trim = false, EmptyIsNull = true },
+                    // No username or password field: the transport reads the credentials the
+                    // Subversion client already cached for this Windows user, which is the only
+                    // place they exist without somebody typing them into a configuration file.
+                    // A hand-edited configuration may still carry them; `SvnCredentials` honours
+                    // that first, so an installation whose service account has no profile of its
+                    // own can be configured, it is just not something the window asks for.
                     // Directory enumerations are one round trip each, so a walk pays them one
                     // after another unless the next level is fetched while the caller reads
                     // the current one. Bounded, and one level deep.
