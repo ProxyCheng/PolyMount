@@ -30,6 +30,26 @@ for the Explorer extension and the installer, Visual Studio C++ build tools and 
   under `scripts\` mount real WinFsp drives with a `dir` source and their own configuration; they
   are what CI runs.
 
+## Work on a branch, merge into master
+
+This tree is shared: more than one person or agent may have it open at the same time, and a
+change committed straight onto `master` lands under whoever else is building from it. Keep
+`master` as the integration point and do the work on a branch:
+
+```powershell
+git switch -c <scope>/<short-name> origin/master
+# ... work, commit ...
+dotnet build .\PolyMount.slnx
+dotnet test  .\PolyMount.slnx
+git switch master
+git merge --no-ff <scope>/<short-name>
+git branch -d <scope>/<short-name>
+```
+
+Rebase or merge the current `origin/master` into the branch before merging it back, and do not
+force-push `master` to make a branch fit. A branch that is still being written never enters
+`master`, so another session can keep building and committing there while it is in progress.
+
 ## Commits
 
 One logical change per commit, with a message that says what changed and why. The subject line is
@@ -45,7 +65,7 @@ docs: say what the package actually contains
 
 Describe the problem before the patch, and say how you verified it — a command, a test, a
 screenshot. If a change alters the configuration format, the IPC protocol or the installer's
-behaviour, update the matching document under `docs\` in the same pull request.
+behaviour, update `README.md` and `CHANGELOG.md` in the same change.
 
 ## Licensing
 
