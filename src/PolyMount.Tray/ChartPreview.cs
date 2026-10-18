@@ -120,7 +120,7 @@ internal sealed class ChartPreview : QWidget
         {
             Row("Code.exe", ("memory-cache", 30000, 0), ("cache", 3904, 0), ("overlay", 2600, 620)),
             Row("Explorer.EXE", ("memory-cache", 11000, 0), ("cache", 4200, 0), ("overlay", 300, 288)),
-            Row("svn.exe", ("memory-cache", 4300, 0), ("cache", 1802, 0)),
+            Row("python.exe", ("memory-cache", 4300, 0), ("cache", 1802, 0)),
             Row("MsMpEng.exe", ("memory-cache", 1500, 0), ("cache", 700, 0), ("overlay", 220, 0)),
             Row(I18n.T("stats.access.other"), ("cache", 1438, 0), ("memory-cache", 413, 0)),
             Row(I18n.T("stats.process.unattributed"), ("svn", 1402, 0), ("memory-cache", 1000, 0))
