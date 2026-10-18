@@ -1,0 +1,13 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- The release version stamps the files, the setup and the update check; it must not move the
+         assembly identity. A plugin is compiled in one step and the host in another, and the host is
+         the one given -p:Version on the command line: letting that reach AssemblyVersion made the
+         installed Core 0.3.0.0 while the plugin had been compiled against 1.0.0.0, and every
+         installation failed to load its own plugin. FileVersion and InformationalVersion still
+         carry the release number, which is what a file's properties page and the update check read. -->
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+  </PropertyGroup>
+
+</Project>
