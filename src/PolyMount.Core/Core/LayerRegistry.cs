@@ -156,6 +156,11 @@ public static class LayerRegistry
         options.MaxCoReadsPerPath = Number(config, "CoRead.MaxPerPath", options.MaxCoReadsPerPath);
         options.MinCoReadCount = Number(config, "CoRead.MinCount", options.MinCoReadCount);
         options.MinConfidence = Number(config, "CoRead.MinConfidencePercent", (int)Math.Round(options.MinConfidence * 100)) / 100.0;
+        options.MinBurstMembers = Number(config, "CoRead.MinBurstMembers", options.MinBurstMembers);
+        options.MinSetOverlap = Number(config, "CoRead.MinSetOverlapPercent", (int)Math.Round(options.MinSetOverlap * 100)) / 100.0;
+        options.MinConfirmations = Number(config, "CoRead.MinConfirmations", options.MinConfirmations);
+        options.MaxBatchFiles = Number(config, "CoRead.MaxBatchFiles", options.MaxBatchFiles);
+        options.GroupWasteStreak = Number(config, "CoRead.GroupWasteStreak", options.GroupWasteStreak);
         options.MaxInFlight = Number(config, "CoRead.MaxInFlight", options.MaxInFlight);
         options.FeedbackWindowMs = Number(config, "CoRead.FeedbackWindowMs", options.FeedbackWindowMs);
         options.FeedbackSamples = Number(config, "CoRead.FeedbackSamples", options.FeedbackSamples);
@@ -163,6 +168,9 @@ public static class LayerRegistry
         if (config.Parameters.TryGetValue("CoRead.MaxFileBytes", out var bytes) &&
             bytes.ValueKind == System.Text.Json.JsonValueKind.Number)
             options.MaxFileBytes = bytes.GetInt64() * 1048576;
+        if (config.Parameters.TryGetValue("CoRead.MaxBatchMB", out var batch) &&
+            batch.ValueKind == System.Text.Json.JsonValueKind.Number)
+            options.MaxBatchBytes = batch.GetInt64() * 1048576;
         return options;
     }
 

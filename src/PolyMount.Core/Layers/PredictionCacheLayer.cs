@@ -16,7 +16,7 @@ namespace PolyMount.Layers;
 /// </summary>
 public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWriteInvalidation, IQuietProbe, IDisposable
 {
-    private sealed class Entry(VirtualObject value, byte[]? content, long bytes, PreloadOrigin origin, long stream)
+    private sealed class Entry(VirtualObject value, byte[]? content, long bytes, PreloadOrigin origin, long stream, string? group)
     {
         public VirtualObject Value = value;
         public byte[]? Content = content;
@@ -28,6 +28,9 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
         /// <summary>The caller stream that nominated this entry; capacity and feedback are
         /// kept per stream so one loader cannot evict or silence another's guesses.</summary>
         public long Stream = stream;
+        /// <summary>The learned set a co-read guess came from, so its fate can be reported to
+        /// that group alone rather than to the stream. Null for the other strategies.</summary>
+        public string? Group = group;
         public int Reads;
         public LinkedListNode<string>? Node;
         public long StoredAt;
@@ -102,6 +105,10 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
     public long BurstCompleted => ModelStats.BurstCompleted;
     public long BurstHits { get { lock (_gate) return _burstUsed; } }
     public long BurstWasted { get { lock (_gate) return _burstWasted; } }
+    /// <summary>Co-read groups currently eligible to preload, and groups closed because their
+    /// guesses kept going unread. One trigger path is one group.</summary>
+    public int BurstGroups => ModelStats.Groups;
+    public int BurstClosedGroups => ModelStats.ClosedGroups;
     /// <summary>Directories the stride is currently walking.</summary>
     public int TrackedDirectories => ModelStats.TrackedDirectories;
     /// <summary>Runtime caller streams with a history right now.</summary>
@@ -136,16 +143,21 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
         _bytes = 0;
     }
 
-    /// <summary>Fetches a predicted path through the layers below and keeps it here.</summary>
-    protected void Preload(VirtualFileSystem lower, string path, long stream, PreloadOrigin origin)
+    /// <summary>Fetches a predicted path through the layers below and keeps it here. Returns
+    /// false when there was nothing to do: the layer already holds the path, the entry is too
+    /// large to keep, or the source no longer has it. A path the layer already holds is not
+    /// fetched again — replacing a kept copy with a fresh unread one would spend the source read
+    /// for data already in RAM and charge the guess for it.</summary>
+    protected bool Preload(VirtualFileSystem lower, string path, long stream, PreloadOrigin origin, string? group = null)
     {
+        if (HoldsContent(path)) { TouchObject(path); return false; }
         VirtualObject value;
         try { value = lower.LoadObject(path, speculative: true); }
-        catch (VfsNotFoundException) { return; }
+        catch (VfsNotFoundException) { return false; }
         // An entry larger than this layer's whole budget is never worth keeping.
-        if (!value.Header.IsDir && value.Header.Size > Math.Min(_capacity, _tuning.MaxFileBytes)) return;
+        if (!value.Header.IsDir && value.Header.Size > Math.Min(_capacity, _tuning.MaxFileBytes)) return false;
 
-        if (value.Header.IsDir) { Store(path, value, null, origin, stream); return; }
+        if (value.Header.IsDir) { Store(path, value, null, origin, stream, group); return true; }
         Interlocked.Exchange(ref _fetchBytes, value.Header.Size);
         try
         {
@@ -153,10 +165,23 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
             using var payload = new MemoryStream(value.Header.Size > int.MaxValue ? 0 : (int)value.Header.Size);
             source.CopyTo(payload);
             payload.Position = 0;
-            Store(path, value, payload, origin, stream);
+            Store(path, value, payload, origin, stream, group);
+            return true;
         }
-        catch (IOException) { }
+        catch (IOException) { return false; }
         finally { Interlocked.Exchange(ref _fetchBytes, 0); }
+    }
+
+    /// <summary>Whether this layer already holds usable bytes for a path: a directory listing or
+    /// a file body. A header-only record does not count — it cannot answer the read a preload
+    /// would have made possible.</summary>
+    internal bool HoldsContent(string path)
+    {
+        lock (_gate)
+        {
+            CheckGeneration();
+            return _entries.TryGetValue(path, out var entry) && (entry.Content != null || entry.Value.Header.IsDir);
+        }
     }
 
     public override bool TryGetEntry(string path, out VfsEntry entry)
@@ -227,8 +252,8 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
         Store(path, value, content, PreloadOrigin.Table, stream: 0);
 
     /// <summary>Keeps a value, recording which predictor chose it and which caller stream it
-    /// belongs to; only the origin and owner differ, so everything else is shared.</summary>
-    private void Store(string path, VirtualObject value, Stream? content, PreloadOrigin origin, long stream)
+    /// belongs to; only the origin, owner and learned set differ, so everything else is shared.</summary>
+    private void Store(string path, VirtualObject value, Stream? content, PreloadOrigin origin, long stream, string? group = null)
     {
         // A record with neither children nor content is header-only: the resolver telling
         // this layer that a path exists, not a guess it chose to read ahead. Keeping it would
@@ -249,7 +274,7 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
             ScoreStale();
             if (bytes > _capacity) return;
             if (_entries.TryGetValue(path, out var previous)) RemoveEntry(path, previous);
-            var entry = new Entry(value.Snapshot(), payload, bytes, origin, stream) { StoredAt = Environment.TickCount64 };
+            var entry = new Entry(value.Snapshot(), payload, bytes, origin, stream, group) { StoredAt = Environment.TickCount64 };
             entry.Node = _lru.AddFirst(path);
             _entries[path] = entry;
             _bytes += bytes;
@@ -281,6 +306,7 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
             if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialWasted++;
             else if (entry.Origin == PreloadOrigin.Burst) quality.BurstWasted++;
             else quality.Wasted++;
+            if (entry.Group != null) _modelImpl?.ReportGroup(entry.Group, false);
             (touched ??= new()).Add(entry.Stream);
         }
         if (touched == null) return;
@@ -334,6 +360,9 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
         if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialPaid++;
         else if (entry.Origin == PreloadOrigin.Burst) quality.BurstPaid++;
         else quality.Paid++;
+        // A co-read guess also goes back to the set it came from: one trigger path that keeps
+        // guessing wrong must not be propped up by another that keeps guessing right.
+        if (entry.Group != null) _modelImpl?.ReportGroup(entry.Group, true);
     }
 
     /// <summary>Removes an entry from both the index and the per-stream accounting. The caller
@@ -394,6 +423,7 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
             if (entry.Origin == PreloadOrigin.Spatial) quality.SpatialWasted++;
             else if (entry.Origin == PreloadOrigin.Burst) quality.BurstWasted++;
             else quality.Wasted++;
+            if (entry.Group != null) _modelImpl?.ReportGroup(entry.Group, false);
             PublishQuality(entry.Stream);
         }
         RemoveEntry(key, entry);
@@ -499,7 +529,7 @@ public sealed class PredictionCacheLayer : PredictionLayerBase
             string directory = Path.GetDirectoryName(modelPath) ?? ".";
             models.Add(new CoReadPrediction(lower, _coRead ?? new CoReadOptions(),
                 Path.Combine(directory, "co-read.json"),
-                (path, stream, origin) => Preload(lower, path, stream, origin)));
+                (path, stream, origin, group) => Preload(lower, path, stream, origin, group)));
         }
         return models.Count switch
         {

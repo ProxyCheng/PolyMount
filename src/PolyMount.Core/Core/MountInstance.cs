@@ -401,6 +401,8 @@ public sealed class MountInstance : IDisposable
                 info.BurstCompleted = prediction.BurstCompleted;
                 info.BurstHits = prediction.BurstHits;
                 info.BurstWasted = prediction.BurstWasted;
+                info.BurstGroups = prediction.BurstGroups;
+                info.BurstClosedGroups = prediction.BurstClosedGroups;
                 info.PredictionStreams = prediction.ActiveStreams;
                 info.Invalidated = prediction.Invalidated;
                 info.PredictionDetail = LayerTexts.Get("provider.prediction");

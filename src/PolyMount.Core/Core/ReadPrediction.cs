@@ -302,6 +302,10 @@ public sealed class ReadPrediction : IPredictionModel
     /// the shared layer can call every model through one interface.</summary>
     public void SetBurstThrottle(long streamId, double value) { }
 
+    /// <summary>The successor/stride/spatial model judges guesses per stream, not per learned
+    /// set, so it has no group to report back to.</summary>
+    public void ReportGroup(string group, bool paid) { }
+
 
     /// <summary>
     /// One demand from one caller stream. <paramref name="streamId"/> selects which history

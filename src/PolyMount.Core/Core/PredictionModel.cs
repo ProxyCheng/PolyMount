@@ -1,5 +1,12 @@
 namespace PolyMount.Core;
 
+/// <summary>Asks the owning layer to fetch one path; the result says whether it actually did
+/// (a path the layer already holds is not fetched again). <paramref name="group"/> names the
+/// learned set the guess belongs to (a co-read trigger), so the layer can report the entry's
+/// fate back to the strategy that issued it; strategies that judge guesses per caller stream
+/// leave it null.</summary>
+public delegate bool PreloadRequest(string path, long streamId, PreloadOrigin origin, string? group);
+
 /// <summary>
 /// What a prediction strategy learns and what it has issued. The layer owns the held cache,
 /// eviction, per-stream quota, quality feedback and write invalidation; a model only observes
@@ -25,6 +32,11 @@ public interface IPredictionModel : IDisposable
     /// <summary>The same dial for a co-read/burst model's preloads.</summary>
     void SetBurstThrottle(long streamId, double value);
 
+    /// <summary>Reports the fate of one entry a model nominated under <paramref name="group"/>:
+    /// read before it was evicted (<paramref name="paid"/> true), or evicted unread. It is how a
+    /// strategy can judge one learned set rather than the whole stream.</summary>
+    void ReportGroup(string group, bool paid);
+
     /// <summary>Drops learned state and held candidates; does not abort already-started I/O.</summary>
     void Reset();
 }
@@ -42,7 +54,12 @@ public readonly record struct PredictionModelStats(
     long BurstPredictions,
     long BurstCompleted,
     int ActiveStreams,
-    int TrackedDirectories);
+    int TrackedDirectories,
+    /// <summary>Learned groups currently eligible to preload (co-read triggers whose set has
+    /// repeated). Zero for strategies that have no groups.</summary>
+    int Groups = 0,
+    /// <summary>Groups a strategy closed because their guesses kept going unread.</summary>
+    int ClosedGroups = 0);
 
 /// <summary>The few budgets the layer needs from a model to keep its cache and feedback
 /// behaviour identical across strategies.</summary>
@@ -70,7 +87,7 @@ public sealed class CompositePrediction : IPredictionModel
         get
         {
             long learned = 0, predictions = 0, completed = 0, siblingP = 0, siblingC = 0, spatialP = 0, spatialC = 0, burstP = 0, burstC = 0;
-            int streams = 0, directories = 0;
+            int streams = 0, directories = 0, groups = 0, closed = 0;
             foreach (var model in _models)
             {
                 var s = model.Stats;
@@ -79,14 +96,16 @@ public sealed class CompositePrediction : IPredictionModel
                 spatialP += s.SpatialPredictions; spatialC += s.SpatialCompleted;
                 burstP += s.BurstPredictions; burstC += s.BurstCompleted;
                 streams += s.ActiveStreams; directories += s.TrackedDirectories;
+                groups += s.Groups; closed += s.ClosedGroups;
             }
-            return new PredictionModelStats(learned, predictions, completed, siblingP, siblingC, spatialP, spatialC, burstP, burstC, streams, directories);
+            return new PredictionModelStats(learned, predictions, completed, siblingP, siblingC, spatialP, spatialC, burstP, burstC, streams, directories, groups, closed);
         }
     }
 
     public void SetThrottle(long streamId, double value) { foreach (var model in _models) model.SetThrottle(streamId, value); }
     public void SetSpatialThrottle(long streamId, double value) { foreach (var model in _models) model.SetSpatialThrottle(streamId, value); }
     public void SetBurstThrottle(long streamId, double value) { foreach (var model in _models) model.SetBurstThrottle(streamId, value); }
+    public void ReportGroup(string group, bool paid) { foreach (var model in _models) model.ReportGroup(group, paid); }
     public void Reset() { foreach (var model in _models) model.Reset(); }
     public void Dispose() { foreach (var model in _models) model.Dispose(); }
 
