@@ -140,6 +140,7 @@ try {
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'))) { throw 'Service executable is missing.' }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Tray\platforms\qwindows.dll'))) { throw 'Qt Windows platform plugin is missing.' }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Service\plugins\PolyMount.Plugin.Svn.dll'))) { throw 'The bundled source plugin is missing.' }
+            if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Mcp\PolyMount.Mcp.exe'))) { throw 'The MCP server executable is missing.' }
         }
         'Install' {
             # The Setup calls Stop before it copies anything; an Install run by hand has to do the

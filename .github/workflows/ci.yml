@@ -73,6 +73,17 @@ jobs:
         shell: pwsh
         run: ./scripts/Test-ObjectMount.ps1 -ServiceExecutable src/PolyMount.Service/bin/Release/net10.0-windows/PolyMount.Service.exe
 
+      # The MCP server is what an agent talks to, so the wire is what is proved: handshake, tool
+      # list, real calls through a supervisor of the test's own, and the error a client sees when
+      # the service is gone. -Full adds one real enable -> mount -> disable round trip.
+      - name: Smoke - MCP server over stdio
+        shell: pwsh
+        run: |
+          ./scripts/Test-Mcp.ps1 `
+            -ServiceExecutable src/PolyMount.Service/bin/Release/net10.0-windows/PolyMount.Service.exe `
+            -McpExecutable src/PolyMount.Mcp/bin/Release/net10.0-windows/PolyMount.Mcp.exe `
+            -Full
+
   package:
     name: Package installer
     runs-on: windows-latest

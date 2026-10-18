@@ -35,7 +35,10 @@ foreach ($download in @(
 )) {
     $destination = Join-Path $dependencies $download.File
     if (-not (Test-Path -LiteralPath $destination)) {
-        & curl.exe --ssl-revoke-best-effort -fL --retry 3 --output $destination $download.Url
+        # -sS: no progress meter (Windows PowerShell 5.1 turns native stderr into a terminating
+        # error under $ErrorActionPreference='Stop'), but a real failure still prints and exits
+        # non-zero, which the check below reports.
+        & curl.exe --ssl-revoke-best-effort -sS -fL --retry 3 --output $destination $download.Url
         if ($LASTEXITCODE -ne 0) { throw "Download failed: $($download.Url)" }
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $destination

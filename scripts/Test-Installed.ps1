@@ -127,9 +127,21 @@ if ($running.Count -eq 1) {
     Check 'it runs in the service session' ($running[0].SessionId -eq 0) "session $($running[0].SessionId)"
 }
 foreach ($relative in 'Service\PolyMount.Service.exe', 'Tray\PolyMount.Tray.exe', 'Tray\platforms\qwindows.dll',
+                        'Mcp\PolyMount.Mcp.exe',
                         'Shell\PolyMount.Shell.dll', 'Service\plugins\PolyMount.Plugin.Svn.dll',
                         'installer\Install-Host.ps1', 'install.json', 'THIRD-PARTY-NOTICES.txt') {
     Check "installed $relative" (Test-Path -LiteralPath (Join-Path $app $relative))
+}
+
+# Nothing runs the MCP server until an agent starts it, so a missing file or a broken self-contained
+# runtime would otherwise go unnoticed until then. Ask the installed copy for its catalog: that
+# needs neither a supervisor nor an MCP client.
+$mcp = Join-Path $app 'Mcp\PolyMount.Mcp.exe'
+if (Test-Path -LiteralPath $mcp) {
+    $describe = & $mcp --describe 2>$null
+    Check 'the MCP server starts from the installed copy' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
+    $toolCount = @(((($describe -join [Environment]::NewLine)) | ConvertFrom-Json).tools).Count
+    Check 'the MCP server offers its 22 tools' ($toolCount -eq 22) "$toolCount tool(s)"
 }
 
 $entry = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |

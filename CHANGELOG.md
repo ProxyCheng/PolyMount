@@ -37,8 +37,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   against the server and keeps it (DPAPI, for the service account). The prompt is generic — a Git or
   SSH plugin can reuse the store, the prompt and the resolution order.
 - Third-party notices, including the Qt Charts licensing consequence.
-- CI: build, unit tests, plugin tests, two self-contained mount smoke tests, and an installer
-  artifact.
+- CI: build, unit tests, plugin tests, three self-contained smoke tests (one instance worker, the
+  object mount, the MCP server over stdio), and an installer artifact that the install test
+  exercises.
 
 ## [0.2.0] - 2026-10-13
 
