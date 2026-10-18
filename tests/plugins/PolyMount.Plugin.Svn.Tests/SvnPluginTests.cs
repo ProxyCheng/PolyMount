@@ -1,4 +1,6 @@
 using System.Net.Security;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Xml.Linq;
@@ -71,18 +73,23 @@ public sealed class SvnPluginTests : IPluginTestProvider
         </D:multistatus>
         """;
 
-    /// <summary>Stands in for a transport, recording calls and optionally refusing to serve.</summary>
-    private sealed class FakeBackend(bool transport) : ISvnBackend
-    {
-        public int Calls;
-        public bool Disposed;
-        private void Enter() { Calls++; if (transport) throw new SvnTransportException("refused"); }
-        public long GetHeadRevision(RequestDiagnostics? diagnostics = null) { Enter(); return 42; }
-        public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null) { Enter(); return Array.Empty<SvnEntry>(); }
-        public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null) { Enter(); return null; }
-        public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null) => Enter();
-        public void Dispose() => Disposed = true;
-    }
+    /// <summary>A Depth:1 response carrying the SVN property the cache keys on.</summary>
+    private const string ListingWithRevision = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <D:multistatus xmlns:D="DAV:" xmlns:S="http://subversion.tigris.org/xmlns/dav/">
+        <D:response>
+        <D:href>/svn/!svn/rvr/9/trunk/a.txt</D:href>
+        <D:propstat>
+        <D:prop>
+        <D:resourcetype/>
+        <D:getcontentlength>3</D:getcontentlength>
+        <S:committed-rev>7</S:committed-rev>
+        </D:prop>
+        <D:status>HTTP/1.1 200 OK</D:status>
+        </D:propstat>
+        </D:response>
+        </D:multistatus>
+        """;
 
     /// <summary>A small repository tree that records what was asked of it, and can park a
     /// listing inside the request so a test controls what is still queued.</summary>
@@ -202,13 +209,64 @@ public sealed class SvnPluginTests : IPluginTestProvider
             PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
         });
         Check("registration", () => { if (!SourceRegistry.Contains("svn")) throw new Exception("SVN was not registered"); });
-        Check("http-transport-selection", () =>
+        Check("transport-selection", () =>
         {
             var http = SvnLayer.Create("https://example.invalid/repo", "", Path.Combine(context.WorkingDirectory, "pin.txt"));
-            if (http.Backend is not FallbackSvnBackend) throw new Exception("http repository did not use the WebDAV transport");
-            if (((FallbackSvnBackend)http.Backend).Current is not SvnHttpClient) throw new Exception("WebDAV transport is not preferred");
-            var other = SvnLayer.Create("svn://example.invalid/repo", "", Path.Combine(context.WorkingDirectory, "pin.txt"));
-            if (other.Backend is not SvnClient) throw new Exception("non-http repository did not use the command line client");
+            if (http.Backend is not SvnHttpClient) throw new Exception("an http repository did not use the WebDAV transport");
+            try
+            {
+                SvnLayer.Create("svn://example.invalid/repo", "", Path.Combine(context.WorkingDirectory, "other-pin.txt"));
+                throw new Exception("svn:// was accepted; the command-line client that served it is no longer shipped");
+            }
+            catch (ArgumentException) { }
+        });
+        Check("credential-cache-format", () =>
+        {
+            string file = Path.Combine(context.WorkingDirectory, "write-cache");
+            WriteCacheFile(file, "wincrypt", "user", Convert.ToBase64String(Protect("secret")), "<https://example.invalid:443> realm");
+            var values = SvnCredentials.Read(file);
+            if (values == null) throw new Exception("a well-formed cache file was rejected");
+            if (Encoding.UTF8.GetString(values["username"]) != "user") throw new Exception("the username did not survive the format");
+            if (!SvnCredentials.RealmMatches(Encoding.UTF8.GetString(values["svn:realmstring"]), new Uri("https://example.invalid/repo")))
+                throw new Exception("the parsed realm did not match its own repository");
+
+            string truncated = Path.Combine(context.WorkingDirectory, "write-cache-truncated");
+            File.WriteAllBytes(truncated, File.ReadAllBytes(file)[..^12]);
+            if (SvnCredentials.Read(truncated) != null) throw new Exception("a truncated cache file was accepted");
+        });
+        Check("credential-unprotect", () =>
+        {
+            byte[] blob = Protect("secret");
+            if (SvnCredentials.Unprotect(blob) != "secret") throw new Exception("a blob protected by this user was not opened");
+            if (SvnCredentials.Unprotect(blob[..(blob.Length / 2)]) != null) throw new Exception("a truncated blob was accepted");
+        });
+        Check("credential-realm-match", () =>
+        {
+            var repository = new Uri("https://svn.example.invalid/repo/trunk");
+            if (!SvnCredentials.RealmMatches("<https://svn.example.invalid:443> Authenticate your account.", repository))
+                throw new Exception("a matching realm was rejected");
+            if (SvnCredentials.RealmMatches("<https://svn.example.invalid:8443> Authenticate your account.", repository))
+                throw new Exception("a realm on another port was accepted");
+            if (SvnCredentials.RealmMatches("<https://elsewhere.invalid:443> Authenticate your account.", repository))
+                throw new Exception("a realm on another host was accepted");
+        });
+        Check("listing-carries-the-revision", () =>
+        {
+            // The cache keys an object by the revision it last changed in. The command line used to
+            // supply it; without it the whole tree is re-keyed whenever the repository moves.
+            var entries = SvnHttpClient.ParseListing(XDocument.Parse(ListingWithRevision), "/svn/!svn/rvr/9/trunk/", "");
+            var entry = entries.Single();
+            if (entry.Name != "a.txt" || entry.ContentVersion != "7")
+                throw new Exception($"listing produced '{entry.Name}' at revision '{entry.ContentVersion}'");
+        });
+        Check("authentication-guidance", () =>
+        {
+            string anonymous = SvnHttpClient.AuthenticationFailure(false, "https://host/repo", "host");
+            if (!anonymous.Contains("Windows account") || !anonymous.Contains("username and password"))
+                throw new Exception("the anonymous failure did not name both ways out: " + anonymous);
+            string rejected = SvnHttpClient.AuthenticationFailure(true, "https://host/repo", "host");
+            if (!rejected.Contains("rejected"))
+                throw new Exception("a rejected credential was not reported as such: " + rejected);
         });
         Check("revision-pinned-url", () =>
         {
@@ -272,30 +330,6 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("The catch-all failure list did not trust every error");
             if (!SvnHttpClient.TrustsCertificateFailures("unknown-ca,cn-mismatch,expired,not-yet-valid,other", certificate, chain, SslPolicyErrors.None))
                 throw new Exception("A valid certificate was rejected");
-        });
-        Check("transport-fallback", () =>
-        {
-            var preferred = new FakeBackend(transport: true);
-            var backup = new FakeBackend(transport: false);
-            var backend = new FallbackSvnBackend(preferred, () => backup);
-            if (backend.GetHeadRevision() != 42) throw new Exception("Fallback did not serve the request");
-            if (!ReferenceEquals(backend.Current, backup)) throw new Exception("Fallback was not adopted");
-            if (!preferred.Disposed) throw new Exception("The refused backend was not released");
-            if (backup.Calls != 1) throw new Exception("Fallback call count was " + backup.Calls);
-        });
-        Check("transport-fallback-is-terminal", () =>
-        {
-            // Once the fallback is in use its failures are real and must surface.
-            var refused = new FakeBackend(transport: true);
-            var alsoRefused = new FakeBackend(transport: true);
-            var backend = new FallbackSvnBackend(refused, () => alsoRefused);
-            try { backend.GetHeadRevision(); throw new Exception("Transport error was swallowed"); }
-            catch (SvnTransportException) { }
-            if (!ReferenceEquals(backend.Current, alsoRefused)) throw new Exception("Fallback was not adopted");
-            if (alsoRefused.Calls != 1) throw new Exception("Fallback was not retried exactly once, calls=" + alsoRefused.Calls);
-            try { backend.GetHeadRevision(); throw new Exception("Transport error was swallowed"); }
-            catch (SvnTransportException) { }
-            if (alsoRefused.Calls != 2) throw new Exception("A terminal failure was retried elsewhere, calls=" + alsoRefused.Calls);
         });
         Check("header-asks-for-the-path-not-the-parent", () =>
         {
@@ -604,4 +638,65 @@ public sealed class SvnPluginTests : IPluginTestProvider
         else results.Add(new(PluginName, "repository-integration", PluginTestOutcome.Skipped, "Set svn.repository to enable network testing"));
         return Task.FromResult<IReadOnlyList<PluginTestResult>>(results);
     }
+
+    /// <summary>Writes one Subversion cache file in its own on-disk format: repeated
+    /// <c>K &lt;length&gt;</c> / <c>V &lt;length&gt;</c> pairs, lengths in bytes.</summary>
+    private static void WriteCacheFile(string path, string passtype, string username, string password, string realm)
+    {
+        using var stream = File.Create(path);
+        void Pair(string key, string value)
+        {
+            var keyBytes = Encoding.UTF8.GetBytes(key);
+            var valueBytes = Encoding.UTF8.GetBytes(value);
+            stream.Write(Encoding.ASCII.GetBytes($"K {keyBytes.Length}\n"));
+            stream.Write(keyBytes);
+            stream.WriteByte((byte)'\n');
+            stream.Write(Encoding.ASCII.GetBytes($"V {valueBytes.Length}\n"));
+            stream.Write(valueBytes);
+            stream.WriteByte((byte)'\n');
+        }
+        Pair("passtype", passtype);
+        Pair("password", password);
+        Pair("svn:realmstring", realm);
+        Pair("username", username);
+    }
+
+    /// <summary>Protects a value the way the Subversion client does, so the reader in the plugin
+    /// can be exercised without a real credential store.</summary>
+    private static byte[] Protect(string text)
+    {
+        var data = Encoding.UTF8.GetBytes(text);
+        var input = new DataBlob { Size = data.Length, Data = Marshal.AllocHGlobal(data.Length) };
+        var output = new DataBlob();
+        try
+        {
+            Marshal.Copy(data, 0, input.Data, data.Length);
+            if (!CryptProtectData(ref input, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, ref output))
+                throw new Exception("CryptProtectData failed: " + Marshal.GetLastWin32Error());
+            var result = new byte[output.Size];
+            Marshal.Copy(output.Data, result, 0, output.Size);
+            return result;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(input.Data);
+            if (output.Data != IntPtr.Zero) LocalFree(output.Data);
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DataBlob
+    {
+        public int Size;
+        public IntPtr Data;
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptProtectData(ref DataBlob dataIn, IntPtr description, IntPtr entropy,
+        IntPtr reserved, IntPtr prompt, int flags, ref DataBlob dataOut);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr handle);
+
 }

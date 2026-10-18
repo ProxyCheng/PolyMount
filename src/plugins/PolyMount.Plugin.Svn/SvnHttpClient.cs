@@ -32,17 +32,19 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// drift apart.</summary>
     internal const int MaxConnections = 16;
     private const string ListingBody =
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop>" +
-        "<resourcetype/><getcontentlength/><getlastmodified/></prop></propfind>";
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\" xmlns:S=\"http://subversion.tigris.org/xmlns/dav/\"><prop>" +
+        "<resourcetype/><getcontentlength/><getlastmodified/><S:committed-rev/></prop></propfind>";
     private const string VersionNameBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-name/></prop></propfind>";
     private const string ConfigurationBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-controlled-configuration/></prop></propfind>";
 
     private static readonly XNamespace Dav = "DAV:";
+    private static readonly XNamespace Svn = "http://subversion.tigris.org/xmlns/dav/";
     private readonly Uri _base;
     private readonly HttpClient _client;
     private readonly object _gate = new();
+    private readonly bool _hasCredentials;
     private string? _repositoryRoot;
     private string _pathPrefix = string.Empty;
 
@@ -56,11 +58,12 @@ internal sealed class SvnHttpClient : ISvnBackend
             ServerCertificateCustomValidationCallback = (_, certificate, chain, errors) =>
                 TrustsCertificateFailures(trustFailures, certificate, chain, errors)
         };
-        // Without an explicit account the svn client reads its own credential store,
-        // which this transport cannot reach; anonymous access is attempted first and a
-        // challenge hands the caller over to the command line client.
+        // No account means anonymous, which is enough for a repository that does not ask. The
+        // caller resolves the cached Subversion credentials before constructing this; a challenge
+        // that still arrives is reported as such rather than retried.
         if (!string.IsNullOrEmpty(username))
         {
+            _hasCredentials = true;
             handler.Credentials = new NetworkCredential(username, password ?? string.Empty);
             handler.PreAuthenticate = true;
         }
@@ -172,11 +175,19 @@ internal sealed class SvnHttpClient : ISvnBackend
         var status = (int)statusCode;
         response.Dispose();
         if (statusCode == HttpStatusCode.NotFound) throw new SvnNotFoundException($"'{rel}' does not exist at this revision: {url}");
-        // Anything else is a transport problem this backend cannot resolve: 401/403 need
-        // the svn credential store, 405/501 mean the server serves no WebDAV, and the
-        // rest are server or proxy behaviour the command line client may still handle.
+        if (statusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            throw new SvnTransportException(AuthenticationFailure(_hasCredentials, url, _base.Host));
+        // Everything else is the server or a proxy refusing the request itself; this transport has
+        // no second way to ask.
         throw new SvnTransportException($"'{url}' returned HTTP {status}");
     }
+
+    /// <summary>What to say when the repository refused the request. A caller with no credentials
+    /// is told both ways out; one whose credentials were rejected is told that, because sending
+    /// them the same advice would be wrong. Internal so the wording is checked by a test.</summary>
+    internal static string AuthenticationFailure(bool hasCredentials, string url, string host) => hasCredentials
+        ? $"the repository at '{host}' rejected the credentials it was given"
+        : $"'{url}' requires authentication and no credentials were available. Run the service as your own Windows account so it can read the cached Subversion credentials, or fill in the username and password on this layer.";
 
     /// <summary>Turns a Depth:1 multistatus listing into child entries.</summary>
     internal static List<SvnEntry> ParseListing(XDocument document, string requestPath, string selfName)
@@ -192,11 +203,8 @@ internal sealed class SvnHttpClient : ISvnBackend
             if (string.Equals(path, requestPath, StringComparison.Ordinal) ||
                 (selfName.Length > 0 && string.Equals(name, selfName, StringComparison.OrdinalIgnoreCase))) continue;
 
-            bool isDir = false;
-            long size = 0;
-            var time = DateTime.UnixEpoch;
-            ReadProps(element, out isDir, out size, out time);
-            entries.Add(new SvnEntry { Name = name, IsDir = isDir, Size = size, TimeUtc = time });
+            ReadProps(element, out bool isDir, out long size, out var time, out string contentVersion);
+            entries.Add(new SvnEntry { Name = name, IsDir = isDir, Size = size, TimeUtc = time, ContentVersion = contentVersion });
         }
         // svn list reports children in name order; keep that so callers see the same sequence.
         entries.Sort(static (a, b) => string.CompareOrdinal(a.Name, b.Name));
@@ -214,22 +222,23 @@ internal sealed class SvnHttpClient : ISvnBackend
             if (string.IsNullOrEmpty(href)) continue;
             var path = HrefPath(href);
             if (!string.Equals(path, requestPath, StringComparison.Ordinal)) continue;
-            ReadProps(element, out bool isDir, out long size, out var time);
+            ReadProps(element, out bool isDir, out long size, out var time, out string contentVersion);
             return new SvnEntry
             {
                 Name = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]),
-                IsDir = isDir, Size = size, TimeUtc = time
+                IsDir = isDir, Size = size, TimeUtc = time, ContentVersion = contentVersion
             };
         }
         return null;
     }
 
     /// <summary>Reads the properties of one response, from the propstat whose status is 200.</summary>
-    private static void ReadProps(XElement response, out bool isDir, out long size, out DateTime time)
+    private static void ReadProps(XElement response, out bool isDir, out long size, out DateTime time, out string contentVersion)
     {
         isDir = false;
         size = 0;
         time = DateTime.UnixEpoch;
+        contentVersion = string.Empty;
         foreach (var propstat in response.Elements(Dav + "propstat"))
         {
             if (propstat.Element(Dav + "status")?.Value?.Contains(" 200 ", StringComparison.Ordinal) != true) continue;
@@ -242,6 +251,10 @@ internal sealed class SvnHttpClient : ISvnBackend
             if (!string.IsNullOrEmpty(modified) && DateTimeOffset.TryParse(modified, CultureInfo.InvariantCulture,
                     DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var parsed))
                 time = parsed.UtcDateTime;
+            // The revision this path last changed in, which is what a cache compares across global
+            // revisions. Without it every entry is keyed by the repository's generation and a new
+            // revision invalidates the whole tree.
+            contentVersion = prop.Element(Svn + "committed-rev")?.Value?.Trim() ?? string.Empty;
         }
     }
 

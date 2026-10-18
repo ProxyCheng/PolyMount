@@ -95,19 +95,21 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     }
 
     /// <summary>
-    /// Prefers the in-process HTTP transport for http(s) repositories, which avoids the
-    /// per-request process spawn, and falls back to the svn command line client when the
-    /// server refuses that transport or the mount relies on the svn credential store.
+    /// Serves a repository over its own HTTP/WebDAV interface, in this process: one request is one
+    /// HTTP exchange instead of one process. Only http(s) repositories can be read this way, and
+    /// the descriptor refuses anything else before a mount is built.
+    ///
+    /// Credentials come from the layer's settings, or from the store the Subversion client itself
+    /// uses — see <see cref="SvnCredentials"/> — or none at all, for a repository that does not ask.
     /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
         string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null)
     {
-        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
-            url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-            return new(new FallbackSvnBackend(
-                new SvnHttpClient(url, trustFailures, username, password),
-                () => new SvnClient(url, trustFailures, username, password)), pinPath, prefetch);
-        return new(new SvnClient(url, trustFailures, username, password), pinPath, prefetch);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var repository) ||
+            (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps))
+            throw new ArgumentException("SVN layers read http(s) repositories; '" + url + "' is not one.", nameof(url));
+        var credential = SvnCredentials.Resolve(url, username, password);
+        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Password), pinPath, prefetch);
     }
 
     public void Dispose()

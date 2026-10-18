@@ -37,8 +37,13 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                 config.Password, SvnPrefetchOptions.From(config.Parameters)),
             config =>
             {
-                if (!Uri.TryCreate(config.Url, UriKind.Absolute, out _) || config.PinnedRevision < 0)
+                if (!Uri.TryCreate(config.Url, UriKind.Absolute, out var repository) || config.PinnedRevision < 0)
                     throw new ArgumentException("SVN requires an absolute repository URL and nonnegative revision");
+                // The transport speaks HTTP/WebDAV. svn:// and svn+ssh:// are the svnserve
+                // protocol, which only the command-line client spoke, and it is no longer shipped.
+                if (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps)
+                    throw new ArgumentException("only http(s) repositories are supported; '" + repository.Scheme +
+                        "://' needs the svn command-line client, which this build no longer includes");
                 SvnPrefetchOptions.From(config.Parameters);
             }, new LayerDescriptor
             {
