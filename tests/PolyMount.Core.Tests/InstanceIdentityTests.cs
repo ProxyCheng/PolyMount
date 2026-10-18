@@ -19,7 +19,7 @@ public sealed class InstanceIdentityTests
         string store = first.GetStoreRoot();
         Assert.IsFalse(first.EnsureId(), "reading the store root should already have made the identity");
 
-        first.Name = "TX4Package";
+        first.Name = "Package";
         Assert.AreEqual(store, first.GetStoreRoot(), "renaming a mount moved its store");
 
         var second = Profile("Mount");

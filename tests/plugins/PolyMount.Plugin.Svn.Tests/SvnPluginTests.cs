@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
@@ -93,6 +94,29 @@ public sealed class SvnPluginTests : IPluginTestProvider
 
     /// <summary>A small repository tree that records what was asked of it, and can park a
     /// listing inside the request so a test controls what is still queued.</summary>
+    /// <summary>A control link that records what an operation asked for, so a tool can be
+    /// exercised without a running service.</summary>
+    private sealed class FakeLink : IControlLink
+    {
+        public string? InstanceName;
+        public ControlRequest? Request;
+        public string Result = "{}";
+        public ControlResponse LastResponse { get; private set; } = new();
+
+        public ControlResponse Supervisor(ControlRequest request) => throw new NotSupportedException();
+        public ControlResponse Instance(string? name, ControlRequest request)
+        {
+            InstanceName = name;
+            Request = request;
+            LastResponse = new ControlResponse { Result = Result };
+            return LastResponse;
+        }
+        public ControlResponse ForPath(string fullPath, ControlRequest request) => throw new NotSupportedException();
+        public string? OwnerOf(string fullPath) => null;
+        public ControlResponse Status() => throw new NotSupportedException();
+        public List<MountMetrics> Metrics(double windowSeconds, string? name) => throw new NotSupportedException();
+    }
+
     private sealed class TreeBackend : ISvnBackend
     {
         private static readonly Dictionary<string, string[]> Tree = new()
@@ -197,21 +221,70 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("The read cache above the overlay must not accept writes");
             var descriptor = LayerRegistry.Describe("svn");
             if (!descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");
-            // Credentials are not asked for: they come from the store the Subversion client already
-            // filled for this Windows account, and a field here would invite a password into a file.
+            // Credentials are not asked for as a username and password: the picker names one of the
+            // product's credentials, and a field here would invite a password into a file.
             if (descriptor.Fields.Any(f => f.Path is "Source.Username" or "Source.Password"))
                 throw new Exception("The property panel still asks for credentials");
+            if (!descriptor.Fields.Any(f => f.Path == "Source.CredentialId" && f.Kind == LayerFieldKind.Credential))
+                throw new Exception("The property panel offers no credential picker");
             // Refresh HEAD writes its result into the pin field, so the editor draws it beside
             // that field rather than at the bottom of the panel.
             var refresh = descriptor.Actions.Single(a => a.Command == ControlCommands.RefreshHead);
             if (refresh.Field != "Source.PinnedRevision") throw new Exception("Refresh HEAD is not attached to the pinned revision field");
             if (typeof(SvnLayer).Assembly == typeof(ILayer).Assembly) throw new Exception("Plugin is not independent");
+            if (ControlOperations.Find("get_svn_source") == null || ControlOperations.Find("list_svn_lanes") == null)
+                throw new Exception("The plugin's MCP operations were not registered");
             PluginLoader.LoadConfigured(Array.Empty<PluginConfig>(), AppContext.BaseDirectory);
             if (SourceRegistry.Contains("svn") || LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Disabled plugin registrations remain active");
             if (LayerRegistry.Descriptors.Any(d => d.Type == "svn")) throw new Exception("Disabled plugin metadata remains active");
+            if (ControlOperations.Find("get_svn_source") != null || ControlOperations.Find("list_svn_lanes") != null)
+                throw new Exception("A disabled plugin's MCP operations remain registered");
             PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
         });
         Check("registration", () => { if (!SourceRegistry.Contains("svn")) throw new Exception("SVN was not registered"); });
+        Check("mcp-operations", () =>
+        {
+            var source = ControlOperations.Find("get_svn_source")
+                ?? throw new Exception("get_svn_source is not in the catalog");
+            var lanes = ControlOperations.Find("list_svn_lanes")
+                ?? throw new Exception("list_svn_lanes is not in the catalog");
+            if (source.Effect != ControlEffect.Read || !source.Idempotent ||
+                lanes.Effect != ControlEffect.Read || !lanes.Idempotent)
+                throw new Exception("The SVN tools must be reads and idempotent");
+
+            var link = new FakeLink { Result = """{"instance":"Project","layers":[{"layer":"svn","account":"alice","revision":42}]}""" };
+            var arguments = new ToolArguments(JsonSerializer.SerializeToElement(new Dictionary<string, JsonElement>
+            {
+                ["instance"] = JsonSerializer.SerializeToElement("Project"),
+                ["layer"] = JsonSerializer.SerializeToElement("svn")
+            }));
+            source.Invoke(link, arguments);
+            if (link.InstanceName != "Project" || link.Request?.Cmd != SvnLayerPlugin.SourceCommand || link.Request?.Layer != "svn")
+                throw new Exception("get_svn_source did not ask the instance for its source");
+            var presented = source.Present(link.LastResponse) as JsonNode
+                ?? throw new Exception("get_svn_source did not project the payload");
+            if (presented["layers"]?[0]?["account"]?.GetValue<string>() != "alice")
+                throw new Exception("The source payload did not reach the caller");
+
+            lanes.Invoke(link, arguments);
+            if (link.Request?.Cmd != SvnLayerPlugin.LanesCommand)
+                throw new Exception("list_svn_lanes did not ask the instance for its lanes");
+            if (lanes.Present(new ControlResponse()) is not JsonObject empty || empty.Count != 0)
+                throw new Exception("An empty result should project as an empty object");
+        });
+        Check("credential-selection-reaches-the-layer", () =>
+        {
+            // A layer that names a credential must actually resolve through it: with the picker's
+            // value dropped on the way to the factory, a deleted or wrong credential would quietly
+            // fall back to the client's cached account and the choice would mean nothing.
+            var config = new SourceConfig { Type = "svn", Url = "https://example.invalid/repo", CredentialId = "does-not-exist" };
+            try
+            {
+                SourceRegistry.Create(config, context.WorkingDirectory);
+                throw new Exception("a layer naming a missing credential was created");
+            }
+            catch (InvalidOperationException) { }
+        });
         Check("transport-selection", () =>
         {
             var http = SvnLayer.Create("https://example.invalid/repo", "", Path.Combine(context.WorkingDirectory, "pin.txt"));

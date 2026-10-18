@@ -10,6 +10,8 @@ public sealed class LocalizedText
     public Dictionary<string, string> Values { get; set; } = new();
     public LocalizedText() { }
     public LocalizedText(string en, string zh) => Values = new() { ["en"] = en, ["zh-CN"] = zh };
+    /// <summary>A hint that reads the same in every language, such as a list of keywords.</summary>
+    public LocalizedText(string text) => Values = new() { ["en"] = text, ["zh-CN"] = text };
     public string Resolve(string language) => Values.GetValueOrDefault(language) ?? Values.GetValueOrDefault("en") ?? Values.Values.FirstOrDefault() ?? "";
 }
 
@@ -27,7 +29,7 @@ public sealed class LayerFieldDescriptor
     public string Path { get; set; } = "";
     public LocalizedText Title { get; set; } = new();
     public LocalizedText Description { get; set; } = new();
-    public string Placeholder { get; set; } = "";
+    public LocalizedText Placeholder { get; set; } = new();
     public LayerFieldKind Kind { get; set; }
     public string? DefaultValue { get; set; }
     public bool Required { get; set; }

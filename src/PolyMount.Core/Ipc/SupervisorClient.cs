@@ -41,16 +41,6 @@ public sealed class SupervisorClient : ControlClient
     public ControlResponse DeleteCredential(string id)
         => Send(new ControlRequest { Cmd = ControlCommands.DeleteCredential, CredentialId = id });
 
-    /// <summary>Forgets the account remembered for one origin — the automatic path's entry.</summary>
-    public ControlResponse ForgetOrigin(string origin)
-        => Send(new ControlRequest { Cmd = ControlCommands.ForgetOrigin, CredentialId = origin });
-
-    /// <summary>Checks an account against the named instance's source and, if the server accepts
-    /// it, keeps it and restarts the instance. The supervisor answers this rather than the
-    /// instance, because the instance may not be running — that is usually why it is being asked.</summary>
-    public ControlResponse Authenticate(string name, string username, string password)
-        => Send(new ControlRequest { Cmd = ControlCommands.Authenticate, Name = name, Username = username, Password = password });
-
     /// <summary>Reloads the configuration from disk and applies it.</summary>
     public ControlResponse Reload()
         => Send(new ControlRequest { Cmd = ControlCommands.Reload });

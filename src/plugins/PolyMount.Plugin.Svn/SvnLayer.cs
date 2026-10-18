@@ -76,9 +76,10 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         return pending.Count > 0 ? pending : null;
     }
 
-    internal SvnLayer(ISvnBackend svn, string pinPath, SvnPrefetchOptions? prefetch = null)
+    internal SvnLayer(ISvnBackend svn, string pinPath, SvnPrefetchOptions? prefetch = null, string? account = null)
     {
         _svn = svn;
+        Account = string.IsNullOrWhiteSpace(account) ? null : account;
         _pinPath = pinPath;
         _prefetchOptions = prefetch ?? new SvnPrefetchOptions();
         // The source serves a fixed number of requests at once and the classes share it by
@@ -103,15 +104,19 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     /// uses — see <see cref="SvnCredentials"/> — or none at all, for a repository that does not ask.
     /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
-        string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null)
+        string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null,
+        string? credentialId = null)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var repository) ||
             (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps))
             throw new ArgumentException("SVN layers read http(s) repositories; '" + url + "' is not one.", nameof(url));
         var source = new SourceConfig { Type = "svn", Url = url, TrustServerCertFailures = trustFailures,
-            Username = username, Password = password };
+            Username = username, Password = password, CredentialId = credentialId ?? "" };
+        // Resolved once, here: the HTTP client holds the pair for the life of the process, so no
+        // request touches the credential store.
         var credential = new SvnCredentialedSource(source).Resolve();
-        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Secret), pinPath, prefetch);
+        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Secret), pinPath, prefetch,
+            credential?.Username);
     }
 
     public void Dispose()
@@ -148,6 +153,11 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         Listing(rel, speculative: true, diagnostics);
         lock (_gate) return _memo.ContainsKey(key);
     }
+
+    /// <summary>The account this layer presents, as it was resolved when the source was built;
+    /// null means requests go anonymously. It is the username only — the secret stays in the
+    /// transport and never appears in a status or a tool reply.</summary>
+    public string? Account { get; }
 
     public string Name => "svn";
     public bool Writable => false;

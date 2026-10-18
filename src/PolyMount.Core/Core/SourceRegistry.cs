@@ -8,7 +8,6 @@ public static class SourceRegistry
         new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, Action<SourceConfig>> Validators = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, LayerDescriptor> Descriptions = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly Dictionary<string, ICredentialHandler> Credentials = new(StringComparer.OrdinalIgnoreCase);
 
     static SourceRegistry()
     {
@@ -22,20 +21,14 @@ public static class SourceRegistry
 
     public static void Register(string type, Func<SourceConfig, string, ILayer> factory, Action<SourceConfig>? validate = null)
         => Register(type, factory, validate, null);
-    public static void Register(string type, Func<SourceConfig, string, ILayer> factory, Action<SourceConfig>? validate, LayerDescriptor? descriptor,
-        ICredentialHandler? credentials = null)
+    public static void Register(string type, Func<SourceConfig, string, ILayer> factory, Action<SourceConfig>? validate, LayerDescriptor? descriptor)
     {
         Factories[type] = factory;
         if (validate != null) Validators[type] = validate;
         else Validators.Remove(type);
         if (descriptor != null) { descriptor.Type = type; Descriptions[type] = descriptor; }
         else Descriptions.Remove(type);
-        if (credentials != null) Credentials[type] = credentials;
-        else Credentials.Remove(type);
     }
-
-    /// <summary>The handler that can sign this source type in, or null when it never needs to.</summary>
-    public static ICredentialHandler? CredentialHandler(string type) => Credentials.GetValueOrDefault(type);
     public static void Validate(string type, SourceConfig config)
     {
         if (Validators.TryGetValue(type, out var validate)) validate(config);
@@ -44,7 +37,7 @@ public static class SourceRegistry
     public static bool Contains(string type) => Factories.ContainsKey(type);
 
     public static IEnumerable<string> Types => Factories.Keys;
-    internal static void Unregister(string type) { Factories.Remove(type); Validators.Remove(type); Descriptions.Remove(type); Credentials.Remove(type); }
+    internal static void Unregister(string type) { Factories.Remove(type); Validators.Remove(type); Descriptions.Remove(type); }
     public static LayerDescriptor? Describe(string type) => Descriptions.GetValueOrDefault(type);
 
     public static ILayer Create(SourceConfig config, string stateDir, string? type = null)

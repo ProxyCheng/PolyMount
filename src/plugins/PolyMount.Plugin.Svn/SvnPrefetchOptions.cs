@@ -5,7 +5,7 @@ namespace PolyMount.Plugins.Svn;
 /// <summary>
 /// Speculative directory-listing read-ahead. Every directory enumeration is one backend
 /// round trip and a walk enumerates its directories one after another, so a cold walk of n
-/// directories costs n round trips end to end; measured against a production repository one
+/// directories costs n round trips end to end; measured against the demo repository one
 /// listing is about 360 ms, of which the layer itself accounts for a few. Fetching the next
 /// level while the caller is still consuming the current one overlaps those round trips
 /// instead of removing them.
@@ -27,7 +27,7 @@ public sealed class SvnPrefetchOptions
     /// <para>
     /// A walk is a burst of speculative requests against a source the reader is also using.
     /// Sharing one budget between them is what puts a speculative request in front of a demanded
-    /// one — measured on a real repository, a listing costs about 360 ms of which the layer itself is a few,
+    /// one — measured on demo, a listing costs about 360 ms of which the layer itself is a few,
     /// so a speculative request holding a connection or a process is 360 ms the reader's request
     /// is not being served. The reader's class keeps the rest of the source, so this bounds
     /// read-ahead's appetite without ever being the reason a reader waits.

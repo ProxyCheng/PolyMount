@@ -6,9 +6,9 @@ namespace PolyMount.Plugins.Svn;
 /// <summary>
 /// How the SVN source finds credentials and what it accepts as one.
 ///
-/// The order is the one Core fixes for every source: what the configuration says, then what the
-/// user entered in this product, then whatever the Subversion client cached for this Windows user,
-/// then anonymous. Only the third step is SVN's own; the rest comes from
+/// The order is the one Core fixes for every source: the credential the layer names, then the
+/// account written into the configuration, then whatever the Subversion client cached for this
+/// Windows user, then anonymous. Only the third step is SVN's own; the rest comes from
 /// <see cref="CredentialedSource"/>.
 /// </summary>
 internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedSource(source.Url, source)
@@ -18,19 +18,6 @@ internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedS
         FromCache(new Uri(Source.Url, UriKind.Absolute)) is { } cached
             ? new Credential(cached.Username, cached.Password)
             : null;
-
-    /// <summary>One request proves the account: the youngest revision, which is what a mount asks
-    /// for first anyway.</summary>
-    protected override void Verify(Credential credential)
-    {
-        using var client = new SvnHttpClient(Source.Url, Source.TrustServerCertFailures, credential.Username, credential.Secret);
-        try { client.GetHeadRevision(); }
-        catch (AuthRequiredException) { throw; }
-        catch (SvnTransportException ex)
-        {
-            throw new InvalidOperationException("could not reach " + Origin + ": " + ex.Message, ex);
-        }
-    }
 
     /// <summary>
     /// The cached credential for a repository, matched by host and port. Several realms can share
@@ -150,15 +137,3 @@ internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedS
 
 /// <summary>A credential read from the Subversion client's own store.</summary>
 internal sealed record CachedCredential(string Username, string Password);
-
-/// <summary>What the product calls to sign an SVN repository in: check the account, then keep it.</summary>
-internal sealed class SvnCredentialHandler : ICredentialHandler
-{
-    public string OriginOf(SourceConfig source) =>
-        Uri.TryCreate(source.Url, UriKind.Absolute, out var uri)
-            ? CredentialStore.OriginOf(uri)
-            : source.Url;
-
-    public void SignIn(SourceConfig source, string username, string password) =>
-        new SvnCredentialedSource(source).SignIn(username, password);
-}

@@ -37,6 +37,11 @@ internal static class ContinuousScrolling
     {
         view.SetVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel);
         view.SetHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel);
+        // Every list and table in the tray is built here. The native focus rectangle draws a
+        // dotted frame around the current row on top of the selection background, which already
+        // says which row is current; the frame is only noise, so these views never take focus.
+        // Clicking still selects and activates rows.
+        view.SetFocusPolicy(Qt.FocusPolicy.NoFocus);
         return view;
     }
 }

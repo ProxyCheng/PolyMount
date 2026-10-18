@@ -48,12 +48,47 @@ public sealed record ControlOperation(
 /// </summary>
 public static class ControlOperations
 {
-    /// <summary>Every operation, read-only and otherwise, in the order a reader should meet them.</summary>
-    public static IReadOnlyList<ControlOperation> All { get; } = Build();
+    private static readonly object Gate = new();
+    private static readonly IReadOnlyList<ControlOperation> BuiltIn = Build();
+    private static readonly Dictionary<string, ControlOperation> Contributions = new(StringComparer.Ordinal);
+
+    /// <summary>Every operation, read-only and otherwise, in the order a reader should meet them:
+    /// the ones Core ships, then the ones plugins added. A front-end built on this table offers
+    /// the plugin operations exactly like the built-in ones, without knowing where they came
+    /// from.</summary>
+    public static IReadOnlyList<ControlOperation> All
+    {
+        get
+        {
+            lock (Gate)
+                return Contributions.Count == 0 ? BuiltIn : BuiltIn.Concat(Contributions.Values).ToArray();
+        }
+    }
 
     /// <summary>The operation with this external name, or null when there is none.</summary>
-    public static ControlOperation? Find(string name) =>
-        All.FirstOrDefault(operation => string.Equals(operation.Name, name, StringComparison.Ordinal));
+    public static ControlOperation? Find(string name)
+    {
+        lock (Gate)
+            if (Contributions.TryGetValue(name, out var contribution)) return contribution;
+        return BuiltIn.FirstOrDefault(operation => string.Equals(operation.Name, name, StringComparison.Ordinal));
+    }
+
+    /// <summary>Adds an operation a plugin contributes. A name Core already offers is refused:
+    /// the shipped meaning of a name is the one callers already rely on.</summary>
+    public static void Register(ControlOperation operation)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (string.IsNullOrWhiteSpace(operation.Name))
+            throw new ArgumentException("A control operation needs a name", nameof(operation));
+        if (BuiltIn.Any(existing => string.Equals(existing.Name, operation.Name, StringComparison.Ordinal)))
+            throw new ArgumentException($"'{operation.Name}' is an operation PolyMount already offers", nameof(operation));
+        lock (Gate) Contributions[operation.Name] = operation;
+    }
+
+    /// <summary>The names plugins added, for a host that has to take them away again.</summary>
+    internal static IReadOnlyList<string> Added { get { lock (Gate) return Contributions.Keys.ToArray(); } }
+
+    internal static void Unregister(string name) { lock (Gate) Contributions.Remove(name); }
 
     /// <summary>Why a call failed, in terms the caller can act on.
     ///

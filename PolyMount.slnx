@@ -7,9 +7,11 @@
     <Project Path="src/PolyMount.Mcp/PolyMount.Mcp.csproj" />
   </Folder>
   <Folder Name="/src/plugins/">
+    <Project Path="src/plugins/PolyMount.Plugin.GameEngine/PolyMount.Plugin.GameEngine.csproj" />
     <Project Path="src/plugins/PolyMount.Plugin.Svn/PolyMount.Plugin.Svn.csproj" />
   </Folder>
   <Folder Name="/tests/plugins/">
+    <Project Path="tests/plugins/PolyMount.Plugin.GameEngine.Tests/PolyMount.Plugin.GameEngine.Tests.csproj" />
     <Project Path="tests/plugins/PolyMount.Plugin.Svn.Tests/PolyMount.Plugin.Svn.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/">

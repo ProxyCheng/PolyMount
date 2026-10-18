@@ -482,10 +482,13 @@ internal static class Program
         bool Runs(string area) => areas == null || areas.Contains(area);
         TrayActivation.Smoke();
         var dashboard = new Dashboard();
-        var editor = dashboard.OpenEditor("demo")!;
+        // The editor is driven against a live instance when there is one, so its checks see the
+        // layers a reader would: an instance name nothing answers under leaves the stack empty,
+        // and every check that needs a row would pass by not running.
         string instance = LiveInstance() ?? "demo";
+        var editor = dashboard.OpenEditor(instance)!;
         var stats = dashboard.OpenPerformance(instance);
-        LayerVisualizer.Open("D:\\demo");
+        LayerVisualizer.Open("D:\\demo\\20260924");
         dashboard.ShowWindow();
         var timer = new QTimer();
         int ticks = 0;
@@ -566,6 +569,8 @@ internal static class Program
                 {
                     try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }
+                    try { editor.SmokePresetPicker(capture == null ? null : Path.Combine(capture, "preset-picker.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
                     editor.SmokeInteractions();
                 }
                 if (Runs("dashboard")) dashboard.SmokeSilentUpdate();
@@ -589,6 +594,8 @@ internal static class Program
                 {
                     try { editor.SmokeLayerPicker(Path.Combine(capture, "layer-picker-alternate.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }
+                    try { editor.SmokePresetPicker(Path.Combine(capture, "preset-picker-alternate.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
                 }
                 dashboard.Capture(Path.Combine(capture, "dashboard-alternate.png"));
                 editor.Capture(Path.Combine(capture, "layers-alternate.png"));
@@ -602,6 +609,8 @@ internal static class Program
                 // resource bundle built before the catalog was, for instance - fails here rather
                 // than quietly painting the key itself into a chart title.
                 foreach (string key in new[] { "dashboard.title", "cache.clear", "confirm.cache", "cache.done",
+                    "preset.title", "preset.subtitle", "preset.apply", "preset.layers",
+                    "preset.preview", "preset.preview.summary", "preset.preview.same",
                     "stats.process", "stats.process.cpu", "stats.process.memory", "stats.process.threads",
                     "stats.process.handles", "stats.process.figures", "stats.unit.cores",
                     "stats.process.moved", "stats.process.moved.read", "stats.process.moved.write",

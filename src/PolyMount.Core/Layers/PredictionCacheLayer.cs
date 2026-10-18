@@ -122,6 +122,11 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
 
     public void Attach(VirtualFileSystem lower) => _modelImpl = CreateModel(lower, _modelPath);
 
+    /// <summary>The strategy this layer hosts, for a command that belongs to it: a plugin's own
+    /// layer-scoped operation can read the state of the model it registered without Core having
+    /// to know the type. Read it, do not keep it — the layer owns its lifetime.</summary>
+    public IPredictionModel? Strategy => _modelImpl;
+
     /// <summary>The strategy this layer hosts. The cache, eviction, quota, feedback and
     /// invalidation around it are the layer's; only the learning/issuing differs.</summary>
     protected abstract IPredictionModel CreateModel(VirtualFileSystem lower, string modelPath);
@@ -491,20 +496,30 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
 public sealed class PredictionCacheLayer : PredictionLayerBase
 {
     private static readonly string[] DefaultStrategies = { "successor", "stride", "spatial" };
+    /// <summary>Names this layer answers itself. A plugin strategy with one of these names is
+    /// not consulted, because the built-in meaning is the one the configuration already had.</summary>
+    private static readonly HashSet<string> BuiltInStrategies = new(StringComparer.OrdinalIgnoreCase)
+        { "successor", "stride", "sibling", "spatial", "co-read", "burst" };
+    private static readonly IReadOnlyDictionary<string, System.Text.Json.JsonElement> NoParameters =
+        new Dictionary<string, System.Text.Json.JsonElement>();
     private readonly ReadPredictionOptions _options;
     private readonly CoReadOptions? _coRead;
     private readonly IReadOnlyList<string> _strategies;
+    private readonly PredictionTuning _tuning;
+    private readonly LayerConfig? _config;
 
     public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options, string model)
         : this(capacity, generation, options, null, null, model) { }
 
     public PredictionCacheLayer(long capacity, Func<string> generation, ReadPredictionOptions options,
-        CoReadOptions? coRead, IReadOnlyList<string>? strategies, string model)
+        CoReadOptions? coRead, IReadOnlyList<string>? strategies, string model, LayerConfig? config = null)
         : base(capacity, generation, Tuning(options, coRead, strategies), model)
     {
         _options = options;
         _coRead = coRead;
         _strategies = strategies is { Count: > 0 } ? strategies : DefaultStrategies;
+        _tuning = Tuning(options, coRead, _strategies);
+        _config = config;
     }
 
     protected override string TypeName => "prediction-cache";
@@ -531,6 +546,20 @@ public sealed class PredictionCacheLayer : PredictionLayerBase
                 Path.Combine(directory, "co-read.json"),
                 (path, stream, origin, group) => Preload(lower, path, stream, origin, group)));
         }
+        // Anything else is a strategy a plugin registered. It is built with the same held cache
+        // and the same feedback surface as the built-ins, and keeps its learned state beside
+        // theirs, under its own name.
+        string stateDirectory = Path.GetDirectoryName(modelPath) ?? ".";
+        foreach (var name in _strategies)
+        {
+            if (BuiltInStrategies.Contains(name)) continue;
+            var context = new PredictionStrategyContext(lower,
+                Path.Combine(stateDirectory, FileName(name)),
+                (path, stream, origin, group) => Preload(lower, path, stream, origin, group),
+                _tuning, _config?.Parameters ?? NoParameters);
+            if (PredictionStrategyRegistry.TryCreate(name, context, out var strategy) && strategy != null)
+                models.Add(strategy);
+        }
         return models.Count switch
         {
             0 => new CompositePrediction(Array.Empty<IPredictionModel>()),
@@ -541,6 +570,11 @@ public sealed class PredictionCacheLayer : PredictionLayerBase
 
     private bool Has(string name) =>
         _strategies.Any(s => string.Equals(s, name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A strategy name as a file name: a plugin names its own strategies, and a name
+    /// that could walk a directory must not become the place its state is written.</summary>
+    private static string FileName(string strategy) =>
+        string.Concat(strategy.Select(c => Path.GetInvalidFileNameChars().Contains(c) ? '_' : c)) + ".json";
 
     private static PredictionTuning Tuning(ReadPredictionOptions options, CoReadOptions? coRead,
         IReadOnlyList<string>? strategies)

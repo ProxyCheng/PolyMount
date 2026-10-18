@@ -1,13 +1,57 @@
-﻿using PolyMount.Core;
+﻿using System.Text.Json;
+using System.Text.Json.Nodes;
+using PolyMount.Core;
+using PolyMount.Core.Ipc;
 
 namespace PolyMount.Plugins.Svn;
 
 /// <summary>Standalone sample plugin. Only the Core contracts are required.</summary>
 public sealed class SvnLayerPlugin : ILayerPlugin
 {
-    public void Register()
+    /// <summary>The commands this plugin answers on an instance's own pipe. Each operation below
+    /// is the front-end side of one of them; both live here so the pair cannot drift.</summary>
+    internal const string SourceCommand = "svn.source";
+    internal const string LanesCommand = "svn.lanes";
+
+    private static readonly JsonSerializerOptions Json = new()
     {
-        LayerPresetRegistry.Register(new()
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
+    public void Register(IPluginContext context)
+    {
+        // The instance side: what the SVN layers of this instance know. The secret never leaves
+        // the transport — the account is a username, or null for anonymous.
+        context.RegisterCommand(SourceCommand, command =>
+            command.Response.Result = JsonSerializer.Serialize(Describe(command.Instance, command.Request.Layer), Json));
+        context.RegisterCommand(LanesCommand, command =>
+            command.Response.Result = JsonSerializer.Serialize(LaneReport(command.Instance, command.Request.Layer), Json));
+
+        // The front-end side: operations in the control catalog, so a surface built on it (the
+        // MCP server among them) offers them like any other tool.
+        context.RegisterControlOperation(new ControlOperation(
+            Name: "get_svn_source",
+            Title: "Get SVN source",
+            Description: "What an instance's SVN layers are doing: the revision they serve, the account they present (username only, null for anonymous), read-ahead counters and settings, cached metadata, and the read lanes the reader and read-ahead share.",
+            Effect: ControlEffect.Read,
+            Idempotent: true,
+            InputSchema: """{"type":"object","properties":{"instance":{"type":"string","description":"Instance name, as list_instances reports it."},"layer":{"type":"string","description":"SVN layer id, as get_instance lists it under providers[].name. Omit for every SVN layer."}},"required":["instance"]}""",
+            Invoke: (link, arguments) => link.Instance(arguments.String("instance"),
+                new ControlRequest { Cmd = SourceCommand, Layer = arguments.OptionalString("layer") }),
+            Present: response => JsonNode.Parse(string.IsNullOrWhiteSpace(response.Result) ? "{}" : response.Result)));
+
+        context.RegisterControlOperation(new ControlOperation(
+            Name: "list_svn_lanes",
+            Title: "List SVN read lanes",
+            Description: "The read lanes an instance's SVN layers share out their source with: requests, in-flight and queued counts, and mean wait per priority class. The reader's class keeping its wait flat while read-ahead's rises is what 'read-ahead is the one yielding' reads as.",
+            Effect: ControlEffect.Read,
+            Idempotent: true,
+            InputSchema: """{"type":"object","properties":{"instance":{"type":"string","description":"Instance name, as list_instances reports it."},"layer":{"type":"string","description":"SVN layer id. Omit for every SVN layer."}},"required":["instance"]}""",
+            Invoke: (link, arguments) => link.Instance(arguments.String("instance"),
+                new ControlRequest { Cmd = LanesCommand, Layer = arguments.OptionalString("layer") }),
+            Present: response => JsonNode.Parse(string.IsNullOrWhiteSpace(response.Result) ? "{}" : response.Result)));
+
+        context.RegisterPreset(new()
         {
             Id = "svn-workspace",
             Titles = SvnTexts.All("preset.svn-workspace.title"),
@@ -32,9 +76,9 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                 new() { Id = "svn", Type = "svn", Source = new() { Type = "svn" } }
             }
         });
-        SourceRegistry.Register("svn", (config, state) =>
+        context.RegisterSource("svn", (config, state) =>
             SvnLayer.Create(config.Url, config.TrustServerCertFailures, Path.Combine(state, "pin.txt"), config.Username,
-                config.Password, SvnPrefetchOptions.From(config.Parameters)),
+                config.Password, SvnPrefetchOptions.From(config.Parameters), config.CredentialId),
             config =>
             {
                 if (!Uri.TryCreate(config.Url, UriKind.Absolute, out var repository) || config.PinnedRevision < 0)
@@ -57,6 +101,7 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
                     new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
                         Title = SvnTexts.Get("svn.field.credential"),
+                        Placeholder = SvnTexts.Get("svn.field.credential.placeholder"),
                         Description = SvnTexts.Get("svn.field.credential.description") },
                     // No username or password field: the transport reads the credentials the
                     // Subversion client already cached for this Windows user, which is the only
@@ -88,6 +133,59 @@ public sealed class SvnLayerPlugin : ILayerPlugin
                     Field = "Source.PinnedRevision",
                     Title = SvnTexts.Get("svn.action.refreshHead"),
                     Confirmation = SvnTexts.Get("svn.action.refreshHead.confirmation") } }
-            }, new SvnCredentialHandler());
+            });
     }
+
+    /// <summary>The instance's SVN layers, keyed by the configuration id the status reports.
+    /// <paramref name="only"/> narrows the answer to one layer, or to none when that id is not
+    /// an SVN layer of this instance.</summary>
+    private static IEnumerable<(string Id, SvnLayer Layer)> SvnLayers(MountInstance instance, string? only)
+    {
+        foreach (var pair in instance.Providers)
+        {
+            if (pair.Value is not SvnLayer layer) continue;
+            if (!string.IsNullOrEmpty(only) && !string.Equals(pair.Key, only, StringComparison.OrdinalIgnoreCase)) continue;
+            yield return (pair.Key, layer);
+        }
+    }
+
+    private static object Describe(MountInstance instance, string? only)
+    {
+        var configs = instance.Profile.GetLayers().ToDictionary(layer => layer.Id, StringComparer.OrdinalIgnoreCase);
+        var layers = new List<object>();
+        foreach (var (id, layer) in SvnLayers(instance, only))
+        {
+            configs.TryGetValue(id, out var config);
+            SvnPrefetchOptions? prefetch = null;
+            try { prefetch = config == null ? null : SvnPrefetchOptions.From(config.Source.Parameters); }
+            catch (ArgumentException) { /* the mount validated it; report what is live, not what is not */ }
+            layers.Add(new
+            {
+                layer = id,
+                url = config?.Source.Url,
+                revision = layer.Revision,
+                account = layer.Account,
+                readAhead = new
+                {
+                    listings = layer.PrefetchedListings,
+                    hits = layer.PrefetchHits,
+                    stale = layer.PrefetchStale,
+                    failures = layer.PrefetchFailures,
+                    concurrency = prefetch?.Concurrency,
+                    queueDepth = prefetch?.QueueDepth,
+                    children = prefetch?.Children,
+                    speculative = prefetch?.SpeculativeConcurrency
+                },
+                metadata = new { directories = layer.CachedDirectories, estimatedBytes = layer.EstimatedMetadataBytes },
+                lanes = layer.Lanes.Snapshot()
+            });
+        }
+        return new { instance = instance.Profile.Name, layers };
+    }
+
+    private static object LaneReport(MountInstance instance, string? only) => new
+    {
+        instance = instance.Profile.Name,
+        layers = SvnLayers(instance, only).Select(entry => new { layer = entry.Id, lanes = entry.Layer.Lanes.Snapshot() }).ToArray()
+    };
 }

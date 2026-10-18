@@ -30,25 +30,33 @@ for the Explorer extension and the installer, Visual Studio C++ build tools and 
   under `scripts\` mount real WinFsp drives with a `dir` source and their own configuration; they
   are what CI runs.
 
-## Work on a branch, merge into master
+## Work on a branch (or a worktree), rebase onto master
 
 This tree is shared: more than one person or agent may have it open at the same time, and a
 change committed straight onto `master` lands under whoever else is building from it. Keep
-`master` as the integration point and do the work on a branch:
+`master` as the integration point and do the work on a branch. When another session is working in
+the same checkout, put the branch in a worktree of its own:
 
 ```powershell
-git switch -c <scope>/<short-name> origin/master
-# ... work, commit ...
+git worktree add ..\PolyMount-<name> -b <scope>/<short-name> origin/master
+# ... work and commit in that directory ...
+git fetch origin
+git rebase origin/master
 dotnet build .\PolyMount.slnx
 dotnet test  .\PolyMount.slnx
 git switch master
-git merge --no-ff <scope>/<short-name>
+git merge --ff-only <scope>/<short-name>
+git worktree remove ..\PolyMount-<name>
 git branch -d <scope>/<short-name>
 ```
 
-Rebase or merge the current `origin/master` into the branch before merging it back, and do not
-force-push `master` to make a branch fit. A branch that is still being written never enters
-`master`, so another session can keep building and committing there while it is in progress.
+**Rebase, do not merge.** `master` stays one straight line, which is what lets the history be
+read and bisected. `git merge --ff-only` is the only merge that belongs on `master`; never
+force-push `master` to make a branch fit.
+
+A worktree is a place to work, not a place to leave behind. Once the branch is merged, remove the
+worktree and delete the branch — an abandoned worktree keeps a checkout, an index and a branch
+name alive, and the next session finds it and has to guess whether it is still wanted.
 
 ## Commits
 

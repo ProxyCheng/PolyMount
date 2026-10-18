@@ -332,7 +332,7 @@ if (args.Contains("--lock-cost"))
 }
 if (args.Contains("--warm-probe"))
 {
-    WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "TX4Package"),
+    WarmPathProbe.Run(Option("--config", ""), Option("--mount-name", "Package"),
         Option("--path", "Repository/11_3606.local/resource.repository"));
     return 0;
 }

@@ -52,7 +52,7 @@ restarting, crashing, or being reconfigured cannot take another with it.
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None. The installer ships a self-contained .NET runtime and Qt. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed — you sign in once from the dashboard, and the credential is kept for the service account |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed — add a credential in the tray's credential manager, choose it on the layer, and it is kept for the service account |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension), Inno Setup 6 |
 
 ## Install

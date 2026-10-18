@@ -20,7 +20,8 @@ internal static class BuiltInLayerDescriptors
             // A read-through cache above an overlay is not the write target: the overlay is,
             // and a cache that accepted writes would keep them from ever reaching it.
             new LayerFieldDescriptor { Path = "Parameters.Writable", Kind = LayerFieldKind.Boolean,
-                DefaultValue = "true", Title = LayerTexts.Get("directory.writable") }
+                DefaultValue = "true", Title = LayerTexts.Get("cache.writable"),
+                Description = LayerTexts.Get("cache.writable.description") }
         } : Array.Empty<LayerFieldDescriptor>()).ToList(),
         Actions = cache ? new() : new() { new() { Command = ControlCommands.ClearLocalChanges,
             Title = LayerTexts.Get("overlay.discard"),

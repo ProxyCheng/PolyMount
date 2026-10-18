@@ -1460,7 +1460,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var started = DateTime.UtcNow.AddSeconds(-3);
         var ended = DateTime.UtcNow;
         string work = Path.Combine(directory, "recording-fixture");
-        string logs = Path.Combine(work, "logs", "TX4Package");
+        string logs = Path.Combine(work, "logs", "Package");
         Directory.CreateDirectory(logs);
         // Two seconds of a log in the same format the service writes: one traced root and one
         // probe the sampling rule would have dropped, marked by its negative id.
@@ -1479,7 +1479,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
         var snapshot = new StatsSnapshot
         {
-            Scope = "TX4Package",
+            Scope = "Package",
             Kind = "recording",
             CapturedUtc = ended,
             WindowSeconds = 3,
@@ -1491,7 +1491,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             {
                 SessionId = "fixture", StartedUtc = started.ToString("O"), EndedUtc = ended.ToString("O"),
                 StoppedReason = "saved", Seconds = 3, SampleTicks = 2, SampleRows = 2,
-                Layers = new List<LayerTotalRecord> { new("TX4Package", "svn", "SVN", "#2563eb", false, 2, 0, 0, 6, 12, 0, 0) }
+                Layers = new List<LayerTotalRecord> { new("Package", "svn", "SVN", "#2563eb", false, 2, 0, 0, 6, 12, 0, 0) }
             }
         };
         var outcome = StatsExport.Write(directory, snapshot);
@@ -1509,7 +1509,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (root.GetProperty("response").GetProperty("samples").GetInt32() != 1)
             throw new InvalidOperationException("A recording bundle does not report its own polling cost");
         // The log was moved in rather than copied, so the fixture no longer has it.
-        string moved = Path.Combine(outcome.Directory, "logs", "TX4Package", "requests-000.log");
+        string moved = Path.Combine(outcome.Directory, "logs", "Package", "requests-000.log");
         if (!File.Exists(moved) || File.Exists(Path.Combine(logs, "requests-000.log")))
             throw new InvalidOperationException("A recording's log copy was not moved into the bundle");
         if (File.ReadAllLines(moved).Length != lines.Count)
@@ -1534,7 +1534,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
     private static string SampleLine(DateTime at, int index) =>
         string.Create(System.Globalization.CultureInfo.InvariantCulture,
-            $"{at:O},TX4Package,svn,{index + 1},0,0,0,0,0,0,0,1.5,12");
+            $"{at:O},Package,svn,{index + 1},0,0,0,0,0,0,0,1.5,12");
 
     private void TogglePause()
     {

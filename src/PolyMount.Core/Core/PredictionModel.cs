@@ -74,6 +74,10 @@ public sealed class CompositePrediction : IPredictionModel
 
     public CompositePrediction(IReadOnlyList<IPredictionModel> models) => _models = models;
 
+    /// <summary>The strategies behind this one, for a command that belongs to exactly one of
+    /// them.</summary>
+    public IReadOnlyList<IPredictionModel> Models => _models;
+
     public IDisposable? Observe(string path, long streamId, bool listing)
     {
         List<IDisposable>? scopes = null;

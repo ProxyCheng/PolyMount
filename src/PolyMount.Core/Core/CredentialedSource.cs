@@ -1,36 +1,22 @@
 namespace PolyMount.Core;
 
 /// <summary>A source refused to serve because the account was missing or not accepted. Thrown in
-/// the plugin, understood by the host, and turned into the prompt the reader sees.</summary>
+/// the plugin, understood by the host, and shown to the reader as the instance's error.</summary>
 public sealed class AuthRequiredException : Exception
 {
     public AuthRequiredException(string message, Exception? inner = null) : base(message, inner) { }
 }
 
-/// <summary>What a source type has to supply before the product can ask a user to sign in: the
-/// origin the credential belongs to, and a way to check that the account works before it is
-/// stored. The storage, the order in which credentials are looked for, and the prompt all live in
-/// Core, so a Git or SSH plugin later only writes these two methods.</summary>
-public interface ICredentialHandler
-{
-    /// <summary>The origin a sign-in is for — also the key the credential is stored under.</summary>
-    string OriginOf(SourceConfig source);
-
-    /// <summary>Checks the account against the server and stores it. Throws with a message worth
-    /// showing when the server refuses it; nothing is stored in that case.</summary>
-    void SignIn(SourceConfig source, string username, string password);
-}
-
 /// <summary>
-/// How a source that needs credentials finds them, and what happens after a user signs in.
+/// How a source that needs credentials finds them.
 ///
-/// The order is the same for every protocol and is decided here once: what the configuration says
-/// (only reachable by editing the file now), then what the user entered in this product, then
-/// whatever the protocol's own client stored, then nothing — anonymous, which is enough for a
-/// source that serves without asking.
+/// One rule for every protocol: the credential the layer names, if it names one; otherwise the
+/// account written into the configuration; otherwise whatever the protocol's own client saved for
+/// this machine; otherwise nothing — anonymous, which is enough for a source that serves without
+/// asking.
 ///
-/// A plugin implements two things: where its protocol keeps cached credentials, if anywhere, and
-/// how to check an account against the server.
+/// The product used to remember accounts by address and guess which one a repository wanted. That
+/// guessing is gone: which account a layer uses is now a thing a reader can see and change.
 /// </summary>
 public abstract class CredentialedSource
 {
@@ -44,40 +30,25 @@ public abstract class CredentialedSource
 
     protected SourceConfig Source { get; }
 
-    /// <summary>The origin the credential is stored under, and what a prompt names.</summary>
+    /// <summary>The origin this source talks to, for messages.</summary>
     public string Origin { get; }
 
-    /// <summary>The credential to present, or null to try anonymously.</summary>
+    /// <summary>The credential to present, or null to try anonymously. Resolved once, when the
+    /// source is built: the result is held by the protocol client, so serving a request never
+    /// reads the credential store or the client's cache.</summary>
     public Credential? Resolve()
     {
-        // A named credential is a decision, not a hint: it is used as it stands, and one that has
+        // A chosen credential is a decision, not a hint: it is used as it stands, and one that has
         // been deleted is reported rather than quietly replaced by another account.
         if (!string.IsNullOrWhiteSpace(Source.CredentialId))
             return CredentialStore.FindById(Source.CredentialId)
-                ?? throw new InvalidOperationException("the credential this layer names no longer exists: " + Source.CredentialId);
-        // What the reader entered here wins over a hand-edited configuration pair: a sign-in is the
-        // newer statement, and a stale pair in the file would otherwise make signing in appear to
-        // do nothing at all.
-        if (CredentialStore.FindByOrigin(Origin) is { } entered) return entered;
-        if (!string.IsNullOrWhiteSpace(Source.Username)) return new Credential(Source.Username, Source.Password ?? string.Empty);
+                ?? throw new InvalidOperationException("the credential this layer names no longer exists; choose another in the layer's settings");
+        if (!string.IsNullOrWhiteSpace(Source.Username))
+            return new Credential(Source.Username, Source.Password ?? string.Empty);
         return ResolveProtocolCredential();
     }
 
     /// <summary>Where this protocol's own client keeps credentials, if it does. Null by default:
     /// a source whose credentials only ever come from the product has nothing to inherit.</summary>
     protected virtual Credential? ResolveProtocolCredential() => null;
-
-    /// <summary>Asks the server whether the account works. Throwing is how it says no.</summary>
-    protected abstract void Verify(Credential credential);
-
-    /// <summary>Checks the account and stores it. Whatever the implementation does with the
-    /// credential on the way is its business; what the product keeps is the origin and the pair.</summary>
-    public void SignIn(string username, string password)
-    {
-        if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("a user name is required");
-        var credential = new Credential(username, password);
-        Verify(credential);
-        if (!CredentialStore.Save(Origin, credential))
-            throw new InvalidOperationException("the server accepted the account, but it could not be saved for this service account");
-    }
 }

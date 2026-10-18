@@ -57,3 +57,13 @@ image.png
 # PolyMount runtime data (local stores, caches, logs, generated config)
 *.log
 config.json
+
+# Internal-only notes and diagnostics. They stay in the working tree on the
+# machines that need them, but they must never reach the public repository:
+# AGENTS.md and docs/ name internal hosts and handover details, and the two
+# scripts drive local diagnostics. The publication lineage excludes them.
+/AGENTS.md
+/docs/
+/.claude/
+/scripts/Test-WarmPackage.py
+/scripts/Test-EngineStartup.ps1

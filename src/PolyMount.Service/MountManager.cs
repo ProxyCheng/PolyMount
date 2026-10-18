@@ -224,7 +224,6 @@ public sealed class MountManager : IControlHost, IDisposable
                     break;
                 case ControlCommands.Credentials:
                     response.Credentials = CredentialStore.List();
-                    response.SavedOrigins = CredentialStore.Origins();
                     break;
                 case ControlCommands.SaveCredential:
                 {
@@ -234,7 +233,6 @@ public sealed class MountManager : IControlHost, IDisposable
                     else
                         CredentialStore.Update(payload.Id, payload.Name, payload.Username, payload.Password);
                     response.Credentials = CredentialStore.List();
-                    response.SavedOrigins = CredentialStore.Origins();
                     break;
                 }
                 case ControlCommands.DeleteCredential:
@@ -242,17 +240,6 @@ public sealed class MountManager : IControlHost, IDisposable
                         throw new InvalidOperationException("deleteCredential requires the credential it is about");
                     CredentialStore.RemoveCredential(request.CredentialId);
                     response.Credentials = CredentialStore.List();
-                    response.SavedOrigins = CredentialStore.Origins();
-                    break;
-                case ControlCommands.ForgetOrigin:
-                    if (string.IsNullOrWhiteSpace(request.CredentialId))
-                        throw new InvalidOperationException("forgetOrigin requires the origin it is about");
-                    CredentialStore.Remove(request.CredentialId);
-                    response.Credentials = CredentialStore.List();
-                    response.SavedOrigins = CredentialStore.Origins();
-                    break;
-                case ControlCommands.Authenticate:
-                    Authenticate(request);
                     break;
                 case ControlCommands.Shutdown:
                     // Respond first, then stop the workers and the host shortly after so the reply
@@ -321,31 +308,6 @@ public sealed class MountManager : IControlHost, IDisposable
             });
         }
         return rows;
-    }
-
-    /// <summary>Checks an account against the instance source and, if the server accepts it,
-    /// keeps it; then restarts the instance so the new credential is used. The check belongs to
-    /// the plugin, which is the only thing that knows how to speak to its server.</summary>
-    private void Authenticate(ControlRequest request)
-    {
-        if (string.IsNullOrWhiteSpace(request.Name))
-            throw new InvalidOperationException("authenticate needs the instance it is about");
-        if (string.IsNullOrWhiteSpace(request.Username))
-            throw new ArgumentException("a user name is required");
-        var profile = Config.Mounts.FirstOrDefault(m => string.Equals(m.Name, request.Name, StringComparison.OrdinalIgnoreCase))
-            ?? throw new ArgumentException("no such mount: " + request.Name);
-        // The layer's own type says what it is; its Source block is a defaulted object on every
-        // layer and would otherwise match on the storage layers too.
-        var layer = profile.GetLayers().FirstOrDefault(candidate =>
-            candidate.Enabled && SourceRegistry.Contains(candidate.Type) &&
-            SourceRegistry.CredentialHandler(candidate.Type) != null &&
-            !string.IsNullOrWhiteSpace(candidate.Source.Url))
-            ?? throw new InvalidOperationException("this instance has no source that can be signed in");
-        SourceRegistry.CredentialHandler(layer.Type)!.SignIn(layer.Source, request.Username, request.Password ?? string.Empty);
-        // The layer resolved its credentials when it was built, so a new one only takes effect
-        // in a new process.
-        _workers.Stop(profile.Name);
-        _workers.Start(profile.Name);
     }
 
     private string WorkerPipe(string? name) => _workers.States()

@@ -45,6 +45,12 @@ QPushButton:hover { background: @HoverSoft; border-color: @AccentBorder; }
 QPushButton:pressed { background: @PrimaryTint; }
 QPushButton:focus { border: 1px solid @Primary; }
 QPushButton:disabled { background: @DisabledBackground; color: @Disabled; border-color: @BorderSoft; }
+/* A credential field reads as an input that opens a chooser: same frame as a line edit, with its
+   text against the left edge. */
+QPushButton#credentialButton { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 8px 10px; font-weight: 400; text-align: left; color: @Text; }
+QPushButton#credentialButton:hover { background: @HoverSoft; border-color: @AccentBorder; }
+QPushButton#credentialButton:pressed { background: @PrimaryTint; }
+QPushButton#credentialButton:focus { border: 1px solid @Primary; }
 QPushButton#primary { background: @Primary; border-color: @Primary; color: @OnPrimary; }
 QPushButton#primary:hover { background: @PrimaryHover; }
 QPushButton#primary:pressed { background: @PrimaryPressed; }

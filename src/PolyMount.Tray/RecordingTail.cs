@@ -39,7 +39,7 @@ internal sealed class RecordingTail
 
     public string Directory { get; }
     /// <summary>The group this tail's copies belong to, which is one folder inside the bundle's
-    /// logs directory (<c>TX4Package</c>, <c>service</c>).</summary>
+    /// logs directory (<c>Package</c>, <c>service</c>).</summary>
     public string Group { get; init; } = "mount";
     /// <summary>What the local copies are named. A bundle groups its logs by the instance, and a
     /// reader's <c>requests*</c> habit should find a recording the same way.</summary>

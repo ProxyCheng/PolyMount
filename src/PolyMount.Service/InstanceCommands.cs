@@ -16,7 +16,7 @@ namespace PolyMount.Service;
 internal static class InstanceCommands
 {
     /// <summary>Whether this is a command one instance answers for itself.</summary>
-    public static bool Handles(string command) => ByPath(command) || command is
+    public static bool Handles(string command) => ByPath(command) || PluginCommands.Handles(command) || command is
         ControlCommands.SetPin or ControlCommands.RefreshHead or ControlCommands.ClearCache
         or ControlCommands.ClearLocalChanges or ControlCommands.RecordingStart
         or ControlCommands.RecordingStatus or ControlCommands.RecordingStop;
@@ -64,6 +64,7 @@ internal static class InstanceCommands
                 response.Recording = instance.StopRecording(request.Reason ?? "stopped");
                 break;
             default:
+                if (PluginCommands.TryApply(new PluginCommand(instance, rel, request, response))) break;
                 throw new InvalidOperationException($"{request.Cmd} is not a command an instance answers");
         }
     }

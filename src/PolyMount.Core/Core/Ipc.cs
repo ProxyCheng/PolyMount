@@ -128,13 +128,8 @@ public sealed class ControlRequest
     // Full local path to inspect, used by the "probe" and "layerAction" commands.
     public string? Path { get; set; }
 
-    // Used by "layerAction": which layer to mutate and what to do.
+    // Populated by "layerAction": which layer to mutate and what to do.
     public string? Layer { get; set; }
-
-    // Populated by "authenticate": the account to check against the source and, if it works, to
-    // keep. Only the request carries it; no reply ever echoes it back.
-    public string? Username { get; set; }
-    public string? Password { get; set; }
 
     // Populated by "saveCredential".
     public CredentialPayload? Credential { get; set; }
@@ -221,10 +216,14 @@ public sealed class ControlResponse
     // Populated by the "recording*" commands.
     public RecordingSessionInfo? Recording { get; set; }
 
-    // Populated by "credentials": the named accounts, and the ones remembered by origin. Neither
-    // carries a secret — the interface never sees one, so it can neither leak nor echo it.
+    // Populated by a command a plugin registered: the payload that plugin wants its caller to
+    // read, as JSON. Core does not look inside it; a front-end that offers the plugin's
+    // operations hands it back unchanged.
+    public string? Result { get; set; }
+
+    // Populated by "credentials": the accounts this product keeps. Never a secret — the
+    // interface does not see one, so it can neither leak nor echo it.
     public List<CredentialRecord> Credentials { get; set; } = new();
-    public List<OriginRecord> SavedOrigins { get; set; } = new();
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -296,17 +295,12 @@ public static class ControlCommands
     public const string RecordingStop = "recordingStop";
     public const string Shutdown = "shutdown";
 
-    /// <summary>The named accounts and the ones remembered by origin. Answered by the supervisor,
-    /// which is the process that owns the file and the only one that can decrypt it.</summary>
+    /// <summary>The one list of credentials this product keeps. Answered by the supervisor, which
+    /// is the process that owns the file and the only one that can decrypt it.</summary>
     public const string Credentials = "credentials";
     /// <summary>Adds or changes a named credential. A missing password keeps the stored one.</summary>
     public const string SaveCredential = "saveCredential";
     public const string DeleteCredential = "deleteCredential";
-    /// <summary>Forgets the account remembered for one origin (the automatic path).</summary>
-    public const string ForgetOrigin = "forgetOrigin";
-    /// <summary>Checks an account against an instance's source and stores it. Answered by the
-    /// supervisor, which holds the configuration and can restart the instance afterwards.</summary>
-    public const string Authenticate = "authenticate";
 }
 
 /// <summary>One recording on the service: whether it is running, and what it has counted.

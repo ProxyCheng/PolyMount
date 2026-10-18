@@ -22,6 +22,13 @@ public sealed class AppConfig
         DefaultIgnoreCondition = JsonIgnoreCondition.Never
     };
 
+    /// <summary>Reads a configuration without creating or repairing one. A front-end that only
+    /// needs to know which plugins are enabled — the MCP server, for one — must not write to the
+    /// service's file, and a path that does not exist is a configuration nobody wrote yet, not
+    /// one this process gets to invent.</summary>
+    public static AppConfig? Load(string path) =>
+        File.Exists(path) ? JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(path)) ?? Default() : null;
+
     public static AppConfig LoadOrCreate(string path)
     {
         if (File.Exists(path))
@@ -248,9 +255,9 @@ public sealed class SourceConfig
     // Used by the "dir" source: allow writing straight through to the backing directory.
     public bool Writable { get; set; } = false;
 
-    /// <summary>The named credential this source uses, or empty for the automatic path. A name
-    /// that no longer exists is an error rather than a reason to try another account: which
-    /// account a layer uses should never be a guess.</summary>
+    /// <summary>The named credential this source uses, or empty for none. A name that no longer
+    /// exists is an error rather than a reason to try another account: which account a layer uses
+    /// should never be a guess.</summary>
     public string CredentialId { get; set; } = "";
     public Dictionary<string, JsonElement> Parameters { get; set; } = new();
 }

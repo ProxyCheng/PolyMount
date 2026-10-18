@@ -17,9 +17,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private readonly QLineEdit _name, _mountPoint, _color, _layerName;
     private readonly QCheckBox _enabled, _layerEnabled;
     private readonly QPushButton _colorPreview;
-    private readonly QLabel _status, _layerTitle, _layerDescription, _id;
+    private readonly QLabel _status, _layerTitle, _layerDescription;
     private readonly QPushButton _save, _removeLayer, _clearCache;
-    private readonly QComboBox _presets;
     private readonly QTimer _timer;
     private readonly QLabel _overlayUsage, _cacheUsage;
     private readonly QProgressBar _cacheProgress;
@@ -31,7 +30,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private List<string> _sourceTypes = new();
     private List<LayerDescriptor> _layerDescriptors = new();
     private List<CredentialRecord> _credentials = new();
-    private readonly Dictionary<QComboBox, List<string>> _credentialIds = new();
+    // The id each credential button currently stands for; empty is "no credential".
+    private readonly Dictionary<QWidget, string> _credentialValues = new();
     private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
@@ -127,9 +127,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         layerButtons.AddWidget(_removeLayer);
         center.AddLayout(layerButtons);
         var presetRow = new QHBoxLayout();
-        _presets = ContinuousScrolling.Combo();
-        presetRow.AddWidget(_presets, 1);
-        presetRow.AddWidget(Button("preset", ApplyPreset, "layers"));
+        presetRow.AddWidget(Button("preset", ChoosePreset, "layers"));
         center.AddLayout(presetRow);
         center.AddWidget(Label("layer.required", "muted"));
         split.AddWidget(middle);
@@ -148,8 +146,6 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _layerDescription = Plain("", "muted");
         right.AddWidget(_layerDescription);
         var common = new QFormLayout();
-        _id = Plain("", "detailValue");
-        Row(common, "layer.id", _id);
         _layerName = Edit(common, "layer.name");
         _layerName.TextChanged += _ => UpdateLayerIdentity();
         _layerEnabled = new QCheckBox();
@@ -260,6 +256,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             if (_layer?.Id != expected)
                 throw new InvalidOperationException(
                     $"Selecting row {i} of the reordered stack shows '{_layer?.Id}', not '{expected}'");
+            // The row says what the layer is, not what it is called in the configuration file.
+            if (_layerList.Item(i).Text().Contains("· " + expected))
+                throw new InvalidOperationException($"Layer row {i} shows the configuration id '{expected}'");
         }
         _layerList.SetCurrentRow(0);
         if (_layer != null)
@@ -393,7 +392,6 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             _sourceTypes = response.SourceTypes;
             _layerDescriptors = response.LayerDescriptors;
             _presetDefinitions = response.Presets;
-            UpdatePresets();
             foreach (var mount in _config.Mounts) mount.Layers = mount.GetLayers();
             _current = -1;
             _layer = null;
@@ -511,7 +509,6 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _loading = true;
         _layerTitle.SetText(_layer == null ? T("layer.select") : Descriptor(_layer.Type).Title.Resolve(I18n.Language));
         _layerDescription.SetText(_layer == null ? "" : Descriptor(_layer.Type).Description.Resolve(I18n.Language));
-        _id.SetText(_layer?.Id ?? "—");
         _layerName.SetText(_layer?.Name ?? "");
         _layerEnabled.SetChecked(_layer?.Enabled == true);
         _color.SetText(_layer == null ? "" : LayerColor(_layer));
@@ -544,45 +541,44 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         LayerFieldKind.Boolean => ((QCheckBox)editor).IsChecked().ToString(),
         LayerFieldKind.Choice => ((QComboBox)editor).CurrentIndex is var index && index >= 0 && index < field.Choices.Count ? field.Choices[index].Value : "",
-        LayerFieldKind.Credential => CredentialValue((QComboBox)editor),
+        LayerFieldKind.Credential => _credentialValues.GetValueOrDefault(editor, ""),
         _ => ((QLineEdit)editor).Text
     };
 
-    /// <summary>The id behind the combo's current row. Empty is "automatic", which is index 0.</summary>
-    private string CredentialValue(QComboBox combo) =>
-        _credentialIds.TryGetValue(combo, out var ids) && combo.CurrentIndex >= 0 && combo.CurrentIndex < ids.Count
-            ? ids[combo.CurrentIndex]
-            : string.Empty;
-
-    /// <summary>Fills a credential combo in place. The first row is the automatic path; the names
-    /// follow. Rebuilding rather than recreating keeps the widget the panel already holds.</summary>
-    private void FillCredentialCombo(QComboBox combo, string? selected)
+    /// <summary>Paints a credential field as the account it uses. The row is the answer, not a list
+    /// to scroll: the picker behind it is where a choice is made.</summary>
+    private void ShowCredential(QPushButton button, LayerFieldDescriptor field, string id)
     {
-        var ids = new List<string> { string.Empty };
-        combo.BlockSignals(true);
-        combo.Clear();
-        combo.AddItem(T("credential.auto"));
-        foreach (var credential in _credentials)
+        string? text = null;
+        if (string.IsNullOrWhiteSpace(id))
         {
-            combo.AddItem(credential.Name + " · " + credential.Username);
-            ids.Add(credential.Id);
+            text = field.Placeholder.Resolve(I18n.Language);
+            if (string.IsNullOrWhiteSpace(text)) text = T("credential.none");
         }
-        int index = ids.IndexOf(selected ?? string.Empty);
-        combo.SetCurrentIndex(index >= 0 ? index : 0);
-        combo.BlockSignals(false);
-        _credentialIds[combo] = ids;
+        else if (_credentials.FirstOrDefault(item => item.Id == id) is { } credential)
+            text = credential.Name + " · " + credential.Username;
+        button.SetText(string.IsNullOrEmpty(text) ? T("credential.missing") : text);
+        button.SetToolTip(field.Description.Resolve(I18n.Language));
     }
 
-    /// <summary>Opens the manager, then re-reads the list and refreshes every combo in place, so a
-    /// credential added there can be chosen here without reopening the editor.</summary>
-    private void ManageCredentials()
+    /// <summary>Opens the picker for one layer. A new credential can be made there without leaving
+    /// the layer being edited; whichever row is used becomes the layer's choice.</summary>
+    private void ChooseCredential(QPushButton button, LayerFieldDescriptor field)
     {
-        using (var manager = new CredentialManager(this)) manager.Exec();
+        // The store changes outside this window too (the tray's manager); re-read before offering
+        // choices, and repaint the row so a reference to a removed credential is shown as such.
         try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
         catch (Exception) { }
-        foreach (var (field, editor, _) in _propertyEditors)
-            if (field.Kind == LayerFieldKind.Credential && editor is QComboBox combo)
-                FillCredentialCombo(combo, CredentialValue(combo));
+        string current = _credentialValues.GetValueOrDefault(button, "");
+        ShowCredential(button, field, current);
+        string defaultText = field.Placeholder.Resolve(I18n.Language);
+        if (string.IsNullOrWhiteSpace(defaultText)) defaultText = T("credential.none");
+        using var picker = new CredentialPicker(this, _credentials, current, defaultText, T("credential.none.hint"));
+        if (picker.Exec() != 1) return;
+        _credentials = picker.Credentials;
+        _credentialValues[button] = picker.SelectedId;
+        ShowCredential(button, field, picker.SelectedId);
+        Dirty();
     }
 
     private void BuildProperties()
@@ -619,10 +615,14 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             QWidget editor;
             if (field.Kind == LayerFieldKind.Credential)
             {
-                var combo = ContinuousScrolling.Combo();
-                FillCredentialCombo(combo, value);
-                combo.CurrentIndexChanged += _ => Dirty();
-                editor = combo;
+                // One row that answers "which account?" instead of a list to read: the choice is
+                // made in a dialog where one can also be created.
+                var button = new QPushButton();
+                button.SetObjectName("credentialButton");
+                _credentialValues[button] = value;
+                ShowCredential(button, field, value);
+                button.Clicked += _ => ChooseCredential(button, field);
+                editor = button;
             }
             else if (field.Kind == LayerFieldKind.Boolean)
             {
@@ -644,24 +644,13 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 var edit = new QLineEdit();
                 if (field.Kind == LayerFieldKind.Secret) edit.SetEchoMode(QLineEdit.EchoMode.Password);
                 edit.SetText(value);
-                edit.SetPlaceholderText(field.Placeholder);
+                edit.SetPlaceholderText(field.Placeholder.Resolve(I18n.Language));
                 edit.TextChanged += _ => Dirty();
                 editor = edit;
             }
             var label = Plain(field.Title.Resolve(I18n.Language), "muted");
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
             QWidget row = editor;
-            if (field.Kind == LayerFieldKind.Credential)
-            {
-                var widget = new QWidget();
-                var rowLayout = new QHBoxLayout(widget);
-                rowLayout.SetContentsMargins(0, 0, 0, 0);
-                rowLayout.AddWidget(editor, 1);
-                var manage = new QPushButton(T("credential.manage"));
-                manage.Clicked += _ => ManageCredentials();
-                rowLayout.AddWidget(manage);
-                row = widget;
-            }
             if (inline.TryGetValue(field.Path, out var actions))
             {
                 var widget = new QWidget();
@@ -697,13 +686,13 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         {
             label.SetText(field.Title.Resolve(I18n.Language));
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
+            if (field.Kind == LayerFieldKind.Credential && editor is QPushButton credentialButton)
+            {
+                ShowCredential(credentialButton, field, _credentialValues.GetValueOrDefault(credentialButton, ""));
+                continue;
+            }
             if (editor is QComboBox combo)
             {
-                if (field.Kind == LayerFieldKind.Credential)
-                {
-                    FillCredentialCombo(combo, CredentialValue(combo));
-                    continue;
-                }
                 int index = combo.CurrentIndex;
                 combo.BlockSignals(true);
                 combo.Clear();
@@ -747,6 +736,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     }
 
     internal void SmokeLayerPicker(string? capture = null) => LayerPicker.Smoke(this, _layerDescriptors.Count > 0 ? _layerDescriptors : LayerRegistry.Descriptors, capture);
+    internal void SmokePresetPicker(string? capture = null) => PresetPicker.Smoke(this,
+        _presetDefinitions.Count > 0 ? _presetDefinitions : LayerPresetRegistry.All,
+        Current?.GetLayers() ?? new(),
+        _layerDescriptors.Count > 0 ? _layerDescriptors : LayerRegistry.Descriptors, capture);
 
     private void AddLayer(string type)
     {
@@ -807,15 +800,21 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         Dirty();
     }
 
-    private void ApplyPreset()
+    /// <summary>Asks which preset to apply. The button is the action and the dialog is the
+    /// choice, in that order: a preset is something done to the stack, not a mode picked from a
+    /// list that sits there all the time. Nothing is asked after the choice — the dialog already
+    /// named the layers and their order, and that is what the confirmation used to say.</summary>
+    private void ChoosePreset()
     {
-        if (Current == null) return;
-        int index = _presets.CurrentIndex;
-        if (index < 0 || index >= _presetDefinitions.Count) return;
+        if (Current == null || _presetDefinitions.Count == 0) return;
         try { CommitLayer(); }
         catch (ArgumentException ex) { _status.SetText(ex.Message); return; }
-        if (!Confirm("preset.confirm")) return;
-        Current.Layers = LayerPresetMerger.Merge(Current.GetLayers(), _presetDefinitions[index]);
+        var dialog = new PresetPicker(this, _presetDefinitions, Current.GetLayers(), _layerDescriptors.Count > 0 ? _layerDescriptors : LayerRegistry.Descriptors);
+        LayerPreset? preset;
+        try { preset = dialog.Exec() == 1 ? dialog.Selected : null; }
+        finally { dialog.DeleteLater(); }
+        if (preset == null) return;
+        Current.Layers = LayerPresetMerger.Merge(Current.GetLayers(), preset);
         RebuildLayers();
         _layerList.SetCurrentRow(_layer == null ? Current.Layers.Count - 1 : Current.Layers.IndexOf(_layer));
         ShowLayer();
@@ -857,7 +856,17 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
 
     private string LayerColor(LayerConfig layer) => string.IsNullOrEmpty(layer.Color) ? LayerColors.Resolve(layer.Type, _config.LayerColors) : layer.Color;
     private string? _saveName;
-    private string LayerText(LayerConfig layer) => $"≡  {(string.IsNullOrEmpty(layer.Name) ? Descriptor(layer.Type).Title.Resolve(I18n.Language) : layer.Name)}{(layer.Enabled ? "" : " · " + T("state.disabled"))}\n     {Descriptor(layer.Type).Title.Resolve(I18n.Language)} · {layer.Id}";
+    /// <summary>One row of the stack. A layer with no name of its own reads as its type; one that
+    /// has been named says so above the type, so the type is never repeated under itself. The
+    /// layer's id is the configuration's business — it decides nothing the reader can see here.</summary>
+    private string LayerText(LayerConfig layer)
+    {
+        string title = Descriptor(layer.Type).Title.Resolve(I18n.Language);
+        string disabled = layer.Enabled ? "" : " · " + T("state.disabled");
+        return string.IsNullOrWhiteSpace(layer.Name)
+            ? $"≡  {title}{disabled}"
+            : $"≡  {layer.Name}{disabled}\n     {title}";
+    }
     private void UpdateLayerIdentity()
     {
         if (_loading || _layer == null) return;
@@ -994,7 +1003,6 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private void Translate()
     {
         UpdateDocumentTitle();
-        UpdatePresets();
         RebuildMounts();
         RebuildLayers();
         _layerTitle.SetText(_layer == null ? T("layer.select") : Descriptor(_layer.Type).Title.Resolve(I18n.Language));
@@ -1006,14 +1014,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     public override void ChangeEvent(QEvent e)
     {
         base.ChangeEvent(e);
-        if (e.type() == QEvent.Type.LanguageChange && _presets != null) Translate();
-    }
-    private void UpdatePresets()
-    {
-        int index = Math.Max(0, _presets.CurrentIndex);
-        _presets.Clear();
-        foreach (var preset in _presetDefinitions) _presets.AddItem(preset.Titles.GetValueOrDefault(I18n.Language) ?? preset.Titles.GetValueOrDefault("en") ?? preset.Id);
-        _presets.SetCurrentIndex(index);
+        if (e.type() == QEvent.Type.LanguageChange && _layerDescription != null) Translate();
     }
     private void UpdateUsageRequest()
     {
@@ -1047,8 +1048,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             _cacheProgress.SetVisible(false);
             var template = provider.PredictionDetail?.Resolve(I18n.Language);
             SetUsageText(_cacheUsage, template == null ? "" : string.Format(I18n.Culture, template,
-                UsageBytes(provider.HeldBytes), UsageBytes(provider.HeldCapacity),
-                provider.LearnedTransitions, provider.PreloadsCompleted, provider.HeldHits, provider.HeldWasted));
+                provider.PreloadsCompleted, provider.HeldHits, provider.HeldWasted,
+                UsageBytes(provider.HeldBytes), UsageBytes(provider.HeldCapacity)));
             return;
         }
         var usage = _usageOnline ? provider?.StorageUsage : null;
@@ -1061,12 +1062,12 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             SetUsageText(_overlayUsage, text); SetUsageText(_cacheUsage, text);
             _cacheProgress.SetEnabled(false); _cacheProgress.SetValue(0); return;
         }
-        SetUsageText(_overlayUsage, I18n.F("usage.overlay", UsageBytes(usage.DiskBytes), usage.DurableObjects, usage.FileObjects, usage.DirectoryObjects));
+        SetUsageText(_overlayUsage, I18n.F("usage.overlay", usage.FileObjects, usage.DirectoryObjects, UsageBytes(usage.DiskBytes)));
         int value = usage.CacheCapacity <= 0 ? 0 : (int)Math.Clamp(1000.0 * usage.CacheBytes / usage.CacheCapacity, 0, 1000);
         _cacheProgress.SetEnabled(true);
         if (_cacheProgress.Value != value) _cacheProgress.SetValue(value);
         SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.CacheBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +
-            I18n.F("usage.cacheDetails", UsageBytes(usage.DiskBytes), UsageBytes(usage.DurableBytes), usage.DurableObjects));
+            I18n.F("usage.cacheDetails", UsageBytes(usage.DiskBytes)));
         _cacheProgress.SetToolTip(T("usage.capacityHint"));
         if (provider?.Type == "memory-cache" && provider.MemoryDetail != null)
             SetUsageText(_cacheUsage, I18n.F("usage.cache", UsageBytes(usage.MemoryBytes), UsageBytes(usage.CacheCapacity), value / 10.0) + "\n" +

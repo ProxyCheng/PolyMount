@@ -12,7 +12,7 @@ public static class LayerRegistry
         Register("overlay", (c, ctx) => new OverlayLayer(ctx.Storage, c.Compression), null, BuiltInLayerDescriptors.Storage("overlay", false));
         RegisterCache("prediction-cache", (c, ctx) => new PredictionCacheLayer(PredictionCapacity(c), ctx.LowerGeneration,
             ReadPredictionProfiles.Resolve(Text(c, "Profile"), () => CustomPrediction(c)),
-            CoReadOptionsFor(c), StrategiesFor(c), Path.Combine(ctx.State, "prediction.json")),
+            CoReadOptionsFor(c), StrategiesFor(c), Path.Combine(ctx.State, "prediction.json"), c),
             c => { if (PredictionCapacity(c) < 1 || PredictionCapacity(c) > 256L * 1048576) throw new ArgumentException("Prediction capacity exceeds 256 MiB"); },
             new LayerDescriptor { Type = "prediction-cache", Title = LayerTexts.Get("prediction.title"), Icon = "predict-path",
                 Description = LayerTexts.Get("prediction.description"),
@@ -51,14 +51,12 @@ public static class LayerRegistry
                     new() { Path = "Parameters.ContextDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 4,
                         DefaultValue = "2", Title = LayerTexts.Get("prediction.context"), Description = LayerTexts.Get("prediction.context.description") },
                     new() { Path = "Parameters.PrefetchDepth", Kind = LayerFieldKind.Integer, Minimum = 1, Maximum = 8,
-                        DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") },
-                    // The layer itself is the shared cache/queue/feedback; this selects which
-                    // independent strategies feed it. A typo leaves an unknown name ignored.
-                    new() { Path = "Parameters.Strategies", Title = new LocalizedText("Strategies", "策略"),
-                        Placeholder = "successor,stride,spatial,co-read", DefaultValue = "successor,stride,spatial",
-                        Description = new LocalizedText(
-                            "Comma-separated: successor, stride, spatial, co-read",
-                            "逗号分隔：successor、stride、spatial、co-read") }
+                        DefaultValue = "2", Title = LayerTexts.Get("prediction.depth"), Description = LayerTexts.Get("prediction.depth.description") }
+                    // `Parameters.Strategies` is deliberately not a field: its value is a
+                    // comma-separated list of model names (successor, stride, spatial, co-read,
+                    // plus whatever a plugin registered), and choosing among those is a preset's
+                    // job. Configurations and presets that set it still work; the form leaves the
+                    // parameter alone.
                 } });
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes,
                 c.Compression, writable: Bool(c, "Writable", true)),

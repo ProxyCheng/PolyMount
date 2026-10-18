@@ -316,9 +316,17 @@ public sealed class MountInstance : IDisposable
         finally { if (remount) Mount(_lastWinFspBin); }
         return Probe(rel);
     }
+    /// <summary>The layers this instance built, keyed by the configuration id they were built
+    /// from. A plugin command that belongs to one of its own layers reaches it through this
+    /// without Core learning what that layer is.</summary>
+    public IReadOnlyDictionary<string, ILayer> Providers => _providers;
+
     public ProbeResult ApplyLayerAction(string layer, string rel, string action)
     {
         if (!_providers.TryGetValue(layer, out var provider)) throw new NotSupportedException($"unknown layer '{layer}'");
+        // A layer that declares actions of its own answers for them; Core only knows the
+        // actions of the layer types it ships.
+        if (provider is ILayerActionHandler custom && custom.TryApplyAction(rel, action)) return Probe(rel);
         switch (provider)
         {
             case OverlayLayer overlay:

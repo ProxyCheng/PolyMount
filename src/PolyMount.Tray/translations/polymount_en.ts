@@ -169,8 +169,8 @@
     </message>
     <message>
       <source>usage.overlay</source>
-      <translation>Disk usage {0}
-{1:N0} modified objects · {2:N0} files · {3:N0} directory listings</translation>
+      <translation>Your changes: {0:N0} files · {1:N0} folders
+On disk: {2}</translation>
     </message>
     <message>
       <source>usage.cache</source>
@@ -178,11 +178,11 @@
     </message>
     <message>
       <source>usage.cacheDetails</source>
-      <translation>Physical disk usage {0} / durable changes {1} · {2:N0} objects (not evicted)</translation>
+      <translation>On disk: {0}</translation>
     </message>
     <message>
       <source>usage.capacityHint</source>
-      <translation>The bar covers evictable cache objects only; the database and durable changes are separate.</translation>
+      <translation>The bar counts cached content that can be evicted; the least recently used is dropped when the limit is reached.</translation>
     </message>
     <message>
       <source>usage.notApplied</source>
@@ -666,6 +666,10 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>No credentials yet. Add one, then choose it on the instance's SVN layer.</translation>
     </message>
     <message>
+      <source>credential.intro</source>
+      <translation>Accounts a layer can use. A password is stored encrypted and is never shown again.</translation>
+    </message>
+    <message>
       <source>credential.add</source>
       <translation>Add...</translation>
     </message>
@@ -694,28 +698,44 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Save</translation>
     </message>
     <message>
-      <source>credential.forget</source>
-      <translation>Forget</translation>
-    </message>
-    <message>
       <source>credential.name</source>
       <translation>Name</translation>
+    </message>
+    <message>
+      <source>credential.name.hint</source>
+      <translation>e.g. Work SVN</translation>
     </message>
     <message>
       <source>credential.username</source>
       <translation>Username</translation>
     </message>
     <message>
+      <source>credential.username.hint</source>
+      <translation>e.g. alice</translation>
+    </message>
+    <message>
       <source>credential.password</source>
       <translation>Password</translation>
+    </message>
+    <message>
+      <source>credential.password.show</source>
+      <translation>Show</translation>
     </message>
     <message>
       <source>credential.password.keep</source>
       <translation>Leave empty to keep the current password</translation>
     </message>
     <message>
+      <source>credential.storage.note</source>
+      <translation>The password is encrypted for the PolyMount service account on this machine.</translation>
+    </message>
+    <message>
       <source>credential.used</source>
-      <translation>{0} layer(s) use it</translation>
+      <translation>{0} layers use it</translation>
+    </message>
+    <message>
+      <source>credential.usedBy</source>
+      <translation>Used by {0}</translation>
     </message>
     <message>
       <source>credential.search</source>
@@ -726,12 +746,24 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>No matching credentials</translation>
     </message>
     <message>
-      <source>credential.automatic</source>
-      <translation>Remembered by address</translation>
+      <source>credential.missing</source>
+      <translation>Missing credential</translation>
     </message>
     <message>
-      <source>credential.auto</source>
-      <translation>Automatic (by address)</translation>
+      <source>credential.missing.hint</source>
+      <translation>This credential no longer exists. Choose another.</translation>
+    </message>
+    <message>
+      <source>credential.pick.title</source>
+      <translation>Choose credential</translation>
+    </message>
+    <message>
+      <source>credential.pick.use</source>
+      <translation>Use</translation>
+    </message>
+    <message>
+      <source>credential.pick.new</source>
+      <translation>New credential...</translation>
     </message>
     <message>
       <source>credential.manage</source>
@@ -747,15 +779,27 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>credential.delete.confirm</source>
-      <translation>{0} layer(s) use it; they go back to automatic.</translation>
+      <translation>Used by {0}; these layers will stop working until another credential is chosen.</translation>
     </message>
     <message>
       <source>credential.delete.plain</source>
       <translation>Remove this credential?</translation>
     </message>
     <message>
-      <source>credential.delete.origin</source>
-      <translation>Forget the account remembered for this address?</translation>
+      <source>credential.delete.failed</source>
+      <translation>Could not remove: {0}</translation>
+    </message>
+    <message>
+      <source>credential.none</source>
+      <translation>None</translation>
+    </message>
+    <message>
+      <source>credential.none.hint</source>
+      <translation>The source provides its own account.</translation>
+    </message>
+    <message>
+      <source>credential.name.duplicate</source>
+      <translation>Another credential already has this name.</translation>
     </message>
     <message>
       <source>credential.name.required</source>
@@ -859,7 +903,7 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>editor.subtitle</source>
-      <translation>Configure this instance's layers and parameters. Disabled layers are skipped; their settings and data are kept.</translation>
+      <translation>Choose the layers this instance is made of, and how each one is set up.</translation>
     </message>
     <message>
       <source>name</source>
@@ -883,7 +927,7 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>saved</source>
-      <translation>Configuration saved. Mounts rebuilt.</translation>
+      <translation>Saved and applied</translation>
     </message>
     <message>
       <source>saved.errors</source>
@@ -1011,7 +1055,35 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>preset</source>
-      <translation>Preset</translation>
+      <translation>Apply preset…</translation>
+    </message>
+    <message>
+      <source>preset.title</source>
+      <translation>Apply a preset</translation>
+    </message>
+    <message>
+      <source>preset.subtitle</source>
+      <translation>Choose a layer arrangement for this instance. Layers it already has keep their settings, missing ones are added, and layers it has beyond the preset stay at the end.</translation>
+    </message>
+    <message>
+      <source>preset.apply</source>
+      <translation>Apply</translation>
+    </message>
+    <message>
+      <source>preset.layers</source>
+      <translation>{0} layers</translation>
+    </message>
+    <message>
+      <source>preset.preview</source>
+      <translation>After applying</translation>
+    </message>
+    <message>
+      <source>preset.preview.summary</source>
+      <translation>{0} layers, {1} of them added</translation>
+    </message>
+    <message>
+      <source>preset.preview.same</source>
+      <translation>{0} layers, all of them already here</translation>
     </message>
     <message>
       <source>preset.svn</source>
@@ -1039,7 +1111,7 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message>
       <source>layer.required</source>
-      <translation>Any layers, any order. Without a writable layer the mount is read-only; disabled layers keep their settings.</translation>
+      <translation>Without a writable layer, reads work and writes are refused.</translation>
     </message>
     <message>
       <source>stats.title</source>

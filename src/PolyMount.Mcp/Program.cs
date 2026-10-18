@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
+using PolyMount.Core;
 using PolyMount.Core.Ipc;
 
 namespace PolyMount.Mcp;
@@ -26,6 +27,8 @@ public static class Program
         string? pipe = null;
         bool readOnly = false;
         bool describe = false;
+        string? configPath = null;
+        var pluginPaths = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -33,6 +36,12 @@ public static class Program
             {
                 case "--pipe" when i + 1 < args.Length:
                     pipe = args[++i];
+                    break;
+                case "--config" when i + 1 < args.Length:
+                    configPath = args[++i];
+                    break;
+                case "--plugin" when i + 1 < args.Length:
+                    pluginPaths.Add(args[++i]);
                     break;
                 case "--read-only":
                     readOnly = true;
@@ -49,6 +58,12 @@ public static class Program
                     return 2;
             }
         }
+
+        // Plugins contribute operations, which become tools. They are loaded before the surface
+        // is built, so what this process offers is the configuration's decision and not this
+        // assembly's: a plugin added to the service is a tool here as soon as the client is
+        // pointed at the same configuration.
+        LoadPlugins(configPath, pluginPaths);
 
         // The service's pipe is a setting; a renamed control pipe reaches this process the same
         // way the tray reaches it.
@@ -92,11 +107,37 @@ public static class Program
     private static string Version() =>
         typeof(Program).Assembly.GetName().Version?.ToString(3) ?? "1.0.0";
 
+    /// <summary>Loads the plugins the service's configuration enables, plus any named on the
+    /// command line. A plugin adds operations to the catalog this process serves; a plugin that
+    /// fails to load is reported on stderr — stdout is the protocol — and the built-in tools
+    /// still work.</summary>
+    private static void LoadPlugins(string? configPath, List<string> pluginPaths)
+    {
+        var plugins = new List<PluginConfig>();
+        string baseDirectory = AppContext.BaseDirectory;
+        if (!string.IsNullOrWhiteSpace(configPath))
+        {
+            string full = Path.GetFullPath(configPath);
+            baseDirectory = Path.GetDirectoryName(full)!;
+            var config = AppConfig.Load(full);
+            if (config == null) Console.Error.WriteLine($"PolyMount.Mcp: no configuration at '{full}'; offering built-in tools only");
+            else plugins.AddRange(config.Plugins);
+        }
+        foreach (var path in pluginPaths)
+            plugins.Add(new PluginConfig { AssemblyPath = Path.GetFullPath(path), Enabled = true });
+        if (plugins.Count == 0) return;
+        foreach (var error in PluginLoader.LoadConfigured(plugins, baseDirectory))
+            Console.Error.WriteLine($"PolyMount.Mcp: plugin not loaded: {error}");
+    }
+
     private const string Usage = """
         PolyMount.Mcp - the PolyMount control plane as an MCP server (stdio).
 
           --pipe <name>   Control pipe to talk to. Default: PolyMount.Control,
                           or POLYMOUNT_PIPE when the variable is set.
+          --config <path> Configuration whose enabled plugins also contribute tools.
+                          Plugin paths inside it are relative to its own directory.
+          --plugin <path> One more plugin assembly to load. Repeatable.
           --read-only     Offer only the operations that change nothing.
           --describe      Print the tool catalog as JSON and exit.
         """;

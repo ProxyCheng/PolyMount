@@ -70,7 +70,7 @@ internal static class LockPathProbe
         {
             // A source revision, not "v1": the cache key used to carry it into a string on
             // every lookup, so how long it is is part of what the key costs.
-            using var cache = new LruCacheLayer(Path.Combine(root, "cache"), () => "123456", 64L * 1024 * 1024);
+            using var cache = new LruCacheLayer(Path.Combine(root, "cache"), () => "795709", 64L * 1024 * 1024);
             var paths = new string[files];
             for (int i = 0; i < files; i++)
             {

@@ -172,8 +172,8 @@
     </message>
     <message>
       <source>usage.overlay</source>
-      <translation>磁盘占用 {0}
-{1:N0} 条对象修改 · {2:N0} 个文件 · {3:N0} 条目录清单</translation>
+      <translation>本地修改 {0:N0} 个文件 · {1:N0} 个目录
+磁盘占用 {2}</translation>
     </message>
     <message>
       <source>usage.cache</source>
@@ -181,11 +181,11 @@
     </message>
     <message>
       <source>usage.cacheDetails</source>
-      <translation>实际磁盘占用 {0} / 持久修改 {1} · {2:N0} 个对象（不参与淘汰）</translation>
+      <translation>磁盘占用 {0}</translation>
     </message>
     <message>
       <source>usage.capacityHint</source>
-      <translation>进度条只算可淘汰的缓存对象；数据库与持久修改另计。</translation>
+      <translation>进度条只统计可以淘汰的缓存内容；到上限时最久未用的会被丢弃。</translation>
     </message>
     <message>
       <source>usage.notApplied</source>
@@ -669,6 +669,10 @@
       <translation>还没有凭据。新增一个，然后在实例的 SVN 层里选它。</translation>
     </message>
     <message>
+      <source>credential.intro</source>
+      <translation>层可以选择使用的账号。密码加密保存，保存后不再显示。</translation>
+    </message>
+    <message>
       <source>credential.add</source>
       <translation>新增…</translation>
     </message>
@@ -697,28 +701,44 @@
       <translation>保存</translation>
     </message>
     <message>
-      <source>credential.forget</source>
-      <translation>忘记</translation>
-    </message>
-    <message>
       <source>credential.name</source>
       <translation>名称</translation>
+    </message>
+    <message>
+      <source>credential.name.hint</source>
+      <translation>例如：公司 SVN</translation>
     </message>
     <message>
       <source>credential.username</source>
       <translation>用户名</translation>
     </message>
     <message>
+      <source>credential.username.hint</source>
+      <translation>例如：alice</translation>
+    </message>
+    <message>
       <source>credential.password</source>
       <translation>密码</translation>
+    </message>
+    <message>
+      <source>credential.password.show</source>
+      <translation>显示</translation>
     </message>
     <message>
       <source>credential.password.keep</source>
       <translation>留空表示不修改</translation>
     </message>
     <message>
+      <source>credential.storage.note</source>
+      <translation>密码将为本机上的 PolyMount 服务账户加密保存。</translation>
+    </message>
+    <message>
       <source>credential.used</source>
       <translation>{0} 个层在用</translation>
+    </message>
+    <message>
+      <source>credential.usedBy</source>
+      <translation>用于 {0}</translation>
     </message>
     <message>
       <source>credential.search</source>
@@ -729,12 +749,24 @@
       <translation>没有匹配的凭据</translation>
     </message>
     <message>
-      <source>credential.automatic</source>
-      <translation>按地址记住的账号</translation>
+      <source>credential.missing</source>
+      <translation>凭据已丢失</translation>
     </message>
     <message>
-      <source>credential.auto</source>
-      <translation>自动（按地址）</translation>
+      <source>credential.missing.hint</source>
+      <translation>这个凭据已不存在，请选择其他凭据。</translation>
+    </message>
+    <message>
+      <source>credential.pick.title</source>
+      <translation>选择凭据</translation>
+    </message>
+    <message>
+      <source>credential.pick.use</source>
+      <translation>使用</translation>
+    </message>
+    <message>
+      <source>credential.pick.new</source>
+      <translation>新建凭据…</translation>
     </message>
     <message>
       <source>credential.manage</source>
@@ -750,15 +782,27 @@
     </message>
     <message>
       <source>credential.delete.confirm</source>
-      <translation>有 {0} 个层正在用它；删除后它们回到自动。</translation>
+      <translation>以下层正在使用它：{0}；在选定其他凭据之前，这些层将无法工作。</translation>
     </message>
     <message>
       <source>credential.delete.plain</source>
       <translation>删除这个凭据？</translation>
     </message>
     <message>
-      <source>credential.delete.origin</source>
-      <translation>忘记这个地址记住的账号？</translation>
+      <source>credential.delete.failed</source>
+      <translation>删除失败：{0}</translation>
+    </message>
+    <message>
+      <source>credential.none</source>
+      <translation>无</translation>
+    </message>
+    <message>
+      <source>credential.none.hint</source>
+      <translation>由源自行提供账号。</translation>
+    </message>
+    <message>
+      <source>credential.name.duplicate</source>
+      <translation>已有其他凭据使用这个名称。</translation>
     </message>
     <message>
       <source>credential.name.required</source>
@@ -862,7 +906,7 @@
     </message>
     <message>
       <source>editor.subtitle</source>
-      <translation>管理此实例的层与参数。禁用的层会被跳过，配置与数据保留。</translation>
+      <translation>选择这个实例由哪些层组成，以及每一层怎么设置。</translation>
     </message>
     <message>
       <source>name</source>
@@ -886,7 +930,7 @@
     </message>
     <message>
       <source>saved</source>
-      <translation>配置已保存，挂载已重建</translation>
+      <translation>已保存并应用</translation>
     </message>
     <message>
       <source>saved.errors</source>
@@ -1014,7 +1058,35 @@
     </message>
     <message>
       <source>preset</source>
-      <translation>预设</translation>
+      <translation>套用预设…</translation>
+    </message>
+    <message>
+      <source>preset.title</source>
+      <translation>套用预设</translation>
+    </message>
+    <message>
+      <source>preset.subtitle</source>
+      <translation>为这个实例选一套层组合。已有的层保留各自设置，缺少的层会补上，预设之外的层留在末尾。</translation>
+    </message>
+    <message>
+      <source>preset.apply</source>
+      <translation>套用</translation>
+    </message>
+    <message>
+      <source>preset.layers</source>
+      <translation>{0} 个层</translation>
+    </message>
+    <message>
+      <source>preset.preview</source>
+      <translation>套用后的层链</translation>
+    </message>
+    <message>
+      <source>preset.preview.summary</source>
+      <translation>共 {0} 个层，其中 {1} 个新增</translation>
+    </message>
+    <message>
+      <source>preset.preview.same</source>
+      <translation>共 {0} 个层，都已经在层链里</translation>
     </message>
     <message>
       <source>preset.svn</source>
@@ -1042,7 +1114,7 @@
     </message>
     <message>
       <source>layer.required</source>
-      <translation>层类型与顺序由你决定。没有可写层时挂载为只读；禁用的层保留配置。</translation>
+      <translation>没有可写层时，读取正常，写入会被拒绝。</translation>
     </message>
     <message>
       <source>stats.title</source>
