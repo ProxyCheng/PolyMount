@@ -22,6 +22,12 @@ public sealed class ManifestFamilyOptions
     /// <summary>Follow-up manifests one lookup may prefetch. A family can hold hundreds of
     /// packages, and the engine does not read all of them in one go.</summary>
     public int MaxManifests { get; set; } = 16;
+    /// <summary>Prefetch the packages that follow the trigger in repository-listing order,
+    /// regardless of family. Start-ups that walk the whole repository are sequential in that
+    /// order; the family rule guesses by name instead and misses when the order disagrees.</summary>
+    public bool Stride { get; set; }
+    /// <summary>How many packages a stride lookup stays ahead of the reader.</summary>
+    public int StrideLookahead { get; set; } = 4;
     /// <summary>How many lookups may be in flight at once. The source serves the reader and
     /// read-ahead from separate budgets; this bound keeps this strategy a small part of the
     /// latter.</summary>
@@ -53,6 +59,10 @@ public sealed class ManifestFamilyOptions
             separator.ValueKind == JsonValueKind.String && !string.IsNullOrEmpty(separator.GetString()))
             options.FamilySeparator = separator.GetString()!;
         options.MaxManifests = Number(parameters, "Manifest.MaxManifests", options.MaxManifests);
+        if (parameters.TryGetValue("Manifest.Stride", out var stride) &&
+            (stride.ValueKind == JsonValueKind.True || stride.ValueKind == JsonValueKind.False))
+            options.Stride = stride.GetBoolean();
+        options.StrideLookahead = Number(parameters, "Manifest.StrideLookahead", options.StrideLookahead);
         options.MaxInFlight = Number(parameters, "Manifest.MaxInFlight", options.MaxInFlight);
         options.TickIntervalMs = Number(parameters, "Manifest.TickIntervalMs", options.TickIntervalMs);
         options.ListingTtlMs = Number(parameters, "Manifest.ListingTtlMs", options.ListingTtlMs);
@@ -60,6 +70,7 @@ public sealed class ManifestFamilyOptions
         options.GroupWasteStreak = Number(parameters, "Manifest.GroupWasteStreak", options.GroupWasteStreak);
         options.RetentionMs = Number(parameters, "Manifest.RetentionHours", options.RetentionMs / 3600000) * 3600000;
         if (options.TickIntervalMs is < 10 or > 10000 || options.MaxManifests is < 1 or > 4096 ||
+            options.StrideLookahead is < 1 or > 256 ||
             options.MaxInFlight is < 1 or > 64 || options.ListingTtlMs is < 0 or > 86400000 ||
             options.FamilyCooldownMs is < 0 or > 600000 || options.GroupWasteStreak is < 1 or > 1000000 ||
             options.RetentionMs is < 0 or > 604800000)

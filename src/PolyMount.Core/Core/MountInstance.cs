@@ -13,6 +13,10 @@ public sealed class MountInstance : IDisposable
     private readonly object _gate = new();
     private FileSystemHost? _host;
     private bool _unmounting;
+    /// <summary>The directory this instance attached a registered volume to, or null when the
+    /// mount did not go through the Windows Mount Manager. Unmounting has to remove it: a
+    /// directory mount point outlives the volume it points at otherwise.</summary>
+    private string? _registeredDirectory;
     private readonly List<IMountAwareLayer> _background = new();
     private string _lastWinFspBin = "";
     private readonly Dictionary<string, ILayer> _layers = new(StringComparer.OrdinalIgnoreCase);
@@ -145,16 +149,24 @@ public sealed class MountInstance : IDisposable
             if (_unmounting) throw new IOException("Mount is still unmounting");
             WinFspBootstrap.Ensure(winFspBin);
 
-            PrepareMountPoint(Profile.MountPoint);
-
-            var fs = new WinFspMount(Vfs, _logPath);
+            var fs = new WinFspMount(Vfs, _logPath) { MountPoint = Profile.MountPoint };
             var host = new FileSystemHost(fs)
             {
-                FileSystemName = "PolyMount",
+                // Tools that create junctions ask the volume what file system it is first, and
+                // cmd refuses anything that does not answer "NTFS" with "Local NTFS volumes are
+                // required". The mount keeps reparse points and resolves name surrogates itself,
+                // so it answers as what those tools are checking for rather than lose the one
+                // capability they are looking for. (A workspace that links directories — a game
+                // engine's, for one — creates junctions on every start.)
+                FileSystemName = "NTFS",
                 VolumeSerialNumber = Serial(Profile.Name),
                 CaseSensitiveSearch = false,
                 CasePreservedNames = true,
                 UnicodeOnDisk = true,
+                // Symbolic links and junctions are reparse points: a writable layer keeps their
+                // bytes and Windows resolves the target itself, which is what makes a mount with
+                // an overlay behave like an ordinary directory to tools that link workspaces.
+                ReparsePoints = true,
                 PersistentAcls = false,
                 PostCleanupWhenModifiedOnly = true,
                 PassQueryDirectoryPattern = true,
@@ -164,12 +176,43 @@ public sealed class MountInstance : IDisposable
                 FileInfoTimeout = 1000
             };
 
-            int rc = host.Mount(Profile.MountPoint, null, false, 0);
-            if (rc < 0)
+            // An elevated process can register the volume with the Windows Mount Manager,
+            // which is what makes the mount a volume that AppLocker and the UAC consent path
+            // can resolve — and therefore what lets programs stored on it start. Without it
+            // the mount still serves data; it just cannot be a place to run something from.
+            string? registered = null;
+            try
+            {
+                if (MountPointVolume.CanRegister)
+                {
+                    if (MountPointVolume.IsDriveLetter(Profile.MountPoint, out string letter))
+                    {
+                        int rc = host.Mount(MountPointVolume.ManagerName(letter), null, false, 0);
+                        if (rc < 0)
+                            throw new IOException(
+                                $"mount failed for '{Profile.MountPoint}' through the Windows Mount Manager: 0x{rc:X8}");
+                    }
+                    else
+                    {
+                        MountPointVolume.MountAtDirectory(host, Profile.MountPoint);
+                        registered = Profile.MountPoint;
+                    }
+                }
+                else
+                {
+                    PrepareMountPoint(Profile.MountPoint);
+                    int rc = host.Mount(Profile.MountPoint, null, false, 0);
+                    if (rc < 0)
+                        throw new IOException($"mount failed for '{Profile.MountPoint}': 0x{rc:X8}");
+                }
+            }
+            catch
             {
                 host.Dispose();
-                throw new IOException($"mount failed for '{Profile.MountPoint}': 0x{rc:X8}");
+                throw;
             }
+
+            _registeredDirectory = registered;
             _host = host;
             StartBackground();
         }
@@ -192,14 +235,23 @@ public sealed class MountInstance : IDisposable
     {
         StopBackground();
         FileSystemHost host;
+        string? registered;
         lock (_gate)
         {
             if (_host == null) return;
             host = _host;
+            registered = _registeredDirectory;
+            _registeredDirectory = null;
             _host = null;
             _unmounting = true;
         }
-        try { host.Unmount(); }
+        try
+        {
+            // The directory mount point names a volume that is about to disappear. Removing it
+            // first keeps it from being left pointing at nothing after the file system goes.
+            if (registered != null) MountPointVolume.DetachDirectory(registered);
+            host.Unmount();
+        }
         finally
         {
             try { host.Dispose(); }
@@ -459,7 +511,9 @@ public sealed class MountInstance : IDisposable
     // WinFsp creates its own reparse-point directory for a directory mount point, so the
     // target must NOT already exist. A pre-existing (even empty) directory causes
     // STATUS_OBJECT_NAME_COLLISION (0xC0000035). Drive-letter mount points (e.g. "X:") are
-    // left untouched.
+    // left untouched. This is the path an unprivileged process takes; an elevated one mounts
+    // through the Windows Mount Manager instead (MountPointVolume), where the directory is
+    // kept and becomes the mount point itself.
     internal static void PrepareMountPoint(string mountPoint)
     {
         if (string.IsNullOrWhiteSpace(mountPoint)) return;

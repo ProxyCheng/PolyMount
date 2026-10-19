@@ -129,7 +129,7 @@ public sealed class HeaderRecordTests
     }
 
     [TestMethod]
-    public void Resolving_one_path_twice_asks_the_provider_once()
+    public void Resolving_a_listed_path_never_asks_the_provider_by_name()
     {
         using var temp = new TempDir();
         var source = new FakeSourceLayer(); source.AddFile("dir/video.bin", "payload");
@@ -141,14 +141,16 @@ public sealed class HeaderRecordTests
         // Nothing is counted until somebody asks for a window; this test asks, so it watches first.
         vfs.Metrics.Watch();
 
+        // The visibility walk has to resolve the parent's listing; that listing carries the
+        // child's header, so the provider is never asked for the path itself.
         Assert.IsTrue(vfs.TryLookup("dir/video.bin", out _, recordAccess: true));
+        Assert.AreEqual(0, source.EntryLookups.Count(p => p == "dir/video.bin"));
         Assert.AreEqual("fake", vfs.Metrics.Snapshot("test", 60).Layers.Single(l => l.Hits > 0).Name);
-        Assert.AreEqual(1, source.EntryLookups.Count(p => p == "dir/video.bin"));
 
         Assert.IsTrue(vfs.TryLookup("dir/video.bin", out _, recordAccess: true));
 
         var metrics = vfs.Metrics.Snapshot("test", 60);
-        Assert.AreEqual(1, source.EntryLookups.Count(p => p == "dir/video.bin"), "the second lookup never reached the source");
+        Assert.AreEqual(0, source.EntryLookups.Count(p => p == "dir/video.bin"), "no lookup ever reached the source by name");
         Assert.AreEqual(1L, metrics.Layers.Single(l => l.Name == "memory-cache").Hits,
             "the memory layer is what answered the second lookup");
         Assert.IsFalse(metrics.Layers.Any(l => l.Name == "cache" && l.Hits > 0), "and the disk cache was not walked to at all");

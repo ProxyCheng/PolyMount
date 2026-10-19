@@ -209,14 +209,30 @@ public sealed class ManifestFamilyPrediction : IPredictionModel
             .ToList();
         if (names.Count == 0) yield break;
         int start = names.FindIndex(name => string.Equals(name, current, StringComparison.OrdinalIgnoreCase));
-        int taken = 0;
-        for (int step = 1; step <= names.Count && taken < _options.MaxManifests; step++)
+        if (_options.Stride)
+        {
+            // Start-ups that walk the whole repository follow the listing's order. The family
+            // below guesses by name; that misses whenever the engine's order is not family
+            // order, so this mode simply stays a few names ahead of the trigger.
+            int taken = 0;
+            for (int step = 1; step <= names.Count && taken < _options.StrideLookahead; step++)
+            {
+                int at = start < 0 ? step - 1 : (start + step) % names.Count;
+                string name = names[at];
+                if (string.Equals(name, current, StringComparison.OrdinalIgnoreCase)) continue;
+                taken++;
+                yield return VfsPath.Child(VfsPath.Child(job.Repository, name), _options.ManifestName);
+            }
+            yield break;
+        }
+        int takenFamily = 0;
+        for (int step = 1; step <= names.Count && takenFamily < _options.MaxManifests; step++)
         {
             int at = start < 0 ? step - 1 : (start + step) % names.Count;
             string name = names[at];
             if (string.Equals(name, current, StringComparison.OrdinalIgnoreCase)) continue;
             if (!string.Equals(FamilyOf(name), job.Family, StringComparison.OrdinalIgnoreCase)) continue;
-            taken++;
+            takenFamily++;
             yield return VfsPath.Child(VfsPath.Child(job.Repository, name), _options.ManifestName);
         }
     }

@@ -57,5 +57,11 @@ internal static class TrayLog
             Log.Error(e.Exception, "a background task failed with nobody awaiting it");
             e.SetObserved();
         };
+        // Qt catches what a signal handler or a virtual override throws and raises this, because
+        // an exception has nowhere to land in its C++ frames. The runtime's own report goes to
+        // stderr, which a windowed process does not show: an unsubscribed handler that throws
+        // makes the button that raised it do nothing at all. The log is where it can be read.
+        QtSharp.Api.ApiRuntime.UnhandledCallbackException += (what, exception) =>
+            Log.Error(exception, "unhandled exception in {Where}", what);
     }
 }

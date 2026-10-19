@@ -118,6 +118,7 @@ public class ObjectNamespaceTests
         var overlay = new OverlayLayer(temp.Sub("overlay"));
         var vfs = new VirtualFileSystem(new ILayer[] { overlay, source });
         vfs.Delete("folder");
+        overlay.Flush();
         var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(temp.Sub("overlay")), source });
         Assert.IsFalse(reopened.TryLookup("folder/file", out _));
         Assert.ThrowsException<VfsNotFoundException>(() => reopened.OpenRead("folder/file", out _));

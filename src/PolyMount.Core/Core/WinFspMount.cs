@@ -1,5 +1,6 @@
 #nullable disable
 using System.Runtime.InteropServices;
+using System.Text;
 using Fsp;
 using Fsp.Interop;
 using FspFileInfo = Fsp.Interop.FileInfo;
@@ -53,6 +54,12 @@ public sealed class WinFspMount : FileSystemBase
 {
     private readonly VirtualFileSystem _vfs;
 
+    /// <summary>The Win32 path this volume is mounted at. A link whose target stays under it
+    /// can be resolved here instead of handing the name back to Windows: CreateProcess opens an
+    /// image through Open directly, and a reparse status it never saw resolved leaves the image
+    /// unlaunchable. Empty when the adapter is used outside a mount (tests).</summary>
+    public string MountPoint { get; set; } = string.Empty;
+
     private RequestDiagnostics.Scope BeginRequest(string operation, string path, int fallbackProcessId = 0)
     {
         if (_vfs.Diagnostics == null) return null;
@@ -91,6 +98,10 @@ public sealed class WinFspMount : FileSystemBase
         UnauthorizedAccessException => NtStatus.AccessDenied,
         FileNotFoundException => NtStatus.ObjectNameNotFound,
         DirectoryNotFoundException => NtStatus.ObjectPathNotFound,
+        // A source that reports the operating system's own "not there" rather than the VFS
+        // exception still means the same thing. The distinction matters: a loader probing for a
+        // DLL treats "not found" as "keep searching" and an I/O error as a broken disk.
+        IOException io when (io.HResult & 0xFFFF) is 0x02 or 0x03 => NtStatus.ObjectNameNotFound,
         IOException io when (io.HResult & 0xFFFF) is 0x70 or 0x27 => NtStatus.DiskFull,
         IOException io when (io.HResult & 0xFFFF) is 0x20 or 0x21 => NtStatus.SharingViolation,
         _ => NtStatus.UnexpectedIoError
@@ -135,11 +146,80 @@ public sealed class WinFspMount : FileSystemBase
         {
             using var request = BeginRequest("WinFsp.GetSecurityByName", fileName);
             Charge(request?.ProcessId ?? 0, write: false);
-            if (!_vfs.TryLookup(VfsPath.Normalize(fileName), out var entry, recordAccess: true)) return NtStatus.ObjectNameNotFound;
-            fileAttributes = entry.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL;
+            var rel = VfsPath.Normalize(fileName);
+            if (!_vfs.TryLookup(rel, out var entry, recordAccess: true))
+            {
+                // A link whose target stays inside this mount is resolved here; only a link that
+                // leaves the mount is handed back to Windows (see TryResolveInMountLink).
+                bool resolved = false;
+                for (int hops = 0; hops < 8 && !resolved; hops++)
+                {
+                    if (!TryResolveInMountLink(rel, out var resolvedRel)) break;
+                    rel = resolvedRel;
+                    resolved = _vfs.TryLookup(rel, out entry, recordAccess: true);
+                }
+                if (!resolved)
+                {
+                    // The name itself is not an object, but a component of it may be a link. Windows
+                    // opens "\link\sub\file" by asking about that whole name; saying "not found" ends
+                    // the search, so name the component instead and let reparse resolution restart the
+                    // call. WinFsp carries the offset back to us in FileAttributes (security.c).
+                    if (_vfs.TryFindReparsePoint(fileName, out int index))
+                    {
+                        fileAttributes = (uint)index;
+                        return NtStatus.Reparse;
+                    }
+                    return NtStatus.ObjectNameNotFound;
+                }
+            }
+            fileAttributes = (entry.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL) |
+                (entry.IsReparsePoint ? Win32.FILE_ATTRIBUTE_REPARSE_POINT : 0);
             return NtStatus.Success;
         }
         catch (Exception ex) { return Fail("GetSecurityByName " + fileName, ex); }
+    }
+
+    /// <summary>Maps a path that crosses a link whose target is inside this mount to the target's
+    /// mount-relative path. Windows resolves name surrogates itself, but CreateProcess opens an
+    /// image through Open and does not restart after a reparse status, so an executable below an
+    /// in-mount directory link was unlaunchable. Resolving the link here keeps the handle a plain
+    /// file; links that leave the mount still go back to Windows as a reparse answer.</summary>
+    private bool TryResolveInMountLink(string path, out string targetRel)
+    {
+        targetRel = string.Empty;
+        if (MountPoint.Length == 0) return false;
+        string rel = VfsPath.Normalize(path);
+        if (!_vfs.TryFindReparsePoint(rel, out int index)) return false;
+        int end = rel.IndexOf('/', index);
+        if (end < 0) end = rel.Length;
+        string linkPath = rel[..end];
+        string remainder = end < rel.Length ? rel[end..] : string.Empty;
+        if (linkPath.Length == 0) return false;
+        if (!_vfs.TryGetReparsePoint(linkPath, out var data) || data is not { Length: >= 16 }) return false;
+        uint tag = BitConverter.ToUInt32(data, 0);
+        if (!ReparseTags.IsNameSurrogate(tag)) return false;
+        int pathBase = tag == ReparseTags.Symlink ? 20 : 16;
+        if (data.Length < pathBase) return false;
+        int substituteOffset = BitConverter.ToUInt16(data, 8);
+        int substituteLength = BitConverter.ToUInt16(data, 10);
+        if (substituteLength <= 0 || pathBase + substituteOffset + substituteLength > data.Length) return false;
+        string substitute = Encoding.Unicode.GetString(data, pathBase + substituteOffset, substituteLength).TrimEnd('\0');
+        if (substitute.StartsWith(@"\??\", StringComparison.Ordinal)) substitute = substitute[4..];
+        bool relative = tag == ReparseTags.Symlink && data.Length >= 20 && (BitConverter.ToUInt32(data, 16) & 1) != 0;
+        string target;
+        try
+        {
+            string root = Path.GetFullPath(MountPoint).TrimEnd('\\', '/');
+            string linkWin32 = Path.Combine(root, linkPath.Replace('/', '\\'));
+            target = Path.GetFullPath(relative
+                ? Path.Combine(Path.GetDirectoryName(linkWin32)!, substitute)
+                : substitute.TrimEnd('\\', '/'));
+            if (!target.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase)) return false;
+            string mapped = target[(root.Length + 1)..].Replace('\\', '/');
+            targetRel = VfsPath.Normalize(mapped + remainder);
+            return targetRel.Length > 0;
+        }
+        catch (Exception) { return false; }
     }
 
     public override int Open(string fileName, uint createOptions, uint grantedAccess,
@@ -164,7 +244,30 @@ public sealed class WinFspMount : FileSystemBase
             bool wantDir = (createOptions & Win32.FILE_DIRECTORY_FILE) != 0;
             bool wantFile = (createOptions & Win32.FILE_NON_DIRECTORY_FILE) != 0;
 
-            if (!_vfs.TryLookup(rel, out var entry)) return NtStatus.ObjectNameNotFound;
+            if (!_vfs.TryLookup(rel, out var entry))
+            {
+                // Resolve an in-mount link here instead of handing it back to Windows: the image
+                // loader opens through this call and does not restart after a reparse status.
+                bool resolved = false;
+                for (int hops = 0; hops < 8 && !resolved; hops++)
+                {
+                    if (!TryResolveInMountLink(rel, out var resolvedRel)) break;
+                    rel = resolvedRel;
+                    resolved = _vfs.TryLookup(rel, out entry);
+                }
+                if (!resolved)
+                {
+                    // Same reparse hand-off as GetSecurityByName: a name that crosses a link was
+                    // never a file system object, and saying "not found" here ends the search
+                    // before Windows tries the link.
+                    if (_vfs.TryFindReparsePoint(fileName, out int reparseIndex))
+                    {
+                        fileInfo = new FspFileInfo { FileAttributes = (uint)reparseIndex };
+                        return NtStatus.Reparse;
+                    }
+                    return NtStatus.ObjectNameNotFound;
+                }
+            }
 
             if (entry.IsDir)
             {
@@ -177,9 +280,11 @@ public sealed class WinFspMount : FileSystemBase
             if (wantDir) return NtStatus.NotADirectory;
 
             // Shell metadata opens (READ_ATTRIBUTES/READ_CONTROL/SYNCHRONIZE)
-            // must not download content or copy it up just to query a file.
+            // must not download content or copy it up just to query a file. Execute access is
+            // not metadata: CreateProcess maps the image from this handle, so it needs a stream.
             bool contentAccess = (grantedAccess & (Win32.GENERIC_READ | Win32.GENERIC_WRITE |
-                Win32.GENERIC_ALL | Win32.FILE_READ_DATA | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA)) != 0;
+                Win32.GENERIC_ALL | Win32.FILE_READ_DATA | Win32.FILE_WRITE_DATA | Win32.FILE_APPEND_DATA |
+                Win32.FILE_EXECUTE)) != 0;
             if (!contentAccess)
             {
                 fileNode = new FsNode { Rel = rel, IsDir = false, ProcessId = request?.ProcessId ?? 0 };
@@ -521,6 +626,64 @@ public sealed class WinFspMount : FileSystemBase
         catch (Exception ex) { return Fail("Flush", ex); }
     }
 
+    /// <summary>The reparse data stored for a name, or STATUS_NOT_A_REPARSE_POINT. The bytes are
+    /// the ones a client wrote (mklink, an installer); Windows resolves a name-surrogate target
+    /// itself, so the mount only has to remember them.</summary>
+    public override int GetReparsePoint(object fileNode, object fileDesc, string fileName, ref byte[] reparseData)
+    {
+        reparseData = null!;
+        using var request = BeginRequest("WinFsp.GetReparsePoint", (fileNode as FsNode)?.Rel ?? "");
+        try
+        {
+            if (fileNode is not FsNode node) return NtStatus.InvalidParameter;
+            if (!_vfs.TryGetReparsePoint(node.Rel, out var data) || data == null) return NtStatus.NotAReparsePoint;
+            reparseData = data;
+            return NtStatus.Success;
+        }
+        catch (Exception ex) { return Fail("GetReparsePoint", ex); }
+    }
+
+    /// <summary>The same answer for a caller that names the path rather than holding a node —
+    /// the file system's own reparse resolution asks this way.</summary>
+    public override int GetReparsePointByName(string fileName, bool isDirectory, ref byte[] reparseData)
+    {
+        reparseData = null!;
+        using var request = BeginRequest("WinFsp.GetReparsePointByName", fileName);
+        try
+        {
+            if (!_vfs.TryGetReparsePoint(VfsPath.Normalize(fileName), out var data) || data == null)
+                return NtStatus.NotAReparsePoint;
+            reparseData = data;
+            return NtStatus.Success;
+        }
+        catch (Exception ex) { return Fail("GetReparsePointByName", ex); }
+    }
+
+    public override int SetReparsePoint(object fileNode, object fileDesc, string fileName, byte[] reparseData)
+    {
+        using var request = BeginRequest("WinFsp.SetReparsePoint", (fileNode as FsNode)?.Rel ?? "");
+        try
+        {
+            if (fileNode is not FsNode node) return NtStatus.InvalidParameter;
+            // Without a layer that accepts writes there is nowhere to keep the bytes; say so
+            // rather than pretend the link was made.
+            return _vfs.SetReparsePoint(node.Rel, reparseData) ? NtStatus.Success : NtStatus.AccessDenied;
+        }
+        catch (Exception ex) { return Fail("SetReparsePoint", ex); }
+    }
+
+
+    public override int DeleteReparsePoint(object fileNode, object fileDesc, string fileName, byte[] reparseData)
+    {
+        using var request = BeginRequest("WinFsp.DeleteReparsePoint", (fileNode as FsNode)?.Rel ?? "");
+        try
+        {
+            if (fileNode is not FsNode node) return NtStatus.InvalidParameter;
+            return _vfs.DeleteReparsePoint(node.Rel) ? NtStatus.Success : NtStatus.NotAReparsePoint;
+        }
+        catch (Exception ex) { return Fail("DeleteReparsePoint", ex); }
+    }
+
     /// <summary>The caller's last handle is gone. This is where a delete disposition takes
     /// effect, and where a written file is committed: CloseHandle waits for this callback, so
     /// the bytes are durable when the caller's close returns, rather than whenever the system
@@ -583,8 +746,9 @@ public sealed class WinFspMount : FileSystemBase
         long size = e.IsDir ? 0 : e.Size;
         return new FspFileInfo
         {
-            FileAttributes = e.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL,
-            ReparseTag = 0,
+            FileAttributes = (e.IsDir ? Win32.FILE_ATTRIBUTE_DIRECTORY : Win32.FILE_ATTRIBUTE_NORMAL) |
+                (e.IsReparsePoint ? Win32.FILE_ATTRIBUTE_REPARSE_POINT : 0),
+            ReparseTag = e.ReparseTag,
             FileSize = (ulong)size,
             AllocationSize = (ulong)RoundUp(size),
             CreationTime = ft,
@@ -623,12 +787,14 @@ public sealed class WinFspMount : FileSystemBase
 
     private FspFileInfo BuildDirInfo(string rel)
     {
-        var time = _vfs.TryLookup(rel, out var entry) && entry.TimeUtc != default ? entry.TimeUtc : DateTime.UnixEpoch;
+        bool found = _vfs.TryLookup(rel, out var entry);
+        var time = found && entry.TimeUtc != default ? entry.TimeUtc : DateTime.UnixEpoch;
         var ft = ToFileTime(time);
         return new FspFileInfo
         {
-            FileAttributes = Win32.FILE_ATTRIBUTE_DIRECTORY,
-            ReparseTag = 0,
+            FileAttributes = Win32.FILE_ATTRIBUTE_DIRECTORY |
+                (found && entry.IsReparsePoint ? Win32.FILE_ATTRIBUTE_REPARSE_POINT : 0),
+            ReparseTag = found ? entry.ReparseTag : 0u,
             FileSize = 0,
             AllocationSize = 0,
             CreationTime = ft,

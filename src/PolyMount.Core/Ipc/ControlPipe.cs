@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -30,7 +31,16 @@ public static class ControlPipe
         security.SetAccessRule(Rule(WindowsIdentity.GetCurrent().User, PipeAccessRights.FullControl));
         security.SetAccessRule(Rule(Sid(WellKnownSidType.LocalSystemSid), PipeAccessRights.FullControl));
         security.SetAccessRule(Rule(Sid(WellKnownSidType.BuiltinAdministratorsSid), PipeAccessRights.FullControl));
-        security.SetAccessRule(Rule(Sid(WellKnownSidType.InteractiveSid), PipeAccessRights.ReadWrite));
+        // The interactive session is what lets a Windows service be reached by the tray and the
+        // Explorer overlay. An elevated server running inside an interactive session already
+        // grants the account it runs under (above) and the interactive rule would only add the
+        // other users logged on to this machine — the control plane can point a layer at any
+        // path, which would hand them what they cannot read themselves. A service in session 0
+        // has no interactive account of its own, so it keeps the rule: that caller is the one
+        // the product is built around.
+        bool serviceSession = Process.GetCurrentProcess().SessionId == 0;
+        if (!Elevation.IsElevated || serviceSession)
+            security.SetAccessRule(Rule(Sid(WellKnownSidType.InteractiveSid), PipeAccessRights.ReadWrite));
         return security;
     }
 

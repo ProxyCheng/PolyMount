@@ -40,6 +40,7 @@ QLabel#detailValue { color: @Body; font-size: 13px; }
 QLabel#layerChain { background: @SurfaceAlt; border: 1px solid @Border; border-radius: 8px; padding: 12px; color: @Body; }
 QLabel#emptyState { color: @Muted; padding: 12px; font-size: 14px; }
 QLabel#errorBox { color: @Danger; background: @DangerSoft; border-radius: 8px; padding: 12px; }
+QLabel#credentialWarning { color: @Danger; background: @DangerSoft; border-radius: 6px; padding: 6px 8px; }
 QPushButton { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 9px 13px; font-weight: 600; color: @Text; }
 QPushButton:hover { background: @HoverSoft; border-color: @AccentBorder; }
 QPushButton:pressed { background: @PrimaryTint; }

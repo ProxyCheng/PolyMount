@@ -20,6 +20,7 @@ public sealed class CacheBudgetTests
         var children = Enumerable.Range(0, 1100).Select(i => new VfsEntry { Name = new string('x', 5000) + i }).ToArray();
         var directory = VirtualObject.Directory("folder", children);
         database.Apply(new[] { new ObjectChange("old|folder", directory), new ObjectChange("current|folder", directory) });
+        database.Commit();
         using var cache = new LruCacheLayer(root, () => "current", 1024L * 1024 * 1024, metadataBudget: Budget);
         Assert.IsTrue(cache.TryGetEntry("folder", out _), "Older generations must not crowd out current cached content on restart");
         Assert.IsTrue(cache.EstimatedMetadataBytes <= Budget);

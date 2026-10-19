@@ -517,12 +517,17 @@ public static class ControlOperations
         return config;
     }
 
+    /// <summary>The source fields whose value must never travel over the configuration API.
+    /// Every one of them is set from the tray and kept redacted everywhere else.</summary>
+    private static readonly string[] SecretFields = { "Password", "ClientCertificatePassword" };
+
     private static void Redact(JsonObject? source)
     {
-        if (source?["Password"] is JsonValue value &&
-            value.TryGetValue<string>(out var password) &&
-            !string.IsNullOrEmpty(password))
-            source["Password"] = Redacted;
+        foreach (var field in SecretFields)
+            if (source?[field] is JsonValue value &&
+                value.TryGetValue<string>(out var secret) &&
+                !string.IsNullOrEmpty(secret))
+                source[field] = Redacted;
     }
 
     private static void RestoreSecrets(JsonNode incoming, JsonNode? current)
@@ -531,35 +536,37 @@ public static class ControlOperations
         foreach (var mount in Mounts(incoming))
         {
             var prior = MatchMount(mount, priorMounts);
-            RestoreSecret(mount["Source"] as JsonObject, prior?["Source"] as JsonObject);
+            foreach (var field in SecretFields)
+                RestoreSecret(mount["Source"] as JsonObject, prior?["Source"] as JsonObject, field);
 
             foreach (var layer in Layers(mount))
-                RestoreSecret(layer["Source"] as JsonObject, MatchLayer(layer, prior)?["Source"] as JsonObject);
+                foreach (var field in SecretFields)
+                    RestoreSecret(layer["Source"] as JsonObject, MatchLayer(layer, prior)?["Source"] as JsonObject, field);
         }
     }
 
-    private static void RestoreSecret(JsonObject? source, JsonObject? prior)
+    private static void RestoreSecret(JsonObject? source, JsonObject? prior, string field)
     {
-        if (source?["Password"] is not JsonValue value || !value.TryGetValue<string>(out var password)) return;
+        if (source?[field] is not JsonValue value || !value.TryGetValue<string>(out var secret)) return;
 
-        if (password == Redacted)
+        if (secret == Redacted)
         {
-            if (prior?["Password"] is JsonValue stored &&
+            if (prior?[field] is JsonValue stored &&
                 stored.TryGetValue<string>(out var original) &&
                 !string.IsNullOrEmpty(original))
-                source["Password"] = original;
+                source[field] = original;
             else
                 throw new ArgumentException(
-                    "the configuration marks a password as [redacted], but the service holds no password to keep; "
-                    + "remove the field, or sign in from the Tray");
+                    $"the configuration marks {field} as [redacted], but the service holds no value to keep; "
+                    + "remove the field, or set it from the Tray");
 
             return;
         }
 
-        if (!string.IsNullOrEmpty(password))
+        if (!string.IsNullOrEmpty(secret))
             throw new ArgumentException(
-                "passwords are not accepted through MCP; leave [redacted] to keep the stored one, "
-                + "or sign in from the Tray to set a new one");
+                $"{field} is a secret and is not accepted through MCP; leave [redacted] to keep the stored one, "
+                + "or set it from the Tray");
     }
 
     private static IEnumerable<JsonObject> Mounts(JsonNode? config)

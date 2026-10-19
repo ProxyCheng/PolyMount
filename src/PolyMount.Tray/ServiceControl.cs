@@ -26,18 +26,13 @@ internal static class ServiceControl
         // Installed layout uses the SCM account and ProgramData configuration, never a
         // second interactive service process beside the packaged tray executable.
         if (File.Exists(Path.Combine(AppContext.BaseDirectory, "..", "install.json")))
-        {
-            try
-            {
-                using var process = Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount")
-                    { UseShellExecute = false, CreateNoWindow = true })!;
-                process.WaitForExit(5000);
-                return process.HasExited && process.ExitCode == 0
-                    ? new(true, I18n.T("service.startRequested"))
-                    : new(false, I18n.T("operation.failed") + "sc.exe start PolyMount");
-            }
-            catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
-        }
+            return StartInstalled();
+
+        // The same holds for a Windows service installed beside a development tree: starting the
+        // exe directly would put a second, unprivileged supervisor where the SCM is meant to run
+        // one, and an unprivileged supervisor mounts without the volume registration (programs on
+        // the mount then cannot start). Ask the SCM; it needs an administrator and says so.
+        if (ServiceInstalled()) return StartInstalled();
 
         var exe = ServiceExePath();
         if (exe != null && File.Exists(exe))
@@ -56,12 +51,40 @@ internal static class ServiceControl
         }
 
         // Fall back to an installed Windows service.
+        return StartInstalled();
+    }
+
+    /// <summary>Starts the installed service through the SCM. It needs an administrator, which a
+    /// tray in an ordinary session is not; the refusal is reported rather than worked around by
+    /// launching the executable behind the service's back.</summary>
+    private static ServiceOutcome StartInstalled()
+    {
         try
         {
-            Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount") { UseShellExecute = false, CreateNoWindow = true });
-            return new(true, I18n.T("service.startRequested"));
+            using var process = Process.Start(new ProcessStartInfo("sc.exe", "start PolyMount")
+                { UseShellExecute = false, CreateNoWindow = true })!;
+            process.WaitForExit(5000);
+            return process.HasExited && process.ExitCode == 0
+                ? new(true, I18n.T("service.startRequested"))
+                : new(false, I18n.T("operation.failed") + "sc.exe start PolyMount");
         }
         catch (Exception ex) { return new(false, I18n.T("operation.failed") + ex.Message); }
+    }
+
+    /// <summary>Whether the SCM knows a service of this name, whether or not it is running.</summary>
+    private static bool ServiceInstalled()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("sc.exe", "query PolyMount")
+                {
+                    UseShellExecute = false, CreateNoWindow = true,
+                    RedirectStandardOutput = true, RedirectStandardError = true
+                })!;
+            process.WaitForExit(5000);
+            return process.HasExited && process.ExitCode == 0;
+        }
+        catch (Exception) { return false; }
     }
 
     public static ServiceOutcome Stop()

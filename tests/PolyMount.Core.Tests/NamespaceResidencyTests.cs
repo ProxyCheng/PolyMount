@@ -60,11 +60,13 @@ public sealed class NamespaceResidencyTests
         var seed = new ObjectDatabase(root, false, recoverable: true);
         using (var content = new MemoryStream(new byte[64]))
             seed.Apply(new[] { new ObjectChange("file", new VirtualObject(FileEntry("file", 64)), content) });
+        seed.Commit();
         // Reopened with an index too small to hold the row: the old blob is known only to the table.
         var bounded = new ObjectDatabase(root, false, recoverable: true, metadataBudget: 1);
         Assert.AreEqual(0, bounded.Records.Count, "this test needs an index that does not hold the row");
         using (var content = new MemoryStream(new byte[32]))
             bounded.Apply(new[] { new ObjectChange("file", new VirtualObject(FileEntry("file", 32)), content) });
+        bounded.Commit();
         Assert.AreEqual(1, Directory.GetFiles(Path.Combine(root, "objects-v2"), "*.blob").Length,
             "the overwritten row's blob must not stay on disk");
     }
@@ -75,6 +77,7 @@ public sealed class NamespaceResidencyTests
         using var temp = new TempDir();
         var seed = new ObjectDatabase(temp.Sub("seed"), false, recoverable: true, metadataBudget: 1024);
         for (int i = 0; i < 6; i++) seed.Apply(new[] { new ObjectChange("k" + i, Folder("k" + i)) });
+        seed.Commit();
         // The budget admits nothing, so every row must come back from disk.
         var reopened = new ObjectDatabase(temp.Sub("seed"), false, recoverable: true, metadataBudget: 1024);
         Assert.AreEqual(0, reopened.Records.Count, "this test needs an index that holds nothing");
@@ -91,6 +94,7 @@ public sealed class NamespaceResidencyTests
         using var temp = new TempDir();
         var seed = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1024);
         for (int i = 0; i < 5; i++) seed.Apply(new[] { new ObjectChange("k" + i, Folder("k" + i)) });
+        seed.Commit();
 
         var bounded = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1024);
         Assert.AreEqual(0, bounded.Records.Count);
@@ -99,6 +103,29 @@ public sealed class NamespaceResidencyTests
         var reopened = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1024);
         for (int i = 0; i < 5; i++)
             Assert.IsFalse(reopened.TryGet("k" + i, out _), $"k{i} survived Clear and would return after a restart");
+    }
+
+    [TestMethod]
+    public void Clear_survives_a_store_with_more_rows_than_sqlite_takes_variables()
+    {
+        using var temp = new TempDir();
+        var seed = new ObjectDatabase(temp.Sub("db"), false, recoverable: true);
+        var changes = new List<ObjectChange>();
+        for (int i = 0; i < 40000; i++) changes.Add(new ObjectChange("k" + i, Folder("k" + i)));
+        seed.Apply(changes);
+
+        // The index admits none of the rows, so clearing has to ask the table for every
+        // blob it is about to orphan. Naming 40,000 paths in one `IN (...)` is a variable
+        // count SQLite refuses (demo's cache reported "too many SQL variables").
+        var bounded = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1);
+        Assert.AreEqual(0, bounded.Records.Count, "this test needs an index that holds nothing");
+        bounded.Clear();
+
+        Assert.AreEqual(0, Directory.GetFiles(Path.Combine(temp.Sub("db"), "objects-v2"), "*.blob").Length,
+            "clearing must take the blobs with it");
+        var reopened = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1);
+        Assert.IsFalse(reopened.TryGet("k0", out _), "a cleared row must not come back after a restart");
+        Assert.IsFalse(reopened.TryGet("k39999", out _));
     }
 
     [TestMethod]

@@ -23,7 +23,8 @@ public sealed class LargeWritePreparationTests
     {
         using var temp = new TempDir();
         string root = temp.Sub("overlay");
-        var vfs = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root) });
+        var overlay = new OverlayLayer(root);
+        var vfs = new VirtualFileSystem(new ILayer[] { overlay });
         using (var file = vfs.OpenWrite("large", true, out _))
         {
             file.SetLength(2 * 1048576);
@@ -31,6 +32,7 @@ public sealed class LargeWritePreparationTests
             file.Write("payload"u8);
             file.Flush();
         }
+        overlay.Flush();
         var reopened = new VirtualFileSystem(new ILayer[] { new OverlayLayer(root) });
         using var read = reopened.OpenRead("large", out _);
         Assert.AreEqual(2L * 1048576, read.Length);

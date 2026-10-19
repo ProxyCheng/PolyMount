@@ -5,12 +5,10 @@
 #include <vector>
 #include <map>
 #include <deque>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
 #include <atomic>
 #include <algorithm>
 #include <cwctype>
+#include <process.h>
 
 // Explorer reserves the overlay position (bottom-left). Seven fixed icons avoid
 // allocating one of Windows' scarce overlay slots for every configured layer.
@@ -24,8 +22,28 @@ static const COLORREF palette[] = {
 };
 static const GUID baseId = {0x7d619ac0,0xdbe2,0x4f33,{0x9a,0x11,0x6c,0xc2,0xc8,0x32,0x90,0x01}};
 struct Cached { int slot = -1; ULONGLONG expires = 0; bool pending = false; ULONGLONG seen = 0; };
-static std::mutex gate;
-static std::condition_variable wake;
+// Win32 synchronization, not the C++ runtime's. A shell extension is loaded into whatever
+// process draws a folder's icons, and that process may carry an older app-local MSVCP140 than
+// the one this DLL was built with (Rider ships 14.29 next to rider64.exe while the current
+// toolset is 14.51). The STL's mutex/condition_variable keep their state inside the object, so
+// the two versions disagree about its layout and _Mtx_lock dereferences a null field -- the
+// host process dies with an access violation. SRWLOCK/CONDITION_VARIABLE are OS objects, so
+// whichever CRT the host loaded is irrelevant.
+static SRWLOCK gate = SRWLOCK_INIT;
+static CONDITION_VARIABLE wake = CONDITION_VARIABLE_INIT;
+struct GateLock {
+    GateLock() { AcquireSRWLockExclusive(&gate); }
+    ~GateLock() { ReleaseSRWLockExclusive(&gate); }
+    GateLock(const GateLock&) = delete;
+    GateLock& operator=(const GateLock&) = delete;
+};
+struct TryGateLock {
+    bool owned = TryAcquireSRWLockExclusive(&gate) != FALSE;
+    TryGateLock() = default;
+    ~TryGateLock() { if(owned) ReleaseSRWLockExclusive(&gate); }
+    TryGateLock(const TryGateLock&) = delete;
+    TryGateLock& operator=(const TryGateLock&) = delete;
+};
 static std::map<std::wstring,Cached> entries;
 static std::deque<std::wstring> requests;
 static std::vector<std::wstring> roots;
@@ -86,8 +104,19 @@ static std::string From(const std::string& json,const std::string& key) {
 }
 static bool Exchange(const std::string& request,std::string& response,const std::wstring& pipeName=L"PolyMount.Control") {
     std::wstring path=L"\\\\.\\pipe\\"+pipeName;
-    HANDLE pipe=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
-    if(pipe==INVALID_HANDLE_VALUE) return false;
+    // The server listens with one instance at a time: it creates the next one only after the
+    // previous connection was accepted, so a client that arrives in that window gets
+    // ERROR_FILE_NOT_FOUND (or ERROR_PIPE_BUSY) even though the service is running. The managed
+    // control client retries inside NamedPipeClientStream.Connect; this one has to do it itself.
+    HANDLE pipe=INVALID_HANDLE_VALUE;
+    const ULONGLONG deadline=GetTickCount64()+500;
+    for(;;) {
+        pipe=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,0,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);
+        if(pipe!=INVALID_HANDLE_VALUE) break;
+        DWORD error=GetLastError();
+        if((error!=ERROR_PIPE_BUSY && error!=ERROR_FILE_NOT_FOUND) || GetTickCount64()>=deadline) return false;
+        Sleep(10);
+    }
     auto io=[&](bool write,void* data,DWORD length,DWORD& count) {
         OVERLAPPED op{}; op.hEvent=CreateEventW(nullptr,TRUE,FALSE,nullptr);
         BOOL ok=write?WriteFile(pipe,data,length,&count,&op):ReadFile(pipe,data,length,&count,&op);
@@ -120,7 +149,7 @@ static bool UnderRoot(const std::wstring& path) {
 // nothing is running that instance, and then there is nothing to ask.
 static std::wstring PipeFor(const std::wstring& path) {
     std::wstring normalized=Normalize(path),best; size_t length=0;
-    std::lock_guard<std::mutex> lock(gate);
+    GateLock lock;
     for(const auto& route:routes)
         if(route.first.size()>=length && (normalized==route.first ||
             (normalized.size()>route.first.size() && normalized.compare(0,route.first.size(),route.first)==0 && normalized[route.first.size()]==L'\\')))
@@ -141,7 +170,7 @@ static void Worker() {
                 for(size_t i=0;i<places.size() && i<pipes.size();++i) nextRoutes.emplace_back(Normalize(Wide(places[i])),Wide(pipes[i]));
             }
             bool changed;
-            { std::lock_guard<std::mutex> lock(gate); changed=roots!=next; roots=next; routes=nextRoutes;
+            { GateLock lock; changed=roots!=next; roots=next; routes=nextRoutes;
               // Recheck recently displayed items even when Explorer does not request a new
               // overlay evaluation. Opening a folder can cache its listing without a shell
               // change notification; its icon in the parent window still needs updating.
@@ -157,8 +186,15 @@ static void Worker() {
             if(changed) for(const auto& root:next) SHChangeNotify(SHCNE_UPDATEDIR,SHCNF_PATHW,root.c_str(),nullptr);
         }
         std::wstring path;
-        { std::unique_lock<std::mutex> lock(gate); wake.wait_for(lock,std::chrono::milliseconds(500),[]{return !requests.empty();});
-          if(requests.empty()) continue; path=requests.front(); requests.pop_front(); }
+        {
+            // SleepConditionVariableSRW releases the lock while it waits and takes it back
+            // before returning; a timeout (or a spurious wake) simply re-checks the queue.
+            AcquireSRWLockExclusive(&gate);
+            while(requests.empty()) if(!SleepConditionVariableSRW(&wake,&gate,500,0)) break;
+            if(requests.empty()) { ReleaseSRWLockExclusive(&gate); continue; }
+            path=requests.front(); requests.pop_front();
+            ReleaseSRWLockExclusive(&gate);
+        }
         std::string response;
         int slot=-1;
         std::wstring pipe=PipeFor(path);
@@ -166,10 +202,11 @@ static void Worker() {
             auto colors=Fields(response,"EffectiveColor"); if(!colors.empty()) slot=ColorSlot(colors[0]);
         }
         bool changed;
-        { std::lock_guard<std::mutex> lock(gate); auto& e=entries[path]; changed=e.slot!=slot; e.slot=slot; e.expires=GetTickCount64()+5000; e.pending=false; }
+        { GateLock lock; auto& e=entries[path]; changed=e.slot!=slot; e.slot=slot; e.expires=GetTickCount64()+5000; e.pending=false; }
         if(changed) SHChangeNotify(SHCNE_UPDATEITEM,SHCNF_PATHW,path.c_str(),nullptr);
     }
 }
+static unsigned __stdcall WorkerStart(void*) { Worker(); return 0; }
 
 class Overlay final : public IShellIconOverlayIdentifier {
     std::atomic<ULONG> refs{1}; int slot;
@@ -193,16 +230,21 @@ public:
     HRESULT STDMETHODCALLTYPE IsMemberOf(LPCWSTR file,DWORD) override {
         try {
         if(!file) return S_FALSE;
-        bool expected=false; if(workerStarted.compare_exchange_strong(expected,true)) std::thread(Worker).detach();
+        bool expected=false; if(workerStarted.compare_exchange_strong(expected,true)) {
+            // _beginthreadex (ucrt) rather than std::thread: the STL's thread object is tied to
+            // the MSVCP140 that happens to be loaded, the same hazard the lock above avoids.
+            uintptr_t thread=_beginthreadex(nullptr,0,WorkerStart,nullptr,0,nullptr);
+            if(thread) CloseHandle(reinterpret_cast<HANDLE>(thread)); else workerStarted=false;
+        }
         std::wstring path=Normalize(file);
         // Explorer callbacks must never wait for the worker's cache maintenance.
-        std::unique_lock<std::mutex> lock(gate,std::try_to_lock);
-        if(!lock.owns_lock()) return S_FALSE;
+        TryGateLock lock;
+        if(!lock.owned) return S_FALSE;
         if(!UnderRoot(path)) return S_FALSE;
         if(entries.size()>=10000 && entries.find(path)==entries.end()) return S_FALSE;
         auto& e=entries[path];
         e.seen=GetTickCount64();
-        if(!e.pending && e.expires<=GetTickCount64() && requests.size()<512) { e.pending=true;requests.push_back(path);wake.notify_one(); }
+        if(!e.pending && e.expires<=GetTickCount64() && requests.size()<512) { e.pending=true;requests.push_back(path);WakeConditionVariable(&wake); }
         return e.slot==slot ? S_OK : S_FALSE;
         } catch(...) { return S_FALSE; }
     }

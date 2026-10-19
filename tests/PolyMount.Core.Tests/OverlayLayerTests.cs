@@ -16,6 +16,7 @@ public class OverlayLayerTests
         vfs.CreateDirectory("dir");
         string text = new('x', 100000);
         using (var write = vfs.OpenWrite("dir/file", true, out _)) write.Write(System.Text.Encoding.UTF8.GetBytes(text));
+        overlay.Flush();
         var reopened = new VirtualFileSystem(new[] { new OverlayLayer(temp.Sub("overlay"), true) });
         Assert.AreEqual("file", reopened.List("dir").Single().Name);
         using var reader = new StreamReader(reopened.OpenRead("dir/file", out var header));

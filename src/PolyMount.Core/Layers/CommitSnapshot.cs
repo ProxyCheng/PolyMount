@@ -10,13 +10,15 @@ internal sealed class CommitSnapshot : Stream
         FileShare.Read | FileShare.Delete, 131072);
     public void PublishTo(string destination)
     {
-        _file.Flush(true);
+        // The catalog commit fsyncs this blob along with the rest of its batch; flushing
+        // here would put a device round trip back on the writer's close path.
+        _file.Flush();
         if (!string.Equals(Path.GetPathRoot(_path), Path.GetPathRoot(destination), StringComparison.OrdinalIgnoreCase))
         {
             // A different store volume cannot adopt the temporary file by rename.
             _file.Position = 0;
             using var target = new FileStream(destination, FileMode.CreateNew, FileAccess.Write);
-            _file.CopyTo(target); target.Flush(true);
+            _file.CopyTo(target); target.Flush();
             return;
         }
         _file.Dispose();

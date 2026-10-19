@@ -16,7 +16,7 @@ internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedS
     /// <inheritdoc/>
     protected override Credential? ResolveProtocolCredential() =>
         FromCache(new Uri(Source.Url, UriKind.Absolute)) is { } cached
-            ? new Credential(cached.Username, cached.Password)
+            ? new PasswordCredential { Username = cached.Username, Password = cached.Password }
             : null;
 
     /// <summary>

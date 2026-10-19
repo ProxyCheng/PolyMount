@@ -4,11 +4,63 @@ using System.Text.Json;
 
 namespace PolyMount.Core;
 
-/// <summary>A username and a secret to present to one origin.</summary>
-public sealed record Credential(string Username, string Secret);
+/// <summary>The kinds of credential the product ships, and the type each one builds. A place
+/// that uses credentials names the kinds it accepts (see <see
+/// cref="LayerFieldDescriptor.CredentialKinds"/>), and the editor offers those.</summary>
+public static class CredentialTypes
+{
+    public const string Password = "password";
+    public const string Certificate = "certificate";
+    public static IReadOnlyList<string> All { get; } = new[] { Password, Certificate };
+}
 
-/// <summary>What a credential looks like to the interface: everything except the secret.</summary>
-public sealed record CredentialRecord(string Id, string Name, string Username);
+/// <summary>
+/// What every credential is. The store keeps the concrete subclasses and a consumer names the
+/// type it accepts, so any subclass that fits can be chosen for it: the SVN source takes a
+/// password credential, a certificate credential, or anything added later that still answers the
+/// account question.
+/// </summary>
+public abstract class Credential
+{
+    /// <summary>The stable discriminator stored beside the secret and shown to the interface.</summary>
+    public abstract string Kind { get; }
+
+    /// <summary>The account a server asks for, when this credential names one.</summary>
+    public string Username { get; init; } = "";
+
+    /// <summary>The account's password, when this credential names an account.</summary>
+    public string Password { get; init; } = "";
+}
+
+/// <summary>An account and its password — the ordinary credential.</summary>
+public sealed class PasswordCredential : Credential
+{
+    public override string Kind => CredentialTypes.Password;
+}
+
+/// <summary>A PKCS#12 file for mutual TLS, the password that opens it, and the account the
+/// server may ask for as well. The account is optional: some servers authenticate on the
+/// certificate alone.</summary>
+public sealed class ClientCertificateCredential : Credential
+{
+    public override string Kind => CredentialTypes.Certificate;
+    public byte[] Certificate { get; init; } = Array.Empty<byte>();
+    public string CertificatePassword { get; init; } = "";
+}
+
+/// <summary>What a credential looks like to the interface: everything except the secret.
+/// <see cref="Usable"/> is false when this account cannot open the stored secret — a record
+/// written by another Windows account, or one whose payload no longer parses — which is what
+/// the layer editor warns about where the credential is chosen.</summary>
+public sealed record CredentialRecord(string Id, string Name, string Username,
+    string Kind = CredentialTypes.Password, bool Usable = true);
+
+/// <summary>What the interface asks the store to save. A null password, certificate or
+/// certificate password keeps what the record already holds, so a form that shows only the
+/// fields a person changed does not have to read a secret back.</summary>
+public sealed record CredentialInput(
+    string? Id, string Name, string Kind, string Username,
+    string? Password, byte[]? Certificate, string? CertificatePassword);
 
 /// <summary>
 /// The accounts this product keeps: one list of credentials, each with a name, an id, a user name
@@ -56,59 +108,87 @@ public static class CredentialStore
     {
         lock (Gate) return Load().Items
             .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new CredentialRecord(item.Id, item.Name, item.Username))
+            .Select(item => new CredentialRecord(item.Id, item.Name, item.Username, KindOf(item), IsUsable(item)))
             .ToList();
     }
 
-    /// <summary>Adds a named credential and returns the record the interface can show. Names are
-    /// what the picker shows, so they are unique: two rows reading the same thing would be a list
-    /// with no way to tell which one a layer means.</summary>
-    public static CredentialRecord Add(string name, string username, string secret)
+    /// <summary>Whether this account can actually use a record: the secret is a blob it can
+    /// open, and a certificate credential still names a certificate. The layer editor shows the
+    /// answer where the credential is chosen, before a mount has to fail to say so.</summary>
+    private static bool IsUsable(StoredCredential item)
     {
-        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("a credential needs a name");
-        if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("a credential needs a user name");
-        if (Protect(secret) is not { } protected_) throw new InvalidOperationException("the secret could not be protected for this service account");
-        name = name.Trim();
-        lock (Gate)
-        {
-            var document = Load();
-            if (document.Items.Any(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase)))
-                throw new ArgumentException("a credential named '" + name + "' already exists");
-            var item = new StoredCredential
-            {
-                Id = Guid.NewGuid().ToString("N"),
-                Name = name,
-                Username = username.Trim(),
-                Secret = Convert.ToBase64String(protected_)
-            };
-            document.Items.Add(item);
-            if (!Save(document)) throw new InvalidOperationException("the credential could not be written");
-            return new CredentialRecord(item.Id, item.Name, item.Username);
-        }
+        string? plain = UnprotectSecret(item);
+        if (plain == null) return false;
+        if (KindOf(item) == CredentialTypes.Password) return plain.Length > 0;
+        return ParseCertificate(plain) is { Certificate.Length: > 0 };
     }
 
-    /// <summary>Changes a named credential. A null secret keeps the one already stored, so the
-    /// interface never has to read a password back to save the rest of the record.</summary>
-    public static void Update(string id, string name, string username, string? secret)
+    /// <summary>Adds or changes a named credential and returns the record the interface can show.
+    /// Names are what the picker shows, so they are unique: two rows reading the same thing would
+    /// be a list with no way to tell which one a layer means.</summary>
+    public static CredentialRecord Save(CredentialInput input)
     {
-        if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("a credential needs a name");
-        if (string.IsNullOrWhiteSpace(username)) throw new ArgumentException("a credential needs a user name");
-        byte[]? protected_ = null;
-        if (secret != null)
-            protected_ = Protect(secret) ?? throw new InvalidOperationException("the secret could not be protected for this service account");
-        name = name.Trim();
+        if (string.IsNullOrWhiteSpace(input.Name)) throw new ArgumentException("a credential needs a name");
+        if (!CredentialTypes.All.Contains(input.Kind))
+            throw new ArgumentException("unknown credential kind '" + input.Kind + "'");
+        string name = input.Name.Trim();
         lock (Gate)
         {
             var document = Load();
-            var item = document.Items.FirstOrDefault(entry => entry.Id == id)
-                ?? throw new ArgumentException("no such credential: " + id);
-            if (document.Items.Any(entry => entry.Id != id &&
+            var item = string.IsNullOrEmpty(input.Id)
+                ? null
+                : document.Items.FirstOrDefault(entry => entry.Id == input.Id)
+                  ?? throw new ArgumentException("no such credential: " + input.Id);
+            if (document.Items.Any(entry => !ReferenceEquals(entry, item) &&
                     string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase)))
                 throw new ArgumentException("a credential named '" + name + "' already exists");
+
+            // A record being edited keeps what the form did not resend, but only while it stays
+            // the same kind: switching from a password to a certificate has nothing to keep.
+            bool keeps = item != null && KindOf(item) == input.Kind;
+            var current = keeps && input.Kind == CredentialTypes.Certificate ? CertificateOf(item!) : null;
+            string secret;
+            if (input.Kind == CredentialTypes.Certificate)
+            {
+                string certificate = input.Certificate is { Length: > 0 } bytes
+                    ? Convert.ToBase64String(bytes)
+                    : current?.Certificate
+                      ?? throw new ArgumentException("a certificate credential needs a PKCS#12 file");
+                string certificatePassword = input.CertificatePassword
+                    ?? current?.Password
+                    ?? throw new ArgumentException("a certificate credential needs the password of its file");
+                // A file that does not open is refused now rather than when a layer tries to
+                // build: the form can say which field is wrong, the mount could only say it
+                // failed.
+                if (input.Certificate is { Length: > 0 }) ValidateCertificate(input.Certificate, certificatePassword);
+                secret = JsonSerializer.Serialize(new CertificateSecret
+                {
+                    Account = input.Password ?? current?.Account ?? string.Empty,
+                    Certificate = certificate,
+                    Password = certificatePassword
+                }, Options);
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(input.Username))
+                    throw new ArgumentException("a credential needs a user name");
+                secret = input.Password
+                    ?? (keeps ? UnprotectSecret(item!) : null)
+                    ?? throw new ArgumentException("a credential needs a password");
+            }
+
+            if (Protect(secret) is not { } protected_)
+                throw new InvalidOperationException("the secret could not be protected for this service account");
+
+            bool added = item == null;
+            item ??= new StoredCredential { Id = Guid.NewGuid().ToString("N") };
             item.Name = name;
-            item.Username = username.Trim();
-            if (protected_ != null) item.Secret = Convert.ToBase64String(protected_);
+            item.Username = input.Username.Trim();
+            item.Kind = input.Kind == CredentialTypes.Certificate ? CredentialTypes.Certificate : "";
+            item.Secret = Convert.ToBase64String(protected_);
+            if (added) document.Items.Add(item);
             if (!Save(document)) throw new InvalidOperationException("the credential could not be written");
+            return new CredentialRecord(item.Id, item.Name, item.Username, input.Kind);
         }
     }
 
@@ -122,16 +202,81 @@ public static class CredentialStore
         }
     }
 
-    /// <summary>The secret behind a named credential, for a layer that chose it.</summary>
+    /// <summary>The secret behind a named credential, for a layer that chose it. The result is
+    /// the concrete subclass the record was saved as, which is what lets a consumer name the
+    /// type it accepts and be handed whichever subclass fits.</summary>
     public static Credential? FindById(string id)
     {
         lock (Gate)
         {
             var item = Load().Items.FirstOrDefault(entry => entry.Id == id);
             if (item == null) return null;
-            try { return Unprotect(Convert.FromBase64String(item.Secret)) is { } secret ? new Credential(item.Username, secret) : null; }
+            string? plain = UnprotectSecret(item);
+            if (plain == null) return null;
+            if (KindOf(item) == CredentialTypes.Password)
+                return new PasswordCredential { Username = item.Username, Password = plain };
+
+            var payload = ParseCertificate(plain);
+            if (payload == null) return null;
+            try
+            {
+                return new ClientCertificateCredential
+                {
+                    Username = item.Username,
+                    Password = payload.Account,
+                    Certificate = Convert.FromBase64String(payload.Certificate),
+                    CertificatePassword = payload.Password
+                };
+            }
             catch (FormatException) { return null; }
         }
+    }
+
+    /// <summary>The kind a stored record is. Files written before kinds existed are passwords,
+    /// which is also what an unrecognised value means: a secret with no certificate is one.</summary>
+    private static string KindOf(StoredCredential item) =>
+        string.Equals(item.Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase)
+            ? CredentialTypes.Certificate : CredentialTypes.Password;
+
+    /// <summary>What a certificate credential holds, protected as one blob: the account password
+    /// (which may be empty), the PKCS#12 bytes in base64 and the password that opens them.</summary>
+    private sealed class CertificateSecret
+    {
+        public string Account { get; set; } = "";
+        public string Certificate { get; set; } = "";
+        public string Password { get; set; } = "";
+    }
+
+    private static CertificateSecret? CertificateOf(StoredCredential item) =>
+        UnprotectSecret(item) is { } json ? ParseCertificate(json) : null;
+
+    private static CertificateSecret? ParseCertificate(string json)
+    {
+        try { return JsonSerializer.Deserialize<CertificateSecret>(json, Options); }
+        catch (JsonException) { return null; }
+    }
+
+    /// <summary>Opens the file with the password it will be used with. The private key stays in
+    /// memory; nothing is written to a key container on disk.</summary>
+    private static void ValidateCertificate(byte[] pfx, string password)
+    {
+        try
+        {
+            using var certificate = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(
+                pfx, password, System.Security.Cryptography.X509Certificates.X509KeyStorageFlags.EphemeralKeySet);
+            if (!certificate.HasPrivateKey)
+                throw new ArgumentException("the certificate file holds no certificate with a private key");
+        }
+        catch (System.Security.Cryptography.CryptographicException ex)
+        {
+            throw new ArgumentException("the certificate could not be opened with that password: " + ex.Message, ex);
+        }
+    }
+
+    private static string? UnprotectSecret(StoredCredential item)
+    {
+        try { return Unprotect(Convert.FromBase64String(item.Secret)); }
+        catch (FormatException) { return null; }
     }
 
     // ---- the document ----
@@ -146,6 +291,9 @@ public static class CredentialStore
         public string Id { get; set; } = "";
         public string Name { get; set; } = "";
         public string Username { get; set; } = "";
+        /// <summary>"certificate", or empty for a password credential — which is also how every
+        /// file written before credentials had kinds is read.</summary>
+        public string Kind { get; set; } = "";
         public string Secret { get; set; } = "";
     }
 
@@ -157,7 +305,9 @@ public static class CredentialStore
         if (Unprotect(blob) is not { } json) return null;
         try
         {
-            return JsonSerializer.Deserialize<Stored>(json) is { } stored ? new Credential(stored.Username, stored.Secret) : null;
+            return JsonSerializer.Deserialize<Stored>(json) is { } stored
+                ? new PasswordCredential { Username = stored.Username, Password = stored.Secret }
+                : null;
         }
         catch (JsonException) { return null; }
     }
@@ -221,9 +371,9 @@ public static class CredentialStore
             foreach (var existing in document.Items)
             {
                 if (!string.Equals(existing.Username, credential.Username, StringComparison.Ordinal)) continue;
-                if (SecretOf(existing) == credential.Secret) return true;
+                if (UnprotectSecret(existing) == credential.Password) return true;
             }
-            if (Protect(credential.Secret) is not { } secret) return false;
+            if (Protect(credential.Password) is not { } secret) return false;
             document.Items.Add(new StoredCredential
             {
                 Id = Guid.NewGuid().ToString("N"),
@@ -234,12 +384,6 @@ public static class CredentialStore
             return true;
         }
         catch (FormatException) { return false; }
-    }
-
-    private static string? SecretOf(StoredCredential item)
-    {
-        try { return Unprotect(Convert.FromBase64String(item.Secret)); }
-        catch (FormatException) { return null; }
     }
 
     /// <summary>Finds a property without caring how an earlier writer capitalised it.</summary>

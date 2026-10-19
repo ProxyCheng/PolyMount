@@ -33,6 +33,10 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private List<CredentialRecord> _credentials = new();
     // The id each credential button currently stands for; empty is "no credential".
     private readonly Dictionary<QWidget, string> _credentialValues = new();
+    // The warning under each credential button, and the block that holds the two: a credential
+    // the service cannot use is said where the choice is, before a mount has to fail.
+    private readonly Dictionary<QPushButton, QLabel> _credentialWarnings = new();
+    private readonly Dictionary<QPushButton, QWidget> _credentialColumns = new();
     private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
@@ -592,9 +596,27 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             if (string.IsNullOrWhiteSpace(text)) text = T("credential.none");
         }
         else if (_credentials.FirstOrDefault(item => item.Id == id) is { } credential)
-            text = credential.Name + " · " + credential.Username;
+            text = credential.Kind == CredentialTypes.Certificate
+                ? credential.Name + " · " + T("credential.kind.certificate")
+                : credential.Name + " · " + credential.Username;
         button.SetText(string.IsNullOrEmpty(text) ? T("credential.missing") : text);
         button.SetToolTip(field.Description.Resolve(I18n.Language));
+        if (_credentialWarnings.TryGetValue(button, out var warning)) ShowCredentialWarning(warning, id);
+    }
+
+    /// <summary>The line under the picker. A layer naming a credential the service cannot use
+    /// would fail at the next mount with a message about the source; saying it here, under the
+    /// choice, is where it can still be fixed without reading a log.</summary>
+    private void ShowCredentialWarning(QLabel warning, string id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) { warning.SetVisible(false); return; }
+        var record = _credentials.FirstOrDefault(item => item.Id == id);
+        string? problem = record == null
+            ? T("credential.missing.hint")
+            : !record.Usable ? T("credential.unusable.hint") : null;
+        if (problem == null) { warning.SetVisible(false); return; }
+        warning.SetText(problem);
+        warning.SetVisible(true);
     }
 
     /// <summary>Opens the picker for one layer. A new credential can be made there without leaving
@@ -609,7 +631,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         ShowCredential(button, field, current);
         string defaultText = field.Placeholder.Resolve(I18n.Language);
         if (string.IsNullOrWhiteSpace(defaultText)) defaultText = T("credential.none");
-        using var picker = new CredentialPicker(this, _credentials, current, defaultText, T("credential.none.hint"));
+        using var picker = new CredentialPicker(this, _credentials, current, defaultText, T("credential.none.hint"),
+            accepted: field.CredentialKinds);
         if (picker.Exec() != 1) return;
         _credentials = picker.Credentials;
         _credentialValues[button] = picker.SelectedId;
@@ -621,6 +644,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         _propertyEditors.Clear();
         _propertyActions.Clear();
+        _credentialValues.Clear();
+        _credentialWarnings.Clear();
+        _credentialColumns.Clear();
         if (_propertyPanel != null)
         {
             _propertyLayout.RemoveWidget(_propertyPanel);
@@ -656,6 +682,18 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 var button = new QPushButton();
                 button.SetObjectName("credentialButton");
                 _credentialValues[button] = value;
+                var column = new QWidget();
+                var columnLayout = new QVBoxLayout(column);
+                columnLayout.SetContentsMargins(0, 0, 0, 0);
+                columnLayout.SetSpacing(4);
+                columnLayout.AddWidget(button);
+                var warning = new QLabel();
+                warning.SetObjectName("credentialWarning");
+                warning.SetWordWrap(true);
+                warning.SetVisible(false);
+                columnLayout.AddWidget(warning);
+                _credentialColumns[button] = column;
+                _credentialWarnings[button] = warning;
                 ShowCredential(button, field, value);
                 button.Clicked += _ => ChooseCredential(button, field);
                 editor = button;
@@ -687,6 +725,8 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             var label = Plain(field.Title.Resolve(I18n.Language), "muted");
             editor.SetToolTip(field.Description.Resolve(I18n.Language));
             QWidget row = editor;
+            if (editor is QPushButton credentialButton && _credentialColumns.TryGetValue(credentialButton, out var credentialColumn))
+                row = credentialColumn;
             if (inline.TryGetValue(field.Path, out var actions))
             {
                 var widget = new QWidget();

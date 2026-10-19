@@ -232,10 +232,17 @@ public sealed class MountManager : IControlHost, IDisposable
                 case ControlCommands.SaveCredential:
                 {
                     var payload = request.Credential ?? throw new InvalidOperationException("saveCredential requires a credential payload");
-                    if (string.IsNullOrWhiteSpace(payload.Id))
-                        CredentialStore.Add(payload.Name, payload.Username, payload.Password ?? string.Empty);
-                    else
-                        CredentialStore.Update(payload.Id, payload.Name, payload.Username, payload.Password);
+                    byte[]? certificate = null;
+                    if (!string.IsNullOrEmpty(payload.Certificate))
+                    {
+                        try { certificate = Convert.FromBase64String(payload.Certificate); }
+                        catch (FormatException) { throw new ArgumentException("the certificate payload is not base64"); }
+                    }
+                    CredentialStore.Save(new CredentialInput(
+                        payload.Id, payload.Name,
+                        string.Equals(payload.Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase)
+                            ? CredentialTypes.Certificate : CredentialTypes.Password,
+                        payload.Username, payload.Password, certificate, payload.CertificatePassword));
                     response.Credentials = CredentialStore.List();
                     break;
                 }

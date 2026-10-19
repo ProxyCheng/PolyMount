@@ -755,6 +755,58 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>This credential no longer exists. Choose another.</translation>
     </message>
     <message>
+      <source>credential.unusable.hint</source>
+      <translation>This credential cannot be read by the service account. Enter it again.</translation>
+    </message>
+    <message>
+      <source>credential.kind</source>
+      <translation>Type</translation>
+    </message>
+    <message>
+      <source>credential.kind.password</source>
+      <translation>Account and password</translation>
+    </message>
+    <message>
+      <source>credential.kind.certificate</source>
+      <translation>Client certificate</translation>
+    </message>
+    <message>
+      <source>credential.certificate</source>
+      <translation>Certificate file</translation>
+    </message>
+    <message>
+      <source>credential.certificate.hint</source>
+      <translation>Choose a .pfx/.p12 file</translation>
+    </message>
+    <message>
+      <source>credential.certificate.keep</source>
+      <translation>Saved; choose a file to replace it</translation>
+    </message>
+    <message>
+      <source>credential.certificate.browse</source>
+      <translation>Choose file…</translation>
+    </message>
+    <message>
+      <source>credential.certificate.filter</source>
+      <translation>Certificate files (*.pfx *.p12);;All files (*)</translation>
+    </message>
+    <message>
+      <source>credential.certificate.password</source>
+      <translation>Certificate password</translation>
+    </message>
+    <message>
+      <source>credential.certificate.required</source>
+      <translation>Choose a certificate file.</translation>
+    </message>
+    <message>
+      <source>credential.certificate.password.required</source>
+      <translation>Enter the certificate password.</translation>
+    </message>
+    <message>
+      <source>credential.certificate.unreadable</source>
+      <translation>Cannot read the certificate file: {0}</translation>
+    </message>
+    <message>
       <source>credential.pick.title</source>
       <translation>Choose credential</translation>
     </message>

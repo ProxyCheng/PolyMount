@@ -100,6 +100,10 @@ public sealed class SvnPlugin : IPolyMountPlugin
                         Title = SvnTexts.Get("svn.field.revision") },
                     new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
                     new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
+                        // Both kinds fill this: an account for a repository that asks for one,
+                        // or a certificate credential for one behind mutual TLS (which may name
+                        // an account as well).
+                        CredentialKinds = new() { CredentialTypes.Password, CredentialTypes.Certificate },
                         Title = SvnTexts.Get("svn.field.credential"),
                         Placeholder = SvnTexts.Get("svn.field.credential.placeholder"),
                         Description = SvnTexts.Get("svn.field.credential.description") },

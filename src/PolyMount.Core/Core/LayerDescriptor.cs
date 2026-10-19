@@ -31,6 +31,11 @@ public sealed class LayerFieldDescriptor
     public LocalizedText Description { get; set; } = new();
     public LocalizedText Placeholder { get; set; } = new();
     public LayerFieldKind Kind { get; set; }
+    /// <summary>For a <see cref="LayerFieldKind.Credential"/> field: the credential kinds this
+    /// consumer accepts. A place that uses credentials names the type it needs, and any
+    /// credential whose kind is on the list can fill it. Empty accepts every kind, which is what
+    /// a consumer that does not care gets.</summary>
+    public List<string> CredentialKinds { get; set; } = new();
     public string? DefaultValue { get; set; }
     public bool Required { get; set; }
     public bool Trim { get; set; } = true;

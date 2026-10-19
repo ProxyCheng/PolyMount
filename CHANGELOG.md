@@ -5,6 +5,74 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-20
+
+### Added
+
+- Symbolic links and junctions work inside a writable mount. A link is a reparse point, and the
+  mount now keeps the bytes a client writes when it creates one, reports the attribute, and lets
+  Windows resolve the target — so `mklink` succeeds where it used to answer "local volumes are
+  required", and a directory link lists its target. A link in the middle of a path is resolved
+  too, which is what a tool whose workspace is a tree of junctions needs: opening, launching and
+  deleting through one now work, and a link that leaves the mount still goes back to Windows.
+- Programs stored on the volume can be started. A file system mounted the ordinary way is not a
+  volume Windows accepts behind a path: AppLocker and the UAC consent path reject it with
+  `ERROR_UNRECOGNIZED_VOLUME`, so an executable on the mount could be read but not run. An
+  elevated process now mounts through the Mount Manager, attaches the configured directory to that
+  volume, and releases the transient drive letter; an unprivileged process keeps the previous
+  behaviour.
+- A repository behind mutual TLS can be given a **certificate credential** — a `.pfx`/`.p12` file
+  and the password that opens it — instead of relying on the personal certificate stores, which a
+  service account cannot see and a user's non-exportable key cannot fill. The editor grows a
+  credential type picker, a certificate file picker and a password box, and the layer names the
+  credential it uses. The password is a secret like the repository password: redacted by the
+  configuration API, set from the tray.
+- The service can run under an account of its own. Credentials are protected so that the account
+  which reads them is the one that can open them, with existing entries migrated as they are read,
+  and the service offers the machine's personal certificate store as well as the account's.
+
+### Changed
+
+- Small writes through the mount are coalesced: a write publishes to the resident index at once and
+  a short window (100 ms, or 256 changes) runs one transaction for everything a burst produced,
+  with the blob fsyncs on the commit thread. Writing a 4 KiB file through an overlay over a local
+  directory measured 33.5 ms/file, then 6.9 ms/file. A reader in the same process still sees its
+  own writes immediately; only durability moves, and an orderly unmount, a clear, an eviction and a
+  management action all commit what is pending first.
+- A durable cache stages a large object by its own size rather than a fixed 256 MiB: the budget
+  scales with the cache (a quarter of its capacity, floor 256 MiB, cap 4 GiB), so a package larger
+  than the old floor is no longer downloaded again on every start. The game-engine plugin's
+  manifest strategy can also stay a few names ahead of a reader that walks the repository in
+  listing order.
+
+### Fixed
+
+- A path the repository does not have is a miss, not an I/O error. The transport reported a 404 by
+  throwing and the layer let it escape, so the mount answered a probe for an absent file with
+  `STATUS_IO_DEVICE_ERROR` — a program whose DLL lives only in `System32` then refused to start.
+- A path spelled in a different case finds the repository's spelling. The mount advertises
+  case-insensitive names and Subversion's URLs are case-sensitive, so a lower-case spelling that
+  differed from the server's answered 404 even though the parent listing named the child.
+- A child's header is answered from its parent's listing instead of a round trip per name, and an
+  SVN listing is parsed without comparing the collection against every child: opening a directory
+  of 3,310 entries no longer costs 3,310 requests, and a start-up that used to make thousands of
+  them now reads the listings it already has. Paths in a listing are compared as decoded paths, so
+  a name such as `直接进入游戏.bat` resolves regardless of how the server escaped it.
+- Clearing an instance's cache on a very large store failed with "too many SQL variables"; the
+  blob names are read in batches and the table is emptied with one statement.
+- An elevated control pipe no longer admits every interactive user: the read/write rule is added
+  only when the server is not elevated, where the tray, an agent's MCP server and the Explorer
+  overlay need it.
+- Starting the service from the tray asks the SCM first and never launches a second, unprivileged
+  supervisor beside an installed service.
+- The Explorer overlay no longer crashes the process that loads it when that process carries an
+  older Visual C++ runtime: it uses primitives whose layout is not shared with the C++ standard
+  library, and the build refuses to produce a DLL that imports the coupled entry points.
+- An exception raised inside a Qt callback is written to the tray's log instead of leaving the
+  control that raised it looking like a dead button.
+- The credential form builds its rows after the label they report into, so adding or editing a
+  credential no longer does nothing.
+
 ## [0.4.10] - 2026-10-18
 
 ### Changed

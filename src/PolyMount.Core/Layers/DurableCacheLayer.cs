@@ -38,7 +38,12 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     }
 
     private const int MaxQueuedWrites = 4096;
-    private const long MaxPendingBytes = 256L * 1024 * 1024;
+    /// <summary>The staging bound for a cache whose capacity does not say otherwise. A single
+    /// object below this is admitted whole; larger ones used to be refused outright, which made
+    /// every start re-download a large package. The bound scales with the cache below.
+    /// </summary>
+    private const long MinPendingBytes = 256L * 1024 * 1024;
+    private const long MaxPendingBytesLimit = 4L * 1024 * 1024 * 1024;
     private const int PersistBatchObjects = 64;
     private const long PersistBatchBytes = 8L * 1024 * 1024;
 
@@ -74,6 +79,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     private readonly string _storeRoot;
     private readonly Func<string> _version;
     private readonly long _indexCapacity;
+    private readonly long _pendingBudget;
     private readonly long _metadataBudget;
     private readonly Func<VirtualObject, bool> _keep;
     private readonly object _gate = new(), _persistGate = new();
@@ -112,6 +118,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         _storeRoot = storeRoot;
         _version = version;
         _indexCapacity = indexCapacityBytes;
+        // One object may be far larger than the queue's old 256 MiB floor, and the content of
+        // a file-backed item is a handle rather than memory, so a cache with room to hold it
+        // must be allowed to stage it. The bound is a quarter of the cache: a 16 GiB cache
+        // admits a 4 GiB object, a small cache keeps the old floor.
+        _pendingBudget = Math.Clamp(indexCapacityBytes / 4, MinPendingBytes, MaxPendingBytesLimit);
         _metadataBudget = metadataBudget;
         _keep = keep;
         foreach (var record in store.Records) Load(record);
@@ -177,6 +188,9 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     public RequestDiagnostics? Diagnostics { get; set; }
     public string? LastPersistenceError { get; private set; }
     public long Capacity => _indexCapacity;
+    /// <summary>How much content may be staged for persistence at once. Exposed so the tests
+    /// can pin the scaling rule without writing a multi-hundred-megabyte object.</summary>
+    internal long PendingBudget => _pendingBudget;
     public long TotalBytes { get { lock (_gate) return _bytes; } }
     public int Count { get { lock (_gate) return _items.Count; } }
     public long EstimatedMetadataBytes { get { lock (_gate) return _metadataBytes; } }
@@ -390,9 +404,11 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
         long metadata = CacheBudgets.Estimate(key.Path, value);
         lock (_gate)
         {
-            // Reserve bounded queue space before retaining or copying any content.
+            // Reserve bounded queue space before retaining or copying any content. The budget
+            // scales with the cache, so a package larger than the old 256 MiB floor is admitted
+            // instead of being downloaded again on every start.
             if (_disposed || metadata > _metadataBudget || estimate > _indexCapacity ||
-                estimate > MaxPendingBytes || _pendingBytes + estimate > MaxPendingBytes ||
+                estimate > _pendingBudget || _pendingBytes + estimate > _pendingBudget ||
                 _queue.Reader.Count >= MaxQueuedWrites || _items.ContainsKey(key)) return;
             Item? item = null;
             try
@@ -625,12 +641,15 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
     {
         while (true)
         {
-            lock (_gate) if (_pendingBytes == 0) return;
+            lock (_gate) if (_pendingBytes == 0) break;
             await Task.Delay(10);
         }
+        // The queue is empty, but the store coalesces its transactions: a caller that awaits
+        // this method is asking for the cache to be on disk, not merely handed over.
+        _store.Commit();
     }
 
-    public void Dispose()
+    public virtual void Dispose()
     {
         _storageCheck.Dispose();
         Task? worker;
@@ -643,5 +662,7 @@ public abstract class DurableCacheLayer : CacheLayer, ICacheLayer, IObjectCache,
             worker = _worker;
         }
         worker?.GetAwaiter().GetResult();
+        // A shutdown is a point on disk: the store has usually coalesced the last fills.
+        try { _store.Dispose(); } catch (Exception) { }
     }
 }

@@ -758,6 +758,58 @@
       <translation>这个凭据已不存在，请选择其他凭据。</translation>
     </message>
     <message>
+      <source>credential.unusable.hint</source>
+      <translation>这个凭据无法被当前服务账户读取，请重新录入。</translation>
+    </message>
+    <message>
+      <source>credential.kind</source>
+      <translation>类型</translation>
+    </message>
+    <message>
+      <source>credential.kind.password</source>
+      <translation>账户和密码</translation>
+    </message>
+    <message>
+      <source>credential.kind.certificate</source>
+      <translation>客户端证书</translation>
+    </message>
+    <message>
+      <source>credential.certificate</source>
+      <translation>证书文件</translation>
+    </message>
+    <message>
+      <source>credential.certificate.hint</source>
+      <translation>选择一个 .pfx/.p12 文件</translation>
+    </message>
+    <message>
+      <source>credential.certificate.keep</source>
+      <translation>已保存；选择文件可替换</translation>
+    </message>
+    <message>
+      <source>credential.certificate.browse</source>
+      <translation>选择文件…</translation>
+    </message>
+    <message>
+      <source>credential.certificate.filter</source>
+      <translation>证书文件 (*.pfx *.p12);;所有文件 (*)</translation>
+    </message>
+    <message>
+      <source>credential.certificate.password</source>
+      <translation>证书密码</translation>
+    </message>
+    <message>
+      <source>credential.certificate.required</source>
+      <translation>请选择证书文件。</translation>
+    </message>
+    <message>
+      <source>credential.certificate.password.required</source>
+      <translation>请填写证书密码。</translation>
+    </message>
+    <message>
+      <source>credential.certificate.unreadable</source>
+      <translation>无法读取证书文件：{0}</translation>
+    </message>
+    <message>
       <source>credential.pick.title</source>
       <translation>选择凭据</translation>
     </message>

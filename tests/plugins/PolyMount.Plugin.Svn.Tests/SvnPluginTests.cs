@@ -119,7 +119,9 @@ public sealed class SvnPluginTests : IPluginTestProvider
 
     private sealed class TreeBackend : ISvnBackend
     {
-        private static readonly Dictionary<string, string[]> Tree = new()
+        // The repository is case-sensitive; the fake is too, so a layer that relies on the
+        // mount's case-insensitivity fails a check the way it would fail against the server.
+        private static readonly Dictionary<string, string[]> Tree = new(StringComparer.Ordinal)
         {
             [""] = ["A", "B", "f.txt"],
             ["A"] = ["inner", "g.txt"],
@@ -165,16 +167,20 @@ public sealed class SvnPluginTests : IPluginTestProvider
             lock (_infos) _infos[rel] = _infos.GetValueOrDefault(rel) + 1;
             Record();
             if (rel.Length == 0) return new SvnEntry { Name = string.Empty, IsDir = true };
-            // Like a repository, report the spelling it holds rather than the one asked for.
-            string? self = Tree.Keys.FirstOrDefault(key => string.Equals(key, rel, StringComparison.OrdinalIgnoreCase));
-            if (self != null) return new SvnEntry { Name = VfsPath.Name(self), IsDir = true };
+            // Like a repository, report the spelling it holds rather than the one asked for —
+            // and only for that spelling: a case-mismatched path is a 404 there.
+            if (Tree.ContainsKey(rel)) return new SvnEntry { Name = VfsPath.Name(rel), IsDir = true };
             string parent = VfsPath.Parent(rel);
             string name = VfsPath.Name(rel);
-            string? owner = Tree.Keys.FirstOrDefault(key => string.Equals(key, parent, StringComparison.OrdinalIgnoreCase));
+            string? owner = Tree.ContainsKey(parent) ? parent : null;
             string? child = owner == null
                 ? null
-                : Tree[owner].FirstOrDefault(entry => string.Equals(entry, name, StringComparison.OrdinalIgnoreCase));
-            return child == null ? null : new SvnEntry { Name = child, IsDir = false };
+                : Tree[owner].FirstOrDefault(entry => string.Equals(entry, name, StringComparison.Ordinal));
+            // The HTTP transport reports a 404 by throwing, not by returning nothing; the fake
+            // does the same so a layer that lets it escape fails a check here instead of turning
+            // "not here" into an I/O error on a real mount.
+            if (child == null) throw new SvnNotFoundException(rel);
+            return new SvnEntry { Name = child, IsDir = false };
         }
         public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
         {
@@ -403,6 +409,81 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (entries.Any(e => e.Name == "Shapes.local")) throw new Exception("The collection listed itself");
             if (entries.Count != 3) throw new Exception("Unexpected entry count: " + entries.Count);
         });
+        Check("escaped-hrefs-match-their-path", () =>
+        {
+            // The repository writes UTF-8 escapes in lowercase (`%e7%9b%b4...`) while
+            // Uri.EscapeDataString writes them in uppercase, and a href that is a path rather
+            // than a URL reaches the comparison exactly as the server wrote it. An ordinal
+            // comparison of the two spellings made every non-ASCII path look missing: its
+            // header never resolved and its content could not be opened.
+            const string name = "直接进入游戏.bat";
+            const string collection = "直接进入";
+            const string requestPath = "/svn/!svn/rvr/7/trunk/src/" + name;
+            const string serverPath = "/svn/!svn/rvr/7/trunk/src/" + name;
+            // What the server actually sent: escapes, in lowercase hex.
+            const string href = "/svn/!svn/rvr/7/trunk/src/%e7%9b%b4%e6%8e%a5%e8%bf%9b%e5%85%a5%e6%b8%b8%e6%88%8f.bat";
+            if (href == requestPath) throw new Exception("The fixture no longer differs from the request spelling");
+
+            var entryDocument = XDocument.Parse(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\"><D:response>" +
+                "<D:href>" + href + "</D:href><D:propstat><D:prop><D:resourcetype/>" +
+                "<D:getcontentlength>1013</D:getcontentlength></D:prop>" +
+                "<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>");
+            var entry = SvnHttpClient.ParseEntry(entryDocument, requestPath);
+            if (entry == null) throw new Exception("A lowercase-escaped href did not match its own path");
+            if (entry.Name != name) throw new Exception("The entry's name was not decoded: " + entry.Name);
+            if (entry.Size != 1013) throw new Exception("The entry's size was lost: " + entry.Size);
+
+            // A directory listing must not report the collection itself as a child, whatever
+            // spelling its own href uses.
+            const string collectionHref = "/svn/!svn/rvr/7/trunk/src/%e7%9b%b4%e6%8e%a5%e8%bf%9b%e5%85%a5/";
+            var listDocument = XDocument.Parse(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\"><D:response>" +
+                "<D:href>" + collectionHref + "</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype>" +
+                "</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>");
+            var listed = SvnHttpClient.ParseListing(listDocument,
+                "/svn/!svn/rvr/7/trunk/src/" + collection, collection);
+            if (listed.Count != 0) throw new Exception("The collection listed itself as a child: " + listed[0].Name);
+
+            // Decoding is not a licence to match different paths: the name is still significant.
+            if (SvnHttpClient.SamePath(serverPath, "/svn/!svn/rvr/7/trunk/src/%e7%9b%b4%e6%8e%a5.bat"))
+                throw new Exception("Two different names compared as the same path");
+        });
+        Check("client-certificate-from-a-pfx", () =>
+        {
+            // A service account cannot reach the signed-in user's personal store, and a user's
+            // key is usually not exportable. A certificate credential carries the PKCS#12 bytes
+            // instead, which is the only way that installation reaches a repository behind
+            // mutual TLS.
+            using var key = System.Security.Cryptography.RSA.Create(2048);
+            var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+                "CN=polymount-client", key, System.Security.Cryptography.HashAlgorithmName.SHA256,
+                System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
+                new System.Security.Cryptography.OidCollection
+                    { new System.Security.Cryptography.Oid("1.3.6.1.5.5.7.3.2") }, critical: false));
+            using var certificate = request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            byte[] pfx = certificate.Export(X509ContentType.Pfx, "pw");
+
+            var loaded = SvnHttpClient.LoadClientCertificates(pfx, "pw");
+            if (loaded.Count != 1) throw new Exception("the PFX did not yield one certificate: " + loaded.Count);
+            if (!loaded[0].HasPrivateKey) throw new Exception("the certificate was loaded without its private key");
+
+            try
+            {
+                SvnHttpClient.LoadClientCertificates(pfx, "wrong");
+                throw new Exception("a wrong certificate password was accepted");
+            }
+            catch (ArgumentException ex) when (ex.Message.Contains("client certificate")) { }
+
+            try
+            {
+                SvnHttpClient.LoadClientCertificates(new byte[] { 1, 2, 3, 4 }, "");
+                throw new Exception("bytes that are not a PKCS#12 file were accepted");
+            }
+            catch (ArgumentException ex) when (ex.Message.Contains("client certificate")) { }
+        });
         Check("certificate-trust-mapping", () =>
         {
             // A self-signed certificate against an empty root store fails with
@@ -428,6 +509,40 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("The catch-all failure list did not trust every error");
             if (!SvnHttpClient.TrustsCertificateFailures("unknown-ca,cn-mismatch,expired,not-yet-valid,other", certificate, chain, SslPolicyErrors.None))
                 throw new Exception("A valid certificate was rejected");
+        });
+        Check("missing-path-is-an-answer", () =>
+        {
+            // A path the repository does not have is a miss, not an exception, because the mount
+            // asks every layer for every path and the Windows loader probes for DLLs the same
+            // way: an exception becomes an I/O error there, and the loader reads that as a broken
+            // disk and refuses to start the program.
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "missing-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, Children = 0 });
+            if (layer.TryGetEntry("A/missing.txt", out _)) throw new Exception("a missing path resolved");
+            if (layer.TryOpenRead("A/missing.txt", out _, out _)) throw new Exception("a missing path opened");
+            if (layer.TryGetEntry("Nope", out _)) throw new Exception("a missing directory resolved");
+        });
+        Check("case-insensitive-path-against-a-case-sensitive-repository", () =>
+        {
+            // The mount advertises case-insensitive names and the repository's URLs are not.
+            // A lower-case spelling has to resolve to the entry the server advertises, and the
+            // content has to be fetched under that spelling — Python 2.7's own runtime is the
+            // case in point: it imports its stdlib from "Lib", while the mount was asked for
+            // "lib" and got a 404 from the server.
+            var backend = new TreeBackend();
+            using var layer = new SvnLayer(backend, Path.Combine(context.WorkingDirectory, "case-pin.txt"),
+                new SvnPrefetchOptions { Concurrency = 0, Children = 0 });
+            if (!layer.TryGetEntry("a/g.TXT", out var entry) || entry.Name != "g.txt")
+                throw new Exception("a case-insensitive lookup did not resolve the advertised name");
+            if (!layer.TryOpenRead("a/G.txt", out _, out var stream))
+                throw new Exception("a case-insensitive open did not find the file");
+            stream.Dispose();
+            if (backend.CatCount("A/g.txt") != 1)
+                throw new Exception("content was not fetched under the advertised spelling");
+            var names = layer.ListOwn("a").Select(item => item.Name).ToArray();
+            if (!names.SequenceEqual(new[] { "inner", "g.txt" }))
+                throw new Exception("a lower-case directory listed: " + string.Join(",", names));
         });
         Check("header-asks-for-the-path-not-the-parent", () =>
         {

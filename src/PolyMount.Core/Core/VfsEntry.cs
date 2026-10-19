@@ -13,6 +13,13 @@ public sealed class VfsEntry
     /// name a version leaves it null and the cache falls back to invalidating by generation,
     /// so nothing here assumes a particular backend exists.</summary>
     public string? ContentVersion { get; init; }
+    /// <summary>Whether this name carries a reparse point (a symbolic link, a junction). The
+    /// resolver sets it from the writable layer's store; the mount reports it as
+    /// FILE_ATTRIBUTE_REPARSE_POINT, which is how Windows knows to resolve the name at all.</summary>
+    public bool IsReparsePoint { get; set; }
+    /// <summary>The reparse tag of that point (0 when there is none), reported alongside the
+    /// attribute so the system can tell a name surrogate from any other kind.</summary>
+    public uint ReparseTag { get; set; }
 }
 
 public sealed class VfsNotFoundException : Exception

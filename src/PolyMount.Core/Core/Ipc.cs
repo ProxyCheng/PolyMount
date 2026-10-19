@@ -139,6 +139,14 @@ public sealed class CredentialPayload
     public string Name { get; set; } = "";
     public string Username { get; set; } = "";
     public string? Password { get; set; }
+    /// <summary>"password" or "certificate". Empty means a password credential, which is what a
+    /// client that predates kinds sends.</summary>
+    public string Kind { get; set; } = "";
+    /// <summary>The PKCS#12 file in base64, for a certificate credential. Null keeps the one the
+    /// record already holds.</summary>
+    public string? Certificate { get; set; }
+    /// <summary>The password that opens <see cref="Certificate"/>. Null keeps the stored one.</summary>
+    public string? CertificatePassword { get; set; }
 }
 
 public sealed class ControlRequest

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -21,10 +22,22 @@ public class ControlPipeTests
             .ToList();
 
     [TestMethod]
-    public void An_interactive_session_may_read_and_write()
+    public void An_interactive_session_may_read_and_write_unless_the_server_is_elevated()
     {
+        // The interactive rule is how a service running under an account of its own is reached
+        // by the signed-in user. An elevated server in an interactive session already grants
+        // the account it runs under, and the control plane can point a layer at any path, so
+        // there the rule would only hand the other interactive users what they cannot read
+        // themselves. A service in session 0 has no interactive account of its own and keeps
+        // the rule; that is the installed shape, and the caller the tray is.
         var interactive = new SecurityIdentifier(WellKnownSidType.InteractiveSid, null);
         var rule = Rules().SingleOrDefault(r => interactive.Equals(r.IdentityReference));
+        bool expected = !Elevation.IsElevated || Process.GetCurrentProcess().SessionId == 0;
+        if (!expected)
+        {
+            Assert.IsNull(rule, "an elevated interactive server must not take commands from other users");
+            return;
+        }
         Assert.IsNotNull(rule, "the tray, an MCP server and the Explorer overlay all run in one");
         Assert.AreEqual(AccessControlType.Allow, rule.AccessControlType);
         Assert.IsTrue(rule.PipeAccessRights.HasFlag(PipeAccessRights.ReadData), "a client reads the answer");

@@ -44,7 +44,7 @@ public abstract class CredentialedSource
             return CredentialStore.FindById(Source.CredentialId)
                 ?? throw new InvalidOperationException("the credential this layer names no longer exists; choose another in the layer's settings");
         if (!string.IsNullOrWhiteSpace(Source.Username))
-            return new Credential(Source.Username, Source.Password ?? string.Empty);
+            return new PasswordCredential { Username = Source.Username, Password = Source.Password ?? string.Empty };
         return ResolveProtocolCredential();
     }
 

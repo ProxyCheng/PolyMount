@@ -16,6 +16,18 @@ $importLib = Join-Path $OutputDirectory 'PolyMount.Shell.lib'
 $command = "call `"$vcvars`" >nul && cl.exe /nologo /std:c++17 /EHsc /O2 /MD /LD `"$source`" /Fo`"$obj`" /link /DEF:`"$exports`" /IMPLIB:`"$importLib`" /OUT:`"$dll`" shell32.lib ole32.lib uuid.lib"
 & cmd.exe /d /c $command
 if ($LASTEXITCODE -ne 0) { throw 'Shell extension compilation failed.' }
+# A shell extension runs inside whatever process draws folder icons, and that host may carry an
+# older app-local MSVCP140 next to its exe (Rider 2025.3 ships 14.29 while this toolset is 14.51).
+# The STL's mutex/condition_variable keep their state inside the object, so the host's older
+# MSVCP140 misreads them and crashes the host in _Mtx_lock. The overlay therefore locks with
+# SRWLOCK/CONDITION_VARIABLE and starts its worker with _beginthreadex; this guard keeps the
+# version-coupled entry points from creeping back in.
+$image = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($dll))
+foreach ($entry in @('_Mtx_','_Cnd_','_Thrd_','_Query_perf_')) {
+    if ($image.Contains($entry)) {
+        throw "PolyMount.Shell.dll imports $entry from MSVCP140: the host's CRT version would have to match this build's exactly, which a shell host does not guarantee."
+    }
+}
 Add-Type -AssemblyName System.Drawing
 $icons = Join-Path $OutputDirectory 'icons'
 New-Item -ItemType Directory -Path $icons -Force | Out-Null

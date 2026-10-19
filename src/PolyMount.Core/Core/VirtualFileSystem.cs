@@ -26,6 +26,94 @@ public sealed class VirtualFileSystem
         _probe = _layers.Select(layer => "Layer.Probe:" + layer.Name).ToArray();
     }
     public IReadOnlyList<ILayer> Layers => _layers;
+    /// <summary>The reparse data a name carries, from the first layer that holds one. A layer
+    /// that accepts writes keeps them; the layers above and below only answer for what they
+    /// have, so a link created locally is found before anything the source says about the path.
+    /// </summary>
+    public bool TryGetReparsePoint(string path, out byte[]? data)
+    {
+        path = VfsPath.Normalize(path);
+        foreach (var layer in _layers)
+            if (ReparsePointStore(layer) is { } store && store.TryGetReparsePoint(path, out data)) return true;
+        data = null;
+        return false;
+    }
+
+    public bool SetReparsePoint(string path, byte[] data)
+    {
+        path = VfsPath.Normalize(path);
+        foreach (var layer in _layers)
+            if (ReparsePointStore(layer) is { } store) return store.SetReparsePoint(path, data);
+        return false;
+    }
+
+    public bool DeleteReparsePoint(string path)
+    {
+        path = VfsPath.Normalize(path);
+        foreach (var layer in _layers)
+            if (ReparsePointStore(layer) is { } store && store.DeleteReparsePoint(path)) return true;
+        return false;
+    }
+
+    /// <summary>The store behind a layer. Layer chains wrap providers in a named decorator, which
+    /// is not the capability itself.</summary>
+    private static IReparsePointStore? ReparsePointStore(ILayer layer) =>
+        (layer is NamedLayer named ? named.Inner : layer) as IReparsePointStore;
+
+    /// <summary>The first component of <paramref name="path"/> that is a name surrogate, and the
+    /// character offset where it begins. Windows resolves a link when the link itself is the name
+    /// it opens, but this mount is asked about whole names: for "\link\sub\file" it is only asked
+    /// whether that name exists, and answering "no" ends the search. Naming the component is how
+    /// the mount tells Windows which part it should resolve.
+    ///
+    /// The offset is in <paramref name="path"/> as given, not in the normalized form: WinFsp
+    /// re-reads the offset out of the original name to start resolution there.</summary>
+    public bool TryFindReparsePoint(string path, out int index)
+    {
+        index = 0;
+        int start = 0;
+        while (start < path.Length && path[start] is '\\' or '/') start++;
+        for (int i = start; i < path.Length; i++)
+        {
+            if (path[i] is not ('\\' or '/')) continue;
+            if (TryGetReparseTag(path[..i], out uint tag) && ReparseTags.IsNameSurrogate(tag))
+            {
+                index = start;
+                return true;
+            }
+            start = i + 1;
+            while (start < path.Length && path[start] is '\\' or '/') start++;
+        }
+        return false;
+    }
+
+    /// <summary>Whether a name carries a reparse point, by tag only. This runs on every lookup
+    /// that misses — a probe for a name that is not there — so it must not read the bytes: a
+    /// store keeps the tags in memory and loads the data only when something asks for it.</summary>
+    private bool TryGetReparseTag(string path, out uint tag)
+    {
+        foreach (var layer in _layers)
+            if (ReparsePointStore(layer) is { } store && store.TryGetReparseTag(path, out tag)) return true;
+        tag = 0;
+        return false;
+    }
+
+
+    /// <summary>Stamps an entry with the reparse point a writable layer keeps for its name. The
+    /// mount reports it as FILE_ATTRIBUTE_REPARSE_POINT, and that attribute is the only reason
+    /// Windows ever asks the file system to resolve a link.</summary>
+    private void MarkReparse(string path, VfsEntry entry)
+    {
+        if (entry.IsReparsePoint) return;
+        foreach (var layer in _layers)
+            if (ReparsePointStore(layer) is { } store && store.TryGetReparseTag(path, out uint tag))
+            {
+                entry.IsReparsePoint = true;
+                entry.ReparseTag = tag;
+                return;
+            }
+    }
+
     public bool Writable => _layers.Any(l => l.Writable);
     public MetricsCollector? Metrics { get; set; }
     public RequestDiagnostics? Diagnostics { get; set; }
@@ -144,8 +232,16 @@ public sealed class VirtualFileSystem
             if (_layers[i] is IObjectCache cache) cache.TouchObject(path);
     }
 
-    private bool Visible(string path, bool fill = true)
+    private bool Visible(string path, bool fill = true) => Visible(path, out _, out _, fill);
+
+    /// <summary>Walks the ancestors as the resolver does and, when the path is visible,
+    /// hands back the listing that contains its last component and the layer that answered
+    /// it. That listing already holds the child's header — the resolver would otherwise ask
+    /// every layer for the same facts by exact path, and the source would repeat on the next
+    /// request what it just said in the parent's listing.</summary>
+    private bool Visible(string path, out DirectoryObjectContent? parent, out int parentIndex, bool fill = true)
     {
+        parent = null; parentIndex = -1;
         if (path.Length == 0) return true;
         int start = 0;
         string current = "";
@@ -153,10 +249,10 @@ public sealed class VirtualFileSystem
         {
             int slash = path.IndexOf('/', start);
             int end = slash < 0 ? path.Length : slash;
-            if (!Resolve(current, out var directory, out _, fill) || !directory.Header.IsDir ||
+            if (!Resolve(current, out var directory, out var directoryIndex, fill) || !directory.Header.IsDir ||
                 directory.Content is not DirectoryObjectContent members ||
                 !members.Contains(path.AsSpan(start, end - start))) return false;
-            if (slash < 0) return true;
+            if (slash < 0) { parent = members; parentIndex = directoryIndex; return true; }
             // The prefix is the next lookup's key, so it has to exist; the component itself
             // does not, and Split used to build every one of them plus an array.
             current = path[..end];
@@ -165,13 +261,37 @@ public sealed class VirtualFileSystem
     }
     // Attribute queries must not read a directory's children. Remote providers can
     // obtain the header from its parent's already resolved listing.
-    private bool ResolveHeader(string path, out VfsEntry entry, out int index, int? limit = null)
+    private bool ResolveHeader(string path, out VfsEntry entry, out int index, int? limit = null,
+        DirectoryObjectContent? parent = null, int parentIndex = -1)
     {
+        // The authoritative listing is the one the visibility walk already resolved, and the
+        // member table is case-insensitive: NTFS semantics, which is what the mount advertises
+        // (MountInstance sets CaseSensitiveSearch=false). Take the header from there, and ask
+        // only the layers above that listing for an override — a copy-up, a renamed entry.
+        // `limit` is the enumeration path, which is already holding the listing and only wants
+        // those overrides, so it keeps the exact-path walk.
+        if (limit == null && parentIndex >= 0 && parent != null &&
+            parent.TryGetEntry(VfsPath.Name(path), out var listed))
+        {
+            for (index = 0; index < parentIndex; index++)
+            {
+                using var request = RequestDiagnostics.Begin(_getEntry[index], path);
+                if (!_layers[index].TryGetEntry(path, out entry!)) continue;
+                TouchBelow(path, index);
+                MarkReparse(path, entry);
+                return true;
+            }
+            entry = listed;
+            index = parentIndex;
+            MarkReparse(path, entry);
+            return true;
+        }
         for (index = 0; index < (limit ?? _layers.Count); index++)
         {
             using var request = RequestDiagnostics.Begin(_getEntry[index], path);
             if (!_layers[index].TryGetEntry(path, out entry!)) continue;
             TouchBelow(path, index);
+            MarkReparse(path, entry);
             return true;
         }
         entry = null!;
@@ -198,7 +318,8 @@ public sealed class VirtualFileSystem
         int index = _layers.Count;
         var token = BeginFill();
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        bool found = Visible(path) && ResolveHeader(path, out entry, out index);
+        bool found = Visible(path, out var parent, out int parentIndex) &&
+                     ResolveHeader(path, out entry, out index, parent: parent, parentIndex: parentIndex);
         // Counted exactly where a layer would have been charged, so what is left over when the two
         // are put together is the time in requests this account covers but nothing answered for —
         // not the traffic it never claimed to cover.
@@ -244,6 +365,9 @@ public sealed class VirtualFileSystem
         // for thousands of children of a cached directory.
         var items = value.Children!.Select(child => ResolveHeader(VfsPath.Child(path, child.Name), out var header, out _, index)
             ? header : child).OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase).ToList();
+        // The listing's own headers came from a layer that does not keep reparse points; the
+        // writable one does, and every entry the mount hands out carries the attribute.
+        foreach (var item in items) MarkReparse(VfsPath.Child(path, item.Name), item);
         if (recordAccess && index < _layers.Count) Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
         if (recordAccess) Metrics?.RecordRequest(watch.Elapsed);
         return items;
@@ -262,13 +386,13 @@ public sealed class VirtualFileSystem
                 Metrics?.RecordRequest(TimeSpan.Zero);
                 return handle;
             }
-            if (!Visible(path))
+            if (!Visible(path, out var parent, out int parentIndex))
             {
                 Metrics?.RecordRequest(TimeSpan.Zero);
                 throw new VfsNotFoundException(path);
             }
             VfsEntry? contentHeader = null;
-            if (ResolveHeader(path, out var visibleHeader, out _))
+            if (ResolveHeader(path, out var visibleHeader, out _, parent: parent, parentIndex: parentIndex))
             {
                 if (visibleHeader.IsDir)
                 {
@@ -545,7 +669,10 @@ public sealed class VirtualFileSystem
         if (path.Length == 0) throw new UnauthorizedAccessException("Cannot delete the root");
         if (!Writable) throw new UnauthorizedAccessException("No provider accepts this write operation");
         if (!TryLookup(path, out var existing)) throw new VfsNotFoundException(path);
-        if (existing.IsDir && List(path, recordAccess: false).Count > 0) throw new VfsDirectoryNotEmptyException(path);
+        // A reparse point is a name, not the directory it points at: Windows deletes the link
+        // without touching the target, so its target's contents must not make it "not empty".
+        if (existing.IsDir && !existing.IsReparsePoint && List(path, recordAccess: false).Count > 0)
+            throw new VfsDirectoryNotEmptyException(path);
     }
     public void Rename(string path, string destination, bool replace)
     {

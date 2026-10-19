@@ -208,6 +208,13 @@ public sealed class LruCacheLayer : DurableCacheLayer, IWriteAwareCache, IObject
         InvalidateEntry(path);
     }
 
+    public override void Dispose()
+    {
+        base.Dispose();
+        // A writable cache owns a second store for the writes it accepted itself.
+        try { _writes.Dispose(); } catch (Exception) { }
+    }
+
     public LayerStorageUsage GetStorageUsage()
     {
         var reads = Reads.GetStorageUsage();

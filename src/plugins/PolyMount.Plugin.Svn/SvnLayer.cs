@@ -113,10 +113,15 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         var source = new SourceConfig { Type = "svn", Url = url, TrustServerCertFailures = trustFailures,
             Username = username, Password = password, CredentialId = credentialId ?? "" };
         // Resolved once, here: the HTTP client holds the pair for the life of the process, so no
-        // request touches the credential store.
+        // request touches the credential store. A certificate credential carries a PKCS#12 file
+        // and may also name an account; a password credential is the account alone. The source
+        // names the base type, so either fills the slot.
         var credential = new SvnCredentialedSource(source).Resolve();
-        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Secret), pinPath, prefetch,
-            credential?.Username);
+        var certificates = credential is ClientCertificateCredential { Certificate.Length: > 0 } clientCertificate
+            ? SvnHttpClient.LoadClientCertificates(clientCertificate.Certificate, clientCertificate.CertificatePassword)
+            : null;
+        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Password, certificates),
+            pinPath, prefetch, credential?.Username);
     }
 
     public void Dispose()
@@ -293,10 +298,33 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         // exactly the length of the call and gives it straight back.
         SvnEntry? info;
         using (var lane = _lanes.Enter(ReadPriority.Ambient))
-            info = _svn.Info(revision, rel, RequestDiagnostics.Ambient);
-        if (info == null) return false;
-        entry = new VfsEntry { Name = info.Name, IsDir = info.IsDir, Size = info.Size, TimeUtc = info.TimeUtc,
-            ContentVersion = info.ContentVersion.Length == 0 ? null : info.ContentVersion };
+        {
+            // A path the repository does not have is an answer, not a failure: the mount asks
+            // every layer for every path (the Windows loader probes for DLLs the same way), and
+            // an exception here becomes an I/O error there — which the loader treats as a broken
+            // disk instead of "not this directory, keep looking".
+            try { info = _svn.Info(revision, rel, RequestDiagnostics.Ambient); }
+            catch (SvnNotFoundException) { info = null; }
+        }
+        if (info == null)
+        {
+            // The mount is case-insensitive and the repository is not. A caller asking for
+            // "lib/os.py" against a repository that holds "Lib/os.py" gets a 404 from the path
+            // itself, while the parent's listing names the child in the spelling the server
+            // holds. Take the header from there — the same answer the parent-listing lookup in
+            // the resolver would give — and remember it under the spelling that was asked for.
+            string parent = VfsPath.Parent(rel);
+            string name = VfsPath.Name(rel);
+            VfsEntry? sibling = Listing(parent, speculative: false, RequestDiagnostics.Ambient)
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (sibling == null) return false;
+            entry = sibling;
+        }
+        else
+        {
+            entry = new VfsEntry { Name = info.Name, IsDir = info.IsDir, Size = info.Size, TimeUtc = info.TimeUtc,
+                ContentVersion = info.ContentVersion.Length == 0 ? null : info.ContentVersion };
+        }
         lock (_gate)
         {
             if (_rev == revision) _entries[key] = entry;
@@ -387,23 +415,40 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         return list;
     }
 
+    /// <summary>The path with every component in the spelling the repository advertises. The
+    /// mount is case-insensitive and the repository is not, so a path that resolved through a
+    /// listing still has to be rewritten before it is fetched.</summary>
+    private string CanonicalPath(string rel)
+    {
+        string canonical = "";
+        foreach (string component in rel.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!TryGetEntry(VfsPath.Child(canonical, component), out var header)) return rel;
+            canonical = VfsPath.Child(canonical, header.Name);
+        }
+        return canonical;
+    }
+
     public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)
     {
         stream = null!;
         if (!TryGetEntry(rel, out entry) || entry.IsDir) return false;
+        // The header lookup resolved the case for the mount; the fetch needs it too, because the
+        // repository's URLs are case-sensitive even though the mount is not.
+        string canonical = CanonicalPath(rel);
 
         // Content is not cached here — the read cache above owns retention — but callers
         // that want the same file at the same time wait for one download instead of
         // starting a second. Read-ahead and the foreground read a resource together often
         // enough, and a whole-file download is the most expensive thing this layer does.
-        string key = Revision + "|" + rel;
+        string key = Revision + "|" + canonical;
         SharedRequest<string> request;
         lock (_gate)
         {
             if (!_contentRequests.TryGetValue(key, out request!))
             {
                 long revision = Revision;
-                request = new SharedRequest<string>(_lanes.Begin(ReadPriority.Ambient), () => Download(revision, rel));
+                request = new SharedRequest<string>(_lanes.Begin(ReadPriority.Ambient), () => Download(revision, canonical));
                 _contentRequests[key] = request;
             }
             request.Users++;
@@ -412,6 +457,13 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         try
         {
             tmp = request.Join(ReadPriority.Ambient);
+        }
+        catch (SvnNotFoundException)
+        {
+            // The header said it was there and the download did not find it: the repository
+            // moved under the lookup. That is a miss for this layer, not a broken disk.
+            Release(request, null);
+            return false;
         }
         catch
         {

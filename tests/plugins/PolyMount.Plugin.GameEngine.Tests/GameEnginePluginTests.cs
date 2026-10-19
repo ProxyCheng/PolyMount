@@ -130,6 +130,38 @@ public sealed class GameEnginePluginTests : IPluginTestProvider
                 throw new Exception($"The repository was listed again ({afterFirst} -> {source.ListCalls}); the listing should be reused");
         });
 
+        Check("a-stride-lookup-follows-the-repository-order", () =>
+        {
+            var source = new TreeSource();
+            source.AddFile("Repo/aaa_1.local/resource.repository", "<Repository/>");
+            source.AddFile("Repo/char3_10071.local/resource.repository", "<Repository/>");
+            source.AddFile("Repo/char3_10072.local/resource.repository", "<Repository/>");
+            source.AddFile("Repo/zzz_1.local/resource.repository", "<Repository/>");
+            var vfs = new VirtualFileSystem(new ILayer[] { source });
+            var loaded = new List<string>();
+            using var model = NewModel(vfs, tempPath(), (path, stream, origin, group) =>
+            {
+                lock (loaded) loaded.Add(path);
+                return true;
+            }, new Dictionary<string, JsonElement>
+            {
+                ["Manifest.Stride"] = JsonSerializer.SerializeToElement(true),
+                ["Manifest.StrideLookahead"] = JsonSerializer.SerializeToElement(2)
+            });
+            long stream = RequestDiagnostics.StreamId(4247, 1);
+            using (model.Observe("Repo/char3_10071.local/resource.repository", stream, false)) { }
+            if (!Until(() => model.Stats.Completed >= 2)) throw new Exception("Nothing was prefetched");
+            lock (loaded)
+            {
+                if (!loaded.Any(p => p.EndsWith("char3_10072.local/resource.repository", StringComparison.OrdinalIgnoreCase)))
+                    throw new Exception("The next manifest in listing order was not prefetched: " + string.Join(",", loaded));
+                if (!loaded.Any(p => p.EndsWith("zzz_1.local/resource.repository", StringComparison.OrdinalIgnoreCase)))
+                    throw new Exception("The stride stopped at the family boundary: " + string.Join(",", loaded));
+                if (loaded.Any(p => p.EndsWith("aaa_1.local/resource.repository", StringComparison.OrdinalIgnoreCase)))
+                    throw new Exception("The stride went backwards: " + string.Join(",", loaded));
+            }
+        });
+
         Check("a-family-that-keeps-wasting-is-closed", () =>
         {
             var source = new TreeSource();

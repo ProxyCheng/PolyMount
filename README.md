@@ -45,9 +45,20 @@ cache.
   follow writes, so they are filled and then told which paths changed.
 - **Listings** come from whichever layer holds the directory, as a complete manifest — the layers
   are never unioned. A deleted file is simply absent from its parent's manifest, so it stays gone
-  without leaving a tombstone behind.
+  without leaving a tombstone behind. Resolving a child by name reads that same manifest: the
+  child's header is already in it, so the source is not asked again, and the name matches
+  regardless of case the way NTFS does. Only layers above the manifest's provider can override
+  the listed header.
 - **Writes** go to the first writable layer, doing a *copy-up* from below first if the file only
   exists remotely. After a successful write, the caches above it drop the paths that changed.
+- **Links** created inside the mount — symbolic links and junctions — are kept by the writable
+  layer as the reparse data Windows wrote, and resolved by Windows itself. A link whose target is
+  inside the mount is followed by opening, launching and deleting through it, which is what a tool
+  whose workspace is a tree of junctions needs.
+- **The volume is a volume**: when the service is elevated it mounts through the Windows Mount
+  Manager, so AppLocker and the UAC consent path accept it and a program stored on the mount can
+  be started. An unprivileged process mounts the ordinary way, which reads and writes the same but
+  cannot launch from the mount.
 - **Generations**: a source's content generation (for SVN, the revision) is part of every cache
   key, so a new revision invalidates by itself instead of being flushed by hand.
 - **Pinning**: a mount can stay on a fixed revision even as the repository moves.
@@ -62,7 +73,7 @@ restarting, crashing, or being reconfigured cannot take another with it.
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None to install by hand. The setup ships a self-contained .NET runtime, the Qt runtime and the Visual C++ runtime. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension), Inno Setup 6 |
 
 ## Install
@@ -99,7 +110,7 @@ Run the service and the tray from a build:
 Build the installer (needs Inno Setup 6):
 
 ```powershell
-.\Build-Installer.bat 0.4.9
+.\Build-Installer.bat 0.5.0
 ```
 
 The version becomes the setup's file name and the app version.
@@ -243,9 +254,9 @@ pointing it at a file server needs no code change. Tags are compared as versions
 ## Status
 
 Early, but functional end to end: layered reads and writes, SVN and directory sources, pinning,
-cache management, per-instance processes, a plugin API, a tray UI, performance instrumentation, a
-recording bundle for diagnosing slow reads, and an MCP server for agents. Interfaces may still
-move.
+cache management, links inside a writable mount and volumes Windows accepts as volumes,
+per-instance processes, a plugin API, a tray UI, performance instrumentation, a recording bundle
+for diagnosing slow reads, and an MCP server for agents. Interfaces may still move.
 
 ## Contributing
 

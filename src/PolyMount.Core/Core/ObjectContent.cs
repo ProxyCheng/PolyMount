@@ -12,7 +12,8 @@ public abstract class ObjectContent
     internal virtual long PersistenceEstimate => EstimatedMemoryBytes;
     protected static VfsEntry Copy(VfsEntry entry) => new()
         { Name = entry.Name, IsDir = entry.IsDir, Size = entry.Size, TimeUtc = entry.TimeUtc,
-          ContentVersion = entry.ContentVersion };
+          ContentVersion = entry.ContentVersion, IsReparsePoint = entry.IsReparsePoint,
+          ReparseTag = entry.ReparseTag };
 }
 
 public sealed class FileObjectContent : ObjectContent

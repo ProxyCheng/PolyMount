@@ -16,8 +16,8 @@
   "svn.field.credential": { "en": "Credential", "zh-CN": "凭据" },
   "svn.field.credential.placeholder": { "en": "None", "zh-CN": "无" },
   "svn.field.credential.description": {
-    "en": "Which account this repository uses. Leave it unchosen to use what the Subversion client already saved for this machine.",
-    "zh-CN": "这个仓库用哪个账号。不选则使用 Subversion 客户端在本机已保存的账号。"
+    "en": "Which account this repository uses. Leave it unchosen to use what the Subversion client already saved for this machine. A repository behind mutual TLS uses a certificate credential.",
+    "zh-CN": "这个仓库用哪个账号。不选则使用 Subversion 客户端在本机已保存的账号。要求客户端证书的仓库请选择证书类型的凭据。"
   },
   "svn.field.prefetch.concurrency": { "en": "Listing read-ahead workers", "zh-CN": "目录预取并发数" },
   "svn.field.prefetch.concurrency.description": {

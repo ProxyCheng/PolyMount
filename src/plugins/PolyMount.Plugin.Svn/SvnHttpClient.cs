@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Xml;
@@ -52,7 +53,8 @@ internal sealed class SvnHttpClient : ISvnBackend
     private string? _vcc;
     private string _pathPrefix = string.Empty;
 
-    public SvnHttpClient(string url, string trustFailures, string? username, string? password)
+    public SvnHttpClient(string url, string trustFailures, string? username, string? password,
+        X509Certificate2Collection? clientCertificates = null)
     {
         _base = new Uri(url.TrimEnd('/'), UriKind.Absolute);
         var handler = new HttpClientHandler
@@ -67,10 +69,12 @@ internal sealed class SvnHttpClient : ISvnBackend
         // .NET client has to offer the store and let Schannel answer the server's certificate
         // request. Without this the handshake fails before any credential is asked for, which is
         // what the demo server does: the alert says "handshake failure", not "certificate needed".
-        var clientCertificates = PersonalCertificates();
-        if (clientCertificates != null)
+        // A certificate credential supplies its own collection; otherwise the personal stores are
+        // offered, which is only useful when the process runs as the account that enrolled one.
+        var certificates = clientCertificates ?? PersonalCertificates();
+        if (certificates != null)
         {
-            handler.ClientCertificates.AddRange(clientCertificates);
+            handler.ClientCertificates.AddRange(certificates);
             _hasClientCertificate = true;
         }
         // No account means anonymous, which is enough for a repository that does not ask. The
@@ -82,7 +86,14 @@ internal sealed class SvnHttpClient : ISvnBackend
             handler.Credentials = new NetworkCredential(username, password ?? string.Empty);
             handler.PreAuthenticate = true;
         }
-        _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(120) };
+        // HTTP/2 multiplexes the concurrent requests a read-ahead/lookup burst issues over one
+        // connection; a server that does not negotiate it falls back to HTTP/1.1.
+        _client = new HttpClient(handler)
+        {
+            Timeout = TimeSpan.FromSeconds(120),
+            DefaultRequestVersion = HttpVersion.Version20,
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
     }
 
     public long GetHeadRevision(RequestDiagnostics? diagnostics = null)
@@ -244,8 +255,15 @@ internal sealed class SvnHttpClient : ISvnBackend
             var path = HrefPath(href);
             var name = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
             if (name.Length == 0) continue;
-            if (string.Equals(path, requestPath, StringComparison.Ordinal) ||
-                (selfName.Length > 0 && string.Equals(name, selfName, StringComparison.OrdinalIgnoreCase))) continue;
+            // The collection's own response is the one to drop. Its name settles that without
+            // decoding any path — a directory cannot contain a child with its own name — so the
+            // path comparison is only needed where there is no name to compare, which is a
+            // listing of the repository root itself. Asked of every child, it would decode two
+            // strings per response (measured: 0.24 ms on a 3,310-child listing).
+            bool self = selfName.Length > 0
+                ? string.Equals(name, selfName, StringComparison.OrdinalIgnoreCase)
+                : SamePath(path, requestPath);
+            if (self) continue;
 
             ReadProps(element, out bool isDir, out long size, out var time, out string contentVersion);
             entries.Add(new SvnEntry { Name = name, IsDir = isDir, Size = size, TimeUtc = time, ContentVersion = contentVersion });
@@ -265,7 +283,7 @@ internal sealed class SvnHttpClient : ISvnBackend
             var href = element.Element(Dav + "href")?.Value;
             if (string.IsNullOrEmpty(href)) continue;
             var path = HrefPath(href);
-            if (!string.Equals(path, requestPath, StringComparison.Ordinal)) continue;
+            if (!SamePath(path, requestPath)) continue;
             ReadProps(element, out bool isDir, out long size, out var time, out string contentVersion);
             return new SvnEntry
             {
@@ -324,8 +342,12 @@ internal sealed class SvnHttpClient : ISvnBackend
             _vcc = absolute;
 
             var root = absolute[..marker];
-            var rootPath = new Uri(root).AbsolutePath.TrimEnd('/');
-            var basePath = _base.AbsolutePath.TrimEnd('/');
+            // Both paths are decoded before they are compared and subtracted: the server's href
+            // and the configured URL can spell the same non-ASCII path with escapes in
+            // different cases, and what is kept here is a repository-relative path that
+            // ResourceUrl escapes again — keeping the escaped form would escape it twice.
+            var rootPath = Uri.UnescapeDataString(new Uri(root).AbsolutePath).TrimEnd('/');
+            var basePath = Uri.UnescapeDataString(_base.AbsolutePath).TrimEnd('/');
             if (!basePath.StartsWith(rootPath, StringComparison.Ordinal))
                 throw new SvnTransportException($"'{_base}' is outside repository root '{root}'");
             _pathPrefix = basePath[rootPath.Length..].Trim('/');
@@ -349,6 +371,16 @@ internal sealed class SvnHttpClient : ISvnBackend
 
     private static string PathOf(string url) => new Uri(url).AbsolutePath.TrimEnd('/');
 
+    /// <summary>Whether two WebDAV path spellings name the same resource. A client writes an
+    /// escape with uppercase hex (<see cref="Uri.EscapeDataString"/>) and a server may write the
+    /// same escape with lowercase hex: this repository answers a UTF-8 name as
+    /// <c>%e7%9b%b4…</c>, and a relative href reaches this comparison exactly as the server
+    /// wrote it, so comparing the escaped strings reported every non-ASCII path as missing —
+    /// its header never resolved and its content could not be opened. The decoded paths are
+    /// the resource either way, so the spelling stops mattering here.</summary>
+    internal static bool SamePath(string left, string right) =>
+        string.Equals(Uri.UnescapeDataString(left), Uri.UnescapeDataString(right), StringComparison.Ordinal);
+
     /// <summary>Extracts the escaped path from a multistatus href, which may be a full URL or a server path.</summary>
     private static string HrefPath(string href)
     {
@@ -358,31 +390,69 @@ internal sealed class SvnHttpClient : ISvnBackend
 
     /// <summary>Mirrors <c>svn --trust-server-cert-failures</c>.</summary>
     /// <summary>The certificates this account could present to a server that asks for one. Read
-    /// once per client. A service account has a personal store of its own, so a certificate the
-    /// signed-in user owns is only reachable when the service runs as that user.</summary>
+    /// once per client. Both stores are offered: an interactive process finds its account's
+    /// certificates in CurrentUser, while the Windows service runs under an account of its own
+    /// (LocalSystem by default) and finds the machine's in LocalMachine. A certificate the
+    /// signed-in user owns reaches the service only after it has been copied to the machine
+    /// store; the setup that runs the service as that user needs neither.</summary>
     private static X509Certificate2Collection? PersonalCertificates()
     {
+        var usable = new X509Certificate2Collection();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine })
+        {
+            try
+            {
+                using var store = new X509Store(StoreName.My, location);
+                store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
+                DateTime now = DateTime.Now;
+                foreach (var certificate in store.Certificates)
+                {
+                    if (!certificate.HasPrivateKey) continue;
+                    if (certificate.NotBefore > now || certificate.NotAfter <= now) continue;
+                    if (!AllowsClientAuthentication(certificate)) continue;
+                    if (!seen.Add(certificate.Thumbprint)) continue;
+                    usable.Add(certificate);
+                }
+            }
+            catch (Exception)
+            {
+                // A store that cannot be read is the same as an empty one for this purpose: the
+                // handshake says what the server wanted, and Send() adds the explanation.
+            }
+        }
+        return usable.Count > 0 ? usable : null;
+    }
+
+    /// <summary>Reads the client certificate a source names: a PKCS#12 file and its password.
+    /// A file that cannot be opened is a configuration error worth saying plainly — the
+    /// alternative is a TLS handshake failure that names neither the file nor the password.
+    /// The key is imported into the account's key store rather than an in-memory one: Schannel
+    /// cannot use an ephemeral key for client authentication ("the platform does not support
+    /// ephemeral keys"), which is what the handshake reports. The key container lives only as
+    /// long as this certificate does.</summary>
+    internal static X509Certificate2Collection LoadClientCertificates(byte[] pfx, string? password)
+    {
+        X509Certificate2Collection loaded;
         try
         {
-            using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
-            store.Open(OpenFlags.ReadOnly | OpenFlags.OpenExistingOnly);
-            var usable = new X509Certificate2Collection();
-            DateTime now = DateTime.Now;
-            foreach (var certificate in store.Certificates)
-            {
-                if (!certificate.HasPrivateKey) continue;
-                if (certificate.NotBefore > now || certificate.NotAfter <= now) continue;
-                if (!AllowsClientAuthentication(certificate)) continue;
-                usable.Add(certificate);
-            }
-            return usable.Count > 0 ? usable : null;
+            loaded = X509CertificateLoader.LoadPkcs12Collection(
+                pfx, password, X509KeyStorageFlags.DefaultKeySet);
         }
-        catch (Exception)
+        catch (CryptographicException ex)
         {
-            // A store that cannot be read is the same as an empty one for this purpose: the
-            // handshake says what the server wanted, and Send() adds the explanation.
-            return null;
+            throw new ArgumentException(
+                "cannot open the client certificate with the password it was saved with: " + ex.Message, ex);
         }
+
+        var usable = new X509Certificate2Collection();
+        foreach (var certificate in loaded)
+            if (certificate.HasPrivateKey && AllowsClientAuthentication(certificate))
+                usable.Add(certificate);
+        if (usable.Count == 0)
+            throw new ArgumentException(
+                "the client certificate holds no certificate with a private key usable for client authentication");
+        return usable;
     }
 
     /// <summary>Whether a certificate may be used to authenticate to a server. No EKU means the
