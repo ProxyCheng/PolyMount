@@ -18,12 +18,18 @@ function Command([string]$cmd) {
 }
 # The supervisor answers "mounted" as soon as the instance's worker process is up, which is before
 # that process has finished mounting. What this test needs is the drive being there, so it waits for
-# the mount point itself rather than for the status alone.
+# the mount point itself rather than for the status alone. "The mount point is there" means it is a
+# reparse point: an elevated service creates the directory first and attaches the volume to it a
+# moment later, so a directory that merely exists is the placeholder, not the mount.
+function Test-MountPoint([string]$path) {
+    try { return ([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0 }
+    catch { return $false }
+}
 function Wait-Mounted {
     for($i=0;$i -lt 60;$i++) {
         try {
             $response = Command 'status'
-            if($response.Mounts[0].Mounted -and [IO.Directory]::Exists($mount)) { return }
+            if($response.Mounts[0].Mounted -and (Test-MountPoint $mount)) { return }
         } catch {}
         Start-Sleep -Milliseconds 300
     }

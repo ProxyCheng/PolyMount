@@ -191,7 +191,11 @@ try {
             $status = Call-Tool $mcp 'get_instance' @{ instance = 'McpSmoke' }
             if ($status.result.isError) { continue }
             $row = $status.result.content[0].text | ConvertFrom-Json
-            $mounted = $row.mounted -and [IO.Directory]::Exists($mount)
+            # A directory that merely exists is the placeholder an elevated mount creates
+            # before it attaches the volume; the mount point itself is a reparse point.
+            $isMountPoint = $false
+            try { $isMountPoint = ([IO.File]::GetAttributes($mount) -band [IO.FileAttributes]::ReparsePoint) -ne 0 } catch {}
+            $mounted = $row.mounted -and $isMountPoint
         }
         if (-not $mounted) { throw 'the instance did not mount through set_instance_enabled' }
 

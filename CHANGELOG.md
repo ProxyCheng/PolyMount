@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-20
+
+### Fixed
+
+- Stopping an instance could lose the last writes through a mount. Small writes are coalesced
+  into a short transaction, and the worker unmounted and exited without closing its stores, so
+  anything still waiting for that transaction went with the process. A stop now disposes the
+  instance, which commits what it accepted before the mount goes.
+- The self-contained mount checks could start working before the mount was up: an elevated
+  service creates the mount point directory and attaches the volume to it a moment later, and
+  "a directory of that name exists" is true of the placeholder. They wait for the mount point
+  itself now.
+
 ## [0.5.0] - 2026-10-20
 
 ### Added

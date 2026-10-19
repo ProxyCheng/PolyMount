@@ -80,8 +80,12 @@ public sealed class InstanceHost : IControlHost
         catch (OperationCanceledException) { }
         finally
         {
-            try { Instance.Unmount(); }
-            catch (Exception ex) { _logger.LogError(ex, "Unmounting {Instance} failed", Instance.Name); }
+            // A stop is a durability point, not just an unmount: the stores coalesce their
+            // writes into short transactions, and a batch still waiting when the process goes
+            // is gone. Disposing the instance unmounts and lets every layer flush and close
+            // what it accepted — the overlay's database commits there.
+            try { Instance.Dispose(); }
+            catch (Exception ex) { _logger.LogError(ex, "Stopping {Instance} failed", Instance.Name); }
         }
         return 0;
     }
