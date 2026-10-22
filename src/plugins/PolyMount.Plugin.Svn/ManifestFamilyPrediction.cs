@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Text.Json;
 using PolyMount.Core;
 
-namespace PolyMount.Plugins.GameEngine;
+namespace PolyMount.Plugins.Svn;
 
 /// <summary>
 /// A format-aware prediction strategy for game-engine content repositories, running inside the

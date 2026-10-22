@@ -39,6 +39,7 @@ internal static class AccessTotals
         var unattributed = new Dictionary<string, List<ProcessLayerCount>>(StringComparer.OrdinalIgnoreCase);
         var cached = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var costMs = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var writeCostMs = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         DateTime first = default, last = default;
         double firstWindow = 1;
         int covered = 0;
@@ -66,6 +67,7 @@ internal static class AccessTotals
                     unattributed[entry.Mount] = new List<ProcessLayerCount>();
                     cached[entry.Mount] = 0;
                     costMs[entry.Mount] = 0;
+                    writeCostMs[entry.Mount] = 0;
                 }
                 sum.WindowSeconds = span;
                 if (entry.PredictiveWasted != null) sum.PredictiveWasted = entry.PredictiveWasted;
@@ -78,6 +80,7 @@ internal static class AccessTotals
                 // percentage of them.
                 cached[entry.Mount] += entry.TotalReads * entry.CacheHitPercent / 100;
                 costMs[entry.Mount] += entry.TotalReads * entry.AvgCostMs;
+                writeCostMs[entry.Mount] += entry.TotalWrites * entry.AvgWriteCostMs;
 
                 foreach (var layer in entry.Layers)
                 {
@@ -97,6 +100,8 @@ internal static class AccessTotals
                     if (layer.MaxCostMs > into.MaxCostMs) into.MaxCostMs = layer.MaxCostMs;
                     // A running amount for now; turned into an average once every answer is in.
                     into.AvgCostMs += layer.AvgCostMs * layer.Hits;
+                    if (layer.MaxWriteCostMs > into.MaxWriteCostMs) into.MaxWriteCostMs = layer.MaxWriteCostMs;
+                    into.AvgWriteCostMs += layer.AvgWriteCostMs * layer.Writes;
                     if (!string.IsNullOrEmpty(layer.DisplayName)) into.DisplayName = layer.DisplayName;
                     if (!string.IsNullOrEmpty(layer.Color)) into.Color = layer.Color;
                     into.Predictive |= layer.Predictive;
@@ -121,12 +126,14 @@ internal static class AccessTotals
             foreach (var layer in rows)
             {
                 layer.AvgCostMs = layer.Hits > 0 ? layer.AvgCostMs / layer.Hits : 0;
+                layer.AvgWriteCostMs = layer.Writes > 0 ? layer.AvgWriteCostMs / layer.Writes : 0;
                 layer.SharePercent = sum.TotalReads == 0 ? 0 : 100.0 * layer.Hits / sum.TotalReads;
                 layer.AccessSharePercent = events == 0 ? 0 : 100.0 * (layer.Hits + layer.Writes) / events;
                 sum.Layers.Add(layer);
             }
             sum.CacheHitPercent = sum.TotalReads == 0 ? 0 : 100.0 * cached[mount] / sum.TotalReads;
             sum.AvgCostMs = sum.TotalReads == 0 ? 0 : costMs[mount] / sum.TotalReads;
+            sum.AvgWriteCostMs = sum.TotalWrites == 0 ? 0 : writeCostMs[mount] / sum.TotalWrites;
             sum.Processes = callers[mount];
             sum.Unattributed = unattributed[mount];
             // What was watched, not what was asked for: the answers' own span, which is shorter

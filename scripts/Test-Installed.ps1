@@ -129,7 +129,8 @@ if ($running.Count -eq 1) {
 foreach ($relative in 'Service\PolyMount.Service.exe', 'Tray\PolyMount.Tray.exe', 'Tray\platforms\qwindows.dll',
                         'Mcp\PolyMount.Mcp.exe',
                         'Shell\PolyMount.Shell.dll', 'Service\plugins\PolyMount.Plugin.Svn.dll',
-                        'Service\plugins\PolyMount.Plugin.GameEngine.dll',
+                        'Service\plugins\PolyMount.Plugin.Smb.dll',
+                        'Service\plugins\PolyMount.Plugin.TxFShim.dll',
                         'installer\Install-Host.ps1', 'install.json', 'THIRD-PARTY-NOTICES.txt') {
     Check "installed $relative" (Test-Path -LiteralPath (Join-Path $app $relative))
 }
@@ -153,10 +154,11 @@ Check 'configuration written' (Test-Path -LiteralPath $config)
 if (Test-Path -LiteralPath $config) {
     $plugins = @((Read-Config).Plugins)
     $paths = @($plugins.AssemblyPath | Sort-Object)
-    Check 'both bundled plugins configured once' (
-        ($paths.Count -eq 2) -and
-        ($paths[0] -eq 'plugins/PolyMount.Plugin.GameEngine.dll') -and
-        ($paths[1] -eq 'plugins/PolyMount.Plugin.Svn.dll')) ($paths -join ', ')
+    Check 'all three bundled plugins configured once' (
+        ($paths.Count -eq 3) -and
+        ($paths[0] -eq 'plugins/PolyMount.Plugin.Smb.dll') -and
+        ($paths[1] -eq 'plugins/PolyMount.Plugin.Svn.dll') -and
+        ($paths[2] -eq 'plugins/PolyMount.Plugin.TxFShim.dll')) ($paths -join ', ')
 }
 
 $reply = Wait-Supervisor
@@ -191,10 +193,11 @@ Check 'still exactly one service, running' (($null -ne $service) -and ($service.
 $after = Read-Config
 Check 'the configuration kept what was not the setup''s' ($after.KeepMe -eq 'from the first install')
 $pathsAfter = @($after.Plugins.AssemblyPath | Sort-Object)
-Check 'both bundled plugins are still named once' (
-    ($pathsAfter.Count -eq 2) -and
-    ($pathsAfter[0] -eq 'plugins/PolyMount.Plugin.GameEngine.dll') -and
-    ($pathsAfter[1] -eq 'plugins/PolyMount.Plugin.Svn.dll')) ($pathsAfter -join ', ')
+Check 'all three bundled plugins are still named once' (
+    ($pathsAfter.Count -eq 3) -and
+    ($pathsAfter[0] -eq 'plugins/PolyMount.Plugin.Smb.dll') -and
+    ($pathsAfter[1] -eq 'plugins/PolyMount.Plugin.Svn.dll') -and
+    ($pathsAfter[2] -eq 'plugins/PolyMount.Plugin.TxFShim.dll')) ($pathsAfter -join ', ')
 $reply = Wait-Supervisor
 Check 'supervisor still answers' ($null -ne $reply)
 
@@ -213,6 +216,14 @@ if (-not $KeepInstalled) {
     Check 'configuration kept (a silent uninstall does not ask)' (Test-Path -LiteralPath $config)
     Check 'uninstall entry removed' ($null -eq (Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
         ForEach-Object { Get-ItemProperty $_.PSPath } | Where-Object { $_.DisplayName -like 'PolyMount*' }))
+    # The shim's launcher sits in ProgramData, which a silent uninstall keeps, but the keys that
+    # start programs through it must not outlive the product: they would leave every instrumented
+    # program failing to start with "the debugger is missing".
+    $shimLauncher = Join-Path $data 'txf-shim\PolyMount.TxFShim.exe'
+    $leftover = @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options' -ErrorAction SilentlyContinue |
+        ForEach-Object { (Get-ItemProperty $_.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger } |
+        Where-Object { $_ -and [string]::Equals([string]$_, $shimLauncher, [StringComparison]::OrdinalIgnoreCase) })
+    Check 'no shim debugger values survived the uninstall' ($leftover.Count -eq 0) "$($leftover.Count) value(s)"
     Remove-Item -LiteralPath $data -Recurse -Force -ErrorAction SilentlyContinue
 }
 

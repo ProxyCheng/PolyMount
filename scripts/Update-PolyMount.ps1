@@ -26,6 +26,12 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The build tools answer in the system's language, and a console whose code page does not match
+# turns those messages into noise. Both halves are pinned here so a log reads the same on every
+# machine: the SDK and MSBuild speak English, and the console decodes what it is given as UTF-8.
+$env:DOTNET_CLI_UI_LANGUAGE = 'en'
+$env:VSLANG = '1033'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $repo = Split-Path $PSScriptRoot -Parent
 $serviceProject = Join-Path $repo 'src\PolyMount.Service\PolyMount.Service.csproj'
 $trayProject = Join-Path $repo 'src\PolyMount.Tray\PolyMount.Tray.csproj'
@@ -257,16 +263,25 @@ try {
     Write-Host '[2/3] Publishing and restarting what changed...'
     if ($mcpChanged) {
         # Published before anything is stopped: an agent session can hold the exe open, and that
-        # failure must not leave the service stopped. The next run picks it up again.
+        # failure must not leave the service stopped. A session that is holding it is asked about
+        # up front instead of being discovered through MSBuild's ten copy retries: those take a
+        # second each, fill the log with the same warning ten times, and end in the same skip.
         Write-Host '  publishing the MCP server (nothing to restart)...'
-        try {
-            Publish-Project $mcpProject $mcpDir
-            if (-not (Test-Path -LiteralPath $mcpExe)) { throw 'Published MCP executable was not found.' }
-            Set-DeployedState $mcpDir $mcpState
+        $agents = @(Get-Process -Name 'PolyMount.Mcp' -ErrorAction SilentlyContinue)
+        if ($agents.Count -gt 0) {
+            Write-Host ("  the MCP server is in use by {0} agent process(es): left as it is." -f $agents.Count)
+            Write-Host '  close the session using PolyMount.Mcp, then run this again to update it.'
         }
-        catch {
-            Write-Warning ("  the MCP server was not updated: {0}" -f $_.Exception.Message)
-            Write-Warning '  close the agent session using PolyMount.Mcp, then run this again.'
+        else {
+            try {
+                Publish-Project $mcpProject $mcpDir
+                if (-not (Test-Path -LiteralPath $mcpExe)) { throw 'Published MCP executable was not found.' }
+                Set-DeployedState $mcpDir $mcpState
+            }
+            catch {
+                Write-Warning ("  the MCP server was not updated: {0}" -f $_.Exception.Message)
+                Write-Warning '  close the agent session using PolyMount.Mcp, then run this again.'
+            }
         }
     }
     if ($backendChanged) {

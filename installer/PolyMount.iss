@@ -116,10 +116,12 @@ Filename: "{win}\explorer.exe"; Parameters: """{app}\Tray\PolyMount.Tray.exe""";
 [CustomMessages]
 english.ManageObject=Manage cache boundary...
 english.PluginSvn=Subversion (SVN) repositories
-english.PluginGameEngine=Game engine projects
+english.PluginSmb=Folders shared by other machines (SMB)
+english.PluginTxFShim=Programs that need transactional opens (opt-in per directory)
 chinesesimplified.ManageObject=管理缓存分界线...
 chinesesimplified.PluginSvn=Subversion (SVN) 仓库
-chinesesimplified.PluginGameEngine=游戏引擎项目
+chinesesimplified.PluginSmb=其他机器共享的文件夹（SMB）
+chinesesimplified.PluginTxFShim=需要事务打开的程序（按目录启用）
 english.PluginPageCaption=Plugins
 english.PluginPageDescription=Choose which of PolyMount's bundled plugins to install.
 english.PluginPageSubCaption=
@@ -149,7 +151,7 @@ chinesesimplified.RemoveData=同时删除 PolyMount 的配置与缓存的数据�
   take an unselected one back out. Adding a plugin means a branch in the two tables below, a line
   in PluginLabel, and incrementing the count. }
 const
-  PluginCount = 2;
+  PluginCount = 3;
 
 var
   PluginPage: TInputOptionWizardPage;
@@ -190,7 +192,8 @@ function PluginLabel(Index: Integer): String;
 begin
   case Index of
     0: Result := ExpandConstant('{cm:PluginSvn}');
-    1: Result := ExpandConstant('{cm:PluginGameEngine}');
+    1: Result := ExpandConstant('{cm:PluginSmb}');
+    2: Result := ExpandConstant('{cm:PluginTxFShim}');
   else
     Result := '';
   end;
@@ -229,7 +232,8 @@ function PluginFile(Index: Integer): String;
 begin
   case Index of
     0: Result := 'PolyMount.Plugin.Svn.dll';
-    1: Result := 'PolyMount.Plugin.GameEngine.dll';
+    1: Result := 'PolyMount.Plugin.Smb.dll';
+    2: Result := 'PolyMount.Plugin.TxFShim.dll';
   else
     Result := '';
   end;

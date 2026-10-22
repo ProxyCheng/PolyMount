@@ -103,6 +103,22 @@ function Sync-BundledPlugins {
     Save-Config ($parsed | ConvertTo-Json -Depth 20)
 }
 
+function Remove-ShimInstrumentation {
+    # The TxF shim leaves Image File Execution Options values behind; each points at the launcher
+    # the plugin deploys beside the machine's configuration. A value that survived the program
+    # files would make the instrumented programs fail to start ("the debugger is missing"), which
+    # is worse than the transaction error this shim exists to avoid. Only values naming this
+    # product's launcher are removed; anyone else's value belongs to something else.
+    $launcher = Join-Path $data 'txf-shim\PolyMount.TxFShim.exe'
+    $root = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+    Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {
+        $debugger = (Get-ItemProperty -LiteralPath $_.PSPath -Name Debugger -ErrorAction SilentlyContinue).Debugger
+        if ($debugger -and [string]::Equals([string]$debugger, $launcher, [StringComparison]::OrdinalIgnoreCase)) {
+            Remove-ItemProperty -LiteralPath $_.PSPath -Name Debugger -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Stop-HostProcesses {
     if ($service -and $service.Status -ne 'Stopped') {
         Stop-Service -Name PolyMount
@@ -169,7 +185,7 @@ try {
             # One entry per bundled plugin, as in the setup's table: a plugin that is copied but
             # never named in the configuration is installed and inert, which is not what the
             # wizard's checkboxes promised.
-            foreach ($plugin in 'PolyMount.Plugin.Svn.dll', 'PolyMount.Plugin.GameEngine.dll') {
+            foreach ($plugin in 'PolyMount.Plugin.Svn.dll', 'PolyMount.Plugin.Smb.dll', 'PolyMount.Plugin.TxFShim.dll') {
                 if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory ('Service\plugins\' + $plugin)))) {
                     throw "The bundled plugin $plugin is missing."
                 }
@@ -227,6 +243,7 @@ try {
         }
         'Uninstall' {
             Stop-HostProcesses
+            Remove-ShimInstrumentation
             if ($service) { & sc.exe delete PolyMount; if ($LASTEXITCODE -ne 0) { throw 'Failed to remove service.' } }
             # ProgramData configuration, credentials and provider data are intentionally kept.
         }

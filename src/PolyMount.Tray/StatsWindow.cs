@@ -38,6 +38,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private DateTime _lastAccessAt = DateTime.MinValue;
     private readonly QTimer _timer;
     private readonly PerformanceChart[] _charts;
+    /// <summary>Which metric each trend card draws, in the order the page lays the cards out:
+    /// read requests, write requests, read bytes, write bytes, read latency, write latency — see
+    /// <see cref="LayerSampler.ChartValue"/>. The grid reads left to right, so a card's metric is
+    /// not its index: the two columns are the two directions of one row's question.</summary>
+    private static readonly int[] ChartMetrics = { 0, 3, 1, 4, 2, 5 };
     /// <summary>What the instance's own process cost, one row per sample. A process is not
     /// a layer: there is nothing to break down, so these are drawn as plain series rather than as
     /// contributions that stack.</summary>
@@ -46,10 +51,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// A process's memory cannot be split between layers, but this can: it is our own count of what
     /// each layer keeps, which is that layer's own share of the cost.</summary>
     private readonly List<HeldSecond> _heldHistory = new();
-    /// <summary>What the layers hold, in two cards: the memory they keep and the bytes they take on
-    /// disk. It was one card that added the two together, which hid which of them had moved — they
+    /// <summary>What the instance holds, in two cards: its memory and the bytes it takes on disk.
+    /// They were one card that added the two together, which hid which of them had moved — they
     /// move for different reasons, a memory budget evicting against a disk budget filling up, and
-    /// the sum of them is a number with no budget behind it.</summary>
+    /// the sum of them is a number with no budget behind it. The memory card's top edge is the
+    /// process's own working set, with the layers stacked beneath it and the part no layer claims
+    /// drawn as one grey band; disk has no such total and stays the layers' own sum.</summary>
     private readonly PerformanceChart _heldMemory, _heldDisk;
     /// <summary>Every card the page draws, in one list: what a frame of the movement between two
     /// samples hands a later moment to, all of them at that one moment.</summary>
@@ -147,7 +154,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     private List<MountMetrics> _latest = new();
     /// <summary>What one request is carrying back. <c>At</c> is the moment it went out: the moment
     /// the windows it covers end, and the moment an observation from it is stamped with.</summary>
-    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, List<HeldRow>? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds, DateTime At)>? _pending;
+    private Task<(List<MountMetrics>? Trends, List<MountMetrics>? Access, HeldReading? Held, ProcessReading Process, double RequestMs, long Completed, double Seconds, DateTime At)>? _pending;
     private bool _paused, _requested;
     private int _epoch, _requestEpoch;
     /// <summary>When the next sample is due, and when the next once-a-second reading — the access
@@ -268,21 +275,25 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
 
         _charts = new[]
         {
+            // Read on the left, write on the right, one row per question: how many, how many
+            // bytes, how long. The two directions are the same three questions asked of two
+            // accounts, and a card of one beside a card of the other is what lets a reader see
+            // which of them an instance is spending its time on. The order is the page's reading
+            // order, and ChartMetrics is what each card draws.
             new PerformanceChart("stats.reads", "#2563eb", "/s", ChartSummary.Volume),
-            new PerformanceChart("stats.layerBytes", "#059669", "B", ChartSummary.Volume),
-            new PerformanceChart("stats.latency", "#8b5cf6", "ms", ChartSummary.Latency),
-            new PerformanceChart("stats.bytes", "#0891b2", "B", ChartSummary.Volume)
+            new PerformanceChart("stats.writes", "#dc2626", "/s", ChartSummary.Volume),
+            new PerformanceChart("stats.readBytes", "#059669", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.writeBytes", "#0891b2", "B", ChartSummary.Volume),
+            new PerformanceChart("stats.readLatency", "#8b5cf6", "ms", ChartSummary.Latency),
+            new PerformanceChart("stats.writeLatency", "#d97706", "ms", ChartSummary.Latency)
         };
         var grid = new QGridLayout();
         grid.SetSpacing(16);
         for (int i = 0; i < _charts.Length; i++) grid.AddWidget(_charts[i], i / 2, i % 2);
-        // The next two cards for what the layers keep: the other four are what they did, these are
-        // what they hold. Two of them, because memory and disk have budgets of their own and it is
-        // worth seeing which one is filling — a single stack of both answers neither question.
+        // What the instance holds is not drawn up here with what the layers did: it is the process
+        // section's subject now, in the same grid as the CPU and the handles it is paid for out of.
         _heldMemory = new PerformanceChart("stats.layerHeld.memory", "#7c3aed", "B", ChartSummary.Gauge);
         _heldDisk = new PerformanceChart("stats.layerHeld.disk", "#c026d3", "B", ChartSummary.Gauge);
-        grid.AddWidget(_heldMemory, _charts.Length / 2, 0);
-        grid.AddWidget(_heldDisk, _charts.Length / 2, 1);
         // A recording's edges are worth seeing the moment they happen, not at the next sample.
         if (_recording != null) _recording.MarksChanged += Render;
         root.AddLayout(grid, 1);
@@ -323,11 +334,13 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         processBody.SetSpacing(12);
         // Levels, so their cards report what the window averaged and peaked at and not what its
         // samples add up to: a level summed over a window is a number that grows with how often the
-        // page looked, which is the refresh rate.
+        // page looked, which is the refresh rate. The process's memory is not one of them: it is
+        // the top edge of the layers' memory card above, where each layer's own holding and the
+        // part no layer claims are drawn against it — a second card of the same number is the
+        // duplication this section used to have.
         _processCharts = new[]
         {
             new PerformanceChart("stats.process.cpu", "#0f766e", "stats.unit.cores", ChartSummary.Gauge),
-            new PerformanceChart("stats.process.memory", "#b45309", "B", ChartSummary.Gauge),
             new PerformanceChart("stats.process.threads", "#475569", "", ChartSummary.Gauge),
             new PerformanceChart("stats.process.handles", "#64748b", "", ChartSummary.Gauge)
         };
@@ -338,10 +351,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _cards = _charts.Concat(new[] { _heldMemory, _heldDisk }).Concat(_processCharts).Append(_processIo).ToArray();
         var processGrid = new QGridLayout();
         processGrid.SetSpacing(16);
-        for (int i = 0; i < _processCharts.Length; i++) processGrid.AddWidget(_processCharts[i], i / 2, i % 2);
-        // Its own row, across both columns: it is the one card here that is a rate rather than a
-        // level, and two overlapping areas need the width to be told apart.
-        processGrid.AddWidget(_processIo, _processCharts.Length / 2, 0, 1, 2);
+        // What the instance holds comes first in the section: the memory card is the process's own
+        // working set with the layers' share drawn inside it, so it belongs beside the CPU and the
+        // handles rather than up with the trends — those say what the layers did, and a budget is
+        // read against the process that pays for it. The disk card follows it because the two were
+        // read together: memory and disk are budgets of their own, and it is worth seeing which one
+        // is filling.
+        processGrid.AddWidget(_heldMemory, 0, 0);
+        processGrid.AddWidget(_heldDisk, 0, 1);
+        for (int i = 0; i < _processCharts.Length; i++)
+            processGrid.AddWidget(_processCharts[i], 1 + i / 2, i % 2);
+        // The rate takes the cell beside the last level rather than a row of its own: the cards
+        // are two across, and half the page is still wider than any chart needs — the two
+        // overlapping areas are told apart by their colours, not by the width they are given.
+        processGrid.AddWidget(_processIo, 1 + _processCharts.Length / 2, _processCharts.Length % 2);
         processBody.AddLayout(processGrid);
         _processFigures = new QLabel();
         _processFigures.SetObjectName("muted");
@@ -552,7 +575,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// axis, and the axis is where the range the reader chose is written.</summary>
     internal void CaptureCharts(string directory)
     {
-        string[] files = { "chart-reads.png", "chart-bytes.png", "chart-latency.png", "chart-writes.png" };
+        string[] files =
+        {
+            "chart-reads.png", "chart-writes.png", "chart-read-bytes.png",
+            "chart-write-bytes.png", "chart-read-latency.png", "chart-write-latency.png"
+        };
         for (int i = 0; i < _charts.Length; i++)
         {
             using var chart = _charts[i].Grab();
@@ -619,7 +646,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// </summary>
     internal void VerifyProcess()
     {
-        if (_processCharts.Length != 4) throw new InvalidOperationException("The process section does not carry its four cards");
+        if (_processCharts.Length != 3) throw new InvalidOperationException("The process section does not carry its three level cards");
         // Only the cards being drawn: one outside the viewport or inside a folded section is not
         // rebuilt at all, on purpose, and "drawing nothing" is what that looks like from here.
         foreach (var chart in _processCharts.Append(_processIo).Where(chart => chart.InSight))
@@ -742,7 +769,8 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// </summary>
     internal void VerifyByteAccount()
     {
-        foreach (var chart in new[] { _charts[1], _charts[3] })
+        // The two byte cards, read then written: the grid's second row.
+        foreach (var chart in new[] { _charts[2], _charts[3] })
             if (chart.Series.Any(item => item.Name == T("stats.layerUnknown")))
                 throw new InvalidOperationException(
                     $"The byte card under {chart.TitleKey} is mixing the process's own account into the layers' stack");
@@ -968,7 +996,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// <summary>Self-check: the layers are drawn in the mount's own order, whatever the traffic.
     ///
     /// Every answer names its layers the way the mount stacks them, top of the chain first, and the
-    /// table, the circle and the four trend cards are read in that order — so a layer keeps its row
+    /// table, the circle and the six trend cards are read in that order — so a layer keeps its row
     /// and its band as the traffic moves. The sum ranked them by hits once, and the cards followed:
     /// a band moved whenever a busier layer overtook it, and the held cards (drawn from the mount's
     /// provider list) no longer agreed with the trends. This fixture is the case that separates the
@@ -1102,21 +1130,27 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
             throw new InvalidOperationException("Performance window did not collect response overhead samples");
         var mounts = new[] { new MountMetrics { Mount = "test", Layers = new()
         {
-            new() { Name = "a", Hits = 2, AvgCostMs = 10, Bytes = 1024 },
-            new() { Name = "b", Hits = 3, AvgCostMs = 20, Bytes = 2048, WriteBytes = 4096 },
+            new() { Name = "a", Hits = 2, AvgCostMs = 10, Bytes = 1024, Writes = 1, AvgWriteCostMs = 8 },
+            new() { Name = "b", Hits = 3, AvgCostMs = 20, Bytes = 2048, WriteBytes = 4096, Writes = 3, AvgWriteCostMs = 4 },
             new() { Name = "idle" }
         } } };
         var now = DateTime.UtcNow;
         var sample = CaptureLayers(now, mounts, WasteSteps(now, mounts), 1);
+        // The write figures are the same shape in the other direction: each layer's share of the
+        // window's average write, weighted by the writes it applied, so the layers add up to the
+        // average and not to the mean of two means.
         if (sample.Layers.Count != 3 || sample.Layers.Values.Sum(l => l.Reads) != 5 ||
             sample.Layers.Values.Sum(l => l.Cost) != 16 || sample.Layers.Values.Sum(l => l.Bytes) != 3072 ||
-            sample.Layers.Values.Sum(l => l.WriteBytes) != 4096)
+            sample.Layers.Values.Sum(l => l.WriteBytes) != 4096 || sample.Layers.Values.Sum(l => l.Writes) != 4 ||
+            sample.Layers.Values.Sum(l => l.WriteCost) != 5)
             throw new InvalidOperationException("Layer chart contributions do not sum to the overall metrics");
         // The same observation over a quarter of a second is four times the rate - and the same
         // duration, because a cost is not divided by anything.
         var quarter = CaptureLayers(now, mounts, WasteSteps(now, mounts), 0.25);
         if (LayerSampler.ChartValue(quarter.Layers["test/a"], 0, 0.25) != 8 ||
-            LayerSampler.ChartValue(quarter.Layers["test/a"], 2, 0.25) != quarter.Layers["test/a"].Cost)
+            LayerSampler.ChartValue(quarter.Layers["test/a"], 2, 0.25) != quarter.Layers["test/a"].Cost ||
+            LayerSampler.ChartValue(quarter.Layers["test/a"], 3, 0.25) != 4 ||
+            LayerSampler.ChartValue(quarter.Layers["test/a"], 5, 0.25) != quarter.Layers["test/a"].WriteCost)
             throw new InvalidOperationException("Chart values are not rates over the interval they were measured across");
         // A block cache reports lifetime byte totals, so its window figure is the step between
         // observations rather than the counters themselves.
@@ -1335,7 +1369,11 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         if (ByteUnits.Split(1536) != ("1.5", "KiB"))
             throw new InvalidOperationException("Byte figures no longer split into a number and a unit");
         // Milliseconds are summed by nothing: a latency chart reports its tail, not a total.
-        if (_charts.Length != 4 || _charts[2].Figures.Contains(ChartFigure.Total))
+        bool metricsMatch = _charts.Length == ChartMetrics.Length;
+        var latencyCards = metricsMatch
+            ? _charts.Where((_, index) => ChartMetrics[index] is 2 or 5).ToArray()
+            : Array.Empty<PerformanceChart>();
+        if (!metricsMatch || latencyCards.Length != 2 || latencyCards.Any(card => card.Figures.Contains(ChartFigure.Total)))
             throw new InvalidOperationException("Charts do not carry the figures their metric is described by");
         // A level is not an amount either: cores in use, bytes held, threads and handles open are
         // read once and read again, and added up they are a number that grows with the refresh rate.
@@ -1385,7 +1423,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         // Every card is drawn up to the same moment, whatever cadence feeds it. A card drawn
         // against its own newest row put the same moment at a different place on each of them, and
         // the two fed once a second (the layers' holdings, the process's cost) drifted against the
-        // four fed at the reader's rate as their cadences drifted.
+        // six fed at the reader's rate as their cadences drifted.
         // The cards that have to agree about now are the ones being drawn: a card out of sight or in
         // a folded section is not rebuilt at all, so it holds the moment it was last built at.
         var ends = _charts.Concat(_processCharts).Append(_heldMemory).Append(_heldDisk)
@@ -1660,9 +1698,9 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                         // jump from there to the first real level. Nothing is recorded for one; the
                         // schedule it rides is a lattice, so it is asked again at its own second
                         // rather than on every tick either way.
-                        if (held.Count > 0)
+                        if (held.Layers.Count > 0)
                         {
-                            _heldHistory.Add(new HeldSecond(sample.At, held));
+                            _heldHistory.Add(new HeldSecond(sample.At, held.Layers, held.Processes));
                             LayerSampler.Trim(_heldHistory, sample.At.AddSeconds(-_rangeSeconds),
                                 row => row.Time, HeldBreakSeconds);
                         }
@@ -1829,27 +1867,45 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     }
 
 
-    /// <summary>What every layer of this window's instances holds. The metrics describe what the
-    /// layers did; what they keep is a status question, and for the "all instances" view it takes
-    /// every instance's own answer rather than the supervisor's summary of them.</summary>
-    private List<HeldRow> Held()
+    /// <summary>What every layer of this window's instances holds, and what the processes behind
+    /// them hold in total. The metrics describe what the layers did; what they keep is a status
+    /// question, and for the "all instances" view it takes every instance's own answer rather than
+    /// the supervisor's summary of them. The process total comes with it because the two are read
+    /// at the same moment: the memory card is a process's working set split into the layers that
+    /// claim a part of it and the rest, and a total read a second later would leave a residual
+    /// that is partly the clock.</summary>
+    private HeldReading Held()
     {
         var status = _instanceName == null ? InstanceView.Status() : _client.Status();
         var layers = new List<HeldRow>();
+        var processes = new List<(string Mount, long WorkingSet)>();
         foreach (var mount in status.Mounts.Where(m => _instanceName == null || m.Name == _instanceName))
+        {
+            // Zero is "nothing is running it" (a stopped instance) or "it could not be read", and
+            // neither is a total to reconcile against.
+            if (mount.WorkingSetBytes > 0) processes.Add((mount.Name, mount.WorkingSetBytes));
             foreach (var provider in mount.Providers)
                 if (provider.StorageUsage is { } usage)
                     layers.Add(new HeldRow(mount.Name + "/" + provider.Name,
                         string.IsNullOrEmpty(provider.DisplayName) ? provider.Name : provider.DisplayName,
                         provider.Color, usage.MemoryBytes, usage.DiskBytes));
-        return layers;
+        }
+        return new HeldReading(layers, processes);
     }
 
-    /// <summary>What the layers are holding, in two cards: the memory they keep and the bytes they
-    /// take on disk. Both are drawn the way the other layer cards are — one series per layer, in
-    /// that layer's own colour, from this window's own once-a-second readings — because they are one
-    /// reading split by where it lives, and two cards is what makes it visible which of the two has
-    /// just moved.</summary>
+    /// <summary>What the layers hold, in two cards: memory and the bytes they take on disk. Both
+    /// are drawn the way the other layer cards are — one series per layer, in that layer's own
+    /// colour, from this window's own once-a-second readings.
+    ///
+    /// The memory card carries one band more than the disk card can: what the process holds that
+    /// no layer claims. The layers' figures are their own estimates of what they keep, and a
+    /// process is more than its layers — runtime, JIT code, the SQLite buffers, the pipe, GC slack
+    /// — so the card's top edge is the process's own reading of its working set and the layer
+    /// bands hang beneath it, with the difference drawn as one grey band. Stacking the layers
+    /// alone answered "which layer is growing" but left the reader unable to tell whether the
+    /// card was talking about the whole process or a part of it, next to a process section that
+    /// said a much larger number for the same thing. Disk has no such total: nothing measures
+    /// what a process occupies on a disk, and the store is the only account there is.</summary>
     private void RenderHeld(string selected)
     {
         DateTime end = _clock;
@@ -1858,10 +1914,20 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var rows = _heldHistory;
         var covered = Covered(rows, end, _rangeSeconds, row => row.Time);
         var drawn = new[] { new List<ChartSeries>(), new List<ChartSeries>() };
+        bool InView(string key) => selected.Length == 0 || key.StartsWith(selected + "/", StringComparison.Ordinal);
+        // The process's own reading for the rows in view, summed over the mounts the reader is
+        // looking at: a window on one instance reconciles that instance's process, and the "all
+        // instances" view reconciles every worker behind it.
+        double WorkingSet(HeldSecond row) => row.Processes
+            .Where(process => selected.Length == 0 || process.Mount == selected)
+            .Sum(process => (double)process.WorkingSet);
+        double LayerSum(HeldSecond row, int which) => row.Layers
+            .Where(layer => InView(layer.Key))
+            .Sum(layer => (double)(which == 0 ? layer.Memory : layer.Disk));
         if (_heldHistory.Count > 0)
             foreach (var (key, name, color, _, _) in _heldHistory[^1].Layers)
             {
-                if (selected.Length > 0 && !key.StartsWith(selected + "/", StringComparison.Ordinal)) continue;
+                if (!InView(key)) continue;
                 string label = selected.Length == 0 ? key : name;
                 string seriesColor = string.IsNullOrEmpty(color) ? "#7c3aed" : color;
                 drawn[0].Add(new ChartSeries(label, seriesColor,
@@ -1869,13 +1935,26 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
                 drawn[1].Add(new ChartSeries(label, seriesColor,
                     rows.Select(row => (row.Time, (double)row.Layers.FirstOrDefault(layer => layer.Key == key).Disk)).ToList()));
             }
+        // Above the layers, because the first series is the top of the stack: the card's top edge
+        // is what the process says it holds, and the grey band is the part no layer accounts for.
+        // Nothing is drawn when no reading named a total — a mount that is stopped, or one whose
+        // process could not be read, says nothing about the rest, and a zero band would say it
+        // holds nothing (see Held).
+        if (rows.Any(row => WorkingSet(row) > 0))
+            drawn[0].Insert(0, new ChartSeries(T("stats.memory.unattributed"), "#94A3B8",
+                rows.Select(row => (row.Time, Math.Max(0, WorkingSet(row) - LayerSum(row, 0)))).ToList()));
         var cards = new[] { _heldMemory, _heldDisk };
         for (int card = 0; card < cards.Length; card++)
         {
             int which = card;
-            double[] totals = covered.Select(row => (double)row.Layers
-                .Where(layer => selected.Length == 0 || layer.Key.StartsWith(selected + "/", StringComparison.Ordinal))
-                .Sum(layer => which == 0 ? layer.Memory : layer.Disk)).ToArray();
+            // What the card's stack adds up to: the layers, and on the memory card the process's
+            // own total when it is larger (a layer's estimate can exceed it when pages were
+            // trimmed, and then the layers are what is drawn above the zero-width band).
+            double[] totals = covered.Select(row =>
+            {
+                double layers = LayerSum(row, which);
+                return which == 0 && WorkingSet(row) > 0 ? Math.Max(layers, WorkingSet(row)) : layers;
+            }).ToArray();
             cards[card].SpanSeconds = _rangeSeconds;
             cards[card].GapSeconds = HeldBreakSeconds;
             if (cards[card].InSight) cards[card].SetSeries(drawn[card], end, ChartStatistics.Of(totals));
@@ -1968,7 +2047,14 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
     /// happening, and their sum is a number nothing is bounded by.</summary>
     private readonly record struct HeldRow(string Key, string Name, string Color, long Memory, long Disk);
 
-    private readonly record struct HeldSecond(DateTime Time, List<HeldRow> Layers);
+    /// <summary>One status answer as the cards use it: the layers' holdings, and what the process
+    /// behind each mount holds in total. The total is the top edge of the memory card, so it is
+    /// kept with the reading rather than read again a second later — the residual it leaves is
+    /// then the difference between two things measured at the same moment.</summary>
+    private sealed record HeldReading(List<HeldRow> Layers, List<(string Mount, long WorkingSet)> Processes);
+
+    private readonly record struct HeldSecond(DateTime Time, List<HeldRow> Layers,
+        IReadOnlyList<(string Mount, long WorkingSet)> Processes);
 
     /// <summary>Adds a reading to the window. A reading taken while nothing is running the instance
     /// is still a reading — zeroes say the process is not there, which is worth seeing rather than a
@@ -1986,10 +2072,15 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         LayerSampler.Trim(_processHistory, now.AddSeconds(-_rangeSeconds), second => second.Time, BreakSeconds);
     }
 
-    /// <summary>The four process cards: the CPU the instance's process used, the memory it holds,
-    /// and the threads and handles it has open. Their figures are the window's readings — the one
-    /// the window's left edge falls inside is drawn, so that the line starts on the edge, but it is
-    /// not counted, which is what keeps the header describing the window the line is drawn over.</summary>
+    /// <summary>The process cards: the CPU the instance's process used, and the threads and
+    /// handles it has open. Their figures are the window's readings — the one the window's left
+    /// edge falls inside is drawn, so that the line starts on the edge, but it is not counted,
+    /// which is what keeps the header describing the window the line is drawn over.
+    ///
+    /// What it holds in memory is not one of them: that is the top edge of the layers' memory
+    /// card, where the layer bands and the part no layer claims are drawn against it. The line
+    /// under these cards still reports the working set and the private bytes, which is where the
+    /// two numbers of the process's memory are compared.</summary>
     private void RenderProcess()
     {
         DateTime end = _clock;
@@ -1997,14 +2088,12 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         var series = new List<ChartSeries>[]
         {
             new() { new(T("stats.process.cpu"), "#0f766e", _processHistory.Select(second => (second.Time, second.Cores)).ToList()) },
-            new() { new(T("stats.process.memory"), "#b45309", _processHistory.Select(second => (second.Time, (double)second.WorkingSet)).ToList()) },
             new() { new(T("stats.process.threads"), "#475569", _processHistory.Select(second => (second.Time, (double)second.Threads)).ToList()) },
             new() { new(T("stats.process.handles"), "#64748b", _processHistory.Select(second => (second.Time, (double)second.Handles)).ToList()) }
         };
         double[][] figures =
         {
             covered.Select(second => second.Cores).ToArray(),
-            covered.Select(second => (double)second.WorkingSet).ToArray(),
             covered.Select(second => (double)second.Threads).ToArray(),
             covered.Select(second => (double)second.Handles).ToArray()
         };
@@ -2197,7 +2286,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         double spacing = points.Count > 1 ? (points[^1].Time - points[0].Time).TotalSeconds / (points.Count - 1) : RefreshSeconds;
         for (int chart = 0; chart < _charts.Length; chart++)
         {
-            int metric = chart;
+            int metric = ChartMetrics[chart];
             // An observation is an amount over the interval it was measured across, and the reader
             // chooses how long that is, so every count and byte is divided by its own interval
             // here: the same mount reads the same on the same chart whatever rate is selected.
@@ -3412,7 +3501,7 @@ internal sealed class PerformanceChart : QWidget
 
     /// <summary>A series as the window shows it. A card is drawn against one moment — the moment the
     /// page is drawn up to — and the rows behind a series are read at whatever cadence that series
-    /// has: the four trend cards at the reader's rate, what the layers hold once a second, what the
+    /// has: the six trend cards at the reader's rate, what the layers hold once a second, what the
     /// process costs with every request. So a run of rows is cut to the window rather than drawn
     /// where it happens to stop.
     ///

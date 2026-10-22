@@ -23,10 +23,16 @@ internal static class LayerSampler
     /// cost over that interval, not that layer's own average, so the layers stack to the total;
     /// <see cref="AvgCost"/> and <see cref="MaxCost"/> are what that layer itself was measured at,
     /// which is what a whole-recording average has to be built from. Costs are durations and stay
-    /// as they are when an amount is turned into a rate.</summary>
+    /// as they are when an amount is turned into a rate.
+    ///
+    /// <see cref="WriteCost"/> is the same share of the average <em>write</em>, over the writes
+    /// themselves rather than over the reads: the two directions are two accounts, and a layer that
+    /// answered ten thousand reads and applied twenty writes belongs in each at its own weight.
+    /// <see cref="Writes"/> is the count those two are read with, and <see cref="AvgWriteCost"/> is
+    /// what this layer's own writes were measured at.</summary>
     internal sealed record LayerSample(double Reads, double Cost, double Bytes, double WriteBytes,
         double Wasted = 0, double WastedBytes = 0, double Accelerated = 0, double Fetched = 0,
-        double AvgCost = 0, double MaxCost = 0);
+        double AvgCost = 0, double MaxCost = 0, double Writes = 0, double WriteCost = 0, double AvgWriteCost = 0);
 
     /// <summary><paramref name="Seconds"/> is how long the window this observation was asked for
     /// covered: exactly one second for a recording, and whatever elapsed since the previous
@@ -78,19 +84,23 @@ internal static class LayerSampler
     {
         var rows = mounts.SelectMany(m => m.Layers.Select(l => (Key: Key(m, l), Layer: l))).ToArray();
         double reads = rows.Sum(r => r.Layer.Hits);
+        double writes = rows.Sum(r => r.Layer.Writes);
         return new(time, seconds, rows.ToDictionary(r => r.Key, r =>
         {
             var step = steps.TryGetValue(r.Key, out var found) ? found : WasteStep.None;
             return new LayerSample(r.Layer.Hits,
                 reads == 0 ? 0 : r.Layer.AvgCostMs * r.Layer.Hits / reads, r.Layer.Bytes, r.Layer.WriteBytes,
-                step.Count, step.Bytes, step.Served, step.Fetched, r.Layer.AvgCostMs, r.Layer.MaxCostMs);
+                step.Count, step.Bytes, step.Served, step.Fetched, r.Layer.AvgCostMs, r.Layer.MaxCostMs,
+                r.Layer.Writes,
+                writes == 0 ? 0 : r.Layer.AvgWriteCostMs * r.Layer.Writes / writes, r.Layer.AvgWriteCostMs);
         }));
     }
 
     /// <summary>What one observation contributes to one of the window's charts, in the chart's own
     /// unit: the counts and the bytes become rates over the interval the observation covered, and a
-    /// cost stays the duration it is. <paramref name="metric"/> is the chart's index — reads,
-    /// bytes, latency, written bytes. The waste series divides its own counters the same way.</summary>
+    /// cost stays the duration it is. <paramref name="metric"/> is the chart's index — read
+    /// requests, read bytes, read latency, write requests, write bytes, write latency. The waste
+    /// series divides its own counters the same way.</summary>
     internal static double ChartValue(LayerSample layer, int metric, double seconds)
     {
         double rate = seconds > 0 ? seconds : 1;
@@ -99,7 +109,9 @@ internal static class LayerSampler
             0 => layer.Reads / rate,
             1 => layer.Bytes / rate,
             2 => layer.Cost,
-            _ => layer.WriteBytes / rate
+            3 => layer.Writes / rate,
+            4 => layer.WriteBytes / rate,
+            _ => layer.WriteCost
         };
     }
 
@@ -182,12 +194,16 @@ internal static class LayerSampler
 
     /// <summary>Folds one observation into a bucket's running total. Amounts add; a duration is
     /// weighted by the reads it was measured over, so a bucket's cost is what its reads cost
-    /// rather than the mean of its observations; the peak is kept rather than averaged away.</summary>
+    /// rather than the mean of its observations; the peak is kept rather than averaged away. A
+    /// write's duration is weighted by the writes it was measured over, the same rule in the other
+    /// direction.</summary>
     private static LayerSample Fold(LayerSample? total, LayerSample layer)
     {
         if (total is not { } sum) return layer;
         double reads = sum.Reads + layer.Reads;
         double Over(double mine, double theirs) => reads <= 0 ? 0 : (mine * sum.Reads + theirs * layer.Reads) / reads;
+        double writes = sum.Writes + layer.Writes;
+        double OverWrites(double mine, double theirs) => writes <= 0 ? 0 : (mine * sum.Writes + theirs * layer.Writes) / writes;
         return sum with
         {
             Reads = reads,
@@ -199,7 +215,10 @@ internal static class LayerSampler
             Accelerated = sum.Accelerated + layer.Accelerated,
             Fetched = sum.Fetched + layer.Fetched,
             AvgCost = Over(sum.AvgCost, layer.AvgCost),
-            MaxCost = Math.Max(sum.MaxCost, layer.MaxCost)
+            MaxCost = Math.Max(sum.MaxCost, layer.MaxCost),
+            Writes = writes,
+            WriteCost = OverWrites(sum.WriteCost, layer.WriteCost),
+            AvgWriteCost = OverWrites(sum.AvgWriteCost, layer.AvgWriteCost)
         };
     }
 

@@ -1,0 +1,28 @@
+{
+  "preset.smb-workspace.title": {
+    "en": "Remote folder workspace",
+    "zh-CN": "远程文件夹工作区"
+  },
+  "smb.title": { "en": "Remote folder", "zh-CN": "远程文件夹" },
+  "smb.description": {
+    "en": "Reads a folder shared by another Windows machine, with the account this service presents. Nothing is installed on that machine: a share the account may read is the whole setup.",
+    "zh-CN": "读取另一台 Windows 机器共享的文件夹，使用本服务提供的账号。那台机器上不需要装任何东西：给它一个可读的共享即可。"
+  },
+  "smb.field.path": { "en": "Folder", "zh-CN": "文件夹" },
+  "smb.field.path.placeholder": { "en": "\\\\host\\share\\folder", "zh-CN": "\\\\主机\\共享名\\文件夹" },
+  "smb.field.path.description": {
+    "en": "A share path on another machine. An administrative share such as \\\\host\\d$ needs an account that is an administrator on that machine and an existing drive; a share created for this purpose needs only read access.",
+    "zh-CN": "另一台机器上的共享路径。使用 \\\\主机\\d$ 这类管理共享时，账号必须是那台机器的管理员，且该盘必须存在；专门建一个共享则只需要读权限。"
+  },
+  "smb.field.credential": { "en": "Credential", "zh-CN": "凭据" },
+  "smb.field.credential.placeholder": { "en": "Service account", "zh-CN": "服务账户" },
+  "smb.field.credential.description": {
+    "en": "Which account opens the share. Leave it unchosen to use the account this service runs as — which, for a LocalSystem service, reaches another machine as the machine account. The session is established when the instance starts, so changing this needs the instance reloaded.",
+    "zh-CN": "用哪个账号打开共享。不选则使用本服务运行所用的账号——若服务以 LocalSystem 运行，它对外的身份是机器账户。会话在实例启动时建立，改动后需要重载实例。"
+  },
+  "smb.field.ttl": { "en": "Generation refresh (seconds)", "zh-CN": "代次刷新间隔（秒）" },
+  "smb.field.ttl.description": {
+    "en": "How often the folder's timestamp is read again from the share. It is what caches key on, and it is consulted for every cache lookup, so it is read on an interval rather than per request.",
+    "zh-CN": "多久重新读一次共享上文件夹的时间戳。它是缓存键的代次，每次缓存查找都会问它，所以按间隔读而不是每次请求都读。"
+  }
+}

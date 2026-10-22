@@ -507,7 +507,10 @@ public sealed class WinFspMount : FileSystemBase
     public override int Rename(object fileNode, object fileDesc, string fileName, string newFileName, bool replaceIfExists)
     {
         int renaming = GetOperationProcessId();
-        Charge(renaming != 0 ? renaming : (fileNode as FsNode)?.ProcessId ?? 0, write: true);
+        int callerId = renaming != 0 ? renaming : (fileNode as FsNode)?.ProcessId ?? 0;
+        Charge(callerId, write: true);
+        // The layers record the rename's own apply as a write; this names whoever caused it.
+        using var caller = RequestDiagnostics.ActingFor(callerId);
         try
         {
             var from = VfsPath.Normalize(fileName);
@@ -617,6 +620,9 @@ public sealed class WinFspMount : FileSystemBase
     public override int Flush(object fileNode, object fileDesc, out FspFileInfo fileInfo)
     {
         fileInfo = default;
+        // The commit this triggers is the layer's write, and it runs here rather than in the Write
+        // callback that named the caller; the handle remembers who opened it.
+        using var caller = RequestDiagnostics.ActingFor((fileNode as FsNode)?.ProcessId ?? 0);
         try
         {
             if (fileDesc is FsHandle handle)
@@ -661,7 +667,7 @@ public sealed class WinFspMount : FileSystemBase
 
     public override int SetReparsePoint(object fileNode, object fileDesc, string fileName, byte[] reparseData)
     {
-        using var request = BeginRequest("WinFsp.SetReparsePoint", (fileNode as FsNode)?.Rel ?? "");
+        using var request = BeginRequest("WinFsp.SetReparsePoint", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
         try
         {
             if (fileNode is not FsNode node) return NtStatus.InvalidParameter;
@@ -675,7 +681,7 @@ public sealed class WinFspMount : FileSystemBase
 
     public override int DeleteReparsePoint(object fileNode, object fileDesc, string fileName, byte[] reparseData)
     {
-        using var request = BeginRequest("WinFsp.DeleteReparsePoint", (fileNode as FsNode)?.Rel ?? "");
+        using var request = BeginRequest("WinFsp.DeleteReparsePoint", (fileNode as FsNode)?.Rel ?? "", (fileNode as FsNode)?.ProcessId ?? 0);
         try
         {
             if (fileNode is not FsNode node) return NtStatus.InvalidParameter;
@@ -691,6 +697,9 @@ public sealed class WinFspMount : FileSystemBase
     /// fails is logged; Close tries once more.</summary>
     public override void Cleanup(object fileNode, object fileDesc, string fileName, uint flags)
     {
+        // Both things this callback can do are writes — the commit of a file's bytes and a delete
+        // disposition — and neither can ask WinFsp who is calling, so the handle's caller is named.
+        using var caller = RequestDiagnostics.ActingFor((fileNode as FsNode)?.ProcessId ?? 0);
         try
         {
             if ((flags & CleanupDelete) != 0 && fileName != null)
@@ -711,6 +720,8 @@ public sealed class WinFspMount : FileSystemBase
 
     public override void Close(object fileNode, object fileDesc)
     {
+        // Cleanup normally commits first; this is the remaining flush, and it is the same caller's.
+        using var caller = RequestDiagnostics.ActingFor((fileNode as FsNode)?.ProcessId ?? 0);
         try { (fileDesc as FsHandle)?.Dispose(); }
         catch (Exception ex) { Log("Close " + (fileNode as FsNode)?.Rel, ex); }
     }

@@ -26,18 +26,23 @@ the top down:
 ```
 memory cache
 listing warm-up   ┐  layers above the write layer. Reads are answered by the
-prediction        │  caches in this group; warm-up fills listings in the
-disk cache        ┘  background; a write invalidates the paths it touched.
+prediction        │  caches in this group; warm-up owns this instance's
+disk cache        ┘  directory listings and fills them in the background;
+                     a write invalidates the paths it touched.
    ↓
 overlay  (writable)  ── local changes, copy-on-write
    ↓
-source   (plugin: SVN, local directory, …)  ── the thing that actually has the bytes
+source   (plugin: SVN, remote folder, local directory, …)  ── the thing that actually has the bytes
 ```
 
 In the bundled presets the layers above the overlay are optional and read-only. In the SVN preset
 the overlay sits directly above the source, and the durable cache sits directly above the overlay
 with `Writable = false`, so a write never stops in it. The local-directory preset has no durable
 cache.
+
+Each layer has one job. The memory cache answers from RAM, the warm-up layer keeps the directory
+namespace on disk, the prediction layer holds what a reader is about to ask for, the disk cache
+keeps file content, and only the overlay takes writes.
 
 - **Reads** walk down until a layer has the path. A hit below a cache layer is copied back up
   into it, so the next read is local. A cache that cannot follow writes is not filled when a
@@ -48,7 +53,11 @@ cache.
   without leaving a tombstone behind. Resolving a child by name reads that same manifest: the
   child's header is already in it, so the source is not asked again, and the name matches
   regardless of case the way NTFS does. Only layers above the manifest's provider can override
-  the listed header.
+  the listed header. One layer owns the listings: the warm-up layer keeps them in a store of its
+  own and never evicts one — a directory is the ancestor chain of everything beneath it, so a
+  capacity-ordered eviction would throw away exactly the entries whose loss costs the most — and
+  the content caches below it are not handed a second copy. A source that moves (a new revision)
+  answers by fetching, and the store of the old version is emptied rather than carried forward.
 - **Writes** go to the first writable layer, doing a *copy-up* from below first if the file only
   exists remotely. After a successful write, the caches above it drop the paths that changed.
 - **Links** created inside the mount — symbolic links and junctions — are kept by the writable
@@ -74,15 +83,17 @@ restarting, crashing, or being reconfigured cannot take another with it.
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None to install by hand. The setup ships a self-contained .NET runtime, the Qt runtime and the Visual C++ runtime. |
 | SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. |
-| Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension), Inno Setup 6 |
+| Remote folder source | an SMB share on another Windows machine — `\\host\share\folder`, or an administrative share such as `\\host\d$`. **Nothing is installed on that machine**: a share the chosen account may read is the whole setup. Choose a credential on the layer; leave it unchosen to use the account the service runs as. Port 445 has to be reachable, and an administrative share needs an account that is an administrator over there. |
+| Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension and the transaction shim), Inno Setup 6 |
 
 ## Install
 
 Download `PolyMount-<version>-win-x64-Setup.exe` from
 [Releases](https://github.com/ProxyCheng/PolyMount/releases) and run it. The wizard asks which
-bundled plugins to enable (the SVN source and the game-engine preset), whether the tray should
-start at sign-in, whether Explorer should show source-colour dots, and optionally whether to run
-the service under your Windows account so it can use the SVN sign-ins saved there.
+bundled plugins to enable (the SVN source, the remote-folder source, and the transaction shim),
+whether the tray should start at sign-in, whether Explorer should show source-colour dots, and
+optionally whether to run the service under your Windows account so it can use the SVN sign-ins
+saved there.
 
 Uninstalling asks before deleting your configuration and cached data; answering **No** keeps them
 for a later installation.
@@ -176,9 +187,19 @@ nothing is discovered by scanning a directory — so an installation starts with
 plugins its operator chose. Assemblies built against the older `ILayerPlugin` still load: that
 name remains as an obsolete alias.
 
-The bundled SVN plugin adds the `svn` source type and the `svn-workspace` preset. The game-engine
-plugin adds a `manifests` prediction strategy and the `game-engine-workspace` preset. Local
-directories are built in (`dir`). Writing another source means writing a plugin that registers a
+The bundled SVN plugin adds the `svn` source type, the `svn-workspace` and `game-engine-workspace`
+presets, and the `manifests` prediction strategy — a package-family prefetcher for content
+repositories, so one plugin covers a Subversion source whether or not it is a game project. The
+remote-folder plugin adds the `smb` source type and the `smb-workspace` preset — a folder shared by
+another machine, read through the Windows redirector, with nothing installed over there. Local
+directories are built in (`dir`). The transaction-shim plugin answers a different need: some
+programs open their files through the Transactional NTFS APIs, which a WinFsp volume may refuse
+with `ERROR_TRANSACTIONAL_OPEN_NOT_ALLOWED` (6832). Rather than claiming transaction support the
+volume does not have, the plugin starts chosen programs through a native launcher that replaces
+those calls inside the process before they reach the kernel. Enabling it installs nothing: an
+administrator names the directory whose programs should be instrumented (`install_txf_shim`), and
+only processes started afterwards are affected — a shimmed open succeeds, and a rollback no longer
+undoes the writes the program made. Writing another source means writing a plugin that registers a
 source type: reference `PolyMount.Core`, implement `IPolyMountPlugin`, and ship a DLL.
 `PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests against; the test
 projects live under `tests/plugins` and are not shipped with the production plugin.
@@ -191,8 +212,9 @@ PolyMount.Service                     supervisor (one per machine) + one worker 
 PolyMount.Tray                        Qt tray and windows, charts, config editor, recording UI
 PolyMount.Mcp                         stdio MCP server over the control pipe
 PolyMount.Shell                       native Explorer overlay handler (source-colour dots)
-plugins/PolyMount.Plugin.Svn          Subversion source and svn-workspace preset
-plugins/PolyMount.Plugin.GameEngine   manifests prediction and game-engine-workspace preset
+plugins/PolyMount.Plugin.Svn          Subversion source, manifest prefetcher, and both presets
+plugins/PolyMount.Plugin.Smb          folder on another machine (SMB) and smb-workspace preset
+plugins/PolyMount.Plugin.TxFShim      transaction-free opens for chosen programs (native shim + launcher)
 PolyMount.Plugin.Testing              test contract for plugin assemblies
 ```
 
@@ -212,8 +234,10 @@ a recording, and edit the configuration. The setup installs it under `{app}\Mcp`
 it automatically.
 
 The catalog is `PolyMount.Core`'s control operations: 22 built in, plus whatever enabled plugins
-contribute (the SVN plugin adds `get_svn_source` and `list_svn_lanes`, the game-engine plugin adds
-`list_manifest_families`). `--describe` prints it without a service.
+contribute (the SVN plugin adds `get_svn_source`, `list_svn_lanes` and `list_manifest_families`,
+the remote-folder plugin adds `get_smb_source`, and the transaction-shim plugin adds
+`get_txf_shim`, `list_txf_shim_targets`, `install_txf_shim`, `remove_txf_shim` and
+`read_txf_shim_log`). `--describe` prints it without a service.
 
 - `--pipe <name>` or `POLYMOUNT_PIPE` selects the control pipe.
 - `--read-only` registers only operations with `effect: read` (eight built in, plus plugin reads).

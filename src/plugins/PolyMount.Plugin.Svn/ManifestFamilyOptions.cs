@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace PolyMount.Plugins.GameEngine;
+namespace PolyMount.Plugins.Svn;
 
 /// <summary>What the manifest-family strategy treats as a package manifest, and how far one
 /// lookup may go. The defaults match a content repository whose packages are directories named

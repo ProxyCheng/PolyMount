@@ -65,6 +65,19 @@ public interface IMountAwareLayer
 /// <summary>What a background layer reports about the pass it is running.</summary>
 public sealed record LayerProgress(long Completed, long Total, LocalizedText Detail);
 
+/// <summary>A layer that owns its chain's directory listings.
+///
+/// Listings are the one thing capacity eviction cannot be allowed to take: a directory is the
+/// ancestor chain of everything beneath it, so losing one costs a source round trip for the
+/// directory and makes every path below it unreachable. The layer that keeps them says so here,
+/// and the resolver stops handing a second copy of every listing to the caches below it — their
+/// capacity is for content, and a copy protected by the namespace rule is capacity they can
+/// never use.
+/// </summary>
+public interface INamespaceStore
+{
+}
+
 // Marker for data sources backed by the local filesystem. Such sources do not benefit from a
 // read-through disk cache (the data is already local), so the mount chain omits the cache layer.
 public interface ILocalSource

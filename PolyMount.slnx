@@ -7,12 +7,14 @@
     <Project Path="src/PolyMount.Mcp/PolyMount.Mcp.csproj" />
   </Folder>
   <Folder Name="/src/plugins/">
-    <Project Path="src/plugins/PolyMount.Plugin.GameEngine/PolyMount.Plugin.GameEngine.csproj" />
+    <Project Path="src/plugins/PolyMount.Plugin.Smb/PolyMount.Plugin.Smb.csproj" />
     <Project Path="src/plugins/PolyMount.Plugin.Svn/PolyMount.Plugin.Svn.csproj" />
+    <Project Path="src/plugins/PolyMount.Plugin.TxFShim/PolyMount.Plugin.TxFShim.csproj" />
   </Folder>
   <Folder Name="/tests/plugins/">
-    <Project Path="tests/plugins/PolyMount.Plugin.GameEngine.Tests/PolyMount.Plugin.GameEngine.Tests.csproj" />
+    <Project Path="tests/plugins/PolyMount.Plugin.Smb.Tests/PolyMount.Plugin.Smb.Tests.csproj" />
     <Project Path="tests/plugins/PolyMount.Plugin.Svn.Tests/PolyMount.Plugin.Svn.Tests.csproj" />
+    <Project Path="tests/plugins/PolyMount.Plugin.TxFShim.Tests/PolyMount.Plugin.TxFShim.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/PolyMount.Core.Tests/PolyMount.Core.Tests.csproj" />

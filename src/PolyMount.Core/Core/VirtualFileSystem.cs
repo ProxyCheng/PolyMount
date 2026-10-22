@@ -336,16 +336,20 @@ public sealed class VirtualFileSystem
     /// <summary>Read either payload kind through the same object-loading boundary.
     /// <paramref name="speculative"/> marks every layer the load reaches as read-ahead, so a
     /// source that serves both lanes can schedule them apart.</summary>
-    public VirtualObject LoadObject(string path, bool speculative = false)
+    public VirtualObject LoadObject(string path, bool speculative = false, bool fill = true)
     {
         using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
         if (!TryLookup(path, out var header)) throw new VfsNotFoundException(path);
-        if (header.IsDir) return new VirtualObject(header, List(path, recordAccess: !speculative, speculative: speculative));
+        if (header.IsDir) return new VirtualObject(header, List(path, recordAccess: !speculative, speculative: speculative, fill: fill));
         using var stream = OpenRead(path, out header, speculative);
         return VirtualObject.WithContent(header, new FileObjectContent(header.Size,
             () => OpenRead(path, out _, speculative: true)));
     }
-    public List<VfsEntry> List(string path, bool recordAccess = true, bool speculative = false)
+    /// <summary>One directory's listing. <paramref name="fill"/> is what a caller that will keep
+    /// the answer elsewhere turns off: the warm-up stores listings in its own layer, and letting
+    /// the caches below it keep a second copy would spend their budgets on records nothing reads
+    /// from them.</summary>
+    public List<VfsEntry> List(string path, bool recordAccess = true, bool speculative = false, bool fill = true)
     {
         using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
         using var predictionDemand = recordAccess ? ObservePredictions(VfsPath.Normalize(path), listing: true) : null;
@@ -353,7 +357,7 @@ public sealed class VirtualFileSystem
         request?.Stage("resolving directory");
         path = VfsPath.Normalize(path);
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        if (!Visible(path) || !Resolve(path, out var value, out var index) || !value.Header.IsDir)
+        if (!Visible(path, fill: fill) || !Resolve(path, out var value, out var index, fill) || !value.Header.IsDir)
         {
             if (recordAccess) Metrics?.RecordRequest(watch.Elapsed);
             return new();
@@ -478,13 +482,27 @@ public sealed class VirtualFileSystem
     }
     private void Fill(string path, VirtualObject value, Stream? content, int hit)
     {
+        // A listing belongs to the chain's namespace store when it has one. Handing the same
+        // listing to the caches below it would put a copy under the rule that never evicts a
+        // directory, which is capacity the content caches can never reclaim.
+        bool directory = value.Header.IsDir;
         for (int i = hit - 1; i >= 0; i--)
         {
             if (_layers[i] is not IObjectCache cache || !AcceptsFill(i, hit)) continue;
+            if (directory && NamespaceStoreAbove(i)) continue;
             long position = content?.Position ?? 0;
             try { cache.StoreObject(path, value, content); }
             finally { if (content != null) content.Position = position; }
         }
+    }
+    /// <summary>Whether a namespace store sits above the layer at <paramref name="index"/>.
+    /// The store keeps the chain's listings; a cache beneath it is for content, and a listing
+    /// it caught would be one more record its capacity could never take back.</summary>
+    private bool NamespaceStoreAbove(int index)
+    {
+        for (int i = 0; i < index; i++)
+            if ((_layers[i] is NamedLayer named ? named.Inner : _layers[i]) is INamespaceStore) return true;
+        return false;
     }
     /// <summary>
     /// Remembers, above the layer that answered, that this path exists and what it looks
@@ -549,6 +567,11 @@ public sealed class VirtualFileSystem
         if (selected != null)
         {
             if (!((IObjectLayer)selected).TryApply(changes)) throw new IOException("The selected write handle no longer supports this operation");
+            // The commit a staging handle makes when it is flushed: the layer's own write, and the
+            // one whose duration is worth reading. Charged like the applies below it, so the write
+            // cards have one event per layer operation rather than one per call into the staging
+            // handle — those only carry bytes, see the recordWrite callback in OpenWrite.
+            Metrics?.RecordWrite(selected.Name, watch.Elapsed, 0);
             UpdateCachesAfterWrite(changes, selected);
             return selected;
         }
@@ -599,7 +622,7 @@ public sealed class VirtualFileSystem
                 scratch.Position = 0;
                 scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
                 SharedObjectFile file = null!;
-                file = new SharedObjectFile(path, scratch, target.Name, bytes => Metrics?.RecordWrite(target.Name, TimeSpan.Zero, bytes), snapshot =>
+                file = new SharedObjectFile(path, scratch, target.Name, bytes => Metrics?.RecordWriteBytes(target.Name, bytes), snapshot =>
                 {
                     lock (_mutationGate)
                     {

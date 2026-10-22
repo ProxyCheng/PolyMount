@@ -3,12 +3,12 @@ using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using PolyMount.Plugin.Testing;
 
-namespace PolyMount.Plugins.GameEngine;
+namespace PolyMount.Plugins.Svn;
 
 /// <summary>Tests exported by a separate test DLL; never shipped with the production plugin.</summary>
-public sealed class GameEnginePluginTests : IPluginTestProvider
+public sealed class ManifestFamilyTests : IPluginTestProvider
 {
-    public string PluginName => "game-engine";
+    public string PluginName => "manifests";
 
     private static bool Until(Func<bool> condition, int milliseconds = 5000)
     {
@@ -29,7 +29,7 @@ public sealed class GameEnginePluginTests : IPluginTestProvider
 
         Check("registration-and-preset", () =>
         {
-            var path = typeof(GameEnginePlugin).Assembly.Location;
+            var path = typeof(SvnPlugin).Assembly.Location;
             var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!PredictionStrategyRegistry.Names.Contains("manifests", StringComparer.OrdinalIgnoreCase))
@@ -73,7 +73,7 @@ public sealed class GameEnginePluginTests : IPluginTestProvider
             var arguments = new ToolArguments(JsonSerializer.SerializeToElement(
                 new Dictionary<string, JsonElement> { ["instance"] = JsonSerializer.SerializeToElement("Project") }));
             var response = operation.Invoke(link, arguments);
-            if (link.InstanceName != "Project" || link.Request?.Cmd != GameEnginePlugin.FamiliesCommand)
+            if (link.InstanceName != "Project" || link.Request?.Cmd != SvnPlugin.FamiliesCommand)
                 throw new Exception("The tool did not ask the instance for its families");
             var presented = operation.Present(response) as System.Text.Json.Nodes.JsonNode
                 ?? throw new Exception("The tool did not project the plugin's payload");

@@ -43,5 +43,6 @@
   "svn.action.refreshHead.confirmation": {
     "en": "Move this layer to HEAD and put that revision into the pinned revision field? Saving makes it the pin.",
     "zh-CN": "将此层更新到 HEAD，并把该版本填入固定 revision？保存后成为固定版本。"
-  }
+  },
+  "preset.game-engine-workspace.title": { "en": "Game engine workspace", "zh-CN": "游戏引擎工作区" }
 }

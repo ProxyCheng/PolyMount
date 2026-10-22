@@ -16,7 +16,8 @@ internal sealed class RecordingSubmission
         RecordingTail serviceLog, RecordingTail instanceLog, ServiceChannelState channel, DateTime startedUtc, DateTime endedUtc,
         string state, string? note, IReadOnlyList<LayerTotalRecord> totals, IReadOnlyList<SecondRecord> seconds,
         IReadOnlyList<double> reads, IReadOnlyList<double> bytes, IReadOnlyList<double> cost,
-        IReadOnlyList<double> writes, IReadOnlyList<double> overhead, long sampleRows)
+        IReadOnlyList<double> writes, IReadOnlyList<double> writeCounts, IReadOnlyList<double> writeCosts,
+        IReadOnlyList<double> overhead, long sampleRows)
     {
         Mount = mount;
         WorkingDirectory = workingDirectory;
@@ -40,6 +41,8 @@ internal sealed class RecordingSubmission
         Bytes = bytes;
         Cost = cost;
         Writes = writes;
+        WriteCounts = writeCounts;
+        WriteCosts = writeCosts;
         Overhead = overhead;
         SampleRows = sampleRows;
     }
@@ -74,6 +77,11 @@ internal sealed class RecordingSubmission
     public IReadOnlyList<double> Bytes { get; }
     public IReadOnlyList<double> Cost { get; }
     public IReadOnlyList<double> Writes { get; }
+    /// <summary>How many writes the layers applied per second, and what one of them cost: the two
+    /// figures the page's write cards are drawn from, kept so the bundle describes the same six
+    /// charts the page shows.</summary>
+    public IReadOnlyList<double> WriteCounts { get; }
+    public IReadOnlyList<double> WriteCosts { get; }
     /// <summary>Round-trip cost of the page's own polling, one entry per second.</summary>
     public IReadOnlyList<double> Overhead { get; }
     public long SampleRows { get; }
@@ -93,9 +101,11 @@ internal sealed class RecordingSubmission
         Charts = new List<ChartRecord>
         {
             new("stats.reads", "/s", ChartStatistics.Of(Reads)),
-            new("stats.layerBytes", "B", ChartStatistics.Of(Bytes)),
-            new("stats.latency", "ms", ChartStatistics.Of(Cost)),
-            new("stats.bytes", "B", ChartStatistics.Of(Writes))
+            new("stats.writes", "/s", ChartStatistics.Of(WriteCounts)),
+            new("stats.readBytes", "B", ChartStatistics.Of(Bytes)),
+            new("stats.writeBytes", "B", ChartStatistics.Of(Writes)),
+            new("stats.readLatency", "ms", ChartStatistics.Of(Cost)),
+            new("stats.writeLatency", "ms", ChartStatistics.Of(WriteCosts))
         },
         Seconds = Seconds.ToList(),
         SamplesFile = Path.Combine(WorkingDirectory, "samples.csv"),

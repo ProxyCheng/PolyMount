@@ -261,7 +261,7 @@
       <translation>请先保存并应用，再操作运行中的层。</translation>
     </message>
     <message>
-      <source>stats.layerBytes</source>
+      <source>stats.readBytes</source>
       <translation>读取字节</translation>
     </message>
     <message>
@@ -1222,12 +1222,20 @@
       <translation>缓存命中率</translation>
     </message>
     <message>
-      <source>stats.latency</source>
+      <source>stats.readLatency</source>
       <translation>读取耗时</translation>
     </message>
     <message>
-      <source>stats.bytes</source>
+      <source>stats.writeBytes</source>
       <translation>写入字节</translation>
+    </message>
+    <message>
+      <source>stats.writes</source>
+      <translation>写入请求</translation>
+    </message>
+    <message>
+      <source>stats.writeLatency</source>
+      <translation>写入耗时</translation>
     </message>
     <message><source>stats.accessors</source><translation>最近 60 秒的访问者：</translation></message>
     <message><source>stats.accessors.none</source><translation>最近 60 秒没有访问者。</translation></message>
@@ -1494,6 +1502,10 @@
     <message><source>stats.reconcile.wall</source><translation>耗时 · 近 {0:0.#} 秒：请求 {1:0.0} ms · 各层 {2:0.0} ms · 未归因 {3:0.0} ms</translation></message>
     <message><source>stats.layerHeld.memory</source><translation>内存占用</translation></message>
     <message><source>stats.layerHeld.disk</source><translation>磁盘占用</translation></message>
+    <message>
+      <source>stats.memory.unattributed</source>
+      <translation>未归属</translation>
+    </message>
     <message><source>stats.reconcile.bytes</source><translation>字节 · 近 {0} 秒：进程 {1} · 各层 {2} · 差 {3}</translation></message>
     <message><source>stats.process.io</source><translation>IO · 传输字节（读 + 写）</translation></message>
     <message><source>stats.process.io.read</source><translation>读</translation></message>

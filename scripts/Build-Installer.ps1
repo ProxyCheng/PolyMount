@@ -36,6 +36,15 @@ foreach ($project in @('Service','Tray','Mcp')) {
     # A distribution must not contain this workstation's repository config.
     Remove-Item -LiteralPath (Join-Path $output 'config.json') -Force -ErrorAction SilentlyContinue
 }
+# The TxF shim's native half is compiled rather than checked in (it links its CRT statically so it
+# can run inside a program carrying any MSVC runtime of its own). A machine without the C++ tools
+# still produces a setup: the plugin then ships without the payload it needs and refuses to
+# instrument anything, which is a visible refusal rather than a shim that cannot start a process.
+try {
+    & (Join-Path $PSScriptRoot 'Build-TxFShim.ps1')
+} catch {
+    Write-Warning "The TxF shim's native half was not built: $($_.Exception.Message)"
+}
 & (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $payload 'Service\plugins') -Configuration Release
 & (Join-Path $PSScriptRoot 'Build-Shell.ps1') -OutputDirectory (Join-Path $payload 'Shell')
 $dependencies = Join-Path $payload 'Dependencies'

@@ -64,6 +64,11 @@ public sealed class MetricsCollector
         /// while the time it took is real, and it lands in whatever account is left over.</summary>
         public long CostNs;
         public long MaxCostNs;
+        /// <summary>What the layer spent applying its writes, kept apart from the read cost beside
+        /// it: one average over both directions would be a number neither of them is, and the pair
+        /// of cards that draw them are read against each other.</summary>
+        public long WriteCostNs;
+        public long MaxWriteCostNs;
         /// <summary>Requests as the file system boundary saw them, and the time they took. Only the
         /// request ring uses these: a request belongs to no layer — that is the whole reason they
         /// are kept apart — and the layers it was served by are already counted beside it.</summary>
@@ -191,18 +196,20 @@ public sealed class MetricsCollector
     /// out of it on every record.</summary>
     private sealed class Counts
     {
-        public long Reads, Cached, Bytes, Writes, WriteBytes, CostNs, MaxNs;
+        public long Reads, Cached, Bytes, Writes, WriteBytes, CostNs, MaxNs, WriteCostNs, WriteMaxNs;
         /// <summary>The request ring's two, used by the shard's own request counts.</summary>
         public long Requests, RequestNs;
 
         public void Clear()
         {
-            Reads = Cached = Bytes = Writes = WriteBytes = CostNs = MaxNs = Requests = RequestNs = 0;
+            Reads = Cached = Bytes = Writes = WriteBytes = CostNs = MaxNs = WriteCostNs = WriteMaxNs = 0;
+            Requests = RequestNs = 0;
         }
     }
 
     /// <summary>What one layer's cells add up to over a window.</summary>
-    private readonly record struct Sums(long Reads, long Cached, long Bytes, long Writes, long WriteBytes, long CostNs, long MaxCostNs);
+    private readonly record struct Sums(long Reads, long Cached, long Bytes, long Writes, long WriteBytes,
+        long CostNs, long MaxCostNs, long WriteCostNs, long MaxWriteCostNs);
 
     /// <summary>The slot this collector was created in: the ring cannot have watched time before
     /// it existed, and saying so is what keeps a rate off a window the process never covered.</summary>
@@ -282,6 +289,20 @@ public sealed class MetricsCollector
         Record(layer, elapsed, bytes, cached, false);
     }
     public void RecordWrite(string layer, TimeSpan elapsed, long bytes) => Record(layer, elapsed, bytes, false, true);
+
+    /// <summary>Bytes a write carried, without counting a write. An application's write call lands
+    /// in the staging handle and costs nothing the layer spent time on; what the layer does is the
+    /// apply that puts the file into its store, and that is what <see cref="RecordWrite"/> counts
+    /// and times. Counting the staging call as well would make the write count the number of
+    /// memory copies and halve the average duration of a write beside them.</summary>
+    public void RecordWriteBytes(string layer, long bytes)
+    {
+        long now = Environment.TickCount64;
+        Volatile.Write(ref _lastActivityMs, now);
+        if (now >= Volatile.Read(ref _watchedUntilMs)) return;
+        if (bytes <= 0) return;
+        CountsFor(ShardFor(_slot()), layer).WriteBytes += bytes;
+    }
 
     /// <summary>One request, at the boundary that took it: whether a layer answered or not, and
     /// however many layers were asked on the way. Recorded beside the layer's own count rather than
@@ -373,6 +394,14 @@ public sealed class MetricsCollector
         {
             counts.Writes++;
             if (bytes > 0) counts.WriteBytes += bytes;
+            // The same rule the read branch follows: a duration of zero is a fast path rather than
+            // a measurement, so it neither adds to the total nor competes for the maximum.
+            long writeCost = elapsed.Ticks * 100;
+            if (writeCost > 0)
+            {
+                counts.WriteCostNs += writeCost;
+                if (writeCost > counts.WriteMaxNs) counts.WriteMaxNs = writeCost;
+            }
         }
         else
         {
@@ -454,7 +483,8 @@ public sealed class MetricsCollector
         if (slot == long.MinValue) return;
         foreach (var (layer, counts) in shard.Layers)
         {
-            if (counts.Reads == 0 && counts.Cached == 0 && counts.Bytes == 0 && counts.Writes == 0 && counts.WriteBytes == 0 && counts.CostNs == 0)
+            if (counts.Reads == 0 && counts.Cached == 0 && counts.Bytes == 0 && counts.Writes == 0 &&
+                counts.WriteBytes == 0 && counts.CostNs == 0 && counts.WriteCostNs == 0)
                 continue;
             ref Cell cell = ref CellAt(layer, slot);
             if (counts.Reads > 0) Interlocked.Add(ref cell.Reads, counts.Reads);
@@ -468,6 +498,15 @@ public sealed class MetricsCollector
                 long seen;
                 while (counts.MaxNs > (seen = Volatile.Read(ref cell.MaxCostNs)) &&
                        Interlocked.CompareExchange(ref cell.MaxCostNs, counts.MaxNs, seen) != seen)
+                {
+                }
+            }
+            if (counts.WriteCostNs > 0) Interlocked.Add(ref cell.WriteCostNs, counts.WriteCostNs);
+            if (counts.WriteMaxNs > 0)
+            {
+                long seen;
+                while (counts.WriteMaxNs > (seen = Volatile.Read(ref cell.MaxWriteCostNs)) &&
+                       Interlocked.CompareExchange(ref cell.MaxWriteCostNs, counts.WriteMaxNs, seen) != seen)
                 {
                 }
             }
@@ -565,6 +604,8 @@ public sealed class MetricsCollector
             cell.WriteBytes = 0;
             cell.CostNs = 0;
             cell.MaxCostNs = 0;
+            cell.WriteCostNs = 0;
+            cell.MaxWriteCostNs = 0;
             Volatile.Write(ref cell.Slot, slot);
         }
         return ref cell;
@@ -633,7 +674,7 @@ public sealed class MetricsCollector
         }
 
         var totals = new Dictionary<string, Sums>(StringComparer.OrdinalIgnoreCase);
-        long reads = 0, cached = 0, writes = 0, costNs = 0;
+        long reads = 0, cached = 0, writes = 0, costNs = 0, writeCostNs = 0;
 
         var shards = PendingShards();
         foreach (var shard in shards)
@@ -641,7 +682,8 @@ public sealed class MetricsCollector
             if (shard.Slot < oldest) continue;
             foreach (var (name, counts) in shard.Layers)
             {
-                if (counts.Reads == 0 && counts.Writes == 0 && counts.Cached == 0 && counts.Bytes == 0 && counts.WriteBytes == 0) continue;
+                if (counts.Reads == 0 && counts.Writes == 0 && counts.Cached == 0 && counts.Bytes == 0 &&
+                    counts.WriteBytes == 0 && counts.CostNs == 0 && counts.WriteCostNs == 0) continue;
                 totals.TryGetValue(name, out var held);
                 totals[name] = new Sums(
                     held.Reads + counts.Reads,
@@ -650,11 +692,14 @@ public sealed class MetricsCollector
                     held.Writes + counts.Writes,
                     held.WriteBytes + counts.WriteBytes,
                     held.CostNs + counts.CostNs,
-                    Math.Max(held.MaxCostNs, counts.MaxNs));
+                    Math.Max(held.MaxCostNs, counts.MaxNs),
+                    held.WriteCostNs + counts.WriteCostNs,
+                    Math.Max(held.MaxWriteCostNs, counts.WriteMaxNs));
                 reads += counts.Reads;
                 cached += counts.Cached;
                 writes += counts.Writes;
                 costNs += counts.CostNs;
+                writeCostNs += counts.WriteCostNs;
             }
             requests += shard.Requests.Requests;
             requestNs += shard.Requests.RequestNs;
@@ -682,11 +727,14 @@ public sealed class MetricsCollector
                         sum.Writes + Volatile.Read(ref cells[index].Writes),
                         sum.WriteBytes + Volatile.Read(ref cells[index].WriteBytes),
                         sum.CostNs + cellCost,
-                        Math.Max(sum.MaxCostNs, Volatile.Read(ref cells[index].MaxCostNs)));
+                        Math.Max(sum.MaxCostNs, Volatile.Read(ref cells[index].MaxCostNs)),
+                        sum.WriteCostNs + Volatile.Read(ref cells[index].WriteCostNs),
+                        Math.Max(sum.MaxWriteCostNs, Volatile.Read(ref cells[index].MaxWriteCostNs)));
                     reads += cellReads;
                     cached += Volatile.Read(ref cells[index].Cached);
                     writes += Volatile.Read(ref cells[index].Writes);
                     costNs += cellCost;
+                    writeCostNs += Volatile.Read(ref cells[index].WriteCostNs);
                 }
                 if (++index == CellCount) index = 0;
             }
@@ -748,6 +796,7 @@ public sealed class MetricsCollector
             TotalWrites = writes,
             CacheHitPercent = reads == 0 ? 0 : 100.0 * cached / reads,
             AvgCostMs = reads == 0 ? 0 : costNs / 1_000_000.0 / reads,
+            AvgWriteCostMs = writes == 0 ? 0 : writeCostNs / 1_000_000.0 / writes,
             // Process-wide and cumulative, read straight from the runtime. It is the one
             // number that says whether the locks on the read path are contended at all;
             // zero over a window means no thread ever queued behind another.
@@ -766,6 +815,8 @@ public sealed class MetricsCollector
                 SharePercent = reads == 0 ? 0 : 100.0 * sum.Reads / reads,
                 AvgCostMs = sum.Reads == 0 ? 0 : sum.CostNs / 1_000_000.0 / sum.Reads,
                 MaxCostMs = sum.MaxCostNs / 1_000_000.0,
+                AvgWriteCostMs = sum.Writes == 0 ? 0 : sum.WriteCostNs / 1_000_000.0 / sum.Writes,
+                MaxWriteCostMs = sum.MaxWriteCostNs / 1_000_000.0,
                 Bytes = sum.Bytes,
                 WriteBytes = sum.WriteBytes
             });

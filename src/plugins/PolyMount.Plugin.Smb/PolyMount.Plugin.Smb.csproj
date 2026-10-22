@@ -8,12 +8,10 @@
   <ItemGroup>
     <ProjectReference Include="..\..\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
-
   <ItemGroup>
-    <InternalsVisibleTo Include="PolyMount.Plugin.GameEngine.Tests" />
+    <InternalsVisibleTo Include="PolyMount.Plugin.Smb.Tests" />
   </ItemGroup>
-
   <ItemGroup>
-    <EmbeddedResource Include="Resources\plugin-texts.json" LogicalName="PolyMount.Plugin.GameEngine.Texts" />
+    <EmbeddedResource Include="Resources\plugin-texts.json" LogicalName="PolyMount.Plugin.Smb.Texts" />
   </ItemGroup>
 </Project>

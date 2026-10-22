@@ -66,6 +66,26 @@ public class MetricsCellTests
     }
 
     [TestMethod]
+    public void A_write_is_timed_apart_from_a_read_and_from_the_bytes_it_carried()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        collector.RecordWrite("overlay", TimeSpan.FromMilliseconds(4), 0);
+        collector.RecordWrite("overlay", TimeSpan.FromMilliseconds(2), 0);
+        // What an application writes into the staging handle is bytes, not a layer operation: it
+        // must not become a third write beside the two the layer really applied, or the average
+        // would be measured over memory copies.
+        collector.RecordWriteBytes("overlay", 12_000);
+
+        var overlay = collector.Snapshot("m", 1).Layers.Single(l => l.Name == "overlay");
+        Assert.AreEqual(2, overlay.Writes, "the staging bytes are not a write of their own");
+        Assert.AreEqual(12_000, overlay.WriteBytes);
+        Assert.AreEqual(3.0, overlay.AvgWriteCostMs, 1e-9, "a write's mean is over the writes applied in the window");
+        Assert.AreEqual(4.0, overlay.MaxWriteCostMs, 1e-9);
+        Assert.AreEqual(0.0, overlay.AvgCostMs, 1e-9, "a write's duration is not a read's");
+    }
+
+    [TestMethod]
     public void Traffic_cannot_push_a_window_out_of_the_ring()
     {
         long slot = 1_000;

@@ -258,7 +258,7 @@ On disk: {2}</translation>
       <translation>Save and apply before operating on a running layer.</translation>
     </message>
     <message>
-      <source>stats.layerBytes</source>
+      <source>stats.readBytes</source>
       <translation>Bytes read</translation>
     </message>
     <message>
@@ -1219,12 +1219,20 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>Cache hit rate</translation>
     </message>
     <message>
-      <source>stats.latency</source>
+      <source>stats.readLatency</source>
       <translation>Read time</translation>
     </message>
     <message>
-      <source>stats.bytes</source>
+      <source>stats.writeBytes</source>
       <translation>Bytes written</translation>
+    </message>
+    <message>
+      <source>stats.writes</source>
+      <translation>Writes</translation>
+    </message>
+    <message>
+      <source>stats.writeLatency</source>
+      <translation>Write time</translation>
     </message>
     <message><source>stats.accessors</source><translation>readers in the last 60 seconds:</translation></message>
     <message><source>stats.accessors.none</source><translation>no readers in the last 60 seconds.</translation></message>
@@ -1491,6 +1499,10 @@ The remote view changes. Local modifications are kept.</translation>
     <message><source>stats.reconcile.wall</source><translation>Time · last {0:0.#} s: requests {1:0.0} ms · layers {2:0.0} ms · unattributed {3:0.0} ms</translation></message>
     <message><source>stats.layerHeld.memory</source><translation>Memory held</translation></message>
     <message><source>stats.layerHeld.disk</source><translation>Disk held</translation></message>
+    <message>
+      <source>stats.memory.unattributed</source>
+      <translation>Unattributed</translation>
+    </message>
     <message><source>stats.reconcile.bytes</source><translation>Bytes · last {0} s: process {1} · layers {2} · gap {3}</translation></message>
     <message><source>stats.process.io</source><translation>IO · Bytes transferred (read + written)</translation></message>
     <message><source>stats.process.io.read</source><translation>Read</translation></message>

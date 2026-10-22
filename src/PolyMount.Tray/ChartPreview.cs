@@ -14,16 +14,20 @@ namespace PolyMount.Tray;
 /// Usage: PolyMount.Tray.exe --render &lt;directory&gt; [--size WxH] [--lang en|zh-CN]</summary>
 internal sealed class ChartPreview : QWidget
 {
-    /// <summary>The cards the page puts in its grid, in the order it puts them: the four trends,
-    /// then what the layers hold in memory and on disk, then the process's own bytes. The page's
-    /// process section holds four more; they are the same card with a level's unit, and the ones
-    /// here are the shapes a chart can be wrong in.</summary>
+    /// <summary>The cards the page draws, in the order it draws them: the six trends — read on
+    /// the left, write on the right, one row per question — then the process section's two
+    /// holdings (memory with the part no layer claims on top, and disk) and its own bytes. The
+    /// page folds that section away; the preview lays it flat, because what is being looked at is
+    /// the cards. The section's three level cards are not here: they are the same card with a
+    /// level's unit, and the ones drawn are the shapes a chart can be wrong in.</summary>
     private static readonly (string TitleKey, string Color, string Unit, ChartSummary Summary)[] Cards =
     {
         ("stats.reads", "#2563eb", "/s", ChartSummary.Volume),
-        ("stats.layerBytes", "#059669", "B", ChartSummary.Volume),
-        ("stats.latency", "#8b5cf6", "ms", ChartSummary.Latency),
-        ("stats.bytes", "#0891b2", "B", ChartSummary.Volume),
+        ("stats.writes", "#dc2626", "/s", ChartSummary.Volume),
+        ("stats.readBytes", "#059669", "B", ChartSummary.Volume),
+        ("stats.writeBytes", "#0891b2", "B", ChartSummary.Volume),
+        ("stats.readLatency", "#8b5cf6", "ms", ChartSummary.Latency),
+        ("stats.writeLatency", "#d97706", "ms", ChartSummary.Latency),
         ("stats.layerHeld.memory", "#7c3aed", "B", ChartSummary.Gauge),
         ("stats.layerHeld.disk", "#c026d3", "B", ChartSummary.Gauge),
         ("stats.process.moved", "#475569", "B", ChartSummary.Volume)
@@ -57,12 +61,12 @@ internal sealed class ChartPreview : QWidget
             card.SetFixedSize(width, height);
             _cards.Add(card);
         }
-        for (int i = 0; i < 4; i++) grid.AddWidget(_cards[i], i / 2, i % 2);
-        grid.AddWidget(_cards[4], 2, 0);
-        grid.AddWidget(_cards[5], 2, 1);
-        grid.AddWidget(_cards[6], 3, 0, 1, 2);
-        grid.AddWidget(_access, 4, 0, 1, 2);
-        Resize(2 * width + 48 + 16, 4 * height + 42 + 3 * 16 + 240);
+        for (int i = 0; i < 6; i++) grid.AddWidget(_cards[i], i / 2, i % 2);
+        grid.AddWidget(_cards[6], 3, 0);
+        grid.AddWidget(_cards[7], 3, 1);
+        grid.AddWidget(_cards[8], 4, 0, 1, 2);
+        grid.AddWidget(_access, 5, 0, 1, 2);
+        Resize(2 * width + 48 + 16, 5 * height + 42 + 4 * 16 + 240);
     }
 
     /// <summary>Draws every card once and writes it out, printing what each one's layout came to.
@@ -173,19 +177,28 @@ internal sealed class ChartPreview : QWidget
                 new(I18n.T("stats.process.moved.write"), "#b45309", Wave(end, 300 * 1024, 1.9)) { Stacked = false }
             };
         // What one layer's reading is worth on this card: the byte cards are read in thousands, a
-        // latency in milliseconds and the rates in single figures.
+        // latency in milliseconds and the rates in single figures. The two directions are given
+        // different magnitudes so a picture of a read card beside a write card shows which is
+        // which, the way a busy instance's two accounts differ.
+        bool written = titleKey.StartsWith("stats.write", StringComparison.Ordinal);
         double peak = unit switch { "B" => 4096, "ms" => 1.2, "/s" => 2.6, _ => 6 };
+        if (written) peak *= 0.45;
         var series = new List<ChartSeries>();
         for (int layer = 0; layer < Layers.Length; layer++)
         {
             var (name, color) = Layers[layer];
             double amplitude = layer == Layers.Length - 1 ? 0 : peak * (1 - layer * 0.18);
-            series.Add(new ChartSeries(name, color, Wave(end, amplitude, layer * 0.9)));
+            series.Add(new ChartSeries(name, color, Wave(end, amplitude, layer * 0.9 + (written ? 1.1 : 0))));
         }
         // The read-ahead layer's guesses that were evicted unread are drawn below the line, hatched
         // in that layer's own colour. The service sends this label; the fixture spells it out.
         if (titleKey == "stats.reads")
             series.Add(new ChartSeries("wasted · predict", "#f59e0b", Wave(end, -peak * 0.7, 2.4)) { Hatched = true });
+        // The part of the process's memory no layer claims: the card's top edge is the process's
+        // own reading, and this band is what the layer bands below it leave over.
+        if (titleKey == "stats.layerHeld.memory")
+            series.Insert(0, new ChartSeries(I18n.T("stats.memory.unattributed"), "#94A3B8",
+                Wave(end, peak * 0.8, 1.4)));
         return series;
     }
 

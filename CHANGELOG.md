@@ -5,6 +5,61 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-22
+
+### Added
+
+- A program that needs Transactional NTFS can run on a mount. WinFsp's volume does not advertise
+  transactions, so an open through `CreateFileTransacted` is refused with 6832 before any file
+  system sees it. The new transaction-shim plugin starts the executables an administrator names
+  through a native launcher that replaces those calls inside the process, before they reach the
+  kernel, and records each one it intercepted. Enabling the plugin installs nothing: the directory
+  is named with `install_txf_shim`, and processes already running keep their behaviour until
+  restarted. A shimmed open succeeds and its writes take effect; a rollback no longer undoes them.
+  The setup offers the plugin as a third bundled choice, and an uninstall removes the registry
+  values it wrote.
+- A folder on another Windows machine is a source: the `smb` plugin maps a UNC path
+  (`\\host\share\folder`, or an administrative share such as `\\host\d$`) and installs nothing on
+  the far side. It presents the configured credential in the worker's session, keys the cache on
+  the mapped folder's write time, and answers "not found" only for a real not-found — a dropped
+  connection is an error, not a deletion. The `smb-workspace` preset and `get_smb_source`
+  operation ship with it.
+
+### Changed
+
+- The performance page measures writes the way it measures reads: requests, bytes and latency,
+  in two columns with one row per question, and the recording bundle carries the same six charts.
+  Write latency comes from where a layer applies a create or a commit; bytes written into a
+  staging handle are counted as bytes, not as writes of their own.
+- The layers' memory holdings are drawn inside the process's own working set, with the part no
+  layer claims (the runtime, SQLite's native buffers, the pipe, GC slack) as one grey band — so
+  the card's total is what the operating system says the worker holds. The total is read by the
+  worker itself, because an unelevated tray cannot open a LocalService worker's handle. Disk has
+  no such total and stays the layers' own sum. The process section now reads memory | disk,
+  CPU | threads, handles | I/O.
+- The listing warm-up layer owns its own store. Complete directory listings used to be written
+  into whichever caches were below it, where the "never evict a listing" rule took capacity the
+  content cache could never reclaim, and warm-up hits were reported as somebody else's. The
+  `warmup` layer now keeps a path-keyed store that never evicts a listing, is emptied when the
+  source's generation moves, and answers the resolver itself — so its effect is visible in the
+  performance window.
+- The game-engine plugin is gone: its `manifests` strategy, `game-engine-workspace` preset and
+  `list_manifest_families` operation moved into the SVN plugin, where they are useful. The
+  deployment sweep removes a plugin DLL the source tree no longer publishes.
+
+### Fixed
+
+- A write's commit is charged to the process that wrote the file. The commit happens when the
+  staging handle is flushed or cleaned up, and those callbacks cannot name the caller, so the
+  write-source card listed the layer's slice but no process — every commit read as "no process
+  to attribute it to". The boundary now carries the caller the handle remembered into the commit,
+  and into a rename and a reparse-point write as well.
+- The warm-up pass resolves through its own store, so a directory's ancestors are not fetched
+  from the source again on every depth (a tree of depth *d* cost the source *d* round trips per
+  listing).
+- The update script pins the build tools and console to one language, and skips publishing the
+  MCP server while a running copy holds it, instead of retrying ten times with a warning each.
+
 ## [0.5.1] - 2026-10-20
 
 ### Fixed

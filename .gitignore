@@ -1,6 +1,9 @@
 # Build output
 [Bb]in/
 [Oo]bj/
+# The TxF shim's native half is compiled by scripts\Build-TxFShim.ps1 into the plugin folder it
+# ships from; like the shell extension, the binaries are built, not checked in.
+/src/plugins/PolyMount.Plugin.TxFShim/native/
 [Dd]ebug/
 [Rr]elease/
 x64/

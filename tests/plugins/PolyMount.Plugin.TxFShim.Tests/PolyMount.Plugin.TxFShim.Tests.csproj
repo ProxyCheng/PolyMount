@@ -6,7 +6,7 @@
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\..\src\plugins\PolyMount.Plugin.GameEngine\PolyMount.Plugin.GameEngine.csproj" />
+    <ProjectReference Include="..\..\..\src\plugins\PolyMount.Plugin.TxFShim\PolyMount.Plugin.TxFShim.csproj" />
     <ProjectReference Include="..\..\..\src\PolyMount.Plugin.Testing\PolyMount.Plugin.Testing.csproj" />
   </ItemGroup>
 </Project>

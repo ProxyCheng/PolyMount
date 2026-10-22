@@ -204,6 +204,11 @@ internal sealed class ObjectDatabase
     }
     /// <summary>Resident records, counted without copying the index.</summary>
     public int Count { get { lock (_gate) { VerifyStorage(); return _records.Count; } } }
+    /// <summary>Whether the resident index already holds a key. A caller deciding whether a
+    /// write is worth queueing asks this rather than <see cref="TryGet"/>: a recoverable store
+    /// answers a miss by reading the table back, which is the right cost for a read and the
+    /// wrong one for a decision.</summary>
+    internal bool Contains(string key) { lock (_gate) return _records.ContainsKey(key); }
     /// <summary>Commits whatever is still waiting, then releases the pooled connections so the
     /// store's files can be deleted or moved (clearing an instance's cache, removing its store
     /// directory).</summary>

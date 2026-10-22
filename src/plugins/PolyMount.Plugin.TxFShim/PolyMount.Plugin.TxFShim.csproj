@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\PolyMount.Core\PolyMount.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="PolyMount.Plugin.TxFShim.Tests" />
+  </ItemGroup>
+  <!-- The native half ships beside the assembly; scripts\Build-TxFShim.ps1 puts it in native\.
+       A checkout without the C++ build publishes the plugin without it, and install refuses,
+       which is the right failure for a shim that could not start anything. The probe is a test
+       tool and never ships. -->
+  <ItemGroup>
+    <Content Include="native\**\*" Exclude="native\probe\**;native\*.obj" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

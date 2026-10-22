@@ -1,20 +1,26 @@
 namespace PolyMount.Core;
 
 /// <summary>
-/// Walks directory listings in the background after a mount, so the read cache holds them for
-/// the version being mounted.
+/// Walks directory listings in the background after a mount, handing each one to the layer that
+/// owns the namespace store.
 /// <para>
 /// A listing is the one thing every other request needs: it carries its children's headers, so
 /// one cached listing answers a whole directory's stat traffic, and it survives a restart at
 /// the same version. Fetching them on demand means the first walk through a tree — an engine
 /// starting, or someone opening a folder — pays a source round trip per directory, and after a
-/// version change there is nothing in the cache to answer with. Doing it here moves that
+/// version change there is nothing in the store to answer with. Doing it here moves that
 /// traffic to when the mount is not being read.
 /// </para>
 /// <para>
 /// The walk yields to the client: it steps only while nothing has read through the mount for a
 /// moment, it takes one directory at a time, and it stops at its budget. A mount that is busy
 /// from its first second therefore warms nothing, which is the intent.
+/// </para>
+/// <para>
+/// Where a listing is kept is the chain's business: the walk resolves through it like any other
+/// reader, so the layer that owns listings (and any cache that is allowed one) is filled by the
+/// same fill path a client read uses. The chain it is given includes the store it fills — without
+/// that, every directory would resolve its ancestors from the source again.
 /// </para>
 /// </summary>
 public sealed class ListingWarmup : IDisposable

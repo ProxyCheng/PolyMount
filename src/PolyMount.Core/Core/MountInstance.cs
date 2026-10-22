@@ -489,6 +489,11 @@ public sealed class MountInstance : IDisposable
         }
 
         if (PrimarySource is IRevisionSource rev) status.Revision = rev.Revision;
+        // The process's own footprint, read by the process itself. A front end that is not
+        // elevated cannot open a LocalSystem worker, and this is the total the layers' holdings
+        // are read against: reported here so the reconciliation works whichever account asks.
+        try { status.WorkingSetBytes = System.Diagnostics.Process.GetCurrentProcess().WorkingSet64; }
+        catch (Exception) { }
         return status;
     }
 

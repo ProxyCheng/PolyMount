@@ -62,6 +62,9 @@ internal sealed class RecordingSession
     /// <summary>One number per second for the whole recording. Four doubles a second is nothing,
     /// and a summary over the whole window has to be computed from something.</summary>
     private readonly List<double> _readsSeries = new(), _bytesSeries = new(), _costSeries = new(), _writeSeries = new();
+    /// <summary>The write side of the same window: how many writes the layers applied and what one
+    /// of them cost, in the two series the page's write cards are drawn from.</summary>
+    private readonly List<double> _writeCountSeries = new(), _writeCostSeries = new();
     private readonly List<SecondRecord> _seconds = new();
     private readonly List<double> _overhead = new();
     private List<MountMetrics> _lastMetrics = new();
@@ -323,6 +326,8 @@ internal sealed class RecordingSession
         double bytes = sample.Layers.Values.Sum(layer => layer.Bytes);
         double cost = sample.Layers.Values.Sum(layer => layer.Cost);
         double writes = sample.Layers.Values.Sum(layer => layer.WriteBytes);
+        double writeCount = sample.Layers.Values.Sum(layer => layer.Writes);
+        double writeCost = sample.Layers.Values.Sum(layer => layer.WriteCost);
         var csv = new StringBuilder();
         foreach (var (mount, layer) in Rows(metrics))
             StatsExport.AppendSampleRow(csv, new SampleRecord(utcNow, mount.Mount, layer.Name, layer.Hits, layer.Bytes,
@@ -352,6 +357,8 @@ internal sealed class RecordingSession
             _bytesSeries.Add(bytes);
             _costSeries.Add(cost);
             _writeSeries.Add(writes);
+            _writeCountSeries.Add(writeCount);
+            _writeCostSeries.Add(writeCost);
             _overhead.Add(requestMs);
             _seconds.Add(new SecondRecord(utcNow, reads, bytes, cost, writes, requestMs, 0, 0,
                 process.CpuSeconds, process.WorkingSetBytes, process.PrivateBytes,
@@ -404,7 +411,8 @@ internal sealed class RecordingSession
                 new ServiceChannelState(_serviceSessionId, _counts, _restarts),
                 StartedUtc, utcNow, State.ToString(), _note,
                 Totals(), _seconds.ToList(), _readsSeries.ToList(), _bytesSeries.ToList(),
-                _costSeries.ToList(), _writeSeries.ToList(), _overhead.ToList(), SampleRows);
+                _costSeries.ToList(), _writeSeries.ToList(), _writeCountSeries.ToList(), _writeCostSeries.ToList(),
+                _overhead.ToList(), SampleRows);
         }
     }
 

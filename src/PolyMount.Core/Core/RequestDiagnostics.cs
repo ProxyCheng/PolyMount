@@ -14,6 +14,10 @@ public sealed class RequestDiagnostics : IDisposable
     private const string LineTemplate =
         "{Kind:l} id={RequestId} parent={ParentId} thread={ThreadId} pid={ProcessId} op={Operation:l} path='{Path:l}' elapsedMs={ElapsedMs} stage='{Stage:l}'";
     private static readonly AsyncLocal<Scope?> Current = new();
+    /// <summary>The caller for work that has no scope of its own; see <see cref="ActingFor"/>.
+    /// Separate from <see cref="Current"/> so that naming a commit's caller cannot be mistaken for
+    /// a request, and so that a real scope always wins.</summary>
+    private static readonly AsyncLocal<int> ActingForProcess = new();
     private readonly Logger _logger;
     private readonly AsyncLogMonitor _monitor = new();
     private readonly ConcurrentDictionary<long, Scope> _active = new();
@@ -62,7 +66,41 @@ public sealed class RequestDiagnostics : IDisposable
     /// a task whose flow was suppressed (see <c>ReadPrediction</c> and <c>DurableCacheLayer</c>),
     /// so there is no scope around it and the work is nobody's. That is the same reading the mount
     /// takes when it charges a request to process 0.</summary>
-    public static int AmbientProcessId => Current.Value?.ProcessId ?? 0;
+    public static int AmbientProcessId
+    {
+        get
+        {
+            int scoped = Current.Value?.ProcessId ?? 0;
+            return scoped != 0 ? scoped : ActingForProcess.Value;
+        }
+    }
+
+    /// <summary>The caller for work that happens after the callback that could name it. A file
+    /// written through the mount is committed when the staging handle is flushed or cleaned up,
+    /// and that commit is the layer's write: without this the write cards put every commit in the
+    /// bucket for nobody, because those callbacks cannot ask WinFsp who is calling.
+    ///
+    /// It deliberately opens no scope: the request was the write that filled the handle, and the
+    /// commit is part of it. Opening one here would add a line to the request log and an event to
+    /// the recording for every closed file.</summary>
+    public static IDisposable? ActingFor(int processId)
+    {
+        if (processId <= 0) return null;
+        int previous = ActingForProcess.Value;
+        ActingForProcess.Value = processId;
+        return new Restore(processId, previous);
+    }
+
+    private sealed class Restore(int processId, int previous) : IDisposable
+    {
+        private int _done;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _done, 1) != 0) return;
+            // Only the innermost mark this scope set is cleared; an outer one stays.
+            if (ActingForProcess.Value == processId) ActingForProcess.Value = previous;
+        }
+    }
 
     /// <summary>
     /// A runtime key for the caller's stream: the process plus the thread handling the request.

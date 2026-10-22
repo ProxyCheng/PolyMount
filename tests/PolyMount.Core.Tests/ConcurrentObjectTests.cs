@@ -91,6 +91,11 @@ public sealed class ConcurrentObjectTests
         Assert.IsTrue(metrics.TotalWrites >= 2);
         Assert.AreEqual(1L, metrics.TotalReads);
         Assert.AreEqual(100.0, metrics.Layers.Single().AccessSharePercent);
+        // The bytes the application wrote are attributed without being counted as writes of their
+        // own, and the writes the layer applied carry the time they took — the pair the two write
+        // cards (rate, latency) are read from.
+        Assert.AreEqual(7L, metrics.Layers.Single().WriteBytes);
+        Assert.IsTrue(metrics.Layers.Single().AvgWriteCostMs > 0, "a write the layer applied is timed");
         var usage = mount.GetStatus().Providers.Single().StorageUsage!;
         Assert.AreEqual(1, usage.FileObjects);
         Assert.AreEqual(1, usage.DirectoryObjects);

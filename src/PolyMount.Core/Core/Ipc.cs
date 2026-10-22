@@ -105,6 +105,12 @@ public sealed class MountStatus
     public long CacheBytes { get; set; }
     public long CacheCapacity { get; set; }
     public int CacheCount { get; set; }
+    /// <summary>What the process serving this instance holds resident right now, by its own
+    /// reading. The worker reports it because it is the process in question: a front end running
+    /// as another account cannot open a LocalSystem worker's process handle, and the one number
+    /// the layers' own holdings are reconciled against has to be there whichever account is
+    /// reading. Zero when nothing is running the instance, or when it could not be read.</summary>
+    public long WorkingSetBytes { get; set; }
     // Directories whose listing the background warm-up has stored, against its budget;
     // zero budget means the instance does not warm.
     public long WarmedDirectories { get; set; }
@@ -385,6 +391,14 @@ public sealed class LayerMetric
     public double SharePercent { get; set; } // share of total reads
     public double AvgCostMs { get; set; }    // average read-resolution latency
     public double MaxCostMs { get; set; }
+    /// <summary>What one write this layer applied took, averaged over the writes it applied in the
+    /// window, and the slowest of them. A write here is the layer's own operation — the apply that
+    /// creates, commits, deletes or renames, which is where its time goes — rather than each call
+    /// an application made into the staging handle; see <c>MetricsCollector.RecordWriteBytes</c>.
+    /// Kept apart from the read figures above: the two directions are read against each other, and
+    /// one average over both would be a number neither of them is.</summary>
+    public double AvgWriteCostMs { get; set; }
+    public double MaxWriteCostMs { get; set; }
     public long Bytes { get; set; }          // bytes served
     /// <summary>Outcome split for a read-ahead layer, whose entries are either read, wasted
     /// on eviction, or still held — the three add up to everything it kept.</summary>
@@ -493,6 +507,9 @@ public sealed class MountMetrics
     public double RequestMs { get; set; }
     public double CacheHitPercent { get; set; }
     public double AvgCostMs { get; set; }
+    /// <summary>What one write cost, averaged over the writes the layers applied in the window:
+    /// the same figure <see cref="AvgCostMs"/> is for reads, in the other direction.</summary>
+    public double AvgWriteCostMs { get; set; }
     /// <summary>How many times a thread had to wait for a monitor since this worker started
     /// (<c>Monitor.LockContentionCount</c>). Cumulative, not an amount over the window: compare
     /// two samples, and a delta of zero means nothing queued on a lock in between — the reading

@@ -4,6 +4,11 @@ using PolyMount.Layers;
 
 namespace PolyMount.Core.Tests;
 
+/// <summary>
+/// The walk itself: fetch a directory, let the resolver's fill path keep the listing, move on.
+/// Where a listing is kept is the chain's business, so these tests pin only what the walk
+/// promises — the order it visits, and that it stops at its budgets and out of a reader's way.
+/// </summary>
 [TestClass]
 public sealed class ListingWarmupTests
 {
@@ -32,24 +37,27 @@ public sealed class ListingWarmupTests
     }
 
     [TestMethod]
-    public void Warmup_stores_listings_so_the_first_walk_stays_off_the_source()
+    public void The_walk_fills_the_chain_it_reads_through()
     {
         using var chain = Chain.Build();
+        int listed = chain.Source.ListedDirectories.Count;
         using (var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 16, quietMs: 0))
         {
             Assert.IsTrue(warmup.WaitForCompletion(TimeSpan.FromSeconds(10)), "the warm-up did not finish");
             // "", "a", "a/b" and "a/empty" — every directory the mount has.
             Assert.AreEqual(4, warmup.WarmedDirectories);
         }
-        Assert.IsTrue(chain.Cache.TryReadObject("a", out _), "the listing was not stored in the cache");
-        Assert.IsTrue(chain.Cache.TryReadObject("a/b", out _), "a nested listing was not stored in the cache");
-        Assert.IsTrue(chain.Cache.TryReadObject("a/empty", out _), "an empty listing was not stored in the cache");
+        Assert.IsTrue(chain.Cache.TryReadObject("a", out var listing), "the listing the walk fetched was not kept");
+        Assert.AreEqual(3, listing.Children!.Count);
+        Assert.IsTrue(chain.Cache.TryReadObject("a/empty", out var empty));
+        Assert.AreEqual(0, empty.Children!.Count, "an empty directory is a listing too");
 
-        int listings = chain.Source.ListedDirectories.Count;
-        var children = chain.Vfs.List("a");
-        Assert.AreEqual(3, children.Count);
-        Assert.AreEqual(listings, chain.Source.ListedDirectories.Count,
-            "a walk after the warm-up still went back to the source");
+        // A second walk of the same tree is answered by what the first one kept.
+        int after = chain.Source.ListedDirectories.Count;
+        using (var again = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 16, quietMs: 0))
+            again.WaitForCompletion(TimeSpan.FromSeconds(10));
+        Assert.AreEqual(after, chain.Source.ListedDirectories.Count, "a warm walk went back to the source");
+        Assert.IsTrue(listed < after);
     }
 
     [TestMethod]
@@ -79,18 +87,5 @@ public sealed class ListingWarmupTests
         using var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 8, quietMs: 30000);
         Assert.IsFalse(warmup.WaitForCompletion(TimeSpan.FromMilliseconds(300)));
         Assert.AreEqual(0, warmup.WarmedDirectories, "the warm-up ran while the mount was being read");
-    }
-
-    [TestMethod]
-    public void A_warmed_version_is_dropped_when_the_source_moves()
-    {
-        using var chain = Chain.Build();
-        using (var warmup = new ListingWarmup(chain.Vfs, () => chain.Metrics.IdleFor, limit: 16, quietMs: 0))
-            warmup.WaitForCompletion(TimeSpan.FromSeconds(10));
-        Assert.IsTrue(chain.Cache.TryReadObject("a", out _));
-
-        chain.Source.AddFile("a/added", "z");
-        chain.Source.BumpGeneration("g1");
-        Assert.IsFalse(chain.Cache.TryReadObject("a", out _), "a listing outlived the version it was fetched at");
     }
 }

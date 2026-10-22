@@ -165,6 +165,29 @@ public class MetricsProcessTests
     /// is that the scopes the VFS opens below the boundary do not lose it.</summary>
     private static RequestDiagnostics Tracing(TempDir temp) => new(temp.Sub("requests.log"));
 
+    /// <summary>A write with no request scope around it — the commit a staging handle makes when
+    /// it is flushed or cleaned up — is still charged to the process whose handle it is. Those
+    /// callbacks cannot ask WinFsp who is calling, so the boundary marks the caller the handle
+    /// remembered; without the mark the write cards put every commit in the bucket for nobody.</summary>
+    [TestMethod]
+    public void A_commit_is_charged_to_the_caller_the_handle_remembered()
+    {
+        long slot = 1_000;
+        var collector = At(() => slot);
+        using (RequestDiagnostics.ActingFor(4321))
+            collector.RecordWrite("overlay", TimeSpan.Zero, 1);
+        // Outside that mark the same commit is the service's own work, which is what a reader of
+        // the card sees as "no process to attribute it to".
+        collector.RecordWrite("overlay", TimeSpan.Zero, 1);
+
+        var metrics = collector.Snapshot("m", 60);
+        Assert.AreEqual(1, metrics.Processes.Single(row => row.Pid == 4321)
+            .ByLayer.Single(layer => layer.Name == "overlay").Writes);
+        Assert.AreEqual(1, metrics.Unattributed.Single(layer => layer.Name == "overlay").Writes);
+        Assert.AreEqual(2, metrics.Layers.Single(layer => layer.Name == "overlay").Writes,
+            "the layer's own count is the same either way");
+    }
+
     [TestMethod]
     public void A_layer_is_charged_to_the_caller_of_the_request_it_served()
     {

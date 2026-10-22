@@ -61,7 +61,7 @@ public static class LayerRegistry
         RegisterCache("cache", (c, ctx) => new LruCacheLayer(ctx.Storage, ctx.LowerGeneration, c.CacheCapacityBytes,
                 c.Compression, writable: Bool(c, "Writable", true)),
             c => { if (c.CacheCapacityBytes <= 0) throw new ArgumentException($"cache '{c.Id}' requires positive capacity"); }, BuiltInLayerDescriptors.Storage("cache", true));
-        Register(ListingWarmupLayer.Type, (c, ctx) => new ListingWarmupLayer(ctx.LowerGeneration,
+        RegisterCache(ListingWarmupLayer.Type, (c, ctx) => new ListingWarmupLayer(ctx.Storage, ctx.LowerGeneration,
                 Number(c, "Limit", 2000), Number(c, "Seconds", 60), Number(c, "QuietMs", 250)),
             c =>
             {
