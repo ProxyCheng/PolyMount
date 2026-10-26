@@ -93,10 +93,12 @@ function New-BadgeFrame([string]$glyph, [string]$colour, [int]$size) {
         $clear = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::Transparent)
         try {
             foreach ($op in $shapes[$glyph]) {
-                $points = @()
+                # A typed list, not @(): PowerShell 7 will not bind an Object[] to the PointF[]
+                # overload of DrawLines/FillPolygon, where Windows PowerShell coerced it.
+                $points = New-Object 'System.Collections.Generic.List[System.Drawing.PointF]'
                 if ($op.P) {
                     for ($i=0; $i -lt $op.P.Count; $i += 2) {
-                        $points += New-Object System.Drawing.PointF([single]($op.P[$i]*$unit), [single]($op.P[$i+1]*$unit))
+                        $points.Add((New-Object System.Drawing.PointF([single]($op.P[$i]*$unit), [single]($op.P[$i+1]*$unit))))
                     }
                 }
                 $rect = $null
@@ -118,11 +120,11 @@ function New-BadgeFrame([string]$glyph, [string]$colour, [int]$size) {
                         $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
                         $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
                         $pen.LineJoin = [System.Drawing.Drawing2D.LineJoin]::Round
-                        if ($points.Count -ge 2) { $graphics.DrawLines($pen, $points) }
+                        if ($points.Count -ge 2) { $graphics.DrawLines($pen, $points.ToArray()) }
                         if ($ellipse) { $graphics.DrawEllipse($pen, $ellipse) }
                     } finally { $pen.Dispose() }
                 } elseif ($op.K -eq 'poly') {
-                    $graphics.FillPolygon($brush, $points)
+                    $graphics.FillPolygon($brush, $points.ToArray())
                 } elseif ($op.K -eq 'ellipse') {
                     $graphics.FillEllipse($brush, $ellipse)
                 } elseif ($op.K -eq 'rect') {
