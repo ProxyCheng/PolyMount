@@ -29,7 +29,7 @@ public sealed class TxFShimTests : IPluginTestProvider
         Check("registrations", () =>
         {
             string path = typeof(TxFShimPlugin).Assembly.Location;
-            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
 
             foreach (string operation in new[] { "get_txf_shim", "list_txf_shim_targets", "install_txf_shim", "remove_txf_shim", "read_txf_shim_log" })
@@ -45,7 +45,7 @@ public sealed class TxFShimTests : IPluginTestProvider
             PluginLoader.LoadConfigured(Array.Empty<PluginConfig>(), AppContext.BaseDirectory);
             if (ControlOperations.Find("get_txf_shim") != null)
                 throw new Exception("A disabled plugin's operation remains registered");
-            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
 
         Check("import-names", () =>
