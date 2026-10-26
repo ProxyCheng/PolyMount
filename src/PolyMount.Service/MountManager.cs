@@ -478,7 +478,8 @@ public sealed class MountManager : IControlHost, IDisposable
                         payload.Id, payload.Name,
                         string.Equals(payload.Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase)
                             ? CredentialTypes.Certificate : CredentialTypes.Password,
-                        payload.Username, payload.Password, certificate, payload.CertificatePassword));
+                        payload.Username, payload.Password, certificate, payload.CertificatePassword,
+                        payload.Origins));
                     response.Credentials = CredentialStore.List();
                     break;
                 }

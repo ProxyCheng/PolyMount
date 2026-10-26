@@ -60,7 +60,8 @@ public sealed record CredentialRecord(string Id, string Name, string Username,
 /// fields a person changed does not have to read a secret back.</summary>
 public sealed record CredentialInput(
     string? Id, string Name, string Kind, string Username,
-    string? Password, byte[]? Certificate, string? CertificatePassword);
+    string? Password, byte[]? Certificate, string? CertificatePassword,
+    IReadOnlyList<string>? Origins = null);
 
 /// <summary>
 /// The accounts this product keeps: one list of credentials, each with a name, an id, a user name
@@ -185,6 +186,11 @@ public static class CredentialStore
             item ??= new StoredCredential { Id = Guid.NewGuid().ToString("N") };
             item.Name = name;
             item.Username = input.Username.Trim();
+            // The origins are the credential's own record of where it may be presented, and they
+            // are written here rather than by using it: a person adding a second server to an
+            // account says so once, in the place that holds the account. Null keeps whatever the
+            // record already has, which is what a form that never showed them sends.
+            if (input.Origins is not null) item.Origins = NormalizeOrigins(input.Origins);
             item.Kind = input.Kind == CredentialTypes.Certificate ? CredentialTypes.Certificate : "";
             item.Secret = Convert.ToBase64String(protected_);
             if (added) document.Items.Add(item);
@@ -315,6 +321,26 @@ public static class CredentialStore
         {
             throw new ArgumentException("the certificate could not be opened with that password: " + ex.Message, ex);
         }
+    }
+
+    /// <summary>The origins a credential may be presented at, checked and spelled the one way.
+    ///
+    /// A string that is not an absolute http(s) origin is refused: this list is what stands
+    /// between a stored password and a host nobody named, so an entry that cannot be compared is
+    /// an entry that would silently never match — or, worse, match everything.</summary>
+    private static List<string> NormalizeOrigins(IReadOnlyList<string> origins)
+    {
+        var normalized = new List<string>(origins.Count);
+        foreach (string origin in origins)
+        {
+            if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) ||
+                uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query))
+                throw new ArgumentException("'" + origin + "' is not an origin (http(s)://host[:port])");
+            string key = OriginOf(uri);
+            if (!normalized.Contains(key, StringComparer.OrdinalIgnoreCase)) normalized.Add(key);
+        }
+        return normalized;
     }
 
     private static string? UnprotectSecret(StoredCredential item)

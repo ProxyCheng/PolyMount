@@ -104,12 +104,13 @@ function Protect-DataDirectory([string]$serviceAccount) {
         default { '"' + $serviceAccount + '"' }
     }
     $installer = '*' + ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-    $rules = @(
-        '*S-1-5-18:(OI)(CI)F',
-        '*S-1-5-32-544:(OI)(CI)F',
-        $grantee + ':(OI)(CI)M',
-        $installer + ':(OI)(CI)M'
-    )
+    # Each rule is its own variable: inside an array literal `$sid + ':(OI)(CI)M'` is not one
+    # element — PowerShell splits it, icacls sees a bare SID and a dangling right, and answers 87.
+    $ruleSystem = '*S-1-5-18:(OI)(CI)F'
+    $ruleAdmins = '*S-1-5-32-544:(OI)(CI)F'
+    $ruleService = $grantee + ':(OI)(CI)M'
+    $ruleInstaller = $installer + ':(OI)(CI)M'
+    $rules = @($ruleSystem, $ruleAdmins, $ruleService, $ruleInstaller)
     & icacls.exe $data /grant:r @rules /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to set the data directory's access rules (icacls exit $LASTEXITCODE)." }
     & icacls.exe $data /inheritance:r /Q | Out-Null

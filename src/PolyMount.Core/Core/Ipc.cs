@@ -153,6 +153,11 @@ public sealed class CredentialPayload
     public string? Certificate { get; set; }
     /// <summary>The password that opens <see cref="Certificate"/>. Null keeps the stored one.</summary>
     public string? CertificatePassword { get; set; }
+    /// <summary>The origins this credential may be presented at, replacing what the record holds.
+    /// Null keeps them, which is what a client that does not offer them sends. A credential is
+    /// bound to the origin it was first used for; a second server that shares the same account is
+    /// named here, once, by whoever may change the configuration.</summary>
+    public List<string>? Origins { get; set; }
 }
 
 public sealed class ControlRequest
