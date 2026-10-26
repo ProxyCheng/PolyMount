@@ -15,7 +15,11 @@ public static class SourceRegistry
         {
             if (string.IsNullOrWhiteSpace(cfg.Path))
                 throw new ArgumentException("source type 'dir' requires 'Path'");
-            return new DirectoryLayer(cfg.Path, cfg.Writable);
+            // Watch: the source is somewhere other people write (another instance's mount, a
+            // share), so listen for their changes instead of relying on the root's timestamp.
+            bool watch = cfg.Parameters.TryGetValue("Watch", out var flag) &&
+                         flag.ValueKind == System.Text.Json.JsonValueKind.True;
+            return new DirectoryLayer(cfg.Path, cfg.Writable, watch);
         }, cfg => { if (string.IsNullOrWhiteSpace(cfg.Path)) throw new ArgumentException("directory provider requires a path"); }, BuiltInLayerDescriptors.Directory());
     }
 

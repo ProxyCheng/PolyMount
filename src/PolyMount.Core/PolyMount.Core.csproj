@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Core\OriginPalette.inc" LogicalName="PolyMount.OriginPalette" />
+    <EmbeddedResource Include="Core\OverlayGlyphs.inc" LogicalName="PolyMount.OverlayGlyphs" />
     <EmbeddedResource Include="Resources\layer-texts.json" LogicalName="PolyMount.LayerTexts" />
     <InternalsVisibleTo Include="PolyMount.Core.Tests" />
   </ItemGroup>

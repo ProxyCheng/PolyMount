@@ -1,4 +1,7 @@
-using QtSharp.Api;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtWidgets;
+using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -68,6 +71,9 @@ internal static class TrayIcons
                 Path((5, 17), (12, 21), (19, 17));
                 break;
             case "layers": Path((3, 8), (12, 3), (21, 8), (12, 13), (3, 8)); Path((3, 12), (12, 17), (21, 12)); Path((3, 16), (12, 21), (21, 16)); break;
+            // A plug: two prongs, the body, and the cable. It is the one mark that says
+            // "this is something you plug in" without borrowing a product's logo.
+            case "plugin": Line(9, 3, 9, 7); Line(15, 3, 15, 7); p.DrawRoundedRect(7, 7, 10, 9, 3, 3); Line(12, 16, 12, 21); break;
             case "drive": p.DrawRoundedRect(3, 5, 18, 14, 3, 3); Line(3, 14, 21, 14); Line(16, 17, 18, 17); break;
             case "folder": Path((3, 7), (3, 19), (21, 19), (21, 7), (11, 7), (9, 4), (3, 4), (3, 7)); break;
             case "edit-layer":

@@ -1555,5 +1555,92 @@
       <source>stats.unit.cores</source>
       <translation>核</translation>
     </message>
+    <message>
+      <source>explorer.restart.title</source>
+      <translation>重启资源管理器</translation>
+    </message>
+    <message>
+      <source>explorer.restart.body</source>
+      <translation>来源颜色扩展已更新。资源管理器只在启动时加载它，新版本尚未生效。现在重启资源管理器？</translation>
+    </message>
+    <message>
+      <source>explorer.restart.now</source>
+      <translation>重启资源管理器</translation>
+    </message>
+    <message>
+      <source>explorer.restart.later</source>
+      <translation>稍后</translation>
+    </message>
+    <message><source>plugins.title</source><translation>插件</translation></message>
+    <message><source>plugins.button</source><translation>插件</translation></message>
+    <message><source>plugins.button.tip</source><translation>启用、禁用和添加插件</translation></message>
+    <message><source>plugins.menu</source><translation>插件…</translation></message>
+    <message><source>plugins.subtitle</source><translation>插件为 PolyMount 增加数据源、层和控制工具。</translation></message>
+    <message><source>plugins.refresh</source><translation>重新读取</translation></message>
+    <message><source>plugins.refresh.tip</source><translation>重新读取插件列表</translation></message>
+    <message><source>plugins.openFolder</source><translation>打开插件目录</translation></message>
+    <message><source>plugins.openFolder.tip</source><translation>打开服务加载插件的目录</translation></message>
+    <message><source>plugins.openFolderFailed</source><translation>无法打开插件目录。</translation></message>
+    <message><source>plugins.import</source><translation>导入插件…</translation></message>
+    <message><source>plugins.import.tip</source><translation>把插件 DLL 复制到服务目录并启用</translation></message>
+    <message><source>plugins.import.filter</source><translation>插件程序集 (*.dll)</translation></message>
+    <message><source>plugins.search</source><translation>按名称、类型或提供的扩展搜索…</translation></message>
+    <message><source>plugins.installed</source><translation>已安装 · {0}</translation></message>
+    <message><source>plugins.available</source><translation>可用文件 · {0}</translation></message>
+    <message><source>plugins.loading</source><translation>正在读取插件列表…</translation></message>
+    <message><source>plugins.failed</source><translation>更改被拒绝</translation></message>
+    <message><source>plugins.retry</source><translation>重试</translation></message>
+    <message><source>plugins.noneInstalled</source><translation>还没有安装任何插件。</translation></message>
+    <message><source>plugins.noneInstalledHint</source><translation>把插件 DLL 放进服务的插件目录，或从任意位置导入一个文件。</translation></message>
+    <message><source>plugins.noMatch</source><translation>没有匹配的插件。</translation></message>
+    <message><source>plugins.state.loaded</source><translation>已加载</translation></message>
+    <message><source>plugins.state.disabled</source><translation>已禁用</translation></message>
+    <message><source>plugins.state.failed</source><translation>加载失败</translation></message>
+    <message><source>plugins.state.missing</source><translation>文件不存在</translation></message>
+    <message><source>plugins.state.inactive</source><translation>未加载</translation></message>
+    <message><source>plugins.contributions.none</source><translation>这个插件没有注册任何扩展。</translation></message>
+    <message><source>plugins.summary.source</source><translation>源 {0}</translation></message>
+    <message><source>plugins.summary.layer</source><translation>层 {0}</translation></message>
+    <message><source>plugins.summary.preset</source><translation>预设 {0}</translation></message>
+    <message><source>plugins.summary.presets</source><translation>预设 {0} 个</translation></message>
+    <message><source>plugins.contributions.disabled</source><translation>启用后显示它提供的扩展。</translation></message>
+    <message><source>plugins.contributions.failed</source><translation>未加载。</translation></message>
+    <message><source>plugins.contributes.source</source><translation>数据源</translation></message>
+    <message><source>plugins.contributes.layer</source><translation>层</translation></message>
+    <message><source>plugins.contributes.preset</source><translation>预设</translation></message>
+    <message><source>plugins.contributes.strategy</source><translation>策略</translation></message>
+    <message><source>plugins.contributes.tool</source><translation>工具</translation></message>
+    <message><source>plugins.tooltip.enable</source><translation>启用这个插件</translation></message>
+    <message><source>plugins.tooltip.disable</source><translation>禁用这个插件</translation></message>
+    <message><source>plugins.remove</source><translation>移除</translation></message>
+    <message><source>plugins.add</source><translation>添加</translation></message>
+    <message><source>plugins.inUse</source><translation>正在使用，重启服务后才能替换</translation></message>
+    <message><source>plugins.error</source><translation>加载错误</translation></message>
+    <message><source>plugins.version</source><translation>v{0}</translation></message>
+    <message><source>plugins.modified</source><translation>修改于 {0}</translation></message>
+    <message><source>plugins.notice.running</source><translation>服务正在运行，插件只能查看。要调整，请先用左侧的「停止服务」停止服务。</translation></message>
+    <message><source>plugins.notice.stopped</source><translation>服务已停止。改动会保存到配置，并在下次启动时生效。</translation></message>
+    <message><source>plugins.notice.noSource</source><translation>找不到服务的配置文件，这里没有可读的内容。</translation></message>
+    <message><source>plugins.noSource</source><translation>服务不可用</translation></message>
+    <message><source>plugins.noSourceHint</source><translation>先启动一次服务，让它记录配置位置；或确认 PolyMount 已安装。</translation></message>
+    <message><source>plugins.state.pending</source><translation>待加载</translation></message>
+    <message><source>plugins.offlineApplied</source><translation>已保存 {0}，服务启动后生效。</translation></message>
+    <message><source>plugins.needAdmin</source><translation>无法写入服务的配置：需要管理员权限。请以管理员身份运行托盘后再试。</translation></message>
+    <message><source>plugins.notAPlugin</source><translation>这个文件不是 PolyMount 插件程序集。</translation></message>
+    <message><source>plugins.confirm.title</source><translation>插件</translation></message>
+    <message>
+      <source>plugins.confirm.remove</source>
+      <translation>从配置中移除「{0}」？
+
+DLL 会留在插件目录里，之后可以再加回来。</translation>
+    </message>
+    <message>
+      <source>plugins.confirm.replace</source>
+      <translation>「{0}」已经存在于插件目录。用这个文件替换它吗？</translation>
+    </message>
+    <message>
+      <source>plugins.footnote</source>
+      <translation>改动只会写入配置，服务启动时才会加载。</translation>
+    </message>
   </context>
 </TS>

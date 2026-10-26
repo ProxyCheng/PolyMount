@@ -12,8 +12,9 @@ dotnet build .\PolyMount.slnx
 dotnet test  .\PolyMount.slnx
 ```
 
-`Fetch-QtSharp.ps1` is not optional: `QtSharp.Api` and `QtSharp.Charts` are not on nuget.org, and
-the NuGet source named `qtsharp` is a local folder the script fills.
+`Fetch-QtSharp.ps1` is not optional: the QtSharp packages (`QtSharp.Api`, `QtSharp.Runtime`,
+`QtSharp.Qt6`, `QtSharp.Charts` and `QtSharp.Charts.Qt6`) are not on nuget.org, and the NuGet
+source named `qtsharp` is a local folder the script fills.
 
 A build also needs WinFsp installed (`winfsp-msil.dll` is referenced at its installed path) and,
 for the Explorer extension and the installer, Visual Studio C++ build tools and Inno Setup 6.

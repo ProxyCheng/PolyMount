@@ -2,10 +2,29 @@ using PolyMount.Core.Ipc;
 
 namespace PolyMount.Core;
 
+/// <summary>What a watcher above the write has to hear about. Mount-relative, '/'-separated.</summary>
+public readonly record struct FileChange(string Path, FileChangeKind Kind);
+
+public enum FileChangeKind
+{
+    /// <summary>A name that was not there before now is.</summary>
+    Added,
+    /// <summary>A name is gone, taking any subtree with it.</summary>
+    Removed,
+    /// <summary>Content, size or timestamp moved under a name that stayed.</summary>
+    Modified,
+    RenamedOld,
+    RenamedNew
+}
+
 /// <summary>Ordered object resolver. Directories are complete, authoritative namespace values.</summary>
 public sealed class VirtualFileSystem
 {
     private readonly List<ILayer> _layers;
+    /// <summary>Raised after a mutation was applied, off the calling thread: a mount forwards
+    /// these to Windows as change notifications, and the handler can block on a rename, which
+    /// must not happen while the writer holds the mutation gate.</summary>
+    public event Action<IReadOnlyList<FileChange>>? Changed;
     /// <summary>The trace name of each layer, per kind of operation, in layer order.</summary>
     private readonly string[] _getEntry, _readObject, _probe;
     // Only mutations coordinate parent snapshot updates. Provider reads never
@@ -573,6 +592,7 @@ public sealed class VirtualFileSystem
             // handle — those only carry bytes, see the recordWrite callback in OpenWrite.
             Metrics?.RecordWrite(selected.Name, watch.Elapsed, 0);
             UpdateCachesAfterWrite(changes, selected);
+            Publish(changes);
             return selected;
         }
         foreach (var layer in _layers)
@@ -582,9 +602,45 @@ public sealed class VirtualFileSystem
             Metrics?.RecordWrite(layer.Name, watch.Elapsed, 0);
             Metrics?.RecordRequest(watch.Elapsed);
             UpdateCachesAfterWrite(changes, layer);
+            Publish(changes);
             return layer;
         }
         throw new UnauthorizedAccessException("No provider accepts this write operation");
+    }
+    /// <summary>Hands a committed mutation to whoever watches the namespace. Off the calling
+    /// thread on purpose: the handler pushes the change into Windows, and a notification that is
+    /// still being delivered must not sit between the writer and its next operation — nor may it
+    /// wait for a rename while the rename waits for the gate the writer is holding.</summary>
+    private void Publish(IReadOnlyList<ObjectChange> changes)
+    {
+        var handler = Changed;
+        if (handler == null) return;
+        FileChange[] list;
+        if (changes.Count == 1)
+            list = new[] { Classify(changes[0]) };
+        else
+        {
+            list = new FileChange[changes.Count];
+            for (int i = 0; i < changes.Count; i++) list[i] = Classify(changes[i]);
+        }
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { handler(list); } catch { /* a watcher that throws is not the writer's problem */ }
+        });
+    }
+    /// <summary>The change a single applied object stands for. A named object that is still
+    /// there was modified; the call sites that know better (a create, a delete, a rename) say so
+    /// with <see cref="Announce"/>.</summary>
+    private static FileChange Classify(ObjectChange change) =>
+        new(change.Path, change.Object == null ? FileChangeKind.Removed : FileChangeKind.Modified);
+    private void Announce(FileChange change)
+    {
+        var handler = Changed;
+        if (handler == null) return;
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { handler(new[] { change }); } catch { }
+        });
     }
     public Stream OpenWrite(string path, bool truncate, out VfsEntry entry)
     {
@@ -600,10 +656,12 @@ public sealed class VirtualFileSystem
             }
             var children = ParentChildren(path);
             Stream scratch = PolyMount.Layers.ObjectDatabase.Scratch();
+            bool existed = false;
             try
             {
                 if (TryLookup(path, out var existing))
                 {
+                    existed = true;
                     if (existing.IsDir) throw new IOException("Path is a directory");
                     if (!truncate) { using var source = OpenRead(path, out _); source.CopyTo(scratch); }
                 }
@@ -619,6 +677,9 @@ public sealed class VirtualFileSystem
                     firstWritable!.TryGetEntry(path, out var published) && !published.IsDir;
                 var target = reusePublished ? firstWritable! : Apply(new ObjectChange[]
                     { new(path, new(entry), scratch), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
+                // Apply reported the name as modified; a name that was not there before is an
+                // addition, and a watcher that only hears "modified" would not list it.
+                if (!existed) Announce(new FileChange(path, FileChangeKind.Added));
                 scratch.Position = 0;
                 scratch = WrapContent(path, scratch, _layers.IndexOf(target), true, "staging");
                 SharedObjectFile file = null!;
@@ -655,6 +716,7 @@ public sealed class VirtualFileSystem
             var value = VirtualObject.Directory(path, Array.Empty<VfsEntry>());
             ReplaceChild(children, value.Header);
             Apply(new ObjectChange[] { new(path, value), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
+            Announce(new FileChange(path, FileChangeKind.Added));
         }
     }
     private static bool SameOrBelow(string candidate, string root) =>
@@ -682,6 +744,7 @@ public sealed class VirtualFileSystem
             var children = ParentChildren(path);
             children.RemoveAll(c => string.Equals(c.Name, VfsPath.Name(path), StringComparison.OrdinalIgnoreCase));
             Apply(new ObjectChange[] { new(path, null), new(VfsPath.Parent(path), VirtualObject.Directory(VfsPath.Parent(path), children)) });
+            Announce(new FileChange(path, FileChangeKind.Removed));
         }
     }
     /// <summary>Whether <paramref name="path"/> could be deleted now. The mount asks this when
@@ -753,6 +816,9 @@ public sealed class VirtualFileSystem
         changes.Add(new(fromParent, VirtualObject.Directory(fromParent, from)));
         if (!ReferenceEquals(from, to)) changes.Add(new(toParent, VirtualObject.Directory(toParent, to)));
         Apply(changes);
+        // The pair Windows expects for a rename: the old name left, the new one arrived.
+        Announce(new FileChange(path, FileChangeKind.RenamedOld));
+        Announce(new FileChange(destination, FileChangeKind.RenamedNew));
     }
     private void CopyTree(string source, string destination, List<ObjectChange> changes, List<Stream> streams)
     {

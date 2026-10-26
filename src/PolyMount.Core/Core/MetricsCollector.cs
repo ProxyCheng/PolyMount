@@ -36,18 +36,25 @@ public sealed class MetricsCollector
     /// report says which part of it was actually measured.</summary>
     internal const int CellCount = 6000;
 
-    /// <summary>How finely the processes that used the mount are kept: a second, not the tenth of
-    /// one the layers get. What reads this dimension is two pies whose subject is a process's share
-    /// of a minute, so a second is resolution enough — and it has to be coarser, because a ring at
-    /// the layers' granularity costs half a megabyte per key, which is affordable for the handful of
-    /// layers a chain is configured with and not for a key space of whoever happens to be reading.
-    /// The cells, the per-thread shards and the watch gate are the ones already here: only the
+    /// <summary>How finely the processes that used the mount are kept: a tenth of a second, ten
+    /// times coarser than the layers rather than a hundred. A second used to be the stride,
+    /// and it was the wrong size for the one comparison this dimension exists for: the access
+    /// cards draw the callers' bars beside the layers' circle and the two have to add up, but the
+    /// window a page asks for is the interval since its previous reading — about 1.09 s at one
+    /// hertz, and never a whole number of seconds. Aligned to whole seconds, the process side
+    /// counted whichever second the query happened to land in: a fraction of the window, measured
+    /// at 42% to 50% of it, and the bars came out half the circle. At a tenth of a second the
+    /// rounding error is at most a tenth of the window.
+    ///
+    /// It stays coarser than the layer ring because the cells are per process: a key space of
+    /// whoever happens to be reading, against the handful of layers a chain is configured with.
+    /// The cells, the per-thread shards and the watch gate are the ones already here; only the
     /// stride differs.</summary>
-    internal const int ProcessCellMilliseconds = 1000;
+    internal const int ProcessCellMilliseconds = 100;
 
     /// <summary>Two minutes of them: the longest window anything asks for is the access window's
     /// sixty seconds, and a query may land between cells.</summary>
-    internal const int ProcessCellCount = 120;
+    internal const int ProcessCellCount = 1200;
 
     private struct Cell
     {

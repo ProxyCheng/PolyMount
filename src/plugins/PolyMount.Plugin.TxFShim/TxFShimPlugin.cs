@@ -19,8 +19,14 @@ namespace PolyMount.Plugins.TxFShim;
 /// installer decides whether this plugin exists on a machine, but injecting into a program is a
 /// second decision, and it is made per directory by <c>install_txf_shim</c>.
 /// </summary>
-public sealed class TxFShimPlugin : IPolyMountPlugin
+public sealed class TxFShimPlugin : IPolyMountPlugin, IPluginMetadata
 {
+    public LocalizedText Title => new("Transactional opens", "事务性打开");
+    public LocalizedText Description => new(
+        "Starts chosen programs through a shim that replaces the transactional file APIs a WinFsp volume cannot provide.",
+        "让选定的程序经由 shim 启动，用它替换 WinFsp 卷无法提供的事务性文件 API。");
+    public string Icon => "plugin";
+
     /// <summary>The command an instance's pipe answers. The operations below are the front-end side
     /// of the same answers, and both live here so they cannot drift.</summary>
     internal const string Command = "txf.shim";

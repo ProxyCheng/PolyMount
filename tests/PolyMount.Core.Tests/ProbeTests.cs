@@ -20,4 +20,27 @@ public class ProbeTests
         Assert.IsTrue(probe.Single(p => p.Name == "fake").Shadowed);
         Assert.IsFalse(probe.Single(p => p.Name == "overlay").Exists);
     }
+
+    [TestMethod]
+    public void Probe_names_the_glyph_of_the_layer_that_won()
+    {
+        // The Explorer badge is chosen by this field, so it has to come from the winning layer's
+        // own descriptor rather than from its colour.
+        using var temp = new TempDir();
+        Directory.CreateDirectory(temp.Sub("source"));
+        File.WriteAllText(temp.Sub("source", "a.txt"), "a");
+        var profile = new MountProfile
+        {
+            StoreRoot = temp.Sub("store"),
+            Layers = new() { new() { Id = "dir", Type = "dir", Source = new() { Path = temp.Sub("source") } } }
+        };
+        using var mount = new MountInstance(profile);
+
+        var probe = mount.Probe("a.txt");
+
+        Assert.IsTrue(probe.Found);
+        Assert.AreEqual("dir", probe.EffectiveLayer);
+        Assert.AreEqual("folder", probe.EffectiveIcon);
+        Assert.AreEqual(OverlayGlyphs.SlotOf("folder"), OverlayGlyphs.SlotOf(probe.EffectiveIcon));
+    }
 }

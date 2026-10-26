@@ -139,9 +139,14 @@ internal static class MountPointVolume
 
         if (Directory.Exists(directory))
         {
-            if (Directory.EnumerateFileSystemEntries(directory).Any())
+            // Name what is in the way. The usual case is another instance's source having
+            // materialised a folder chain here while this mount was down, and "not empty" alone
+            // leaves the operator to find that out themselves.
+            var occupants = Directory.EnumerateFileSystemEntries(directory).Take(4).Select(Path.GetFileName).ToArray();
+            if (occupants.Length > 0)
                 throw new IOException(
-                    $"mount point '{directory}' already exists and is not empty; choose an empty or non-existent path");
+                    $"mount point '{directory}' already exists and is not empty (found: {string.Join(", ", occupants)}); " +
+                    "choose an empty or non-existent path, or remove what is there");
             return;
         }
         Directory.CreateDirectory(directory);

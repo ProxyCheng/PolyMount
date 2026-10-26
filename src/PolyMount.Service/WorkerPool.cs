@@ -93,7 +93,20 @@ public sealed class WorkerPool : IDisposable
     /// switched off loses its process.</summary>
     public void Apply(AppConfig config)
     {
-        string global = JsonSerializer.Serialize(new { config.WinFspBin, config.ControlPipe });
+        // Plugins are part of what a worker is: each one loads the enabled set when it starts, and
+        // a worker that started before a plugin was enabled does not know its layer types. A
+        // change to the set therefore restarts every worker — the instances themselves did not
+        // change, but the code they run with did.
+        string global = JsonSerializer.Serialize(new
+        {
+            config.WinFspBin,
+            config.ControlPipe,
+            Plugins = config.Plugins
+                .Where(plugin => plugin.Enabled)
+                .Select(plugin => plugin.AssemblyPath)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+        });
         lock (_gate)
         {
             foreach (var worker in _workers.ToList())

@@ -9,19 +9,67 @@ namespace PolyMount.Layers;
 /// default, writes land in the overlay above it) or as a writable pass-through layer when
 /// <c>writable</c> is set.
 /// </summary>
-public sealed class DirectoryLayer : ILayer, ILocalSource
+public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
 {
     private readonly string _root;
     private readonly bool _writable;
+    private readonly FileSystemWatcher? _watcher;
+    private long _touched;
 
-    public DirectoryLayer(string root, bool writable = false)
+    public DirectoryLayer(string root, bool writable = false, bool watch = false)
     {
         if (string.IsNullOrWhiteSpace(root))
             throw new ArgumentException("directory layer requires a non-empty path", nameof(root));
 
         _root = Path.GetFullPath(root);
         _writable = writable;
-        Directory.CreateDirectory(_root);
+        // The root is deliberately not created here. A source that points inside another
+        // instance's mount point (a mounting-inside-a-mount layout) would otherwise materialise a
+        // real directory at that path whenever this worker starts first, and the mount it lives
+        // under then refuses to mount because its point is no longer empty. Writes create it.
+        _watcher = watch ? Watch() : null;
+    }
+
+    /// <summary>Watches the backing tree, so a change made by someone else — the engine writing
+    /// through another instance's mount, a colleague on a share — invalidates what the caches
+    /// above this layer hold. The counter is part of <see cref="Generation"/>, which is the key
+    /// those caches index on; one event is enough, so the handler does no work of its own.
+    /// Requires the source to raise change notifications: a PolyMount mount only does so from the
+    /// version that forwards resolver changes to WinFsp.</summary>
+    private FileSystemWatcher? Watch()
+    {
+        if (!Directory.Exists(_root)) return null;
+        try
+        {
+            var watcher = new FileSystemWatcher(_root)
+            {
+                IncludeSubdirectories = true,
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
+                               NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
+                // A deep tree under a slow share overflows a small buffer; an overflow is
+                // reported as an error, which is also just "assume everything moved".
+                InternalBufferSize = 64 * 1024
+            };
+            FileSystemEventHandler touched = (_, _) => Interlocked.Increment(ref _touched);
+            watcher.Created += touched;
+            watcher.Changed += touched;
+            watcher.Deleted += touched;
+            watcher.Renamed += (_, _) => Interlocked.Increment(ref _touched);
+            watcher.Error += (_, _) => Interlocked.Increment(ref _touched);
+            watcher.EnableRaisingEvents = true;
+            return watcher;
+        }
+        catch (Exception ex) when (ex is IOException or ArgumentException or PlatformNotSupportedException)
+        {
+            return null;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_watcher == null) return;
+        _watcher.EnableRaisingEvents = false;
+        _watcher.Dispose();
     }
 
     public string Name => "dir";
@@ -29,12 +77,37 @@ public sealed class DirectoryLayer : ILayer, ILocalSource
 
     // The listing/content changes whenever the backing tree is touched; expose the root's
     // last-write time so any cache keyed on Generation is at least invalidated on top-level edits.
+    // With a watcher on, every event under the root also bumps the counter, which is what makes a
+    // deep change invalidate the caches above: a timestamp of the root alone never moves for it.
+    //
+    // The timestamp is remembered for a second rather than read on every call. Every cache layer
+    // asks for the generation of the source below it during each lookup, and this source may be
+    // another instance's mount: reading it every time made one lookup a stat that crossed a mount
+    // boundary, which measured as a memory cache "hitting" in 4 ms instead of microseconds.
+    private long _ticks;
+    private long _ticksAt;
+    private bool _ticksKnown;
+    private readonly object _ticksGate = new();
     public string Generation
     {
         get
         {
-            try { return Directory.GetLastWriteTimeUtc(_root).Ticks.ToString(); }
-            catch { return "0"; }
+            long touched = Interlocked.Read(ref _touched);
+            long now = Environment.TickCount64;
+            if (!Volatile.Read(ref _ticksKnown) || now - Interlocked.Read(ref _ticksAt) >= 1000)
+            {
+                lock (_ticksGate)
+                {
+                    if (!_ticksKnown || now - _ticksAt >= 1000)
+                    {
+                        try { _ticks = Directory.GetLastWriteTimeUtc(_root).Ticks; }
+                        catch { _ticks = 0; }
+                        Volatile.Write(ref _ticksAt, now);
+                        Volatile.Write(ref _ticksKnown, true);
+                    }
+                }
+            }
+            return Interlocked.Read(ref _ticks) + ":" + touched;
         }
     }
 

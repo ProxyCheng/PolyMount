@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
-using QtSharp.Api;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtNetwork;
+using QtSharp.QtWidgets;
 
 namespace PolyMount.Tray;
 

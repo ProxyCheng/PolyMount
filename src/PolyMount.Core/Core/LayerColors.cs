@@ -15,9 +15,10 @@ public static class LayerColors
         return Array.AsReadOnly(System.Text.RegularExpressions.Regex.Matches(reader.ReadToEnd(), "0x([0-9A-F]{6})")
             .Select(m => "#" + m.Groups[1].Value).ToArray());
     }
-    // Defaults always have an exact Explorer overlay counterpart. All seven palette entries
-    // are assigned to built-in layers, so no two of them can share a dot; a key that is not
-    // listed here hashes into the same palette and can collide with one of these.
+    // Defaults always have an exact Explorer overlay counterpart. Every palette entry costs one
+    // Explorer overlay handler, and a layer type without an entry hashes into the same palette, so
+    // a spare entry is what a plugin type lands on instead of colliding with a built-in one. Two
+    // built-in layers must never share a colour: that is what keeps a chain's dots distinguishable.
     private static readonly Dictionary<string, string> Defaults = new(StringComparer.OrdinalIgnoreCase)
     {
         ["overlay"] = OriginPalette[0],

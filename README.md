@@ -89,11 +89,16 @@ restarting, crashing, or being reconfigured cannot take another with it.
 ## Install
 
 Download `PolyMount-<version>-win-x64-Setup.exe` from
-[Releases](https://github.com/ProxyCheng/PolyMount/releases) and run it. The wizard asks which
-bundled plugins to enable (the SVN source, the remote-folder source, and the transaction shim),
-whether the tray should start at sign-in, whether Explorer should show source-colour dots, and
-optionally whether to run the service under your Windows account so it can use the SVN sign-ins
-saved there.
+[Releases](https://github.com/ProxyCheng/PolyMount/releases) and run it. The wizard asks where to
+install it, which bundled plugins to enable (the SVN source, the remote-folder source, and the
+transaction shim), whether the tray should start at sign-in, whether Explorer should show
+source badges, and optionally whether to run the service under your Windows account so it can
+use the SVN sign-ins saved there.
+
+An upgrade replaces the Explorer extension only when what it was built from changed — the package
+carries a build fingerprint for that. When it did change, the tray asks whether to restart Explorer
+(the extension is loaded only when Explorer starts); when it did not, nothing about Explorer is
+touched.
 
 Uninstalling asks before deleting your configuration and cached data; answering **No** keeps them
 for a later installation.
@@ -101,7 +106,7 @@ for a later installation.
 ## Build from source
 
 ```powershell
-# QtSharp is not on nuget.org; this fetches the two pinned packages into .\packages
+# QtSharp is not on nuget.org; this fetches the pinned binding, runtime, Qt and charts packages into .\packages
 powershell -ExecutionPolicy Bypass -File .\scripts\Fetch-QtSharp.ps1
 
 dotnet build .\PolyMount.slnx
@@ -176,16 +181,30 @@ file; it is ordinary JSON and can be edited by hand. A service started from a bu
 The chain above is the layer order of the `svn-workspace` preset. A mount is legal with no source,
 with only a source, or with several sources.
 
+The tray's **Plugins** section — beside the mount overview in the sidebar, in the same page —
+shows what each configured plugin adds and keeps that `Plugins` list. **While the service runs it
+is read-only**: changing the set restarts every worker and remounts every instance, and an
+imported DLL cannot replace one the service holds open. Stop the service with the sidebar's
+button, and the section reads and writes the configuration itself — enable or disable a plugin,
+remove an entry (the DLL stays), or import a DLL from anywhere; the changes take effect when the
+service starts. A DLL copied by hand into the service's `plugins` folder appears there among the
+files that can be added — the loader still reads the configuration rather than the folder, so
+copying a file alone does not load it. Writing the configuration may need administrator rights.
+
 ## Plugins
 
 Plugins are the extension point, and a data source is one thing they can add. A plugin is an
-assembly with a class implementing `IPolyMountPlugin`; the `IPluginContext` it is given registers
+assembly with a class implementing `IPolyMountPlugin`; it may also implement the optional
+`IPluginMetadata` to give the tray a localized title and description and the name of one of its
+line icons, so the plugin page shows what the plugin calls itself rather than a file name.
+The `IPluginContext` it is given registers
 layer types (ordinary and cache), source types, presets, prediction strategies, control commands
 and control operations. A layer can also implement `ILayerActionHandler` to answer the actions its
 own descriptor declares. The service loads **only** the assemblies its configuration names —
 nothing is discovered by scanning a directory — so an installation starts with exactly the
-plugins its operator chose. Assemblies built against the older `ILayerPlugin` still load: that
-name remains as an obsolete alias.
+plugins its operator chose. The tray's Plugins section is the front end for that list: it reports
+which files are in the folder but not named, and adding one writes the entry. Assemblies built
+against the older `ILayerPlugin` still load: that name remains as an obsolete alias.
 
 The bundled SVN plugin adds the `svn` source type, the `svn-workspace` and `game-engine-workspace`
 presets, and the `manifests` prediction strategy — a package-family prefetcher for content
@@ -211,7 +230,7 @@ PolyMount.Core                        layering engine, WinFsp adapter, IPC contr
 PolyMount.Service                     supervisor (one per machine) + one worker process per mount instance
 PolyMount.Tray                        Qt tray and windows, charts, config editor, recording UI
 PolyMount.Mcp                         stdio MCP server over the control pipe
-PolyMount.Shell                       native Explorer overlay handler (source-colour dots)
+PolyMount.Shell                       native Explorer overlay handler (source badges)
 plugins/PolyMount.Plugin.Svn          Subversion source, manifest prefetcher, and both presets
 plugins/PolyMount.Plugin.Smb          folder on another machine (SMB) and smb-workspace preset
 plugins/PolyMount.Plugin.TxFShim      transaction-free opens for chosen programs (native shim + launcher)
@@ -233,14 +252,14 @@ instances, inspect a path across the layers, read metrics, mount or unmount, pin
 a recording, and edit the configuration. The setup installs it under `{app}\Mcp`; nothing starts
 it automatically.
 
-The catalog is `PolyMount.Core`'s control operations: 22 built in, plus whatever enabled plugins
+The catalog is `PolyMount.Core`'s control operations: 26 built in, plus whatever enabled plugins
 contribute (the SVN plugin adds `get_svn_source`, `list_svn_lanes` and `list_manifest_families`,
 the remote-folder plugin adds `get_smb_source`, and the transaction-shim plugin adds
 `get_txf_shim`, `list_txf_shim_targets`, `install_txf_shim`, `remove_txf_shim` and
 `read_txf_shim_log`). `--describe` prints it without a service.
 
 - `--pipe <name>` or `POLYMOUNT_PIPE` selects the control pipe.
-- `--read-only` registers only operations with `effect: read` (eight built in, plus plugin reads).
+- `--read-only` registers only operations with `effect: read` (nine built in, plus plugin reads).
 - Destructive operations (`clear_cache`, `clear_local_changes`, `apply_layer_action`,
   `release_above`, `shutdown_service`) carry `destructiveHint`.
 - `get_config` replaces stored passwords with `[redacted]`; `save_config` refuses a plaintext

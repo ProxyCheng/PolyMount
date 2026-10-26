@@ -13,8 +13,14 @@ if ($Machine) {
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) { throw 'Run as administrator to register Explorer overlay entries in HKLM.' }
     $overlayRoot = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers'
 }
-for($i=0; $i -lt 7; $i++) {
-    $guid = '{7d619ac' + $i + '-dbe2-4f33-9a11-6cc2c8329001}'
+# One handler per badge; the glyph list is the only place the number lives. The class id is the
+# base with the slot added to its first field (Overlay.cpp does the same arithmetic to read it
+# back), so only the last hex digit ever changes.
+$glyphSource = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'src\PolyMount.Core\Core\OverlayGlyphs.inc'))
+$slots = @([regex]::Matches($glyphSource,'PM_GLYPH\("([a-z0-9-]+)"\)')).Count
+if ($slots -gt 10) { throw "The overlay has $slots badges; Explorer's slots stop at ten for this product (see docs\explorer-overlays.md)." }
+for($i=0; $i -lt $slots; $i++) {
+    $guid = '{0:x8}-dbe2-4f33-9a11-6cc2c8329001' -f (0x7d619ac0 + $i)
     $classKey = "HKCU:\Software\Classes\CLSID\$guid"
     $overlayKey = "$overlayRoot\   PolyMount $i"
     if ($Uninstall) {

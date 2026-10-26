@@ -7,8 +7,12 @@ using PolyMount.Layers;
 namespace PolyMount.Plugins.Svn;
 
 /// <summary>Standalone sample plugin. Only the Core contracts are required.</summary>
-public sealed class SvnPlugin : IPolyMountPlugin
+public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
 {
+    public LocalizedText Title => SvnTexts.Get("svn.title");
+    public LocalizedText Description => SvnTexts.Get("svn.description");
+    public string Icon => "repository";
+
     /// <summary>The commands this plugin answers on an instance's own pipe. Each operation below
     /// is the front-end side of one of them; both live here so the pair cannot drift.</summary>
     internal const string SourceCommand = "svn.source";

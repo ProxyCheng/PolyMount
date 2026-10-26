@@ -112,6 +112,16 @@ public sealed class AppConfig
         foreach (var kv in LayerColors)
             if (!PolyMount.Core.LayerColors.TryNormalizeHex(kv.Value, out _))
                 throw new ArgumentException($"invalid color '{kv.Value}' for layer '{kv.Key}'");
+        // One entry per assembly. Two entries naming the same file load the same code twice and
+        // register everything twice, which is a configuration nobody meant to write.
+        var plugins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var plugin in Plugins)
+        {
+            if (string.IsNullOrWhiteSpace(plugin.AssemblyPath))
+                throw new ArgumentException("a plugin has an empty AssemblyPath");
+            if (!plugins.Add(plugin.AssemblyPath.Replace('\\', '/')))
+                throw new ArgumentException("duplicate plugin: " + plugin.AssemblyPath);
+        }
     }
 
     public static AppConfig Default() => new();

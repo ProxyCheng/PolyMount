@@ -118,3 +118,21 @@ QCheckBox::indicator:checked:pressed { background: @PrimaryPressed; border-color
 QCheckBox::indicator:disabled { background: @AppBackground; border-color: @BorderStrong; }
 QCheckBox::indicator:checked:disabled { background: @PrimaryDisabled; border-color: @PrimaryDisabled; }
 QCheckBox::indicator:indeterminate { background: @Primary; border: 5px solid @PrimaryTint; }
+
+/* Plugins: a row is a list line, not a card — the hairline between two of them is what makes a
+   stack of rows read as one list, and the row itself stays transparent so the surface around it
+   is the only background. */
+QWidget#pluginRow { background: transparent; }
+QLabel#pluginName { color: @Text; font-size: 14px; font-weight: 600; }
+QLabel#pluginPath { color: @Muted; font-size: 12px; }
+QLabel#pluginContribution { color: @Body; font-size: 12px; }
+QLabel#pluginState { font-size: 13px; }
+QFrame#pluginSeparator { color: @BorderSoft; background: @BorderSoft; border: none; max-height: 1px; }
+QPushButton#linkDanger { background: transparent; border: none; color: @Muted; padding: 5px 8px; }
+QPushButton#linkDanger:hover { color: @DangerStrong; background: @DangerSoft; border-radius: 6px; }
+QPushButton#linkDanger:disabled { color: @Disabled; background: transparent; }
+QWidget#pluginRow:hover { background: @HoverSoft; border-radius: 8px; }
+QPushButton#iconButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px; }
+QPushButton#iconButton:hover { background: @HoverSoft; border-color: @Border; }
+QPushButton#iconButton:pressed { background: @PrimaryTint; }
+QPushButton#iconButton:disabled { background: transparent; }

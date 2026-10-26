@@ -1552,5 +1552,92 @@ The remote view changes. Local modifications are kept.</translation>
       <source>stats.unit.cores</source>
       <translation>cores</translation>
     </message>
+    <message>
+      <source>explorer.restart.title</source>
+      <translation>Restart Explorer</translation>
+    </message>
+    <message>
+      <source>explorer.restart.body</source>
+      <translation>The source-colour extension was updated. Explorer loads it only when it starts, so the new version is not in use yet. Restart Explorer now?</translation>
+    </message>
+    <message>
+      <source>explorer.restart.now</source>
+      <translation>Restart Explorer</translation>
+    </message>
+    <message>
+      <source>explorer.restart.later</source>
+      <translation>Later</translation>
+    </message>
+    <message><source>plugins.title</source><translation>Plugins</translation></message>
+    <message><source>plugins.button</source><translation>Plugins</translation></message>
+    <message><source>plugins.button.tip</source><translation>Enable, disable and add plugins</translation></message>
+    <message><source>plugins.menu</source><translation>Plugins…</translation></message>
+    <message><source>plugins.subtitle</source><translation>Extensions add data sources, layers and control tools to PolyMount.</translation></message>
+    <message><source>plugins.refresh</source><translation>Reload</translation></message>
+    <message><source>plugins.refresh.tip</source><translation>Read the plugin list again</translation></message>
+    <message><source>plugins.openFolder</source><translation>Open plugin folder</translation></message>
+    <message><source>plugins.openFolder.tip</source><translation>Open the folder the service loads plugins from</translation></message>
+    <message><source>plugins.openFolderFailed</source><translation>The plugin folder could not be opened.</translation></message>
+    <message><source>plugins.import</source><translation>Import plugin…</translation></message>
+    <message><source>plugins.import.tip</source><translation>Copy a plugin DLL into the service's folder and enable it</translation></message>
+    <message><source>plugins.import.filter</source><translation>Plugin assemblies (*.dll)</translation></message>
+    <message><source>plugins.search</source><translation>Search plugins by name, type or what they add…</translation></message>
+    <message><source>plugins.installed</source><translation>INSTALLED · {0}</translation></message>
+    <message><source>plugins.available</source><translation>AVAILABLE FILES · {0}</translation></message>
+    <message><source>plugins.loading</source><translation>Reading the plugin list…</translation></message>
+    <message><source>plugins.failed</source><translation>The change was refused</translation></message>
+    <message><source>plugins.retry</source><translation>Try again</translation></message>
+    <message><source>plugins.noneInstalled</source><translation>No plugins are installed yet.</translation></message>
+    <message><source>plugins.noneInstalledHint</source><translation>Copy a plugin DLL into the service's plugin folder, or import one from anywhere.</translation></message>
+    <message><source>plugins.noMatch</source><translation>No plugin matches the search.</translation></message>
+    <message><source>plugins.state.loaded</source><translation>Loaded</translation></message>
+    <message><source>plugins.state.disabled</source><translation>Disabled</translation></message>
+    <message><source>plugins.state.failed</source><translation>Failed to load</translation></message>
+    <message><source>plugins.state.missing</source><translation>File missing</translation></message>
+    <message><source>plugins.state.inactive</source><translation>Not loaded</translation></message>
+    <message><source>plugins.contributions.none</source><translation>This plugin adds no extension points.</translation></message>
+    <message><source>plugins.summary.source</source><translation>source {0}</translation></message>
+    <message><source>plugins.summary.layer</source><translation>layer {0}</translation></message>
+    <message><source>plugins.summary.preset</source><translation>preset {0}</translation></message>
+    <message><source>plugins.summary.presets</source><translation>{0} presets</translation></message>
+    <message><source>plugins.contributions.disabled</source><translation>Enable it to see what it adds.</translation></message>
+    <message><source>plugins.contributions.failed</source><translation>Not loaded.</translation></message>
+    <message><source>plugins.contributes.source</source><translation>source</translation></message>
+    <message><source>plugins.contributes.layer</source><translation>layer</translation></message>
+    <message><source>plugins.contributes.preset</source><translation>preset</translation></message>
+    <message><source>plugins.contributes.strategy</source><translation>strategy</translation></message>
+    <message><source>plugins.contributes.tool</source><translation>tool</translation></message>
+    <message><source>plugins.tooltip.enable</source><translation>Enable this plugin</translation></message>
+    <message><source>plugins.tooltip.disable</source><translation>Disable this plugin</translation></message>
+    <message><source>plugins.remove</source><translation>Remove</translation></message>
+    <message><source>plugins.add</source><translation>Add</translation></message>
+    <message><source>plugins.inUse</source><translation>In use — restart the service to replace it</translation></message>
+    <message><source>plugins.error</source><translation>Load error</translation></message>
+    <message><source>plugins.version</source><translation>v{0}</translation></message>
+    <message><source>plugins.modified</source><translation>changed {0}</translation></message>
+    <message><source>plugins.notice.running</source><translation>The service is running, so plugins are read-only. Stop it with the button on the left to make changes.</translation></message>
+    <message><source>plugins.notice.stopped</source><translation>The service is stopped. Changes are saved to the configuration and take effect when it starts.</translation></message>
+    <message><source>plugins.notice.noSource</source><translation>The service's configuration was not found; there is nothing to read here.</translation></message>
+    <message><source>plugins.noSource</source><translation>The service is not available</translation></message>
+    <message><source>plugins.noSourceHint</source><translation>Start the service once so its configuration is known, or check that PolyMount is installed.</translation></message>
+    <message><source>plugins.state.pending</source><translation>Pending load</translation></message>
+    <message><source>plugins.offlineApplied</source><translation>Saved {0}. It takes effect when the service starts.</translation></message>
+    <message><source>plugins.needAdmin</source><translation>The service's configuration could not be written: administrator rights are required. Run the tray as administrator and try again.</translation></message>
+    <message><source>plugins.notAPlugin</source><translation>That file is not a PolyMount plugin assembly.</translation></message>
+    <message><source>plugins.confirm.title</source><translation>Plugins</translation></message>
+    <message>
+      <source>plugins.confirm.remove</source>
+      <translation>Remove “{0}” from the configuration?
+
+The DLL stays in the plugin folder, so it can be added again later.</translation>
+    </message>
+    <message>
+      <source>plugins.confirm.replace</source>
+      <translation>“{0}” is already in the plugin folder. Replace it with this file?</translation>
+    </message>
+    <message>
+      <source>plugins.footnote</source>
+      <translation>Changes are written to the configuration; the service loads them when it starts.</translation>
+    </message>
   </context>
 </TS>

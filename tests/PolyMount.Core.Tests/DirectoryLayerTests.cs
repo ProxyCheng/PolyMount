@@ -74,11 +74,18 @@ public class DirectoryLayerTests
     public void Generation_changes_when_root_mutated()
     {
         using var t = new TempDir();
+        // The layer no longer creates its root: a source that points inside another instance's
+        // mount must not materialise a directory there before that mount is up.
+        Directory.CreateDirectory(t.Sub("root"));
         var layer = new DirectoryLayer(t.Sub("root"));
         var g1 = layer.Generation;
 
         // Force a later timestamp on the root directory.
         Directory.SetLastWriteTimeUtc(t.Sub("root"), DateTime.UtcNow.AddMinutes(5));
+        // The timestamp is remembered for a second, because every cache layer asks for the
+        // generation of the source below it on each lookup and this source may be another
+        // instance's mount: reading it every time put a cross-mount stat in every hit.
+        Thread.Sleep(1100);
         var g2 = layer.Generation;
 
         Assert.AreNotEqual(g1, g2);

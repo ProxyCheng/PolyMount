@@ -13,8 +13,12 @@ namespace PolyMount.Plugins.Smb;
 /// service presents, since session 0 has none of its own), the generation a remote folder can
 /// offer, and the diagnostics that say which of "unreachable", "refused" and "gone" happened.
 /// </summary>
-public sealed class SmbPlugin : IPolyMountPlugin
+public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
 {
+    public LocalizedText Title => SmbTexts.Get("smb.title");
+    public LocalizedText Description => SmbTexts.Get("smb.description");
+    public string Icon => "folder";
+
     /// <summary>The command this plugin answers on an instance's own pipe; the operation below
     /// is the front-end side of the same answer, and both live here so they cannot drift.</summary>
     internal const string SourceCommand = "smb.source";

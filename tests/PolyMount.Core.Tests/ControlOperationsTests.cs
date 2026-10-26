@@ -34,7 +34,12 @@ public sealed class ControlOperationsTests
         {
             "list", "get", "probe",
             "mount", "unmount", "set", "reload", "save", "refresh", "start", "stop",
-            "clear", "apply", "release", "shutdown"
+            "clear", "apply", "release", "shutdown",
+            // A plugin file entering the host and an entry leaving the configuration are their
+            // own actions, not a "set": one copies bytes into the service's folder, the other
+            // changes what the configuration names. Neither is spelled with one of the verbs
+            // above without saying something untrue.
+            "import", "remove"
         };
 
         foreach (var operation in ControlOperations.All)
@@ -90,6 +95,27 @@ public sealed class ControlOperationsTests
         link = new RecordingLink();
         Call(link, "get_metrics", """{"instance":"demo"}""");
         Assert.AreEqual("metrics", link.Calls.Single());
+
+        link = new RecordingLink();
+        Call(link, "list_plugins", "{}");
+        Assert.AreEqual("supervisor", link.Calls.Single());
+        Assert.AreEqual(ControlCommands.Plugins, link.Requests.Single().Cmd);
+
+        link = new RecordingLink();
+        Call(link, "set_plugin_enabled", """{"path":"plugins/Example.dll","enabled":false}""");
+        Assert.AreEqual("supervisor", link.Calls.Single());
+        Assert.AreEqual(ControlCommands.SetPluginEnabled, link.Requests.Single().Cmd);
+        Assert.AreEqual("plugins/Example.dll", link.Requests.Single().AssemblyPath);
+        Assert.AreEqual(false, link.Requests.Single().PluginEnabled);
+
+        link = new RecordingLink();
+        Call(link, "remove_plugin", """{"path":"plugins/Example.dll"}""");
+        Assert.AreEqual(ControlCommands.RemovePlugin, link.Requests.Single().Cmd);
+
+        link = new RecordingLink();
+        Call(link, "import_plugin", """{"source":"C:\\tmp\\Example.dll"}""");
+        Assert.AreEqual(ControlCommands.ImportPlugin, link.Requests.Single().Cmd);
+        Assert.AreEqual("C:\\tmp\\Example.dll", link.Requests.Single().SourcePath);
     }
 
     [TestMethod]
@@ -131,7 +157,8 @@ public sealed class ControlOperationsTests
             ControlCommands.Reload, ControlCommands.SaveConfig, ControlCommands.SetPin,
             ControlCommands.RefreshHead, ControlCommands.ClearCache, ControlCommands.ClearLocalChanges,
             ControlCommands.LayerAction, ControlCommands.ReleaseAbove, ControlCommands.RecordingStart,
-            ControlCommands.RecordingStop, ControlCommands.Shutdown
+            ControlCommands.RecordingStop, ControlCommands.Shutdown,
+            ControlCommands.SetPluginEnabled, ControlCommands.RemovePlugin, ControlCommands.ImportPlugin
         };
 
         foreach (var operation in ControlOperations.All.Where(o => o.Effect == ControlEffect.Read))
@@ -154,6 +181,7 @@ public sealed class ControlOperationsTests
         Assert.ThrowsException<ArgumentException>(() => Call(link, "set_pin", """{"instance":"demo","revision":0}"""));
         // A missing "enabled" must not become "disabled".
         Assert.ThrowsException<ArgumentException>(() => Call(link, "set_instance_enabled", """{"instance":"demo"}"""));
+        Assert.ThrowsException<ArgumentException>(() => Call(link, "set_plugin_enabled", """{"path":"plugins/a.dll"}"""));
         Assert.ThrowsException<ArgumentException>(() => Call(link, "save_config", "{}"));
         Assert.ThrowsException<ArgumentException>(() => Call(link, "get_metrics", """{"window_seconds":0}"""));
         Assert.ThrowsException<ArgumentException>(() =>

@@ -143,6 +143,187 @@ public sealed class MountManager : IControlHost, IDisposable
         }
     }
 
+    // ---- plugins ----------------------------------------------------------------------
+
+    /// <summary>Where the host keeps the assemblies it loads. A plugin path in the configuration
+    /// is relative to the host's own directory, and this is the one folder every deployment shape
+    /// (development, installed) puts them in.</summary>
+    private static string PluginsDirectory => Path.Combine(AppContext.BaseDirectory, "plugins");
+
+    private static string AbsolutePluginPath(string assemblyPath) =>
+        Path.GetFullPath(assemblyPath, AppContext.BaseDirectory);
+
+    /// <summary>Whether two configuration paths name one file. Slashes differ between a hand-edited
+    /// configuration and one this service wrote; the file is the identity, not the spelling.</summary>
+    private static bool SamePlugin(string left, string right)
+    {
+        try
+        {
+            return string.Equals(AbsolutePluginPath(left), AbsolutePluginPath(right), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception) { return false; }
+    }
+
+    /// <summary>What the plugin manager shows: every configured entry with the result of the last
+    /// load, and the DLLs in the plugin folder the configuration does not name.</summary>
+    private void FillPlugins(ControlResponse response)
+    {
+        var report = PluginLoader.LastReport;
+        foreach (var entry in Config.Plugins)
+        {
+            string full = "";
+            try { full = AbsolutePluginPath(entry.AssemblyPath); } catch (Exception) { }
+            var result = report.Plugins.FirstOrDefault(row => SamePlugin(row.AssemblyPath, entry.AssemblyPath));
+            response.Plugins.Add(new PluginView
+            {
+                AssemblyPath = entry.AssemblyPath,
+                FileName = Path.GetFileName(entry.AssemblyPath.Replace('\\', '/')),
+                FullPath = full,
+                Enabled = entry.Enabled,
+                Present = full.Length > 0 && File.Exists(full),
+                Loaded = result?.Loaded ?? false,
+                Version = result?.Version is { Length: > 0 } version ? version
+                    : full.Length > 0 ? PluginLoader.ReadVersion(full) : "",
+                Title = result?.Title,
+                Description = result?.Description,
+                Icon = result?.Icon ?? "",
+                Error = result?.Error,
+                SourceTypes = result?.SourceTypes.ToList() ?? new(),
+                LayerTypes = result?.LayerTypes.ToList() ?? new(),
+                Presets = result?.Presets.ToList() ?? new(),
+                Strategies = result?.Strategies.ToList() ?? new(),
+                Commands = result?.Commands.ToList() ?? new(),
+                Operations = result?.Operations.ToList() ?? new()
+            });
+        }
+
+        response.PluginDirectory = PluginsDirectory;
+        response.ConfigPath = ConfigPath;
+        var loaded = PluginLoader.LoadedPaths;
+        foreach (string file in PluginLoader.DiscoverFiles(Config.Plugins, AppContext.BaseDirectory))
+        {
+            long size = 0;
+            string modified = "";
+            try
+            {
+                var info = new FileInfo(file);
+                size = info.Length;
+                modified = info.LastWriteTimeUtc.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception) { }
+            response.PluginFiles.Add(new PluginFileView
+            {
+                Name = Path.GetFileName(file),
+                FullPath = file,
+                Size = size,
+                ModifiedUtc = modified,
+                Version = PluginLoader.ReadVersion(file),
+                InUse = loaded.Any(path => string.Equals(path, file, StringComparison.OrdinalIgnoreCase))
+            });
+        }
+    }
+
+    /// <summary>Changes the plugin set and applies it, but only writes the configuration once the
+    /// new set actually loads. A plugin that cannot load is a configuration the host refuses to
+    /// start with, so a command that produced one is taken back rather than written: the previous
+    /// set is loaded again and the error reaches the caller.</summary>
+    private void ApplyPluginChange(Action<AppConfig> change)
+    {
+        lock (_configGate)
+        {
+            var before = Config.Plugins
+                .Select(plugin => new PluginConfig { AssemblyPath = plugin.AssemblyPath, Enabled = plugin.Enabled })
+                .ToList();
+            change(Config);
+            try
+            {
+                Config.Validate();
+                LoadPlugins(Config);
+            }
+            catch (Exception)
+            {
+                Config.Plugins = before;
+                try { LoadPlugins(Config); }
+                catch (Exception restore) { Log("restoring the previous plugin set", restore); }
+                throw;
+            }
+            _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
+            AppConfig.Save(ConfigPath, Config);
+            Reload();
+        }
+    }
+
+    private void SetPluginEnabled(string assemblyPath, bool enabled)
+    {
+        var entry = Config.Plugins.FirstOrDefault(plugin => SamePlugin(plugin.AssemblyPath, assemblyPath))
+            ?? throw new InvalidOperationException("no plugin is configured at '" + assemblyPath + "'");
+        if (entry.Enabled == enabled) return;
+        if (enabled)
+        {
+            string full;
+            try { full = AbsolutePluginPath(entry.AssemblyPath); }
+            catch (Exception ex) { throw new InvalidOperationException("the plugin path is unusable: " + ex.Message); }
+            if (!File.Exists(full))
+                throw new InvalidOperationException("the plugin file does not exist: " + full);
+        }
+        ApplyPluginChange(_ => entry.Enabled = enabled);
+    }
+
+    private void RemovePlugin(string assemblyPath)
+    {
+        if (!Config.Plugins.Any(plugin => SamePlugin(plugin.AssemblyPath, assemblyPath)))
+            throw new InvalidOperationException("no plugin is configured at '" + assemblyPath + "'");
+        ApplyPluginChange(config => config.Plugins.RemoveAll(plugin => SamePlugin(plugin.AssemblyPath, assemblyPath)));
+    }
+
+    private void ImportPlugin(string sourcePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourcePath))
+            throw new InvalidOperationException("importPlugin requires the file to import");
+        string source;
+        try { source = Path.GetFullPath(sourcePath); }
+        catch (Exception ex) { throw new InvalidOperationException("the import path is unusable: " + ex.Message); }
+        if (!File.Exists(source)) throw new InvalidOperationException("the file does not exist: " + source);
+        if (!string.Equals(Path.GetExtension(source), ".dll", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("a plugin is a .dll file");
+        string name = Path.GetFileName(source);
+        Directory.CreateDirectory(PluginsDirectory);
+        string target = Path.Combine(PluginsDirectory, name);
+        string relative = "plugins/" + name;
+
+        // A loaded assembly keeps its file locked for the life of the process, and there is no
+        // unloading it. A file that was ever loaded is therefore not replaceable until the service
+        // restarts; saying so is better than a sharing violation from the copy.
+        if (PluginLoader.LoadedPaths.Any(path => string.Equals(path, target, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException(
+                "'" + name + "' is loaded by the running service; restart the service to replace it, or import the new build under another file name");
+
+        bool existed = File.Exists(target);
+        if (!string.Equals(source, target, StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.Copy(source, target, overwrite: true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new InvalidOperationException("could not copy '" + name + "' into the plugin folder: " + ex.Message, ex);
+            }
+        }
+
+        try
+        {
+            ApplyPluginChange(config =>
+            {
+                var entry = config.Plugins.FirstOrDefault(plugin => SamePlugin(plugin.AssemblyPath, relative));
+                if (entry == null) config.Plugins.Add(new PluginConfig { AssemblyPath = relative, Enabled = true });
+                else entry.Enabled = true;
+            });
+        }
+        catch
+        {
+            if (!existed) { try { File.Delete(target); } catch (Exception) { } }
+            throw;
+        }
+    }
+
     private void StartConfigWatcher()
     {
         if (_watcher != null) return;
@@ -251,6 +432,27 @@ public sealed class MountManager : IControlHost, IDisposable
                         throw new InvalidOperationException("deleteCredential requires the credential it is about");
                     CredentialStore.RemoveCredential(request.CredentialId);
                     response.Credentials = CredentialStore.List();
+                    break;
+                case ControlCommands.Plugins:
+                    FillPlugins(response);
+                    break;
+                case ControlCommands.SetPluginEnabled:
+                    if (string.IsNullOrWhiteSpace(request.AssemblyPath))
+                        throw new InvalidOperationException("setPluginEnabled needs the plugin it is about");
+                    if (request.PluginEnabled is not { } pluginEnabled)
+                        throw new InvalidOperationException("setPluginEnabled needs the value to set");
+                    SetPluginEnabled(request.AssemblyPath, pluginEnabled);
+                    FillPlugins(response);
+                    break;
+                case ControlCommands.RemovePlugin:
+                    if (string.IsNullOrWhiteSpace(request.AssemblyPath))
+                        throw new InvalidOperationException("removePlugin needs the plugin it is about");
+                    RemovePlugin(request.AssemblyPath);
+                    FillPlugins(response);
+                    break;
+                case ControlCommands.ImportPlugin:
+                    ImportPlugin(request.SourcePath ?? "");
+                    FillPlugins(response);
                     break;
                 case ControlCommands.Shutdown:
                     // From here on the status says so: the supervisor answers for a moment while

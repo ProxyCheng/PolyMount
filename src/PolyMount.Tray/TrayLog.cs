@@ -61,7 +61,7 @@ internal static class TrayLog
         // an exception has nowhere to land in its C++ frames. The runtime's own report goes to
         // stderr, which a windowed process does not show: an unsubscribed handler that throws
         // makes the button that raised it do nothing at all. The log is where it can be read.
-        QtSharp.Api.ApiRuntime.UnhandledCallbackException += (what, exception) =>
+        QtSharp.Runtime.ApiRuntime.UnhandledCallbackException += (what, exception) =>
             Log.Error(exception, "unhandled exception in {Where}", what);
     }
 }

@@ -12,6 +12,7 @@ public sealed class MountInstance : IDisposable
     private readonly string _statePath;
     private readonly object _gate = new();
     private FileSystemHost? _host;
+    private Action<IReadOnlyList<FileChange>>? _changes;
     private bool _unmounting;
     /// <summary>The directory this instance attached a registered volume to, or null when the
     /// mount did not go through the Windows Mount Manager. Unmounting has to remove it: a
@@ -214,8 +215,50 @@ public sealed class MountInstance : IDisposable
 
             _registeredDirectory = registered;
             _host = host;
+            _changes ??= OnVfsChanged;
+            Vfs.Changed += _changes;
             StartBackground();
         }
+    }
+
+    /// <summary>Tells Windows what changed. The resolver raises this off the writer's thread, so
+    /// a notification still in flight never delays the write that caused it, and waiting for a
+    /// rename here cannot deadlock against the mutation gate.</summary>
+    private void OnVfsChanged(IReadOnlyList<FileChange> changes)
+    {
+        var host = Volatile.Read(ref _host);
+        if (host == null || changes.Count == 0) return;
+        var infos = new Fsp.Interop.NotifyInfo[changes.Count];
+        for (int i = 0; i < changes.Count; i++)
+        {
+            var change = changes[i];
+            infos[i] = new Fsp.Interop.NotifyInfo
+            {
+                // Normalised the way WinFsp wants it: a Windows path with no drive prefix.
+                FileName = "\\" + change.Path.Replace('/', '\\'),
+                Action = change.Kind switch
+                {
+                    FileChangeKind.Added => Fsp.Interop.NotifyAction.Added,
+                    FileChangeKind.Removed => Fsp.Interop.NotifyAction.Removed,
+                    FileChangeKind.RenamedOld => Fsp.Interop.NotifyAction.RenamedOldName,
+                    FileChangeKind.RenamedNew => Fsp.Interop.NotifyAction.RenamedNewName,
+                    _ => Fsp.Interop.NotifyAction.Modified
+                },
+                // ChangeName covers both kinds of name, so one filter serves files and folders.
+                Filter = Fsp.Interop.NotifyFilter.ChangeName | Fsp.Interop.NotifyFilter.ChangeSize
+                       | Fsp.Interop.NotifyFilter.ChangeLastWrite | Fsp.Interop.NotifyFilter.ChangeCreation
+                       | Fsp.Interop.NotifyFilter.ChangeAttributes
+            };
+        }
+        try
+        {
+            // CANT_WAIT: a rename is in progress and Windows is not taking notifications now.
+            // Dropping one batch is better than blocking a writer on a rename.
+            if (host.NotifyBegin((uint)infos.Length) < 0) return;
+            try { host.Notify(infos); }
+            finally { host.NotifyEnd(); }
+        }
+        catch { /* the volume is going away */ }
     }
 
     /// <summary>Starts every background layer's pass. The layer does the work; the mount
@@ -244,6 +287,7 @@ public sealed class MountInstance : IDisposable
             _registeredDirectory = null;
             _host = null;
             _unmounting = true;
+            if (_changes != null) Vfs.Changed -= _changes;
         }
         try
         {
@@ -352,6 +396,7 @@ public sealed class MountInstance : IDisposable
             IsDir = effective?.IsDir ?? false,
             EffectiveLayer = effective?.Name ?? "",
             EffectiveColor = effective?.Color ?? "",
+            EffectiveIcon = effective is null ? "" : LayerRegistry.Describe(_configs[effective.Name].Type).Icon,
             Layers = layers
         };
     }

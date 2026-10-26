@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using PolyMount.Core.Ipc;
-using QtSharp.Api;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtWidgets;
+using QtSharp.Runtime;
 
 namespace PolyMount.Tray;
 
@@ -19,6 +22,12 @@ internal static class Program
     {
         // Qt argv includes the executable name; Main(args) omits it.
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
+        // A renamed control pipe reaches this process the way it already reaches the MCP server:
+        // the pipe name is a setting of the installation, and a second service on this machine —
+        // a test run, an instance of another build — is reachable only by naming its pipe.
+        string? controlPipe = Environment.GetEnvironmentVariable("POLYMOUNT_PIPE");
+        if (!string.IsNullOrWhiteSpace(controlPipe))
+            SupervisorClient.Default = new SupervisorClient(controlPipe);
         InstallCrashTracer();
         TrayLog.Start(window: args.Length == 0);
         I18n.Initialize();
@@ -180,7 +189,7 @@ internal static class Program
                 QSystemTrayIcon.MessageIcon.Information, 4000);
 
         ShowDashboard();
-        RestartExplorerIfTheInstallerReplacedTheShellExtension();
+        OfferExplorerRestartIfTheShellExtensionWasReplaced();
         return _app.Exec();
     }
 
@@ -191,8 +200,10 @@ internal static class Program
     /// follow the junctions this product mounts. This process was started through Explorer, so
     /// the Explorer it starts is not mitigated. A marker older than ten minutes is ignored and
     /// only removed, so one left by an install whose tray never ran does not restart the desktop
-    /// at some later sign-in.</summary>
-    private static void RestartExplorerIfTheInstallerReplacedTheShellExtension()
+    /// at some later sign-in. The marker exists only when the DLL actually changed, and the
+    /// restart is offered rather than taken: Explorer closing its windows is the reader's call.
+    /// </summary>
+    private static void OfferExplorerRestartIfTheShellExtensionWasReplaced()
     {
         string shell = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Shell"));
         string marker = Path.Combine(shell, "restart-explorer");
@@ -204,6 +215,13 @@ internal static class Program
         }
         catch (Exception) { }
         if (!recent) return;
+        if (QMessageBox.Question(null,
+                I18n.T("explorer.restart.title"),
+                I18n.T("explorer.restart.body"),
+                I18n.T("explorer.restart.now"),
+                I18n.T("explorer.restart.later"),
+                null, 1, 1) != 0)
+            return;
         _ = Task.Run(async () =>
         {
             await Task.Delay(2000);
@@ -303,6 +321,17 @@ internal static class Program
         };
 
         menu.AddSeparator();
+
+        var plugins = menu.AddAction("");
+        I18n.Bind(plugins.SetText, "plugins.menu");
+        plugins.SetIcon(TrayIcons.Get("plugin"));
+        plugins.Triggered += _ =>
+        {
+            // The page lives in the workspace, so this is the same place the Dashboard's own
+            // button opens: one page, two ways in, and coming back to it shows the same list.
+            ShowDashboard();
+            _dashboard?.ShowPlugins();
+        };
 
         var credentials = menu.AddAction("");
         I18n.Bind(credentials.SetText, "credential.menu");
@@ -495,7 +524,7 @@ internal static class Program
     /// should not have to be verified against every other one either — so the run says what it
     /// covers, and the caller can ask for less.</summary>
     internal static readonly string[] SmokeAreas =
-        { "workspace", "dashboard", "editor", "object", "service", "stats", "recording", "locale" };
+        { "workspace", "dashboard", "editor", "object", "service", "stats", "recording", "locale", "plugins" };
 
     /// <summary>The areas a run was asked for, or null for all of them. Names are matched
     /// case-insensitively, and a name this build does not know is refused rather than ignored:
@@ -551,6 +580,10 @@ internal static class Program
                 // checks — is the page that came back rather than the one that was closed.
                 stats = dashboard.OpenPerformance(instance);
             }
+            // The plugin section is part of the workbench, so there is no page to open early; the
+            // workspace is put on its overview here so the captures below photograph the workbench
+            // rather than whichever tab the interactions above left current.
+            if (ticks == 3 && Runs("plugins")) dashboard.ShowOverview();
             // The reader changing the range is a change of window, not of cadence: readings are
             // counted from the moment the range changes, against a rate pinned here so the count
             // means the same thing on every machine.
@@ -623,6 +656,18 @@ internal static class Program
                     try { editor.VerifyPageFits(); } catch (Exception ex) { failure = ex.ToString(); }
                 }
                 if (Runs("dashboard")) dashboard.SmokeSilentUpdate();
+                if (Runs("plugins"))
+                {
+                    try
+                    {
+                        var plugins = dashboard.PluginPage;
+                        dashboard.ShowPlugins();
+                        plugins.SmokeVerify();
+                        if (capture != null) dashboard.Capture(Path.Combine(capture, "plugins.png"));
+                    }
+                    catch (Exception ex) { failure = ex.ToString(); }
+                    dashboard.ShowOverview();
+                }
                 if (Runs("locale")) I18n.SetLanguage(original == "en" ? "zh-CN" : "en");
             }
             // Step away from the performance tab and back again, the way a reader glancing at

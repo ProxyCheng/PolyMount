@@ -10,16 +10,23 @@
 #include <cwctype>
 #include <process.h>
 
-// Explorer reserves the overlay position (bottom-left). Seven fixed icons avoid
-// allocating one of Windows' scarce overlay slots for every configured layer.
+// Explorer reserves the overlay position (bottom-left). A fixed set of badges -- one per layer
+// type glyph, drawn in the palette colour at the same index -- avoids allocating one of Windows'
+// scarce overlay slots for every configured layer.
 static HMODULE module;
 static std::atomic<long> objects{0};
 static std::atomic<bool> workerStarted{false};
-static const COLORREF palette[] = {
-#define PM_COLOR(hex) RGB(((hex)>>16)&255,((hex)>>8)&255,(hex)&255),
-#include "../PolyMount.Core/Core/OriginPalette.inc"
-#undef PM_COLOR
+// The badge vocabulary, shared with the tray's icons: a file wears the same mark as the layer row
+// that served it. The last entry is the generic mark, which is what a layer type whose descriptor
+// names no glyph (or one the badges do not draw) gets.
+static const char* const glyphs[] = {
+#define PM_GLYPH(name) name,
+#include "../PolyMount.Core/Core/OverlayGlyphs.inc"
+#undef PM_GLYPH
 };
+// One handler per glyph: a handler can only ever hand Explorer one icon, so a badge with its own
+// shape needs its own class. The count comes from the list itself.
+static const int glyphCount = (int)(sizeof(glyphs) / sizeof(glyphs[0]));
 static const GUID baseId = {0x7d619ac0,0xdbe2,0x4f33,{0x9a,0x11,0x6c,0xc2,0xc8,0x32,0x90,0x01}};
 struct Cached { int slot = -1; ULONGLONG expires = 0; bool pending = false; ULONGLONG seen = 0; };
 // Win32 synchronization, not the C++ runtime's. A shell extension is loaded into whatever
@@ -135,11 +142,9 @@ static bool Exchange(const std::string& request,std::string& response,const std:
     }
     CloseHandle(pipe); return ok && response.find('\n')!=std::string::npos;
 }
-static int ColorSlot(const std::string& color) {
-    if(color.size()!=7 || color[0]!='#') return -1;
-    unsigned long rgb=strtoul(color.substr(1).c_str(),nullptr,16);
-    int r=(rgb>>16)&255,g=(rgb>>8)&255,b=rgb&255,slot=0,best=INT_MAX;
-    for(int i=0;i<7;++i) { int dr=r-GetRValue(palette[i]),dg=g-GetGValue(palette[i]),db=b-GetBValue(palette[i]); int d=dr*dr+dg*dg+db*db; if(d<best){best=d;slot=i;} } return slot;
+static int IconSlot(const std::string& icon) {
+    for(int i=0;i<glyphCount;++i) if(_stricmp(glyphs[i],icon.c_str())==0) return i;
+    return glyphCount-1;
 }
 static bool UnderRoot(const std::wstring& path) {
     for(const auto& root:roots) if(path==root || (path.size()>root.size() && path.compare(0,root.size(),root)==0 && path[root.size()]==L'\\')) return true;
@@ -199,7 +204,7 @@ static void Worker() {
         int slot=-1;
         std::wstring pipe=PipeFor(path);
         if(!pipe.empty() && Exchange("{\"Cmd\":\"probe\",\"Path\":\""+Escape(Utf8(path))+"\"}",response,pipe)) {
-            auto colors=Fields(response,"EffectiveColor"); if(!colors.empty()) slot=ColorSlot(colors[0]);
+            auto icons=Fields(response,"EffectiveIcon"); slot=IconSlot(icons.empty()?"":icons[0]);
         }
         bool changed;
         { GateLock lock; auto& e=entries[path]; changed=e.slot!=slot; e.slot=slot; e.expires=GetTickCount64()+5000; e.pending=false; }
@@ -222,7 +227,7 @@ public:
     HRESULT STDMETHODCALLTYPE GetOverlayInfo(LPWSTR file,int size,int* index,DWORD* flags) override {
         if(!file||!index||!flags) return E_POINTER;
         wchar_t location[MAX_PATH]; GetModuleFileNameW(module,location,MAX_PATH);
-        std::wstring path(location); path=path.substr(0,path.find_last_of(L"\\/"))+L"\\icons\\palette-dot-"+std::to_wstring(slot)+L".ico";
+        std::wstring path(location); path=path.substr(0,path.find_last_of(L"\\/"))+L"\\icons\\badge-"+Wide(glyphs[slot])+L".ico";
         if(path.size()+1>(size_t)size) return E_INVALIDARG;
         wcscpy_s(file,size,path.c_str());*index=0;*flags=ISIOI_ICONFILE|ISIOI_ICONINDEX;return S_OK;
     }
@@ -265,7 +270,7 @@ public:
 };
 STDAPI DllGetClassObject(REFCLSID clsid,REFIID iid,void** out) {
     GUID test=clsid;int slot=(int)(test.Data1-baseId.Data1);test.Data1=baseId.Data1;
-    if(test!=baseId||slot<0||slot>=7)return CLASS_E_CLASSNOTAVAILABLE;
+    if(test!=baseId||slot<0||slot>=glyphCount)return CLASS_E_CLASSNOTAVAILABLE;
     auto* factory=new Factory(slot);HRESULT result=factory->QueryInterface(iid,out);factory->Release();return result;
 }
 STDAPI DllCanUnloadNow(){return !objects&&!workerStarted ? S_OK:S_FALSE;}

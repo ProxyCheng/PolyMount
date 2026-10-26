@@ -36,7 +36,8 @@ jobs:
             throw 'WinFsp did not install winfsp-msil.dll'
           }
 
-      # QtSharp.Api and QtSharp.Charts are not on nuget.org; the qtsharp source is a local folder.
+      # The QtSharp packages (binding, runtime, Qt and Charts) are not on nuget.org; the
+      # qtsharp source is a local folder.
       - name: Fetch QtSharp packages
         shell: pwsh
         run: ./scripts/Fetch-QtSharp.ps1

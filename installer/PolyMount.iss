@@ -28,6 +28,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 PrivilegesRequired=admin
+; An installation directory is the reader's choice, also when this is an upgrade of an existing
+; installation: Inno's default ("auto") hides the page in exactly that case.
+DisableDirPage=no
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
@@ -55,7 +58,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "autostart"; Description: "{cm:AutoStart}"
-Name: "overlays"; Description: "{cm:OriginDots}"
+Name: "overlays"; Description: "{cm:OriginBadges}"
 Name: "useraccount"; Description: "{cm:UserAccount}"; Flags: unchecked
 ; The bundled source plugins are not tasks: they get a page of their own (see InitializeWizard),
 ; because "what this installation can mount" is a different question from "how should it start".
@@ -66,8 +69,13 @@ Source: "{#PayloadDir}\Tray\*"; DestDir: "{app}\Tray"; Flags: ignoreversion recu
 ; The MCP server is started by an agent rather than by Windows, so there is no service, shortcut
 ; or run entry for it - only the executable and the runtime it carries.
 Source: "{#PayloadDir}\Mcp\*"; DestDir: "{app}\Mcp"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#PayloadDir}\Shell\PolyMount.Shell.dll"; DestDir: "{app}\Shell"; Flags: ignoreversion restartreplace
-Source: "{#PayloadDir}\Shell\icons\palette-dot-*.ico"; DestDir: "{app}\Shell\icons"; Flags: ignoreversion
+Source: "{#PayloadDir}\Shell\PolyMount.Shell.dll"; DestDir: "{app}\Shell"; Flags: ignoreversion restartreplace; Check: ShellDllNeedsCopy
+; The build's fingerprint: a hash of the source the DLL was compiled from, written by
+; Build-Shell.ps1. The installed copy is compared with this rather than with the DLL, whose bytes
+; differ between builds of identical source (PE timestamp, and the CI's timestamped signature).
+Source: "{#PayloadDir}\Shell\build-id.txt"; DestDir: "{app}\Shell"; Flags: ignoreversion
+Source: "{#PayloadDir}\Shell\build-id.txt"; Flags: dontcopy
+Source: "{#PayloadDir}\Shell\icons\badge-*.ico"; DestDir: "{app}\Shell\icons"; Flags: ignoreversion
 Source: "Install-Host.ps1"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "Install-Host.ps1"; Flags: dontcopy
 Source: "install.json"; DestDir: "{app}"; Flags: ignoreversion
@@ -84,6 +92,11 @@ Source: "{#PayloadDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recu
 Name: "{group}\PolyMount"; Filename: "{app}\Tray\PolyMount.Tray.exe"
 Name: "{group}\{cm:UninstallProgram,PolyMount}"; Filename: "{uninstallexe}"
 
+[InstallDelete]
+; The badges used to be one coloured dot per palette entry ("palette-dot-N.ico"). The shell no
+; longer asks for those, and leaving them behind would look like a badge set that is still live.
+Type: files; Name: "{app}\Shell\icons\palette-dot-*.ico"
+
 [Registry]
 Root: HKLM; Subkey: "Software\Classes\*\shell\PolyMountLayers"; ValueType: string; ValueName: "MUIVerb"; ValueData: "PolyMount"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\Classes\*\shell\PolyMountLayers"; ValueType: string; ValueName: "SubCommands"; ValueData: ""
@@ -96,13 +109,28 @@ Root: HKLM; Subkey: "Software\Classes\Directory\shell\PolyMountLayers\shell\Mana
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\PolyMountLayers\shell\ManageObject"; ValueType: string; ValueName: "MultiSelectModel"; ValueData: "Document"
 Root: HKLM; Subkey: "Software\Classes\Directory\shell\PolyMountLayers\shell\ManageObject\command"; ValueType: string; ValueName: ""; ValueData: """{app}\Tray\PolyMount.Tray.exe"" --manage-cache ""%1"""
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "PolyMountTray"; ValueData: """{app}\Tray\PolyMount.Tray.exe"""; Tasks: autostart; Flags: uninsdeletevalue
+; Overlay handlers: one per badge, never a literal count. Build-Shell.ps1 draws one icon per glyph
+; in src\PolyMount.Core\Core\OverlayGlyphs.inc and writes the number beside them, so adding a badge
+; is the only edit either side needs. (The count cannot ride on the compiler command line: ISCC's
+; /D values are strings, and #for needs an integer.)
+; The class id carries the slot in its first field -- Overlay.cpp reads it back as
+; base.Data1 + slot -- and ISPP has no hex formatter, so the index is appended in decimal, which
+; stays a valid GUID only while it is one digit. Hence the guard below, and Core's ten-entry cap.
+#define SlotsFile AddBackslash(PayloadDir) + "Shell\badge-slots.iss"
+#if !FileExists(SlotsFile)
+  #error Missing badge-slots.iss beside the shell icons: stage the payload with scripts\Build-Installer.ps1
+#endif
+#include SlotsFile
+#if BadgeSlots > 10
+  #error More than ten overlay slots needs the class id spelled in hex; see the comment above
+#endif
 #sub OverlayEntry
 Root: HKLM; Subkey: "Software\Classes\CLSID\{{7d619ac{#Index}-dbe2-4f33-9a11-6cc2c8329001}\InprocServer32"; ValueType: string; ValueName: ""; ValueData: "{app}\Shell\PolyMount.Shell.dll"; Tasks: overlays; Flags: uninsdeletekey
 Root: HKLM; Subkey: "Software\Classes\CLSID\{{7d619ac{#Index}-dbe2-4f33-9a11-6cc2c8329001}\InprocServer32"; ValueType: string; ValueName: "ThreadingModel"; ValueData: "Both"; Tasks: overlays
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers\   PolyMount {#Index}"; ValueType: string; ValueName: ""; ValueData: "{{7d619ac{#Index}-dbe2-4f33-9a11-6cc2c8329001}"; Tasks: overlays; Flags: uninsdeletekey
 #endsub
 #define Index 0
-#for {Index = 0; Index < 7; Index++} OverlayEntry
+#for {Index = 0; Index < PaletteSlots; Index++} OverlayEntry
 
 [Run]
 ; Started through Explorer rather than as a child of Setup. Setup runs with RedirectionGuard (the
@@ -129,20 +157,20 @@ chinesesimplified.PluginPageCaption=插件
 chinesesimplified.PluginPageDescription=选择要安装的 PolyMount 插件。
 chinesesimplified.PluginPageSubCaption=
 english.AutoStart=Start the tray at Windows sign-in
-english.OriginDots=Show source colours in Explorer
+english.OriginBadges=Show source badges in Explorer
 english.UserAccount=Run the service as this Windows account (reuses your saved SVN sign-in)
 english.ServiceFailure=PolyMount service setup failed. See the installer log and retry setup.
 english.WinFspFailure=WinFsp installation failed.
 english.RuntimeFailure=Visual C++ runtime installation failed.
-english.RestartExplorerHint=If the source colours do not appear, restart Explorer from Task Manager (right-click Windows Explorer and choose Restart) or sign out and back in.
+english.RestartExplorerHint=If the source badges do not appear, restart Explorer from Task Manager (right-click Windows Explorer and choose Restart) or sign out and back in.
 english.RemoveData=Also delete the PolyMount configuration and cached data?%n%nAnswer No to keep them for a later installation.
 chinesesimplified.AutoStart=登录 Windows 时启动托盘
-chinesesimplified.OriginDots=在资源管理器中显示来源颜色
+chinesesimplified.OriginBadges=在资源管理器中显示来源角标
 chinesesimplified.UserAccount=以当前 Windows 账户运行服务（复用已保存的 SVN 登录）
 chinesesimplified.ServiceFailure=PolyMount 服务安装失败，请查看安装日志并重新安装。
 chinesesimplified.WinFspFailure=WinFsp 安装失败。
 chinesesimplified.RuntimeFailure=Visual C++ 运行库安装失败。
-chinesesimplified.RestartExplorerHint=如果来源颜色没有出现，请在任务管理器里重启资源管理器（右键「Windows 资源管理器」→「重新启动」），或注销后重新登录。
+chinesesimplified.RestartExplorerHint=如果来源角标没有出现，请在任务管理器里重启资源管理器（右键「Windows 资源管理器」→「重新启动」），或注销后重新登录。
 chinesesimplified.RemoveData=同时删除 PolyMount 的配置与缓存的数据？%n%n选择「否」会保留它们，以便日后重新安装。
 
 [Code]
@@ -156,6 +184,21 @@ const
 var
   PluginPage: TInputOptionWizardPage;
   RestartExplorerAfterInstall: Boolean;
+  ReplaceShellDll: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  { The Shell DLL is installed whether or not PrepareShellExtensionDll gets as far as comparing
+    it (a silent install, the overlay task unchecked, no earlier registration), so copying is the
+    default and only an identical copy turns it off. }
+  ReplaceShellDll := True;
+  Result := True;
+end;
+
+function ShellDllNeedsCopy(): Boolean;
+begin
+  Result := ReplaceShellDll;
+end;
 
 { The shell extension DLL is loaded by Explorer once the overlay handlers are registered. A loaded
   image cannot be overwritten, so on an upgrade the new DLL is put in place by renaming the old
@@ -169,16 +212,68 @@ begin
     'Software\Classes\CLSID\{7d619ac0-dbe2-4f33-9a11-6cc2c8329001}\InprocServer32', '');
 end;
 
+{ Byte-for-byte comparison through the system's own tool: the script has no hash function, and
+  this runs once per install rather than on any path a reader waits for. }
+function SameFile(Left, Right: String): Boolean;
+var
+  Code: Integer;
+begin
+  Result := False;
+  if not FileExists(Left) or not FileExists(Right) then exit;
+  if Exec(ExpandConstant('{sys}\fc.exe'), '/b "' + Left + '" "' + Right + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := Code = 0;
+end;
+
 procedure PrepareShellExtensionDll();
 var
-  dll, previous, marker: String;
+  dll, installedId, stagedId, previous, marker: String;
 begin
   RestartExplorerAfterInstall := False;
+  ReplaceShellDll := True;
   if WizardSilent() then exit;
-  if not WizardIsTaskSelected('overlays') then exit;
+  if not WizardIsTaskSelected('overlays') then
+  begin
+    { The registrations are removed by this install, so a pending hand-off would restart Explorer
+      for an extension it will no longer load. }
+    DeleteFile(ExpandConstant('{app}\Shell\restart-explorer'));
+    exit;
+  end;
   if not OverlayRegistered() then exit;
   dll := ExpandConstant('{app}\Shell\PolyMount.Shell.dll');
-  if not FileExists(dll) then exit;
+  if not FileExists(dll) then
+  begin
+    { A destination with no copy there means this upgrade moved the installation: the Explorer
+      that is running loaded the extension from the old directory, so the hand-off applies even
+      when the bytes are the same. }
+    marker := ExpandConstant('{app}\Shell\restart-explorer');
+    ForceDirectories(ExtractFileDir(marker));
+    SaveStringToFile(marker, 'moved', False);
+    RestartExplorerAfterInstall := True;
+    exit;
+  end;
+  { The installed build-id records what the extension Explorer is running was compiled from. When
+    the new package's id is the same, nothing that Explorer loads has changed: no copy (a loaded
+    image cannot be overwritten, identical or not) and no restart. A missing id means an
+    installation older than this file, which is treated as a change -- one restart, after which
+    later upgrades compare correctly. }
+  installedId := ExpandConstant('{app}\Shell\build-id.txt');
+  stagedId := '';
+  try
+    ExtractTemporaryFile('build-id.txt');
+    stagedId := ExpandConstant('{tmp}\build-id.txt');
+  except
+    stagedId := '';
+  end;
+  if (stagedId <> '') and FileExists(installedId) and SameFile(installedId, stagedId) then
+  begin
+    ReplaceShellDll := False;
+    { A marker left by an earlier install whose tray never started is not news now: nothing that
+      Explorer loads has changed this time either. Removing it is what keeps a reinstall from
+      asking again. }
+    DeleteFile(ExpandConstant('{app}\Shell\restart-explorer'));
+    exit;
+  end;
   previous := dll + '.old';
   DeleteFile(previous);
   if not RenameFile(dll, previous) then exit;

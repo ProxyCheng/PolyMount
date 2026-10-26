@@ -132,4 +132,61 @@ public sealed class PluginExtensionTests
         finally { PluginCommands.Unregister("test.plugin.command"); }
         Assert.IsFalse(PluginCommands.Handles("test.plugin.command"));
     }
+
+    [TestMethod]
+    public void One_plugin_entry_per_file_and_no_empty_ones()
+    {
+        var duplicate = new AppConfig();
+        duplicate.Plugins.Add(new PluginConfig { AssemblyPath = "plugins/Example.dll" });
+        duplicate.Plugins.Add(new PluginConfig { AssemblyPath = "plugins\\Example.dll" });
+        Assert.ThrowsException<ArgumentException>(() => duplicate.Validate());
+
+        var empty = new AppConfig();
+        empty.Plugins.Add(new PluginConfig { AssemblyPath = " " });
+        Assert.ThrowsException<ArgumentException>(() => empty.Validate());
+    }
+
+    [TestMethod]
+    public void The_plugin_folder_offers_only_assemblies_that_declare_the_plugin_contract()
+    {
+        using var temp = new TempDir();
+        string directory = temp.Sub("plugins");
+        Directory.CreateDirectory(directory);
+        // A real assembly without the contract (Core owns the interface, not an implementation),
+        // a file that is not a PE at all, and the test assemblies the publish step leaves behind:
+        // none of them is something a reader could add.
+        string plainAssembly = Path.Combine(directory, "NotAPlugin.dll");
+        File.Copy(typeof(PluginLoader).Assembly.Location, plainAssembly);
+        File.WriteAllText(Path.Combine(directory, "Broken.dll"), "not a PE file");
+        File.WriteAllText(Path.Combine(directory, "Some.Tests.dll"), "x");
+        File.WriteAllText(Path.Combine(directory, "notes.txt"), "x");
+
+        var files = PluginLoader.DiscoverFiles(Array.Empty<PluginConfig>(), temp.Path);
+
+        Assert.AreEqual(0, files.Count);
+        Assert.IsFalse(PluginLoader.IsPluginAssembly(plainAssembly));
+        Assert.IsFalse(PluginLoader.IsPluginAssembly(Path.Combine(directory, "Broken.dll")));
+    }
+
+    [TestMethod]
+    public void A_missing_plugin_file_is_reported_rather_than_thrown()
+    {
+        using var temp = new TempDir();
+        var report = PluginLoader.LoadConfiguredDetailed(new[]
+        {
+            new PluginConfig { AssemblyPath = "plugins/Missing.dll", Enabled = true },
+            // A disabled entry whose file is gone is a stale name the manager can still show and
+            // remove; it is not a reason for the host to refuse the configuration.
+            new PluginConfig { AssemblyPath = "plugins/AlsoMissing.dll", Enabled = false }
+        }, temp.Path);
+
+        Assert.AreEqual(1, report.Errors.Count, string.Join("; ", report.Errors));
+        StringAssert.Contains(report.Errors[0], "does not exist");
+        Assert.IsFalse(report.Plugins[0].Present);
+        Assert.IsFalse(report.Plugins[0].Loaded);
+        Assert.IsNotNull(report.Plugins[0].Error);
+        Assert.IsFalse(report.Plugins[1].Present);
+        Assert.IsNull(report.Plugins[1].Error);
+        Assert.AreEqual(2, PluginLoader.LastReport.Plugins.Count);
+    }
 }

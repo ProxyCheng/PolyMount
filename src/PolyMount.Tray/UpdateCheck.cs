@@ -2,7 +2,9 @@ using System.Diagnostics;
 using System.Net.Http;
 using System.Reflection;
 using PolyMount.Core.Update;
-using QtSharp.Api;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtWidgets;
 
 namespace PolyMount.Tray;
 

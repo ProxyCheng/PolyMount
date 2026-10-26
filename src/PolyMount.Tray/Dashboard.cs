@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.Globalization;
 using PolyMount.Core.Ipc;
-using QtSharp.Api;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtWidgets;
+using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -31,7 +34,11 @@ internal sealed class Dashboard : QWidget
     private readonly QSplitter _workspace;
     private readonly QWidget _overviewPage;
     private readonly QWidget _sidebar, _sidebarBody;
+    /// <summary>The workbench half of the shared page; the plugin manager is the other.</summary>
+    private readonly QWidget _workbench;
     private readonly QPushButton _refresh, _start, _stop, _create;
+    private readonly QPushButton _navOverview, _navPlugins;
+    private readonly PluginManager _plugins;
     private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect;
     private readonly QTimer _timer;
     private readonly BusyLine _busy;
@@ -44,8 +51,14 @@ internal sealed class Dashboard : QWidget
     /// connected.</summary>
     private ServiceState _serviceState = ServiceState.Running;
     private string? _selectedName;
+    /// <summary>The destination the side navigation is showing as current. The tab workspace
+    /// reports the page it activates; this is what the two entries are painted from.</summary>
+    private string _navKey = "overview";
     private DateTime _nextRefresh;
     private readonly TabWorkspace _tabs;
+    /// <summary>The window's own buttons, which share the tab strip's row because the window has
+    /// no title bar of its own.</summary>
+    private readonly WindowChrome _chrome;
     private bool _quietPending;
     /// <summary>A command went out and the state that proves it took effect has not come back yet.
     ///
@@ -98,10 +111,21 @@ internal sealed class Dashboard : QWidget
         
         I18n.Bind(SetWindowTitle, "dashboard.title");
         SetMinimumSize(480, 360);
+        // The tab strip is the window's first row, and the three buttons at its end are the ones a
+        // title bar would have: a title bar of its own would be a row saying nothing the strip does
+        // not already say. The system's own frame is what goes away; the window is still a normal
+        // top-level window to the taskbar, the keyboard and the window menu.
+        SetWindowFlag(Qt.WindowType.FramelessWindowHint, true);
         var shell = new QVBoxLayout(this);
         shell.SetContentsMargins(0, 0, 0, 0);
         _tabs = new TabWorkspace(this);
         shell.AddWidget(_tabs);
+        _chrome = new WindowChrome(this);
+        _tabs.Frameless = true;
+        _tabs.SetWindowChrome(_chrome);
+        var edges = new WindowEdges(this);
+        QCoreApplication.Instance().InstallEventFilter(edges);
+        Destroyed += _ => QCoreApplication.Instance().RemoveEventFilter(edges);
         var overviewPage = new QWidget();
         _tabs.Open("overview", () => overviewPage, () => T("overview"), pinned: true);
         var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080, out _overviewScroll));
@@ -138,7 +162,14 @@ internal sealed class Dashboard : QWidget
         nav.AddWidget(Label("brand.subtitle", "sidebarMuted"));
         nav.AddSpacing(16);
         nav.AddWidget(Label("workspace", "sidebarMuted"));
-        nav.AddWidget(Label("overview", "navActive"));
+        // Two destinations, side by side as peers: the mounts and the capabilities they are built
+        // from. The plugins used to be a button in the heading, beside refresh and "new instance" —
+        // an action among actions, although it opens a place rather than doing something.
+        _navOverview = NavItem("overview", "drive", ShowOverview);
+        _navPlugins = NavItem("plugins.button", "plugin", ShowPlugins);
+        nav.AddWidget(_navOverview);
+        nav.AddWidget(_navPlugins);
+        UpdateNav("overview");
         nav.AddStretch(1);
         nav.AddWidget(Label("service.connection", "sidebarMuted"));
         _service = PlainLabel("", "serviceBadge");
@@ -184,14 +215,20 @@ internal sealed class Dashboard : QWidget
         sidebarFrame.AddWidget(sidebarScroll);
         root.AddWidget(sidebar);
 
-        var content = new QVBoxLayout();
+        // The right-hand side is the section the sidebar selects: the workbench and the plugin
+        // manager are two views of one page, not two pages. Both stay built; one is hidden.
+        _workbench = new QWidget();
+        var content = new QVBoxLayout(_workbench);
         content.SetContentsMargins(24, 20, 24, 14);
         // Twelve rather than eighteen between the heading, the metrics, the panels and the two
         // status lines: those gaps are part of the page's minimum height, and the panels are what a
         // reader came for. The panels still get every pixel the window has left over — this only
         // decides how small a window can get before the page has to scroll.
         content.SetSpacing(12);
-        root.AddLayout(content, 1);
+        root.AddWidget(_workbench, 1);
+        _plugins = new PluginManager();
+        _plugins.Hide();
+        root.AddWidget(_plugins, 1);
         var heading = new QHBoxLayout();
         var title = new QVBoxLayout();
         title.SetSpacing(5);
@@ -255,7 +292,10 @@ internal sealed class Dashboard : QWidget
         list.AddWidget(_table, 1);
         _empty = PlainLabel("", "emptyState");
         _empty.SetAlignment(Qt.Alignment.AlignCenter);
-        list.AddWidget(_empty);
+        // The table goes away while there is nothing in it, and the hint takes the stretch it
+        // would have had: an empty table is a frame over nothing, and a hint laid out under it
+        // reads as a footnote to a list rather than as the state of the list.
+        list.AddWidget(_empty, 1);
         list.AddWidget(Label("mount.list.hint", "muted"));
         workspace.AddWidget(listPanel);
 
@@ -288,6 +328,12 @@ internal sealed class Dashboard : QWidget
         // One to a row, not two: the panel is as narrow as 306 pixels, and a button's label is the
         // one thing here that cannot be shortened for it — in English the longest of these runs to
         // "Clear instance cache", which with a second button beside it does not fit.
+        // The error is above the switch, not at the bottom of the panel: it is the reason a
+        // reader opens the instance at all, and "mount" is the action it is about. The panel
+        // scrolls, and the one line that explains a failed mount must not be what is below the
+        // fold.
+        _detailError = PlainLabel("", "errorBox");
+        body.AddWidget(_detailError);
         _toggleMount = Button("mount", ToggleSelected, "primary", "play");
         body.AddWidget(_toggleMount);
         _open = Button("open.folder", OpenSelected, icon: "folder");
@@ -314,11 +360,14 @@ internal sealed class Dashboard : QWidget
         body.AddWidget(Label("layers.heading", "eyebrow"));
         _layers = PlainLabel("", "layerChain");
         body.AddWidget(_layers);
-        _detailError = PlainLabel("", "errorBox");
-        body.AddWidget(_detailError);
         body.AddStretch(1);
         scroll.SetWidget(_detailBody);
         detail.AddWidget(scroll, 1);
+        // With no instance selected the body is hidden, and then the three labels above are the
+        // only items left: without one that may absorb the panel's height they take it in turns,
+        // and "choose an instance" reads as stretched down the whole panel. The spacer receives
+        // that space while the body is away; the scroll area's stretch receives it when it is not.
+        detail.AddStretch(0);
         workspace.AddWidget(details);
         workspace.SetStretchFactor(0, 3);
         workspace.SetStretchFactor(1, 2);
@@ -355,7 +404,43 @@ internal sealed class Dashboard : QWidget
         FillTable();
         UpdateActions();
         UpdateConnection();
+        UpdateNav(_navKey);
         Update();
+    }
+
+    /// <summary>One side-navigation entry. The active state is an inline style rather than an
+    /// object name because it changes at runtime and Qt only repaints an object-name change after
+    /// an unpolish/polish cycle — a style sheet is the one thing a widget can take without help.</summary>
+    private static QPushButton NavItem(string key, string icon, Action action)
+    {
+        var button = new QPushButton();
+        I18n.Bind(button.SetText, key);
+        button.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+        button.SetIcon(TrayIcons.Get(icon, TrayTheme.Tokens.SidebarText));
+        button.Clicked += _ => action();
+        return button;
+    }
+
+    private void UpdateNav(string key)
+    {
+        _navKey = key;
+        // Pages opened from the workspace (an instance's settings, its performance) are still the
+        // overview's work; only the plugin manager is a destination of its own.
+        bool plugins = string.Equals(key, "plugins", StringComparison.Ordinal);
+        StyleNav(_navOverview, !plugins, "drive");
+        StyleNav(_navPlugins, plugins, "plugin");
+    }
+
+    private static void StyleNav(QPushButton button, bool active, string icon)
+    {
+        var palette = TrayTheme.Tokens;
+        string color = active ? palette.SidebarText : palette.SidebarMuted;
+        button.SetIcon(TrayIcons.Get(icon, color));
+        string style = active
+            ? $"QPushButton {{ background: {palette.SidebarActive}; border: none; border-radius: 8px; color: {palette.SidebarText}; text-align: left; padding: 10px 12px; font-weight: 600; }}"
+            : $"QPushButton {{ background: transparent; border: none; border-radius: 8px; color: {palette.SidebarMuted}; text-align: left; padding: 10px 12px; }}"
+              + $" QPushButton:hover {{ background: {palette.SidebarActive}; color: {palette.SidebarText}; }}";
+        if (button.StyleSheet != style) button.SetStyleSheet(style);
     }
 
     /// <summary>Closing the window closes it. It used to hide itself and stay, which is what a tray
@@ -743,6 +828,58 @@ internal sealed class Dashboard : QWidget
         if (e.type() == QEvent.Type.LanguageChange && _table != null) Translate();
     }
 
+    /// <summary>A maximized and a restored window have different marks to offer, and a window put
+    /// in either state by the keyboard or the window menu never goes through the button.</summary>
+    public override void ResizeEvent(QResizeEvent e)
+    {
+        base.ResizeEvent(e);
+        if (_chrome == null) return;
+        _chrome.Sync();
+        _tabs.RefreshChrome();
+    }
+
+    /// <summary>A window without a frame has no edge to be dragged by either: the system's frame is
+    /// what normally answers "this press is on the border" with a resize. The filter looks for
+    /// those presses itself, before the widget under the pointer handles one, and hands the gesture
+    /// to the window's own resize loop — the same loop a frame would have started.</summary>
+    private sealed class WindowEdges(Dashboard owner) : QObject(owner)
+    {
+        private const int Margin = 6;
+
+        public override bool EventFilter(QObject watched, QEvent e)
+        {
+            if (e.type() != QEvent.Type.MouseButtonPress) return false;
+            if (owner.IsMaximized() || owner.IsFullScreen()) return false;
+            var mouse = QMouseEvent.FromHandle(e.Handle);
+            if (mouse.Button() != Qt.MouseButton.LeftButton) return false;
+            var global = new QPoint(mouse.GlobalX(), mouse.GlobalY());
+            // Which widget the press belongs to is asked of the window under the pointer rather than
+            // of the event's receiver: the filter is installed on the application, and what arrives
+            // here is not necessarily the managed wrapper this window knows its children by.
+            var widget = QApplication.WidgetAt(global);
+            if (widget == null || (widget != owner && !owner.IsAncestorOf(widget))) return false;
+            // The window's own buttons sit inside the top-right margin; a press there is a click.
+            if (owner._chrome.IsAncestorOf(widget)) return false;
+            var edges = EdgesAt(owner, global);
+            if (edges == (Qt.Edges)0) return false;
+            owner.WindowHandle()?.StartSystemResize(edges);
+            return true;
+        }
+
+        /// <summary>Which edges of the window a point is on. A corner is two of them, which is what
+        /// the system's own resize loop expects.</summary>
+        internal static Qt.Edges EdgesAt(QWidget window, QPoint global)
+        {
+            var at = window.MapFromGlobal(global);
+            var edges = (Qt.Edges)0;
+            if (at.X() < Margin) edges |= Qt.Edges.LeftEdge;
+            if (at.X() >= window.Width - Margin) edges |= Qt.Edges.RightEdge;
+            if (at.Y() < Margin) edges |= Qt.Edges.TopEdge;
+            if (at.Y() >= window.Height - Margin) edges |= Qt.Edges.BottomEdge;
+            return edges;
+        }
+    }
+
     private void UpdateFilters()
     {
         int selected = Math.Max(0, _filter.CurrentIndex);
@@ -824,6 +961,7 @@ internal sealed class Dashboard : QWidget
         if (structureChanged) _table.SetUpdatesEnabled(true);
         _filling = false;
         SetText(_listCount, I18n.F("list.count", _visible.Count, _mounts.Count) + (_connected ? "" : " · " + T("last.known")));
+        _table.SetVisible(_visible.Count > 0);
         _empty.SetVisible(_visible.Count == 0);
         SetText(_empty, T(!_connected ? "empty.offline" : _mounts.Count == 0 ? "empty.new" : "empty.search"));
         UpdateDetails(changed);
@@ -1009,13 +1147,77 @@ internal sealed class Dashboard : QWidget
     internal StatsWindow OpenPerformance(string name) => (StatsWindow)_tabs.Open("stats:" + name,
         () => new StatsWindow(name), () => I18n.F("stats.instance", name));
 
+    /// <summary>The plugin manager view, for the smoke run: the page is part of the workbench and
+    /// has no address of its own.</summary>
+    internal PluginManager PluginPage => _plugins;
+
+    /// <summary>Shows the mounts, and the workbench they are managed from.</summary>
+    internal void ShowOverview()
+    {
+        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
+        ShowSection(plugins: false);
+    }
+
+    /// <summary>Shows the plugin manager in the same page. The sidebar is the switch: the tab,
+    /// its bar and the window are the workbench either way.</summary>
+    internal void ShowPlugins()
+    {
+        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
+        ShowSection(plugins: true);
+    }
+
+    private void ShowSection(bool plugins)
+    {
+        _workbench.SetVisible(!plugins);
+        _plugins.SetVisible(plugins);
+        UpdateNav(plugins ? "plugins" : "overview");
+    }
+
 
     /// <summary>The tab interactions are driven against the instance the run is looking at, which is
     /// the live one when there is one: the editor's key carries its name, so a name written here
     /// that the run did not open is a key that is not there — which is what a machine with an
     /// instance other than the one this used to say hit.</summary>
-    internal void SmokeTabs(string instance) =>
+    internal void SmokeTabs(string instance)
+    {
         _tabs.SmokeInteractions("editor:" + instance, "stats:" + instance, () => new StatsWindow(instance));
+        VerifyChrome();
+    }
+
+    /// <summary>The window has no title bar of its own, and the three buttons that replace it are on
+    /// the tab strip's row at the window's right edge — including after the smoke has split the
+    /// workspace and folded the splits away again, which is when they have to move.</summary>
+    private void VerifyChrome()
+    {
+        // The smoke leaves a split behind it, and a split made a moment ago has not been laid out:
+        // its panes still carry their minimum size and sit at the origin until the event loop gets
+        // a turn. What is checked here is where a reader would see the buttons.
+        for (int round = 0; round < 3; round++) QCoreApplication.ProcessEvents();
+        if ((WindowFlags() & (Qt.WindowFlags)Qt.WindowType.FramelessWindowHint) == 0)
+            throw new InvalidOperationException("The window kept its title bar");
+        if (!_chrome.IsVisible())
+            throw new InvalidOperationException("The window's buttons are not shown");
+        if (_chrome.Window() != this)
+            throw new InvalidOperationException("The window's buttons left the window");
+        var bar = _tabs.TopRightTabBar() ?? throw new InvalidOperationException("No tab strip to host the window's buttons");
+        int barTop = bar.MapTo(this, new QPoint(0, 0)).Y();
+        var corner = _chrome.ParentWidget();
+        if (corner == null || Math.Abs(corner.MapTo(this, new QPoint(0, 0)).Y() - barTop) > 2 || corner.Height != bar.Height)
+            throw new InvalidOperationException(
+                $"The window's buttons are not on the strip's row: bar {barTop}+{bar.Height}, corner {corner?.MapTo(this, new QPoint(0, 0)).Y()}+{corner?.Height}");
+        var center = _chrome.MapTo(this, new QPoint(_chrome.Width / 2, _chrome.Height / 2));
+        if (center.Y() < barTop || center.Y() >= barTop + bar.Height)
+            throw new InvalidOperationException("The window's buttons are not on the tab strip's row");
+        int right = _chrome.MapTo(this, new QPoint(0, 0)).X() + _chrome.Width;
+        if (Width - right > 16)
+            throw new InvalidOperationException($"The window's buttons are not at the window's right edge: {right} of {Width}");
+        // Without a frame nobody else answers "this press is on the border", so the filter's own
+        // reading of the edges is checked here: the top edge it must find, the middle it must not.
+        if ((WindowEdges.EdgesAt(this, MapToGlobal(new QPoint(Width / 2, 2))) & Qt.Edges.TopEdge) == 0)
+            throw new InvalidOperationException("A press on the window's top edge is not read as a resize");
+        if (WindowEdges.EdgesAt(this, MapToGlobal(new QPoint(Width / 2, Height / 2))) != (Qt.Edges)0)
+            throw new InvalidOperationException("A press in the middle of the window is read as a resize");
+    }
 
     private void OnConfigSaved() => Refresh();
 

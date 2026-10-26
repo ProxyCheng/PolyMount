@@ -37,17 +37,18 @@ QtPrintSupport, QtSvg, QtSvgWidgets
     The Qt Company Ltd. and contributors — LGPL v3, or a commercial Qt licence
     <https://www.qt.io/licensing/open-source-lgpl-obligations>
     These are the unmodified official binaries, as published by The Qt Company and redistributed
-    in the QtSharp.Api package. The LGPL requires that a recipient be able to replace them: they
+    in the QtSharp.Qt6 package. The LGPL requires that a recipient be able to replace them: they
     are ordinary DLLs beside the executable, so replacing them is a file copy, and the complete
     corresponding source is available from <https://download.qt.io/>.
 
 Qt Charts 6.11.0 (Qt6Charts.dll)
     The Qt Company Ltd. and contributors — GPL v3, or a commercial Qt licence
-    (See the section above.)
+    (See the section above.) Redistributed in the QtSharp.Charts.Qt6 package.
 
-QtSharp.Api 0.1.0 and QtSharp.Charts 0.1.0 (managed bindings and their native glue)
+QtSharp.Api 0.2.0, QtSharp.Runtime 0.2.0, QtSharp.Qt6 0.2.0, QtSharp.Charts 0.2.0 and
+QtSharp.Charts.Qt6 0.2.0 (managed bindings, their native glue and the Qt runtime payload)
     ProxyCheng and contributors — MIT
-    <https://github.com/ProxyCheng/QtSharp>, <https://github.com/ProxyCheng/QtSharp.Charts>
+    <https://github.com/ProxyCheng/QtSharp>
 
 .NET 10 runtime (published self-contained; the whole framework is in this directory)
     .NET Foundation and contributors — MIT

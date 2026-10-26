@@ -1,5 +1,8 @@
-using QtSharp.Api;
 using QtSharp.Charts;
+using QtSharp.QtCore;
+using QtSharp.QtGui;
+using QtSharp.QtWidgets;
+using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 

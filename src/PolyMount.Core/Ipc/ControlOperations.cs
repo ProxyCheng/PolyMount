@@ -178,6 +178,14 @@ public static class ControlOperations
         {"type":"object","properties":{"path":{"type":"string","description":"Full local path under a mount point."},"boundary":{"type":"integer","description":"Every manageable layer above this index releases the path. 0 releases all of them."},"expected_layers":{"type":"array","items":{"type":"string"},"description":"The layer names probe_path reported, in the same order. The service refuses the call if the chain has changed since."}},"required":["path","boundary","expected_layers"]}
         """;
 
+    private const string PluginPathSchema = """
+        {"type":"object","properties":{"path":{"type":"string","description":"The plugin's assembly path exactly as list_plugins reports it under plugins[].assemblyPath."}},"required":["path"]}
+        """;
+
+    private const string SetPluginEnabledSchema = """
+        {"type":"object","properties":{"path":{"type":"string","description":"The plugin's assembly path exactly as list_plugins reports it under plugins[].assemblyPath."},"enabled":{"type":"boolean","description":"Whether the plugin should contribute to the running service."}},"required":["path","enabled"]}
+        """;
+
     // ---------------------------------------------------------------- catalog
 
     private static ControlOperation[] Build() =>
@@ -241,6 +249,14 @@ public static class ControlOperations
                 presets = response.Presets
             }),
 
+        ReadOnly("list_plugins", "List plugins",
+            "The plugins the configuration names — whether each is enabled, whether it loaded, and the layer types, source types, presets and tools it adds — "
+            + "plus the DLLs in the service's plugin folder that are not named yet. "
+            + "A plugin is what gives this product its svn and smb sources; with none enabled there is nothing to mount from.",
+            EmptySchema,
+            (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Plugins }),
+            PluginCatalog),
+
         ReadOnly("list_log_files", "List diagnostics files",
             "The diagnostics files the service holds, with their sizes and absolute paths. "
             + "Request logs are sampled: they record slow requests and root requests, not every request. "
@@ -301,6 +317,46 @@ public static class ControlOperations
             idempotent: true,
             (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Reload }),
             MountsPresent),
+
+        Mutation("set_plugin_enabled", "Enable or disable a plugin",
+            "Switches one configured plugin on or off. Enabling a plugin whose file is missing or whose load fails is refused and changes nothing. "
+            + "Any change to the plugin set restarts every instance's worker, because a worker loads plugins when it starts.",
+            SetPluginEnabledSchema,
+            idempotent: true,
+            (link, args) => link.Supervisor(new ControlRequest
+            {
+                Cmd = ControlCommands.SetPluginEnabled,
+                AssemblyPath = args.String("path"),
+                PluginEnabled = args.OptionalBool("enabled")
+                    ?? throw new ArgumentException("missing required argument 'enabled'")
+            }),
+            PluginCatalog),
+
+        Mutation("remove_plugin", "Remove a plugin from the configuration",
+            "Stops naming a plugin in the configuration. The DLL stays in the plugin folder and appears among the files list_plugins offers to add "
+            + "again; a plugin the host already loaded stays in memory until the service restarts, but no longer contributes anything.",
+            PluginPathSchema,
+            idempotent: true,
+            (link, args) => link.Supervisor(new ControlRequest
+            {
+                Cmd = ControlCommands.RemovePlugin,
+                AssemblyPath = args.String("path")
+            }),
+            PluginCatalog),
+
+        Mutation("import_plugin", "Import a plugin DLL",
+            "Copies a DLL into the service's plugin folder and names it in the configuration, enabled. "
+            + "A plugin the running service already loaded cannot be replaced this way — its file is locked; restart the service or import under another name.",
+            """
+            {"type":"object","properties":{"source":{"type":"string","description":"Absolute path of the DLL to copy."}},"required":["source"]}
+            """,
+            idempotent: false,
+            (link, args) => link.Supervisor(new ControlRequest
+            {
+                Cmd = ControlCommands.ImportPlugin,
+                SourcePath = args.String("source")
+            }),
+            PluginCatalog),
 
         Mutation("save_config", "Save the configuration",
             "Replaces the entire service configuration and applies it. This rewrites the whole file — read get_config first and send the "
@@ -449,6 +505,15 @@ public static class ControlOperations
     private static ControlOperation DestructiveOp(string name, string title, string description, string schema, bool idempotent,
         Func<IControlLink, ToolArguments, ControlResponse> invoke, Func<ControlResponse, object?> present) =>
         new(name, title, description, ControlEffect.Destructive, idempotent, schema, invoke, present);
+
+    /// <summary>The shape every plugin command returns: the same catalog, so a caller that
+    /// changed one plugin can read the new state without a second call.</summary>
+    private static object? PluginCatalog(ControlResponse response) => new
+    {
+        directory = response.PluginDirectory,
+        plugins = response.Plugins,
+        files = response.PluginFiles
+    };
 
     /// <summary>A path-based command, refused before it is sent when no mount point contains the
     /// path: the supervisor's answer to a command it does not own says which process does, which

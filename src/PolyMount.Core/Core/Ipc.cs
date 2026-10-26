@@ -194,6 +194,12 @@ public sealed class ControlRequest
 
     // Why a "recordingStop" is stopping: stopped / capacity / tray-exit …
     public string? Reason { get; set; }
+
+    // Plugin management: the configured entry a command is about, the value to switch it to,
+    // and the file an import should copy from.
+    public string? AssemblyPath { get; set; }
+    public bool? PluginEnabled { get; set; }
+    public string? SourcePath { get; set; }
 }
 
 /// <summary>Where one instance is served: the process that owns it, and the pipe it answers on.
@@ -264,6 +270,59 @@ public sealed class ControlResponse
     // Populated by "credentials": the accounts this product keeps. Never a secret — the
     // interface does not see one, so it can neither leak nor echo it.
     public List<CredentialRecord> Credentials { get; set; } = new();
+
+    // Populated by "plugins": what the configuration names, what each one contributed when it
+    // was loaded, and the DLLs in the host's plugin folder that are not named yet.
+    public List<PluginView> Plugins { get; set; } = new();
+    public List<PluginFileView> PluginFiles { get; set; } = new();
+    public string? PluginDirectory { get; set; }
+    /// <summary>The configuration the plugins list lives in. A front-end that edits plugins
+    /// while the service is stopped needs it, and this is the only process that knows which file
+    /// it was started with.</summary>
+    public string? ConfigPath { get; set; }
+}
+
+/// <summary>One configured plugin as the plugin manager shows it: the entry, the file behind it,
+/// whether the last load succeeded, and the extension points it registered.</summary>
+public sealed class PluginView
+{
+    /// <summary>The configuration's own value, relative to the host directory.</summary>
+    public string AssemblyPath { get; set; } = "";
+    public string FileName { get; set; } = "";
+    public string FullPath { get; set; } = "";
+    public bool Enabled { get; set; }
+    /// <summary>Whether the file is there. A configured entry whose file is gone is an error the
+    /// host refuses to start with, so the manager shows it as such rather than hiding it.</summary>
+    public bool Present { get; set; }
+    /// <summary>Whether the last load registered it. False for a disabled plugin, and for one
+    /// whose load failed.</summary>
+    public bool Loaded { get; set; }
+    public string Version { get; set; } = "";
+    /// <summary>What the plugin calls itself, when it implements <c>IPluginMetadata</c>; null for
+    /// a plugin that only has a file name.</summary>
+    public LocalizedText? Title { get; set; }
+    public LocalizedText? Description { get; set; }
+    public string Icon { get; set; } = "";
+    public string? Error { get; set; }
+    public List<string> SourceTypes { get; set; } = new();
+    public List<string> LayerTypes { get; set; } = new();
+    public List<string> Presets { get; set; } = new();
+    public List<string> Strategies { get; set; } = new();
+    public List<string> Commands { get; set; } = new();
+    public List<string> Operations { get; set; } = new();
+}
+
+/// <summary>A DLL in the host's plugin folder that the configuration does not name.</summary>
+public sealed class PluginFileView
+{
+    public string Name { get; set; } = "";
+    public string FullPath { get; set; } = "";
+    public long Size { get; set; }
+    public string ModifiedUtc { get; set; } = "";
+    public string Version { get; set; } = "";
+    /// <summary>Whether the running host has this assembly loaded. A loaded file cannot be
+    /// replaced until the service restarts.</summary>
+    public bool InUse { get; set; }
 }
 
 // Per-layer presence of one path, for the layered visualization UI.
@@ -297,6 +356,10 @@ public sealed class ProbeResult
     public bool IsDir { get; set; }
     public string EffectiveLayer { get; set; } = "";  // name of the winning layer, "" if none
     public string EffectiveColor { get; set; } = "";  // color of the winning layer (for the badge)
+    /// <summary>The winning layer's type icon, from its descriptor ("" when it declares none).
+    /// The Explorer badge picks its glyph with this, so a file carries the same mark as the layer
+    /// row in the window.</summary>
+    public string EffectiveIcon { get; set; } = "";
     public List<LayerProbe> Layers { get; set; } = new();
 }
 
@@ -341,6 +404,19 @@ public static class ControlCommands
     /// <summary>Adds or changes a named credential. A missing password keeps the stored one.</summary>
     public const string SaveCredential = "saveCredential";
     public const string DeleteCredential = "deleteCredential";
+
+    /// <summary>The plugin list: configured entries with what they contributed, and the DLLs
+    /// beside the host that the configuration does not name.</summary>
+    public const string Plugins = "plugins";
+    /// <summary>Switches one configured plugin on or off. The value is explicit, like
+    /// <see cref="SetEnabled"/> for instances: a missing field is a caller with a bug, not a
+    /// reason to guess.</summary>
+    public const string SetPluginEnabled = "setPluginEnabled";
+    /// <summary>Removes a plugin from the configuration. The DLL stays where it is and appears
+    /// among the files that can be added again.</summary>
+    public const string RemovePlugin = "removePlugin";
+    /// <summary>Copies a DLL into the host's plugin folder and names it in the configuration.</summary>
+    public const string ImportPlugin = "importPlugin";
 }
 
 /// <summary>One recording on the service: whether it is running, and what it has counted.

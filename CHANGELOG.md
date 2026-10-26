@@ -5,6 +5,57 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-26
+
+### Added
+
+- Plugins are managed from the tray. The sidebar's **Plugins** section — beside the mount overview,
+  on the same page — lists every configured plugin with its title, version and what it contributes,
+  and switches, removes or imports one from there. The service gains `plugins`,
+  `setPluginEnabled`, `removePlugin` and `importPlugin` commands, and the MCP surface the same
+  operations, so a window and an agent see one state. A plugin may name itself (title, description,
+  icon, version) and is listed by its file name when it does not. Changing the set restarts the
+  workers; while the service runs the section is read-only, because a loaded DLL is locked and a
+  change remounts every instance.
+- A mount can tell Windows what changed. Name changes made through one instance are forwarded to
+  WinFsp's notification API, and a directory source can watch its root, so another instance's
+  writes — or a colleague on a share — invalidate what the caches above it hold instead of waiting
+  for the source's generation to move.
+- The Explorer badges carry the tray's own layer glyphs, not only a colour: the shape comes from the
+  layer's icon and the colour from its palette slot. The number of overlay slots is derived from
+  the palette itself (up to 10) instead of being written in several places.
+
+### Changed
+
+- QtSharp moved to 0.2.0. The binding is now ten module assemblies with one namespace each, and the
+  managed runtime, the Qt runtime and the Charts payload are packages of their own; nothing a
+  reader sees changes.
+- The dashboard has no title bar of its own. The tab strip is its first row, and minimize,
+  maximize/restore and close share that row at the window's right edge; dragging the empty strip
+  moves the window, double-clicking it maximizes or restores, and a press on the window's border
+  resizes it. Floating windows keep their native frames.
+- The setup always shows the installation directory page, an upgrade included, so the destination
+  is a choice rather than whatever the previous installation remembered.
+- An upgrade replaces the Explorer extension only when the sources it was built from changed, a
+  fingerprint the package carries; the common upgrade no longer touches Explorer, and a changed
+  extension is followed by a question before Explorer is restarted.
+- A failed instance's reason is shown above its switch in the details panel, where the action it is
+  about is.
+- A directory source no longer creates its root when it starts, and remembers its generation rather
+  than stat-ing the root on every lookup. A source that points inside another instance's mount
+  point can no longer block that instance's mount after a restart.
+
+### Fixed
+
+- A restart no longer leaves an instance unmounted because a child instance's directory source
+  created a real directory inside the parent's mount point before the parent was up.
+- The workbench's empty state: with no instances the hint sits in the middle of the list instead of
+  under an empty table, and with no instance selected the detail panel's text is top-aligned
+  instead of spread down the panel.
+- The pinned overview tab stays in its own group: dropping it on an edge of any group no longer
+  splits that group, and dropping it on another group no longer moves it. It can still be reordered
+  in its strip.
+
 ## [0.6.3] - 2026-10-22
 
 ### Added

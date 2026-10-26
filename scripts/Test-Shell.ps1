@@ -23,12 +23,16 @@ public static class OverlayProbe {
                 stream.Position=offset;
                 using(var png=new System.IO.MemoryStream(reader.ReadBytes(bytes)))
                 using(var image=new System.Drawing.Bitmap(png)) {
-                    var center=image.GetPixel(image.Width/4,image.Height*3/4);
-                    if(center.A!=255 || (center.ToArgb()&0xffffff)!=rgb) throw new Exception("Dot center differs from preset RGB");
+                    // A badge is one colour: every opaque pixel must be the preset RGB, softened
+                    // only by the antialiasing that fades it into the transparent background. The
+                    // count catches a frame that came out empty at the small sizes.
+                    int painted=0;
                     for(int y=0;y<image.Height;y++) for(int x=0;x<image.Width;x++) {
                         var color=image.GetPixel(x,y);
                         if(color.A>0 && color.R==255 && color.G==255 && color.B==255) throw new Exception("White outline pixel found");
+                        if(color.A==255 && (color.ToArgb()&0xffffff)==rgb) painted++;
                     }
+                    if(painted<4) throw new Exception("Badge frame has only "+painted+" pixels of the preset RGB");
                 }
             }
         }
@@ -40,14 +44,17 @@ public static class OverlayProbe {
         if(hr!=0) Marshal.ThrowExceptionForHR(hr); return file.ToString();
     }
     public static IOverlay Create(int slot) {
-        var guid = new Guid("7d619ac" + slot + "-dbe2-4f33-9a11-6cc2c8329001");
+        // Same arithmetic as Overlay.cpp: the slot is the base's first field plus the slot number.
+        var guid = new Guid((0x7d619ac0 + slot).ToString("x8") + "-dbe2-4f33-9a11-6cc2c8329001");
         return (IOverlay)Activator.CreateInstance(Type.GetTypeFromCLSID(guid));
     }
 }
 '@ -ReferencedAssemblies System.Drawing
-$handlers = @(0..6 | ForEach-Object { [OverlayProbe]::Create($_) })
 $paletteText = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'src\PolyMount.Core\Core\OriginPalette.inc'))
 $palette = @([regex]::Matches($paletteText,'0x([0-9A-F]{6})') | ForEach-Object { [Convert]::ToInt32($_.Groups[1].Value,16) })
+$glyphText = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'src\PolyMount.Core\Core\OverlayGlyphs.inc'))
+$glyphs = @([regex]::Matches($glyphText,'PM_GLYPH\("([a-z0-9-]+)"\)') | ForEach-Object { $_.Groups[1].Value })
+$handlers = @(0..($glyphs.Count-1) | ForEach-Object { [OverlayProbe]::Create($_) })
 for($i=0; $i -lt $handlers.Count; $i++) {
     $handler=$handlers[$i]
     $file = [OverlayProbe]::Icon($handler)
@@ -58,8 +65,8 @@ for($i=0; $i -lt $handlers.Count; $i++) {
 $deadline=[DateTime]::UtcNow.AddSeconds(20)
 $slot=-1
 do {
-    for($i=0;$i -lt 7;$i++) { if ([OverlayProbe]::Member($handlers[$i],$Path) -eq 0) { $slot=$i;break } }
+    for($i=0;$i -lt $handlers.Count;$i++) { if ([OverlayProbe]::Member($handlers[$i],$Path) -eq 0) { $slot=$i;break } }
     if ($slot -lt 0) { Start-Sleep -Milliseconds 300 }
 } while($slot -lt 0 -and [DateTime]::UtcNow -lt $deadline)
 if ($slot -lt 0) { throw "No origin overlay resolved for $Path" }
-Write-Host "COM overlay passed: $Path -> palette slot $slot; all seven icons exist; non-mount paths ignored."
+Write-Host "COM overlay passed: $Path -> palette slot $slot; all $($handlers.Count) icons exist; non-mount paths ignored."

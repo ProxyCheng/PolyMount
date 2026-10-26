@@ -257,6 +257,32 @@ public class MetricsProcessTests
         Assert.AreEqual(metrics.TotalReads, byLayer.Values.Sum(pair => pair.Reads), "and nothing is left over");
     }
 
+    /// <summary>A window that starts between two of the cells the process dimension is kept in
+    /// still covers all of it. The access cards add the callers' bars up against the layers'
+    /// circle, and the page asks for the interval since its previous reading — a second and a
+    /// bit, never aligned to the stride. Aligned to whole seconds, the process side answered for
+    /// the one second the query happened to land in (measured at 42% of the window), and the bars
+    /// came out half the circle beside them.</summary>
+    [TestMethod]
+    public void A_window_that_starts_between_two_cells_still_covers_all_of_it()
+    {
+        long slot = 995; // 9.95 s: the last tenth of one second
+        var collector = At(() => slot);
+        using var temp = new TempDir();
+        using var diagnostics = Tracing(temp);
+        ServeAs(collector, diagnostics, 4321, "overlay", write: true);
+        slot = 1050;     // 10.50 s: the middle of the next one
+        ServeAs(collector, diagnostics, 4321, "overlay", write: true);
+
+        slot = 1055;     // a little over half a second later
+        var metrics = collector.Snapshot("m", 0.7);
+        var layer = metrics.Layers.Single(row => row.Name == "overlay");
+        var caller = metrics.Processes.Single(row => row.Pid == 4321)
+            .ByLayer.Single(row => row.Name == "overlay");
+        Assert.AreEqual(2, layer.Writes);
+        Assert.AreEqual(layer.Writes, caller.Writes, "the callers' bars add up to the layers' circle");
+    }
+
     [TestMethod]
     public void The_fold_carries_the_layers_of_what_it_folds()
     {
