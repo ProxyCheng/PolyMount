@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-26
+
+### Fixed
+
+- A stored credential can be used at more than one origin. 0.8.0 bound a credential to the origin it
+  was first used for and offered no way to name a second one, which refused a configuration where one
+  account opens two repositories — the shape an installation with two servers of the same account
+  has. `saveCredential` now carries an `Origins` list, validated as `http(s)://host[:port]`; a client
+  that does not send it keeps what the record holds.
+- The installer's data-directory hardening built its `icacls` rules inside an array literal, where
+  `$sid + ':perm'` is split into two arguments; `icacls` answered 87 and the setup stopped after
+  creating the service, leaving it installed and not started.
+
 ## [0.8.0] - 2026-10-26
 
 A security pass over the whole tree, answering the `[Security]` issues filed against this

@@ -134,8 +134,11 @@ is one line to create and can name any directory on the machine.
   A root on another scheme, host or port is refused rather than followed.
 - **A credential is bound to where it was first used.** `CredentialStore.Use` records the origin
   the first time a credential opens a source and refuses a layer that names the same credential for
-  a different origin. One account usually opens several repositories, so this is a recorded first
-  use rather than a per-address store.
+  a different origin. One account usually opens several repositories, so the binding is a recorded
+  first use rather than a per-address store — and a second server that shares the same account is
+  named explicitly: `saveCredential` carries an `Origins` list that replaces the record's
+  (`http(s)://host[:port]`). The tray's credential form does not offer that field yet; it is a
+  follow-up, and until then the list is written by whoever can already change the configuration.
 - **Bodies are bounded.** Each exchange has a 120-second deadline that covers the body, WebDAV
   documents are parsed through a reader capped at 32 Mi characters with DTDs prohibited, and a file
   body is capped at 32 GiB. Downloads go beside the store, not to the system temp directory.
