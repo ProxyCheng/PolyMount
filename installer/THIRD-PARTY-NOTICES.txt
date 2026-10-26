@@ -32,7 +32,7 @@ Nothing here is legal advice. Read the Qt licensing terms for your own distribut
 Bundled with this installation
 ------------------------------
 
-Qt 6.11.0 — QtCore, QtGui, QtWidgets, QtNetwork, QtXml, QtOpenGL, QtOpenGLWidgets,
+Qt 6.12.0 — QtCore, QtGui, QtWidgets, QtNetwork, QtOpenGL, QtOpenGLWidgets,
 QtPrintSupport, QtSvg, QtSvgWidgets
     The Qt Company Ltd. and contributors — LGPL v3, or a commercial Qt licence
     <https://www.qt.io/licensing/open-source-lgpl-obligations>
@@ -41,12 +41,12 @@ QtPrintSupport, QtSvg, QtSvgWidgets
     are ordinary DLLs beside the executable, so replacing them is a file copy, and the complete
     corresponding source is available from <https://download.qt.io/>.
 
-Qt Charts 6.11.0 (Qt6Charts.dll)
+Qt Charts 6.12.0 (Qt6Charts.dll)
     The Qt Company Ltd. and contributors — GPL v3, or a commercial Qt licence
     (See the section above.) Redistributed in the QtSharp.Charts.Qt6 package.
 
-QtSharp.Api 0.2.0, QtSharp.Runtime 0.2.0, QtSharp.Qt6 0.2.0, QtSharp.Charts 0.2.0 and
-QtSharp.Charts.Qt6 0.2.0 (managed bindings, their native glue and the Qt runtime payload)
+QtSharp.Api 0.13.0, QtSharp.Runtime 0.13.0, QtSharp.Qt6 0.13.0, QtSharp.Charts 0.13.0 and
+QtSharp.Charts.Qt6 0.13.0 (managed bindings, their native glue and the Qt runtime payload)
     ProxyCheng and contributors — MIT
     <https://github.com/ProxyCheng/QtSharp>
 

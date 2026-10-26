@@ -5,6 +5,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-26
+
+### Changed
+
+- QtSharp moved to 0.13.0, generated from Qt 6.12.0. The binding is nine module assemblies now —
+  QtXml, QtSql and QtWebSockets are no longer bound — and the installers carry the Qt 6.12
+  runtime. The tray's own code is unchanged, and nothing a reader sees changes.
+- `scripts/Fetch-QtSharp.ps1` no longer pins or verifies checksums: a QtSharp version is published
+  once and never reused, so a package already in `packages\` is the one that release served.
+
 ## [0.7.0] - 2026-10-26
 
 ### Added

@@ -106,7 +106,7 @@ for a later installation.
 ## Build from source
 
 ```powershell
-# QtSharp is not on nuget.org; this fetches the pinned binding, runtime, Qt and charts packages into .\packages
+# QtSharp is not on nuget.org; this fetches the binding, runtime, Qt and charts packages into .\packages
 powershell -ExecutionPolicy Bypass -File .\scripts\Fetch-QtSharp.ps1
 
 dotnet build .\PolyMount.slnx
