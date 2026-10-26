@@ -130,7 +130,7 @@ Root: HKLM; Subkey: "Software\Classes\CLSID\{{7d619ac{#Index}-dbe2-4f33-9a11-6cc
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Explorer\ShellIconOverlayIdentifiers\   PolyMount {#Index}"; ValueType: string; ValueName: ""; ValueData: "{{7d619ac{#Index}-dbe2-4f33-9a11-6cc2c8329001}"; Tasks: overlays; Flags: uninsdeletekey
 #endsub
 #define Index 0
-#for {Index = 0; Index < PaletteSlots; Index++} OverlayEntry
+#for {Index = 0; Index < BadgeSlots; Index++} OverlayEntry
 
 [Run]
 ; Started through Explorer rather than as a child of Setup. Setup runs with RedirectionGuard (the
