@@ -151,9 +151,9 @@ try {
 
     $list = Send-Mcp $mcp 'tools/list' @{}
     $tools = @($list.result.tools)
-    if ($tools.Count -ne 22) { throw "expected 22 tools, got $($tools.Count)" }
+    if ($tools.Count -ne 26) { throw "expected 26 tools, got $($tools.Count)" }
     $names = @($tools | ForEach-Object { $_.name })
-    foreach ($required in @('list_instances', 'probe_path', 'save_config', 'shutdown_service')) {
+    foreach ($required in @('list_instances', 'probe_path', 'save_config', 'shutdown_service', 'list_plugins')) {
         if ($names -notcontains $required) { throw "tools/list is missing $required" }
     }
 
@@ -179,7 +179,7 @@ try {
     $readOnlyInit = Invoke-Mcp $readOnly
     if ($readOnlyInit.result.serverInfo.name -ne 'polymount') { throw 'the read-only server did not start' }
     $readOnlyTools = Send-Mcp $readOnly 'tools/list' @{}
-    if (@($readOnlyTools.result.tools).Count -ne 8) { throw "expected 8 read-only tools, got $(@($readOnlyTools.result.tools).Count)" }
+    if (@($readOnlyTools.result.tools).Count -ne 9) { throw "expected 9 read-only tools, got $(@($readOnlyTools.result.tools).Count)" }
 
     if ($Full) {
         $enabled = Call-Tool $mcp 'set_instance_enabled' @{ instance = 'McpSmoke'; enabled = $true }
@@ -212,7 +212,7 @@ try {
     $down = Call-Tool $mcp 'list_instances'
     Assert-Tool-Error $down 'not reachable' 'list_instances with the service stopped'
 
-    'MCP smoke passed: handshake, 22 tools (8 read-only), list/get/config, path errors, argument errors, service-down error.'
+    'MCP smoke passed: handshake, 26 tools (9 read-only), list/get/config, path errors, argument errors, service-down error.'
 }
 finally {
     foreach ($client in $clients) {
