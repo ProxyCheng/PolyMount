@@ -143,7 +143,7 @@ if (Test-Path -LiteralPath $mcp) {
     $describe = & $mcp --describe 2>$null
     Check 'the MCP server starts from the installed copy' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
     $toolCount = @(((($describe -join [Environment]::NewLine)) | ConvertFrom-Json).tools).Count
-    Check 'the MCP server offers its 22 tools' ($toolCount -eq 22) "$toolCount tool(s)"
+    Check 'the MCP server offers its 26 tools' ($toolCount -eq 26) "$toolCount tool(s)"
 }
 
 $entry = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
