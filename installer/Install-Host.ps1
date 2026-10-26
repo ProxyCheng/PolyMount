@@ -65,6 +65,63 @@ function Write-FreshConfig {
     } | ConvertTo-Json -Depth 20)
 }
 
+function Set-ControlUsers {
+    # The control plane's allowlist, seeded from the account that ran setup: this is the one moment
+    # the product knows both who administers the machine and who expects to drive it. Without it
+    # the pipe stays open to every interactive session, which the host reports in its log and in
+    # every status answer, because a configuration written by a service in session 0 cannot know
+    # who that user is.
+    if (-not (Test-Path -LiteralPath $config)) { return }
+    try { $parsed = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
+    catch {
+        Write-Warning "Leaving $config alone: $($_.Exception.Message)"
+        return
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $sid = $identity.User.Value
+    $users = New-Object System.Collections.ArrayList
+    foreach ($entry in @($parsed.ControlUsers)) { if ($entry -and $entry.Sid) { [void]$users.Add($entry) } }
+    if (@($users | Where-Object { $_.Sid -eq $sid }).Count -gt 0) { return }
+    [void]$users.Add([pscustomobject]@{ Sid = $sid; Name = $identity.Name })
+    $parsed | Add-Member -NotePropertyName ControlUsers -NotePropertyValue @($users) -Force
+    Save-Config ($parsed | ConvertTo-Json -Depth 20)
+}
+
+function Protect-DataDirectory([string]$serviceAccount) {
+    # The data directory holds the configuration, the stored credentials and the stores. What it
+    # inherits from ProgramData is "Users may read this and create entries in it", which is a
+    # repository read and a store pre-creation for every local account. Inheritance is broken and
+    # the accounts that use it are named instead: SYSTEM, administrators, the service account, and
+    # the account that ran setup (the one that drives the control pipe and reads the configuration
+    # when the service is stopped).
+    #
+    # icacls and not Get-Acl/Set-Acl, for the reason the grant below gives. Written so that a
+    # failure to tighten is reported but never leaves the directory without the service account's
+    # access: the grants are applied first and inheritance is removed afterwards.
+    $grantee = switch ($serviceAccount) {
+        'NT AUTHORITY\SYSTEM' { '*S-1-5-18' }
+        'NT AUTHORITY\LOCAL SERVICE' { '*S-1-5-19' }
+        default { '"' + $serviceAccount + '"' }
+    }
+    $installer = '*' + ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    $rules = @(
+        '*S-1-5-18:(OI)(CI)F',
+        '*S-1-5-32-544:(OI)(CI)F',
+        $grantee + ':(OI)(CI)M',
+        $installer + ':(OI)(CI)M'
+    )
+    & icacls.exe $data /grant:r @rules /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to set the data directory's access rules (icacls exit $LASTEXITCODE)." }
+    & icacls.exe $data /inheritance:r /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to remove inherited access from '$data' (icacls exit $LASTEXITCODE)." }
+    # The stores are the service's alone: the account that drives the control plane reads the
+    # configuration over the pipe, not the cache on disk.
+    $stores = Join-Path $data 'stores'
+    if (Test-Path -LiteralPath $stores) {
+        & icacls.exe $stores /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' ($grantee + ':(OI)(CI)M') /Q | Out-Null
+    }
+}
+
 function Sync-BundledPlugins {
     # The setup's plugin checkboxes are its statement about the plugins it ships: a selected one is
     # named in the configuration, an unselected one is not. Only entries that point at a managed
@@ -198,6 +255,7 @@ try {
             Stop-HostProcesses
             New-Item -ItemType Directory -Path $data -Force | Out-Null
             if (Test-Path -LiteralPath $config) { Sync-BundledPlugins } else { Write-FreshConfig }
+            Set-ControlUsers
             $exe = Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'
             $binary = '"' + $exe + '" --config "' + $config + '"'
             # sc.exe is not used to set a binary path here: handed a binPath containing quotes from
@@ -237,6 +295,7 @@ try {
             }
             & icacls.exe $data /grant ($grantee + ':(OI)(CI)M') /Q | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "Failed to grant the service account access to '$data' (icacls exit $LASTEXITCODE)." }
+            Protect-DataDirectory $account
             & sc.exe description PolyMount 'Layered virtual drives, on-demand file access.' | Out-Null
             Start-Service PolyMount
             (Get-Service PolyMount).WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30))

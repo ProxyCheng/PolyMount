@@ -105,6 +105,66 @@ public static class PluginLoader
     public static IReadOnlyList<string> LoadConfigured(IEnumerable<PluginConfig> plugins, string baseDirectory) =>
         LoadConfiguredDetailed(plugins, baseDirectory).Errors;
 
+    /// <summary>Where a plugin assembly may live: inside the host's own directory or the
+    /// <c>plugins</c> folder under it.
+    ///
+    /// A plugin is code that runs as the service account, with everything that account can reach.
+    /// The configuration used to accept any path — an absolute one, a UNC one — and load it, so a
+    /// file placed where a lower-privileged account can write became code execution in the
+    /// service the moment the configuration named it. The rule is therefore about where the file
+    /// is, not who wrote the entry: the installation directory is writable only by an
+    /// administrator, and that is the same account that could replace the service itself.</summary>
+    public static bool IsInsideHost(string fullPath, string baseDirectory)
+    {
+        string root;
+        try { root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(baseDirectory)); }
+        catch (Exception) { return false; }
+        return fullPath.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(root + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The path a configuration entry resolves to, resolved against the host's directory,
+    /// or the reason it may not be used. Nothing is loaded: this is what a configuration is checked
+    /// with before any of its code runs.</summary>
+    public static string? ResolvePath(string configuredPath, string baseDirectory, out string error)
+    {
+        error = "";
+        if (string.IsNullOrWhiteSpace(configuredPath))
+        {
+            error = "the plugin entry has no assembly path";
+            return null;
+        }
+        string full;
+        try { full = Path.GetFullPath(configuredPath, baseDirectory); }
+        catch (Exception ex)
+        {
+            error = configuredPath + ": the path cannot be resolved: " + ex.Message;
+            return null;
+        }
+        if (!IsInsideHost(full, baseDirectory))
+        {
+            error = configuredPath + ": a plugin has to be inside the installation directory (" + baseDirectory
+                + "); a path outside it would be code from somewhere this installation does not control";
+            return null;
+        }
+        return full;
+    }
+
+    /// <summary>Checks every enabled entry's path without loading anything, and returns the errors.
+    /// The host asks this before it loads a configuration it was handed, so a document that names
+    /// code outside the installation is refused before any of it runs.</summary>
+    public static IReadOnlyList<string> CheckPaths(IEnumerable<PluginConfig> plugins, string baseDirectory)
+    {
+        var errors = new List<string>();
+        foreach (var plugin in plugins)
+        {
+            if (!plugin.Enabled) continue;
+            ResolvePath(plugin.AssemblyPath, baseDirectory, out string error);
+            if (error.Length > 0) errors.Add(error);
+        }
+        return errors;
+    }
+
     /// <summary>Loads the enabled plugins and reports on every configured one. A failed plugin is
     /// not fatal here — the caller decides: the host treats the error list as fatal, while the
     /// plugin manager has to be able to show a broken plugin and change it.</summary>
@@ -137,8 +197,9 @@ public static class PluginLoader
             {
                 string configuredPath = plugin.AssemblyPath ?? "";
                 string fullPath;
-                try { fullPath = string.IsNullOrWhiteSpace(configuredPath) ? "" : Path.GetFullPath(configuredPath, baseDirectory); }
-                catch (Exception) { fullPath = ""; }
+                // Resolved through the one containment rule, so the loader cannot be the way
+                // around what CheckPaths already refused.
+                fullPath = ResolvePath(configuredPath, baseDirectory, out string pathError) ?? "";
                 bool present = fullPath.Length > 0 && File.Exists(fullPath);
                 string version = present ? ReadVersion(fullPath) : "";
                 var empty = new List<string>();
@@ -150,13 +211,12 @@ public static class PluginLoader
                         cachedIdentity?.Title, cachedIdentity?.Description, cachedIdentity?.Icon ?? ""));
                     continue;
                 }
-                if (configuredPath.Length == 0)
+                if (pathError.Length > 0)
                 {
-                    string error = "the plugin entry has no assembly path";
-                    results.Add(new PluginLoadResult(configuredPath, fullPath, true, false, false, version,
-                        empty, empty, empty, empty, empty, empty, error,
+                    results.Add(new PluginLoadResult(configuredPath, fullPath, true, present, false, version,
+                        empty, empty, empty, empty, empty, empty, pathError,
                         cachedIdentity?.Title, cachedIdentity?.Description, cachedIdentity?.Icon ?? ""));
-                    errors.Add(error);
+                    errors.Add(pathError);
                     continue;
                 }
                 if (!present)

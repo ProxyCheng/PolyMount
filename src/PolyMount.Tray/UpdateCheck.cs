@@ -190,13 +190,32 @@ internal sealed class UpdateCheck : IDisposable
     {
         try
         {
-            if (!url.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return;
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            // The address comes from the release feed, and the default handler for whatever it
+            // names is the shell. Only an https link to the feed's own host (or to GitHub, which
+            // is where the releases are) is opened: a compromised or substituted feed could hand
+            // this a file:// or a custom-protocol URL, and the shell would run it.
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var target)) return;
+            if (target.Scheme != Uri.UriSchemeHttps) return;
+            if (!TrustedHost(target.Host)) return;
+            Process.Start(new ProcessStartInfo(target.AbsoluteUri) { UseShellExecute = true });
         }
         catch (Exception ex)
         {
             Serilog.Log.Warning(ex, "Could not open the release page");
         }
+    }
+
+    /// <summary>Whether a release link may be handed to the shell: GitHub, or the host of the feed
+    /// this installation was configured with. Nothing else, however the feed spells it.</summary>
+    private static bool TrustedHost(string host)
+    {
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".github.com", StringComparison.OrdinalIgnoreCase) ||
+            host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase))
+            return true;
+        var feed = UiSettings.Get(FeedKey);
+        return Uri.TryCreate(feed, UriKind.Absolute, out var feedUri) &&
+               string.Equals(feedUri.IdnHost, host, StringComparison.OrdinalIgnoreCase);
     }
 
     public void Dispose() => _timer.Dispose();

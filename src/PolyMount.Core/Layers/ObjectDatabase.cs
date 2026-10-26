@@ -378,7 +378,7 @@ internal sealed class ObjectDatabase
         // the write store, where content is user data — checks only rows it had to read back
         // from disk; a resident one is confirmed when it is opened, which fails loudly, and
         // stat-ing it on every header lookup cost this machine tens of microseconds per file.
-        if ((!resident || _recoverable) && record is { Blob: not null } current && !File.Exists(Path.Combine(_root, current.Blob)))
+        if ((!resident || _recoverable) && record is { Blob: not null } current && !File.Exists(BlobPath(current.Blob)))
         {
             if (!_recoverable) throw new IOException("Persistent object content was removed: " + key);
             Apply(new[] { new ObjectChange(key, null) });
@@ -386,6 +386,32 @@ internal sealed class ObjectDatabase
             record = null;
             return false;
         }
+        return true;
+    }
+
+    /// <summary>The file a record's content lives in, checked before it is opened or deleted.
+    ///
+    /// The name comes out of the catalog, which is a file on disk: whoever can write the store can
+    /// also write a row whose blob reads <c>..\..\Windows\System32\anything</c>, and
+    /// <see cref="Path.Combine(string, string)"/> is happy to hand that back. A record may only
+    /// name a file this database created — the shape is a Guid and a suffix — so a row that names
+    /// anything else is corrupt rather than interesting, and it is refused here instead of being
+    /// opened or deleted with the service account's rights.</summary>
+    private string BlobPath(string blob)
+    {
+        if (!IsBlobName(blob)) throw new InvalidDataException("the store names a content file outside it: " + blob);
+        return Path.Combine(_root, blob);
+    }
+
+    /// <summary>Whether a name is one this database writes: 32 hex digits and <c>.blob</c>. The
+    /// check is a length and a character scan because it runs on the read path.</summary>
+    private static bool IsBlobName(string name)
+    {
+        if (name.Length is < 5 or > 96) return false;
+        if (!name.EndsWith(".blob", StringComparison.OrdinalIgnoreCase)) return false;
+        foreach (char c in name)
+            if (!char.IsAsciiHexDigit(c) && c != '.' && c != 'b' && c != 'l' && c != 'o')
+                return false;
         return true;
     }
 
@@ -472,7 +498,7 @@ internal sealed class ObjectDatabase
         // writer's SQLite transaction or blob copy. Write sharing is allowed for one
         // reason: the commit thread fsyncs a blob while readers hold it, and a
         // read-only share would make that open fail. Nothing ever writes the bytes.
-        FileStream file = new(Path.Combine(_root, record.Blob!), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        FileStream file = new(BlobPath(record.Blob!), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (!record.Compressed) { stream = file; return true; }
             // WinFsp requires seekable handles. Compressed objects are decoded to a temporary
             // disk-backed handle, not an unbounded in-memory byte array.
@@ -480,13 +506,34 @@ internal sealed class ObjectDatabase
             try
             {
                 using (file)
-                using (var decoder = new BrotliStream(file, CompressionMode.Decompress)) decoder.CopyTo(scratch);
+                using (var decoder = new BrotliStream(file, CompressionMode.Decompress))
+                    Decode(decoder, scratch, record.Value.Header.Size);
                 scratch.Position = 0;
                 stream = scratch;
                 return true;
             }
             catch { scratch.Dispose(); throw; }
     }
+    /// <summary>Decodes a compressed object, refusing to write more than the record says it holds.
+    /// Brotli amplifies: a few kilobytes of blob can expand to gigabytes, and the scratch file is
+    /// on the system volume. The declared size is the bound the writer stored, so a body that
+    /// outgrows it is a store that has been tampered with rather than a file that is larger than
+    /// it said.</summary>
+    private static void Decode(Stream decoder, Stream scratch, long size)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            int read = decoder.Read(buffer, 0, buffer.Length);
+            if (read == 0) return;
+            total += read;
+            if (total > size)
+                throw new InvalidDataException("a compressed object expands past the size its record holds");
+            scratch.Write(buffer, 0, read);
+        }
+    }
+
     internal static FileStream Scratch() => new(Path.Combine(Path.GetTempPath(), "PolyMount-object-" + Guid.NewGuid().ToString("N")),
         FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete, 131072, FileOptions.DeleteOnClose);
 
@@ -582,7 +629,7 @@ internal sealed class ObjectDatabase
             catch
             {
                 // The changes never entered the batch, so their immutable blobs are orphans.
-                if (!accepted) foreach (var blob in created) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
+                if (!accepted) foreach (var blob in created) { try { if (IsBlobName(blob)) File.Delete(Path.Combine(_root, blob)); } catch { } }
                 throw;
             }
             if (commitNow) Commit();
@@ -682,7 +729,7 @@ internal sealed class ObjectDatabase
             foreach (var path in drops) DropReparse(connection, transaction, path);
             transaction.Commit();
         }
-        foreach (var blob in obsolete) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
+        foreach (var blob in obsolete) { try { if (IsBlobName(blob)) File.Delete(Path.Combine(_root, blob)); } catch { } }
     }
 
     private static void DropReparse(SqliteConnection connection, SqliteTransaction transaction, string path)
@@ -860,7 +907,7 @@ internal sealed class ObjectDatabase
                 _residentFiles = 0;
                 _residentDirectories = 0;
             }
-            foreach (var blob in blobs) { try { File.Delete(Path.Combine(_root, blob)); } catch { } }
+            foreach (var blob in blobs) { try { if (IsBlobName(blob)) File.Delete(Path.Combine(_root, blob)); } catch { } }
         }
     }
 }

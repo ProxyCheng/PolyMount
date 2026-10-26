@@ -2,7 +2,7 @@
   "mcpServers": {
     "polymount": {
       "type": "stdio",
-      "command": "D:\\PolyMount\\src\\PolyMount.Mcp\\bin\\Debug\\net10.0-windows\\PolyMount.Mcp.exe",
+      "command": "src/PolyMount.Mcp/bin/Debug/net10.0-windows/PolyMount.Mcp.exe",
       "args": []
     }
   }

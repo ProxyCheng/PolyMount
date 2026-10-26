@@ -30,7 +30,7 @@ public sealed class ManifestFamilyTests : IPluginTestProvider
         Check("registration-and-preset", () =>
         {
             var path = typeof(SvnPlugin).Assembly.Location;
-            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!PredictionStrategyRegistry.Names.Contains("manifests", StringComparer.OrdinalIgnoreCase))
                 throw new Exception("The manifests strategy was not registered");
@@ -60,7 +60,7 @@ public sealed class ManifestFamilyTests : IPluginTestProvider
                 throw new Exception("A disabled plugin's preset remains registered");
             if (ControlOperations.Find("list_manifest_families") != null)
                 throw new Exception("A disabled plugin's control operation remains registered");
-            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
 
         Check("a-family-tool-asks-the-instance", () =>

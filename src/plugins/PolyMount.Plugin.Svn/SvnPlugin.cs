@@ -166,7 +166,8 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
         });
         context.RegisterSource("svn", (config, state) =>
             SvnLayer.Create(config.Url, config.TrustServerCertFailures, Path.Combine(state, "pin.txt"), config.Username,
-                config.Password, SvnPrefetchOptions.From(config.Parameters), config.CredentialId),
+                config.Password, SvnPrefetchOptions.From(config.Parameters), config.CredentialId,
+                config.AllowInsecureTransport),
             config =>
             {
                 if (!Uri.TryCreate(config.Url, UriKind.Absolute, out var repository) || config.PinnedRevision < 0)
@@ -176,6 +177,13 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                 if (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps)
                     throw new ArgumentException("only http(s) repositories are supported; '" + repository.Scheme +
                         "://' needs the svn command-line client, which this build no longer includes");
+                // Plain http is the transport without a server identity: the listing becomes the
+                // mounted files and the account goes with the request. It is allowed only where the
+                // source says so, which is a decision written in the configuration rather than one
+                // taken by default.
+                if (repository.Scheme == Uri.UriSchemeHttp && !config.AllowInsecureTransport)
+                    throw new ArgumentException("'" + config.Url + "' is a plain http repository; set "
+                        + "Source.AllowInsecureTransport to use an unencrypted transport deliberately");
                 SvnPrefetchOptions.From(config.Parameters);
             }, new LayerDescriptor
             {
@@ -186,7 +194,8 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                     new() { Path = "Source.Url", Title = SvnTexts.Get("svn.field.url"), Required = true },
                     new() { Path = "Source.PinnedRevision", Kind = LayerFieldKind.Integer, Minimum = 0,
                         Title = SvnTexts.Get("svn.field.revision") },
-                    new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust") },
+                    new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust"),
+                        Description = SvnTexts.Get("svn.field.trust.description") },
                     new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
                         // Both kinds fill this: an account for a repository that asks for one,
                         // or a certificate credential for one behind mutual TLS (which may name

@@ -48,8 +48,11 @@ public static class InstanceView
             Ok = supervisor.Ok,
             Error = supervisor.Error,
             // The supervisor is the only one that can be on its way out, and this is the answer
-            // that has to carry it: the merged view is what the windows read.
+            // that has to carry it: the merged view is what the windows read. The control plane's
+            // policy is the supervisor's as well — it is the process that created the pipe and the
+            // one whose configuration the list lives in.
             State = supervisor.State,
+            SecurityWarning = supervisor.SecurityWarning,
             Mounts = supervisor.Mounts.Select(row => live.TryGetValue(row.Name, out var own) ? Combine(row, own) : row).ToList()
         };
     }

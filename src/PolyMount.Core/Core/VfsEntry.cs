@@ -42,12 +42,78 @@ public sealed class VfsNameCollisionException(string rel) : IOException("destina
 
 public static class VfsPath
 {
+    /// <summary>The canonical spelling of a path in this namespace, with the names that are not
+    /// names refused.
+    ///
+    /// What arrives here comes from two places: the interface, which normalises but is not
+    /// obliged to be careful, and listings from a source, which are whatever that source says.
+    /// Both are turned into the one form every layer indexes by — forward slashes, no leading or
+    /// trailing slash, the empty string for the root — and both are refused if a component could
+    /// mean something other than a file name:
+    ///
+    /// <c>.</c> and <c>..</c> walk the path rather than naming something in it; a colon ends the
+    /// name and starts an alternate stream; a reserved device name (<c>NUL</c>, <c>COM1</c>,
+    /// <c>CON.txt</c>, …) is a file no directory contains, so opening a path that ends in one
+    /// reaches the device instead of a file. None of those can be created as ordinary files on
+    /// Windows either, so refusing them loses nothing and closes the ways a path stops being a
+    /// path.
+    ///
+    /// It is a scan and not a regular expression because it runs on every resolution: one pass,
+    /// and no allocation for a path that is already canonical.</summary>
     public static string Normalize(string fileName)
     {
         if (string.IsNullOrEmpty(fileName)) return string.Empty;
-        var s = fileName.Replace('\\', '/');
+        var s = fileName.Contains('\\') ? fileName.Replace('\\', '/') : fileName;
         if (s == "/") return string.Empty;
-        return s.Trim('/');
+        s = s.Trim('/');
+        if (!IsCanonical(s)) throw new ArgumentException("not a name in this namespace: '" + fileName + "'");
+        return s;
+    }
+
+    /// <summary>Whether every component of an already normalised path is a plain file name.
+    /// See <see cref="Normalize"/>.</summary>
+    private static bool IsCanonical(string path)
+    {
+        int start = 0;
+        for (int i = 0; i <= path.Length; i++)
+        {
+            if (i < path.Length && path[i] != '/')
+            {
+                if (path[i] == ':') return false;
+                continue;
+            }
+            int length = i - start;
+            if (length == 0) return false;                                  // an empty component
+            if (length == 1 && path[start] == '.') return false;            // "."
+            if (length == 2 && path[start] == '.' && path[start + 1] == '.') return false;
+            if (IsDeviceName(path, start, length)) return false;
+            start = i + 1;
+        }
+        return true;
+    }
+
+    /// <summary>Whether one component is a reserved device name, with or without an extension:
+    /// Windows resolves <c>CON</c> and <c>CON.txt</c> to the console device wherever they appear
+    /// in a path, so a source listing either of them would otherwise reach a device rather than a
+    /// file.</summary>
+    private static bool IsDeviceName(string path, int start, int length)
+    {
+        int dot = path.IndexOf('.', start, length);
+        int nameLength = dot < 0 ? length : dot - start;
+        if (nameLength is < 3 or > 4) return false;
+        ReadOnlySpan<char> name = path.AsSpan(start, nameLength);
+        if (name.Equals("CON", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("PRN", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("AUX", StringComparison.OrdinalIgnoreCase) ||
+            name.Equals("NUL", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (nameLength != 4) return false;
+        // COM1..COM9 and LPT1..LPT9: a digit is what makes the fourth character one.
+        int number = name[3] - '0';
+        if (number is < 1 or > 9) return false;
+        ReadOnlySpan<char> prefix = name[..3];
+        return prefix.Equals("COM", StringComparison.OrdinalIgnoreCase) ||
+               prefix.Equals("LPT", StringComparison.OrdinalIgnoreCase);
     }
 
     public static string Parent(string rel)

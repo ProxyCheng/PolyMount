@@ -5,64 +5,47 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
-## [0.7.1] - 2026-10-26
+## [0.8.0] - 2026-10-26
 
-### Changed
+A security pass over the whole tree, answering the `[Security]` issues filed against this
+repository. Two of the changes are visible to an existing installation: the control plane now
+carries an account list, and a TLS default that accepted any certificate is now strict.
 
-- QtSharp moved to 0.13.0, generated from Qt 6.12.0. The binding is nine module assemblies now —
-  QtXml, QtSql and QtWebSockets are no longer bound — and the installers carry the Qt 6.12
-  runtime. The tray's own code is unchanged, and nothing a reader sees changes.
-- `scripts/Fetch-QtSharp.ps1` no longer pins or verifies checksums: a QtSharp version is published
-  once and never reused, so a package already in `packages\` is the one that release served.
+### Security
 
-## [0.7.0] - 2026-10-26
-
-### Added
-
-- Plugins are managed from the tray. The sidebar's **Plugins** section — beside the mount overview,
-  on the same page — lists every configured plugin with its title, version and what it contributes,
-  and switches, removes or imports one from there. The service gains `plugins`,
-  `setPluginEnabled`, `removePlugin` and `importPlugin` commands, and the MCP surface the same
-  operations, so a window and an agent see one state. A plugin may name itself (title, description,
-  icon, version) and is listed by its file name when it does not. Changing the set restarts the
-  workers; while the service runs the section is read-only, because a loaded DLL is locked and a
-  change remounts every instance.
-- A mount can tell Windows what changed. Name changes made through one instance are forwarded to
-  WinFsp's notification API, and a directory source can watch its root, so another instance's
-  writes — or a colleague on a share — invalidate what the caches above it hold instead of waiting
-  for the source's generation to move.
-- The Explorer badges carry the tray's own layer glyphs, not only a colour: the shape comes from the
-  layer's icon and the colour from its palette slot. The number of overlay slots is derived from
-  the palette itself (up to 10) instead of being written in several places.
-
-### Changed
-
-- QtSharp moved to 0.2.0. The binding is now ten module assemblies with one namespace each, and the
-  managed runtime, the Qt runtime and the Charts payload are packages of their own; nothing a
-  reader sees changes.
-- The setup always shows the installation directory page, an upgrade included, so the destination
-  is a choice rather than whatever the previous installation remembered.
-- An upgrade replaces the Explorer extension only when the sources it was built from changed, a
-  fingerprint the package carries; the common upgrade no longer touches Explorer, and a changed
-  extension is followed by a question before Explorer is restarted.
-- A failed instance's reason is shown above its switch in the details panel, where the action it is
-  about is.
-- A directory source no longer creates its root when it starts, and remembers its generation rather
-  than stat-ing the root on every lookup. A source that points inside another instance's mount
-  point can no longer block that instance's mount after a restart.
-
-### Fixed
-
-- A restart no longer leaves an instance unmounted because a child instance's directory source
-  created a real directory inside the parent's mount point before the parent was up.
-- The workbench's empty state: with no instances the hint sits in the middle of the list instead of
-  under an empty table, and with no instance selected the detail panel's text is top-aligned
-  instead of spread down the panel.
-- The pinned overview tab stays in its own group: dropping it on an edge of any group no longer
-  splits that group, and dropping it on another group no longer moves it. It can still be reordered
-  in its strip.
-
-## [0.6.3] - 2026-10-22
+- **The control plane names its accounts.** Every control pipe used to grant read-write to the
+  whole interactive session and never asked who was calling, so any standard local user could stop
+  the service, replace the configuration, list the stored accounts or point a layer at any path.
+  `ControlUsers` (accounts by SID) now builds the pipe's descriptor, and the caller is identified
+  from the connection and checked again on every request. The installer, `Install-Service.ps1` and
+  `Update-PolyMount.ps1` seed it from the account that ran them; a configuration with no list keeps
+  the old behaviour rather than locking an upgrade out, and says so in the log and in every status
+  answer.
+- A client checks who served the connection before sending it anything: a pipe name is a
+  first-come claim, and the tray sends credentials over it.
+- The pipe server bounds what a stranger can cost it — request length, concurrent requests, idle
+  time — and reopens after a failure instead of faulting the host.
+- `getConfig` redacts stored passwords at the IPC boundary; the MCP front-end was the only surface
+  that did. A `saveConfig` that still says `[redacted]` keeps the stored value.
+- A configuration is validated before any plugin it names is loaded, a plugin path must resolve
+  inside the installation directory, and a refused document restores the running plugin set.
+- Certificate validation is strict by default: `TrustServerCertFailures` is empty, a server that
+  presents no certificate is never accepted, and a plain `http://` source needs
+  `AllowInsecureTransport`. A named credential is bound to the origin it was first used for, and
+  the repository root the server advertises has to stay on the configured origin.
+- Network bodies are bounded (120 s including the body, 32 Mi characters per document, 32 GiB per
+  file) and downloads land beside the store rather than in the system temp directory.
+- A local directory source canonicalises against its root, checks the handle's final path on every
+  open, and neither lists nor resolves reparse points unless asked to.
+- A store opens only the blob names it wrote and bounds decompression by the record's declared
+  size; store directories are locked down when an instance mounts, and the installer breaks
+  inheritance on the data directory.
+- Paths refuse `.`, `..`, `:` and reserved device names; `POLYMOUNT_PIPE` and
+  `POLYMOUNT_CRASH_TRACER` are validated; the update check opens only an https link on a trusted
+  host; `Install-Service.ps1` no longer puts the service account's password on a command line.
+- `SECURITY.md` states the model, what is enforced where, and what is not covered. The mounted
+  volume itself still exposes no per-file ACLs, which is a deliberate limit: the product is
+  single-user by design.
 
 ### Added
 
@@ -84,6 +67,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
+- The setup always shows the destination page, an upgrade included (Inno hides it by default when
+  it recognizes an earlier installation), so the installation directory is a choice.
+- An upgrade replaces the Explorer extension only when what it was built from changed, tracked by a
+  build fingerprint the package carries (the DLL's own bytes cannot say this: the PE timestamp and
+  the CI's timestamped signature differ on every build). An unchanged extension is not copied at
+  all — a loaded image cannot be overwritten, identical or not — no restart marker is written, and
+  one an earlier install left behind (its tray never ran) is cleared: the common upgrade no longer
+  touches Explorer. When the extension did change, the tray asks whether to restart Explorer now
+  instead of doing it silently.
 - The performance page measures writes the way it measures reads: requests, bytes and latency,
   in two columns with one row per question, and the recording bundle carries the same six charts.
   Write latency comes from where a layer applies a create or a commit; bytes written into a

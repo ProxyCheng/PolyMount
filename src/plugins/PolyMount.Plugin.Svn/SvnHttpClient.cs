@@ -43,6 +43,22 @@ internal sealed class SvnHttpClient : ISvnBackend
     private const string ConfigurationBody =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?><propfind xmlns=\"DAV:\"><prop><version-controlled-configuration/></prop></propfind>";
 
+    /// <summary>How long one exchange may take, body included. <see cref="HttpClient.Timeout"/>
+    /// with <see cref="HttpCompletionOption.ResponseHeadersRead"/> ends when the headers arrive, so
+    /// a server that sends headers and then stalls would hold the reading thread forever.</summary>
+    private static readonly TimeSpan BodyTimeout = TimeSpan.FromSeconds(120);
+
+    /// <summary>The largest WebDAV document this transport will parse into memory. A listing of a
+    /// directory with tens of thousands of children is a few megabytes; a document that reaches
+    /// this is not one this client is meant to read, and reading it would be the whole worker's
+    /// memory.</summary>
+    private const long MaxDocumentCharacters = 32L * 1024 * 1024;
+
+    /// <summary>The largest file body written to disk. The cap is what stops a hostile or broken
+    /// source from filling the store's volume; every file this product actually serves is far
+    /// below it.</summary>
+    private const long MaxFileBytes = 32L * 1024 * 1024 * 1024;
+
     private static readonly XNamespace Dav = "DAV:";
     private readonly Uri _base;
     private readonly HttpClient _client;
@@ -161,16 +177,19 @@ internal sealed class SvnHttpClient : ISvnBackend
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
         using var request = RequestDiagnostics.Begin("SVN.cat", url, diagnostics);
+        using var timeout = new CancellationTokenSource(BodyTimeout);
         using var message = new HttpRequestMessage(HttpMethod.Get, url);
-        using var response = Send(message, url, rel);
+        using var response = Send(message, url, rel, timeout.Token);
         request?.Stage($"status={(int)response.StatusCode}");
         Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
         var part = dest + ".part-" + Guid.NewGuid().ToString("N");
         try
         {
-            using (var source = response.Content.ReadAsStream())
+            long written;
+            using (var source = response.Content.ReadAsStream(timeout.Token))
             using (var file = File.Create(part))
-                source.CopyTo(file);
+                written = CopyBounded(source, file, url, timeout.Token);
+            request?.Stage($"bytes={written}");
             if (File.Exists(dest)) File.Delete(dest);
             File.Move(part, dest);
         }
@@ -181,34 +200,76 @@ internal sealed class SvnHttpClient : ISvnBackend
         }
     }
 
+    /// <summary>Copies a body to disk, bounded by <see cref="MaxFileBytes"/> and cancellable by
+    /// the exchange's timeout. A declared size from the listing is not available here — this is
+    /// the request that carries the body — so the bound is the transport's own.</summary>
+    private static long CopyBounded(Stream source, Stream destination, string url, CancellationToken token)
+    {
+        var buffer = new byte[81920];
+        long total = 0;
+        while (true)
+        {
+            int read;
+            try { read = source.ReadAsync(buffer, token).AsTask().GetAwaiter().GetResult(); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw new SvnTransportException($"the body of '{url}' did not arrive within {BodyTimeout.TotalSeconds:0} seconds");
+            }
+            if (read == 0) return total;
+            total += read;
+            if (total > MaxFileBytes)
+                throw new SvnTransportException($"'{url}' is larger than the {MaxFileBytes} byte limit this transport writes");
+            destination.Write(buffer, 0, read);
+        }
+    }
+
     public void Dispose() => _client.Dispose();
 
     // ---- protocol ----
 
     private XDocument PropFind(string url, string depth, string body)
     {
+        using var timeout = new CancellationTokenSource(BodyTimeout);
         using var message = new HttpRequestMessage(new HttpMethod("PROPFIND"), url);
         message.Headers.TryAddWithoutValidation("Depth", depth);
         message.Content = new StringContent(body, Encoding.UTF8, "text/xml");
-        using var response = Send(message, url, string.Empty);
-        using var stream = response.Content.ReadAsStream();
+        using var response = Send(message, url, string.Empty, timeout.Token);
         try
         {
-            return XDocument.Load(stream);
+            using var stream = response.Content.ReadAsStream(timeout.Token);
+            // The reader is what bounds the document: a hostile or broken server can send a
+            // listing of any size, and parsing it whole is how a worker runs out of memory. DTDs
+            // are refused outright — no WebDAV document has one, and an entity reference is how a
+            // parser is made to read a file the caller never asked for.
+            using var reader = XmlReader.Create(stream, new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                XmlResolver = null,
+                MaxCharactersInDocument = MaxDocumentCharacters
+            });
+            return XDocument.Load(reader);
         }
         catch (XmlException ex)
         {
             throw new SvnTransportException($"'{url}' did not return a WebDAV document", ex);
         }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            throw new SvnTransportException($"'{url}' did not finish within {BodyTimeout.TotalSeconds:0} seconds");
+        }
     }
 
     /// <summary>Issues a request, mapping transport and existence failures onto backend exceptions.</summary>
-    private HttpResponseMessage Send(HttpRequestMessage message, string url, string rel)
+    private HttpResponseMessage Send(HttpRequestMessage message, string url, string rel, CancellationToken token = default)
     {
         HttpResponseMessage response;
         try
         {
-            response = _client.Send(message, HttpCompletionOption.ResponseHeadersRead);
+            response = _client.Send(message, HttpCompletionOption.ResponseHeadersRead, token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            throw new SvnTransportException($"request to '{url}' timed out");
         }
         catch (HttpRequestException ex)
         {
@@ -342,6 +403,18 @@ internal sealed class SvnHttpClient : ISvnBackend
             _vcc = absolute;
 
             var root = absolute[..marker];
+            // The root is where every later request goes, and it is the server's answer, not the
+            // configured address. Following it wherever it points moves the whole mount — and the
+            // credential offered on a challenge — to an origin nobody configured: another host, a
+            // plain-http downgrade, an internal address reached from the outside. A repository
+            // root on another origin is therefore not followed; the instance says why instead.
+            var rootUri = new Uri(root);
+            if (!string.Equals(rootUri.Scheme, _base.Scheme, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(rootUri.IdnHost, _base.IdnHost, StringComparison.OrdinalIgnoreCase) ||
+                rootUri.Port != _base.Port)
+                throw new SvnTransportException(
+                    $"the repository root '{root}' is on a different origin than the configured '{_base.GetLeftPart(UriPartial.Authority)}'; "
+                    + "following it would move every request, and the account, to a host this source does not name");
             // Both paths are decoded before they are compared and subtracted: the server's href
             // and the configured URL can spell the same non-ASCII path with escapes in
             // different cases, and what is kept here is a repository-relative path that
@@ -476,9 +549,11 @@ internal sealed class SvnHttpClient : ISvnBackend
         var allowed = new HashSet<string>(
             (trustFailures ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             StringComparer.OrdinalIgnoreCase);
+        // A server that presents no certificate is not one whose failures were excused: there is
+        // nothing to check at all, and "other" was never meant to cover an absent certificate.
+        if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNotAvailable)) return false;
         if (allowed.Contains("other")) return true;
         if (errors == SslPolicyErrors.None) return true;
-        if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNotAvailable)) return false;
         if (errors.HasFlag(SslPolicyErrors.RemoteCertificateNameMismatch) && !allowed.Contains("cn-mismatch")) return false;
         if (!errors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors)) return true;
         foreach (var status in chain?.ChainStatus ?? [])
@@ -500,6 +575,9 @@ internal sealed class SvnHttpClient : ISvnBackend
             var expired = certificate == null || certificate.NotAfter.ToUniversalTime() <= now;
             trusted &= allowed.Contains(expired ? "expired" : "not-yet-valid");
         }
+        // Anything else — a revoked chain, a weak signature, a name constraint — is a failure that
+        // no token in the list names, so it stays a failure. It used to fall through as trusted,
+        // which meant the list did not have to be understood to be wrong.
         return trusted;
     }
 

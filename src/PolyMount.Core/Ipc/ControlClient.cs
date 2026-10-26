@@ -35,8 +35,28 @@ public abstract class ControlClient
     public int ConnectTimeoutMs { get; set; } = 3000;
     public int ResponseTimeoutMs { get; set; } = 5000;
 
-    /// <summary>What this client adds to a request before it goes out. An instance's client fills
-    /// in the instance, so the process answering cannot take a request for another one.</summary>
+    /// <summary>Whether the process on the other end is checked before a request is sent to it.
+    ///
+    /// A pipe name is a first-come claim: a process that creates <c>PolyMount.Control</c> before
+    /// the service does shares the name with it, and the connection may then land on either. The
+    /// service refuses to be impersonated from the other side (the pipe's access rules name the
+    /// accounts that may drive it), but a client also has to know it is talking to the product
+    /// rather than to whatever else holds the name — the tray sends credentials over this pipe,
+    /// and an answer that was forged is exactly as damaging as one that leaked.
+    ///
+    /// The check is what can be known without an installed secret: the server's image is
+    /// PolyMount.Service.exe, or the server is this very process (an in-process pipe, which is
+    /// what the tests and the single-process development runs use). A server whose image cannot
+    /// be read is accepted — the alternative is a client that cannot distinguish a hardened
+    /// service from an unreadable one — and that limit is written down with the rest of the
+    /// design in <c>SECURITY.md</c>.</summary>
+    public bool VerifyServer { get; set; } = true;
+
+    /// <summary>The image name a control pipe is served from: the one executable that hosts an
+    /// instance, whether as supervisor or worker.</summary>
+    private const string ServerImage = "PolyMount.Service.exe";
+
+    /// <summary>The process preparing a request (see <see cref="Prepare"/>).</summary>
     protected virtual ControlRequest Prepare(ControlRequest request) => request;
 
     public ControlResponse Send(ControlRequest request)
@@ -44,6 +64,7 @@ public abstract class ControlClient
         request = Prepare(request);
         using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
         pipe.Connect(ConnectTimeoutMs);
+        if (VerifyServer) VerifyServerIdentity(pipe);
 
         // leaveOpen: true on both so disposing the reader/writer does NOT close the pipe out from
         // under the other (the reader closes first, then the writer's flush-on-dispose would hit a
@@ -69,6 +90,21 @@ public abstract class ControlClient
             if (line == null) throw new IOException("empty control response");
             return JsonSerializer.Deserialize<ControlResponse>(line) ?? new ControlResponse();
         }
+    }
+
+    /// <summary>Refuses a connection to something that is not PolyMount. Every caller inherits
+    /// this, so a front-end cannot forget it: the failure says which process answered, which is
+    /// the only way a squatted name is ever noticed.</summary>
+    private void VerifyServerIdentity(NamedPipeClientStream pipe)
+    {
+        var server = PipeCaller.Server(pipe);
+        if (server == null) return;
+        if (server.ProcessId == Environment.ProcessId) return;
+        if (string.Equals(Path.GetFileName(server.ImagePath), ServerImage, StringComparison.OrdinalIgnoreCase)) return;
+        throw new IOException(
+            $"the control pipe '{PipeName}' is served by {server.Account} running "
+            + (server.ImagePath.Length > 0 ? "'" + server.ImagePath + "'" : "an unreadable image")
+            + $" (pid {server.ProcessId}), not PolyMount; refusing to send it a request");
     }
 
     /// <summary>How the instance this client answers for is doing. The supervisor reports every

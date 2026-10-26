@@ -69,6 +69,15 @@ public static class Program
         // way the tray reaches it.
         pipe ??= Environment.GetEnvironmentVariable("POLYMOUNT_PIPE");
         pipe = string.IsNullOrWhiteSpace(pipe) ? ControlClient.SupervisorPipe : pipe;
+        // An environment variable is inherited from whoever started this process, and this one
+        // decides which service the agent drives. It may name a pipe of this product and nothing
+        // else: no separators, no path, no foreign address to reach through a crafted name.
+        if (!IsControlPipeName(pipe))
+        {
+            Console.Error.WriteLine($"PolyMount.Mcp: '{pipe}' is not a PolyMount control pipe name "
+                + "(expected PolyMount.Control or PolyMount.Control.<instance>).");
+            return 2;
+        }
         SupervisorClient.Default = new SupervisorClient(pipe);
 
         var surface = new ToolSurface(PipeControlLink.Default, pipe, readOnly);
@@ -151,4 +160,16 @@ public static class Program
         clear_local_changes, apply_layer_action, release_above and shutdown_service — discard data
         or take mounts down; use them only when the user asked for that.
         """;
+
+    /// <summary>Whether a string is a control-pipe name this product could have created. The
+    /// supervisor's pipe is the configured base name and an instance's is that name with the
+    /// instance's identity appended; a value that is not one of those is not a pipe this product
+    /// serves, whatever process happens to listen on it.</summary>
+    static bool IsControlPipeName(string name)
+    {
+        if (name.Length > 200 || !name.StartsWith("PolyMount.", StringComparison.Ordinal)) return false;
+        foreach (char c in name)
+            if (c is '\\' or '/' or ':' or '|' or '<' or '>' or '"' or '*' or '?') return false;
+        return true;
+    }
 }

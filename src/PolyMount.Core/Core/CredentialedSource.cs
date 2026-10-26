@@ -41,7 +41,7 @@ public abstract class CredentialedSource
         // A chosen credential is a decision, not a hint: it is used as it stands, and one that has
         // been deleted is reported rather than quietly replaced by another account.
         if (!string.IsNullOrWhiteSpace(Source.CredentialId))
-            return CredentialStore.FindById(Source.CredentialId)
+            return CredentialStore.Use(Source.CredentialId, Origin)
                 ?? throw new InvalidOperationException("the credential this layer names no longer exists; choose another in the layer's settings");
         if (!string.IsNullOrWhiteSpace(Source.Username))
             return new PasswordCredential { Username = Source.Username, Password = Source.Password ?? string.Empty };

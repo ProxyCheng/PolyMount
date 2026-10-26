@@ -11,6 +11,14 @@
   "svn.field.url": { "en": "Repository URL", "zh-CN": "仓库地址" },
   "svn.field.revision": { "en": "Pinned revision (0 = HEAD)", "zh-CN": "固定版本（0 = HEAD）" },
   "svn.field.trust": { "en": "Trusted certificate failures", "zh-CN": "信任的证书错误" },
+  "svn.field.trust.description": {
+    "en": "Empty means the server's certificate must verify. A self-signed or internal server lists the failures to accept instead: unknown-ca, cn-mismatch, expired, not-yet-valid, or other for anything else. Everything listed here is a promise this source makes about its own network.",
+    "zh-CN": "留空表示必须验证服务器证书。自签名或内部服务器在此列出要接受的错误：unknown-ca、cn-mismatch、expired、not-yet-valid，或 other 表示其余全部。列在这里的每一项，都是这个来源对自己所在网络作出的承诺。"
+  },
+  "svn.field.insecure.description": {
+    "en": "A plain http:// repository is refused unless insecure transport is accepted for this source; anything that carries an account should stay on https.",
+    "zh-CN": "除非明确允许这个来源使用不加密的连接，https 以外的 http:// 仓库会被拒绝；任何涉及账号的仓库都应留在 https 上。"
+  },
   "svn.field.username": { "en": "Username", "zh-CN": "用户名" },
   "svn.field.password": { "en": "Password", "zh-CN": "密码" },
   "svn.field.credential": { "en": "Credential", "zh-CN": "凭据" },

@@ -240,6 +240,11 @@ public sealed class ControlResponse
     public List<LayerDescriptor> LayerDescriptors { get; set; } = new();
     public List<LayerPreset> Presets { get; set; } = new();
 
+    /// <summary>Something the configuration says is weaker than it should be, in the words to
+    /// show a reader — today, a control plane with no account list. It is answered by every
+    /// command so a front-end that polls status sees it without asking a second question.</summary>
+    public string? SecurityWarning { get; set; }
+
     // Populated by the "instances" command: where each instance is served.
     public List<InstanceEndpoint> Instances { get; set; } = new();
 

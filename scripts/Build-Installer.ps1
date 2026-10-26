@@ -12,6 +12,12 @@ param(
     [string]$SignToolPath
 )
 $ErrorActionPreference = 'Stop'
+# The default above reads POLYMOUNT_SIGN_PASSWORD, which is the documented path: a password passed
+# as a parameter is on this process's command line while the build runs, where the process
+# inventory and any command-line telemetry can see it.
+if ($PSBoundParameters.ContainsKey('SignPassword') -and $SignPassword) {
+    Write-Warning 'The signing password was passed as a parameter and is visible on this command line; prefer POLYMOUNT_SIGN_PASSWORD.'
+}
 $repo = Split-Path $PSScriptRoot -Parent
 $artifacts = Join-Path $repo 'artifacts'
 $payload = Join-Path $artifacts 'installer-payload'

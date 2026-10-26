@@ -1,6 +1,10 @@
+using System.Diagnostics;
+using System.Security.Principal;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PolyMount.Core;
+using PolyMount.Core.Ipc;
 using PolyMount.Layers;
 
 namespace PolyMount;
@@ -11,6 +15,16 @@ public sealed class AppConfig
     public string ControlPipe { get; set; } = "PolyMount.Control";
     public List<MountProfile> Mounts { get; set; } = new();
     public List<PluginConfig> Plugins { get; set; } = new();
+
+    /// <summary>The accounts that may drive the control plane: the tray, an agent's MCP server,
+    /// the Explorer overlay. Identity is the SID; the name is what a reader sees, refreshed by
+    /// whoever seeded the list.
+    ///
+    /// Empty is not "nobody" — it is "not configured", which keeps the interactive grant the
+    /// product had before this list existed, and is reported as a warning. The installer seeds it
+    /// from the account that ran it; a service started in session 0 cannot know who that is, so a
+    /// fresh configuration created there stays open until the next install.</summary>
+    public List<ControlUser> ControlUsers { get; set; } = new();
 
     // Optional per-layer color overrides (key = layer name/type e.g. "overlay"/"svn"/"dir",
     // value = "#RRGGBB"). Missing keys use the deterministic auto color.
@@ -42,15 +56,64 @@ public sealed class AppConfig
         }
 
         var fresh = Default();
+        fresh.SeedControlUsers();
         Save(path, fresh);
         return fresh;
     }
 
+    /// <summary>Writes the configuration through a temporary file in the same directory.
+    ///
+    /// The file is read by the hot-reload watcher and by the tray the moment it changes, and both
+    /// used to be able to see a half-written document — <c>File.WriteAllText</c> truncates first
+    /// and fills in after, which is a window a reader can land in. Writing beside the file and
+    /// renaming over it means a reader sees the old document or the new one, and a power loss
+    /// leaves one of them rather than a prefix of one.</summary>
     public static void Save(string path, AppConfig config)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         config.EnsureMountIds();
-        File.WriteAllText(path, JsonSerializer.Serialize(config, Options));
+        string text = JsonSerializer.Serialize(config, Options);
+        string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+            {
+                writer.Write(text);
+                writer.Flush();
+                // The rename is only worth anything if the bytes behind it reached the disk.
+                stream.Flush(flushToDisk: true);
+            }
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch (Exception)
+        {
+            try { File.Delete(temporary); } catch (Exception) { }
+            throw;
+        }
+    }
+
+    /// <summary>Names the account this process runs as, when it has one a person signed in to.
+    ///
+    /// A configuration created from a tray (or a service started by hand) is created for that
+    /// account, and this is what keeps the tray able to talk to it afterwards. A service started
+    /// by the service control manager runs in session 0 under LocalService or LocalSystem, which
+    /// nobody connects from: seeding that would leave the real user locked out, so it does not.</summary>
+    public void SeedControlUsers()
+    {
+        if (ControlUsers.Count > 0) return;
+        try
+        {
+            if (Process.GetCurrentProcess().SessionId == 0) return;
+            using var identity = WindowsIdentity.GetCurrent();
+            if (identity.User is not { } user) return;
+            ControlUsers.Add(new ControlUser { Sid = user.Value, Name = identity.Name });
+        }
+        catch (Exception)
+        {
+            // A process that cannot name its own account leaves the list empty, which is the
+            // open policy it would otherwise have had silently. The warning says so.
+        }
     }
 
     /// <summary>Gives every mount the identity its store folder is derived from, and reports
@@ -88,16 +151,42 @@ public sealed class AppConfig
     public static AppConfig FromJson(string json) =>
         JsonSerializer.Deserialize<AppConfig>(json) ?? throw new ArgumentException("invalid config json");
 
-    /// <summary>Basic validation; throws <see cref="ArgumentException"/> on problems.</summary>
+    /// <summary>Basic validation; throws <see cref="ArgumentException"/> on problems.
+    ///
+    /// It is <see cref="ValidateStructure"/> plus the layer types, because those are the only
+    /// part that cannot be answered until the plugin set this configuration names has been
+    /// loaded: a layer type is a name a plugin registers. The split is what lets a document be
+    /// refused before any of the code it names runs.</summary>
     public void Validate()
+    {
+        ValidateStructure();
+        foreach (var m in Mounts) m.ValidateLayers();
+    }
+
+    /// <summary>Everything about a configuration that can be decided without loading a plugin:
+    /// names, identities, stores, colors, the accounts allowed to drive the service, and the
+    /// shape of the plugin entries themselves.</summary>
+    public void ValidateStructure()
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var stores = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var identity = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in Mounts)
         {
             if (string.IsNullOrWhiteSpace(m.Name)) throw new ArgumentException("a mount has an empty Name");
             if (!names.Add(m.Name)) throw new ArgumentException("duplicate mount name: " + m.Name);
             if (string.IsNullOrWhiteSpace(m.MountPoint)) throw new ArgumentException($"mount '{m.Name}' has no MountPoint");
+            // The identity is a Guid this product makes, and it is concatenated into a store
+            // folder, a log file name and a pipe name. A value that can carry a separator or a
+            // rooted path is therefore a path out of all three, so anything that is not a plain
+            // token is refused. An empty one is allowed: Save makes it before it writes, and the
+            // editor hands over a new instance exactly that way.
+            if (!string.IsNullOrEmpty(m.Id))
+            {
+                if (m.Id.Length > 64 || m.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-' && c != '_'))
+                    throw new ArgumentException($"mount '{m.Name}' has an invalid Id '{m.Id}': an id is made of letters, digits, '-' and '_'");
+                if (!identity.Add(m.Id)) throw new ArgumentException("duplicate mount id: " + m.Id);
+            }
             // One store holds one instance's pin, cache and overlay. Two instances sharing it
             // overwrite each other's pin -- which then asks a source for a revision it does not
             // have -- and each serves what the other cached, so this is refused rather than run.
@@ -107,11 +196,15 @@ public sealed class AppConfig
             if (stores.TryGetValue(store, out var other))
                 throw new ArgumentException($"mounts '{other}' and '{m.Name}' share the store '{store}'; one of them needs its own Id or StoreRoot");
             stores[store] = m.Name;
-            m.ValidateLayers();
         }
         foreach (var kv in LayerColors)
             if (!PolyMount.Core.LayerColors.TryNormalizeHex(kv.Value, out _))
                 throw new ArgumentException($"invalid color '{kv.Value}' for layer '{kv.Key}'");
+        // An account that cannot be resolved to a SID is a rule that would never match, so it is
+        // refused where it is written instead of becoming a pipe nobody can connect to.
+        foreach (var account in ControlUsers)
+            if (!ControlAccess.IsWellFormed(account.Sid))
+                throw new ArgumentException($"ControlUsers holds '{account.Sid}', which is not a security identifier (S-1-5-...)");
         // One entry per assembly. Two entries naming the same file load the same code twice and
         // register everything twice, which is a configuration nobody meant to write.
         var plugins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -131,6 +224,15 @@ public sealed class PluginConfig
 {
     public string AssemblyPath { get; set; } = "";
     public bool Enabled { get; set; } = true;
+}
+
+/// <summary>One account the control plane accepts. The SID is the identity — it cannot be
+/// re-pointed by renaming an account or by a machine that resolves names differently — and the
+/// name is there so a person can read the file and the log.</summary>
+public sealed class ControlUser
+{
+    public string Sid { get; set; } = "";
+    public string Name { get; set; } = "";
 }
 
 public sealed class MountProfile
@@ -255,7 +357,24 @@ public sealed class SourceConfig
     public string Type { get; set; } = "svn";
     public string Url { get; set; } = "";
     public long PinnedRevision { get; set; } = 0;
-    public string TrustServerCertFailures { get; set; } = "unknown-ca,cn-mismatch,expired,not-yet-valid,other";
+
+    /// <summary>Certificate failures this source accepts, comma separated, mirroring
+    /// <c>svn --trust-server-cert-failures</c>: unknown-ca, cn-mismatch, expired, not-yet-valid,
+    /// other.
+    ///
+    /// Empty — the default — is the strict reading: the server's certificate has to verify. It
+    /// used to default to the whole list, which accepted any certificate from anybody, and the
+    /// account is offered before the first challenge arrives, so an on-path attacker could take
+    /// it with a certificate it made itself. A self-signed internal server lists exactly the
+    /// failures it means to accept, in its own configuration, where a reader can see what this
+    /// source promises about its network.</summary>
+    public string TrustServerCertFailures { get; set; } = "";
+
+    /// <summary>Whether a source may talk over a transport that is neither encrypted nor
+    /// authenticated — <c>http://</c>. It is refused by default: the content becomes the mounted
+    /// files and the account travels with the request, so an on-path attacker with no certificate
+    /// at all can read and rewrite both.</summary>
+    public bool AllowInsecureTransport { get; set; }
     public string? Username { get; set; }
     public string? Password { get; set; }
 

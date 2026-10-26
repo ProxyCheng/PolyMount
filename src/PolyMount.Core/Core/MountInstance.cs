@@ -29,6 +29,10 @@ public sealed class MountInstance : IDisposable
         profile.ValidateLayers();
         var state = Path.Combine(profile.GetStoreRoot(), "state");
         Directory.CreateDirectory(state);
+        // The store holds what the service can read; it is not for whoever happens to be logged on
+        // to this machine. Applied at the root so everything the layers create under it inherits
+        // the same rules (see StoreAcl).
+        StoreAcl.Harden(profile.GetStoreRoot());
         _statePath = state;
         _logPath = Path.Combine(state, "polymount.log");
 

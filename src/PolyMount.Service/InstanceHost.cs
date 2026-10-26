@@ -75,7 +75,8 @@ public sealed class InstanceHost : IControlHost
         _logger.LogInformation("Serving {Instance} ({Id}) on {Pipe}", Instance.Name, Instance.Profile.Id, Pipe);
         try
         {
-            await new PipeServer(this, Pipe).RunAsync(_stop.Token);
+            await new PipeServer(this, Pipe, new ControlAccess(Config.ControlUsers.Select(a => a.Sid)), _logger)
+                .RunAsync(_stop.Token);
         }
         catch (OperationCanceledException) { }
         finally
@@ -145,6 +146,7 @@ public sealed class InstanceHost : IControlHost
         // click - and not to the ones that poll. They are the largest thing this service can say,
         // and a window asking for a metrics window ten times a second has no use for them.
         if (InstanceCommands.ByPath(request.Cmd)) ControlEnvelope.WithRegistry(response);
+        response.SecurityWarning = new ControlAccess(Config.ControlUsers.Select(a => a.Sid)).Warning;
         return response;
     }
 

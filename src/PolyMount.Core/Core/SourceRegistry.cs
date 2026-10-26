@@ -19,7 +19,11 @@ public static class SourceRegistry
             // share), so listen for their changes instead of relying on the root's timestamp.
             bool watch = cfg.Parameters.TryGetValue("Watch", out var flag) &&
                          flag.ValueKind == System.Text.Json.JsonValueKind.True;
-            return new DirectoryLayer(cfg.Path, cfg.Writable, watch);
+            // Links are not followed unless the source says so: a junction planted in the tree is
+            // a way out of it, and this layer runs as the service account.
+            bool links = cfg.Parameters.TryGetValue("FollowReparsePoints", out var follow) &&
+                         follow.ValueKind == System.Text.Json.JsonValueKind.True;
+            return new DirectoryLayer(cfg.Path, cfg.Writable, watch, links);
         }, cfg => { if (string.IsNullOrWhiteSpace(cfg.Path)) throw new ArgumentException("directory provider requires a path"); }, BuiltInLayerDescriptors.Directory());
     }
 

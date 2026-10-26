@@ -30,7 +30,7 @@ public sealed class SmbPluginTests : IPluginTestProvider
         Check("configured-loading-and-preset", () =>
         {
             string path = typeof(SmbPlugin).Assembly.Location;
-            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!SourceRegistry.Contains("smb")) throw new Exception("the source type was not registered");
 
@@ -68,7 +68,7 @@ public sealed class SmbPluginTests : IPluginTestProvider
                 throw new Exception("Disabled plugin registrations remain active");
             if (ControlOperations.Find("get_smb_source") != null)
                 throw new Exception("A disabled plugin's MCP operation remains registered");
-            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
 
         Check("path-parsing", () =>

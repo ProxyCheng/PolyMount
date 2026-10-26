@@ -105,11 +105,15 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
         string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null,
-        string? credentialId = null)
+        string? credentialId = null, bool allowInsecureTransport = false)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var repository) ||
             (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps))
             throw new ArgumentException("SVN layers read http(s) repositories; '" + url + "' is not one.", nameof(url));
+        if (repository.Scheme == Uri.UriSchemeHttp && !allowInsecureTransport)
+            throw new ArgumentException("'" + url + "' is not encrypted: a plain http repository is served without "
+                + "authenticating the server, and the account this source resolves would travel with the request. "
+                + "Set this source's AllowInsecureTransport to accept it.", nameof(url));
         var source = new SourceConfig { Type = "svn", Url = url, TrustServerCertFailures = trustFailures,
             Username = username, Password = password, CredentialId = credentialId ?? "" };
         // Resolved once, here: the HTTP client holds the pair for the life of the process, so no
@@ -521,10 +525,16 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         }
     }
 
-    /// <summary>Fetches one file's content to a private temp file that the open handles own.</summary>
+    /// <summary>Fetches one file's content to a private file that the open handles own.
+    ///
+    /// It goes beside the store rather than in the system temp directory: what fills the system
+    /// drive is the store's problem to bound and the reader's to see, and a source on another
+    /// volume should not be writing its bodies through C:.</summary>
     private string Download(long revision, string rel)
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "PolyMount-svn-" + Guid.NewGuid().ToString("N") + ".tmp");
+        string directory = Path.Combine(Path.GetDirectoryName(_pinPath) ?? Path.GetTempPath(), "downloads");
+        Directory.CreateDirectory(directory);
+        var tmp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
         _svn.CatToFile(revision, rel, tmp, RequestDiagnostics.Ambient);
         return tmp;
     }

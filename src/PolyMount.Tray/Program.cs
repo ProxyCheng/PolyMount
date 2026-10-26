@@ -250,7 +250,13 @@ internal static class Program
     private static void InstallCrashTracer()
     {
         string? tracer = Environment.GetEnvironmentVariable("POLYMOUNT_CRASH_TRACER");
-        if (string.IsNullOrEmpty(tracer) || !File.Exists(tracer)) return;
+        // The variable names a native library this process loads and calls into, so it is read for
+        // what a debug aid can honestly be: an absolute path to a file that exists. A relative
+        // name would be resolved against the working directory, which is a description of whoever
+        // launched the tray, not of this build.
+        if (string.IsNullOrEmpty(tracer) || !Path.IsPathFullyQualified(tracer) || !File.Exists(tracer)
+            || !string.Equals(Path.GetExtension(tracer), ".dll", StringComparison.OrdinalIgnoreCase))
+            return;
         try
         {
             var library = NativeLibrary.Load(tracer);

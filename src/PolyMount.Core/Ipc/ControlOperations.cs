@@ -235,7 +235,7 @@ public static class ControlOperations
             + "Layer types and their parameters are in list_layer_types.",
             EmptySchema,
             (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.GetConfig }),
-            response => string.IsNullOrWhiteSpace(response.Config) ? null : Redact(JsonNode.Parse(response.Config))),
+            response => string.IsNullOrWhiteSpace(response.Config) ? null : ConfigSecrets.Redact(JsonNode.Parse(response.Config))),
 
         ReadOnly("list_layer_types", "List the layer types",
             "The layer types this service can build, their editable fields, and the presets it offers. "
@@ -543,7 +543,7 @@ public static class ControlOperations
     /// password: an incoming one that says exactly this keeps the stored secret, and any other
     /// non-empty value is refused, because a secret typed into a conversation is a secret in a
     /// transcript.</summary>
-    private const string Redacted = "[redacted]";
+    private const string Redacted = ConfigSecrets.Redacted;
 
     /// <summary>Validates the document, puts back the passwords get_config took out, and saves.
     ///
@@ -571,42 +571,18 @@ public static class ControlOperations
         return link.Supervisor(new ControlRequest { Cmd = ControlCommands.SaveConfig, Config = incoming.ToJsonString() });
     }
 
-    private static JsonNode? Redact(JsonNode? config)
-    {
-        foreach (var mount in Mounts(config))
-        {
-            Redact(mount["Source"] as JsonObject);
-            foreach (var layer in Layers(mount))
-                Redact(layer["Source"] as JsonObject);
-        }
-        return config;
-    }
-
-    /// <summary>The source fields whose value must never travel over the configuration API.
-    /// Every one of them is set from the tray and kept redacted everywhere else.</summary>
-    private static readonly string[] SecretFields = { "Password", "ClientCertificatePassword" };
-
-    private static void Redact(JsonObject? source)
-    {
-        foreach (var field in SecretFields)
-            if (source?[field] is JsonValue value &&
-                value.TryGetValue<string>(out var secret) &&
-                !string.IsNullOrEmpty(secret))
-                source[field] = Redacted;
-    }
-
     private static void RestoreSecrets(JsonNode incoming, JsonNode? current)
     {
-        var priorMounts = Mounts(current).ToList();
-        foreach (var mount in Mounts(incoming))
+        var priorMounts = ConfigSecrets.Mounts(current).ToList();
+        foreach (var mount in ConfigSecrets.Mounts(incoming))
         {
-            var prior = MatchMount(mount, priorMounts);
-            foreach (var field in SecretFields)
+            var prior = ConfigSecrets.MatchMount(mount, priorMounts);
+            foreach (var field in ConfigSecrets.Fields)
                 RestoreSecret(mount["Source"] as JsonObject, prior?["Source"] as JsonObject, field);
 
-            foreach (var layer in Layers(mount))
-                foreach (var field in SecretFields)
-                    RestoreSecret(layer["Source"] as JsonObject, MatchLayer(layer, prior)?["Source"] as JsonObject, field);
+            foreach (var layer in ConfigSecrets.Layers(mount))
+                foreach (var field in ConfigSecrets.Fields)
+                    RestoreSecret(layer["Source"] as JsonObject, ConfigSecrets.MatchLayer(layer, prior)?["Source"] as JsonObject, field);
         }
     }
 
@@ -633,45 +609,6 @@ public static class ControlOperations
                 $"{field} is a secret and is not accepted through MCP; leave [redacted] to keep the stored one, "
                 + "or set it from the Tray");
     }
-
-    private static IEnumerable<JsonObject> Mounts(JsonNode? config)
-    {
-        if (config is not JsonObject root || root["Mounts"] is not JsonArray mounts) yield break;
-        foreach (var mount in mounts)
-            if (mount is JsonObject obj) yield return obj;
-    }
-
-    private static IEnumerable<JsonObject> Layers(JsonObject mount)
-    {
-        if (mount["Layers"] is not JsonArray layers) yield break;
-        foreach (var layer in layers)
-            if (layer is JsonObject obj) yield return obj;
-    }
-
-    private static JsonObject? MatchMount(JsonObject mount, IReadOnlyList<JsonObject> prior)
-    {
-        string? id = StringOf(mount["Id"]);
-        if (!string.IsNullOrEmpty(id))
-            return prior.FirstOrDefault(candidate =>
-                string.Equals(StringOf(candidate["Id"]), id, StringComparison.OrdinalIgnoreCase));
-
-        string? name = StringOf(mount["Name"]);
-        return name is null
-            ? null
-            : prior.FirstOrDefault(candidate =>
-                string.Equals(StringOf(candidate["Name"]), name, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static JsonObject? MatchLayer(JsonObject layer, JsonObject? mount)
-    {
-        string? id = StringOf(layer["Id"]);
-        if (mount is null || string.IsNullOrEmpty(id)) return null;
-        return Layers(mount).FirstOrDefault(candidate =>
-            string.Equals(StringOf(candidate["Id"]), id, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static string? StringOf(JsonNode? node) =>
-        node is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
 
     /// <summary>The fields a caller needs to decide what to do next, without the per-layer detail
     /// that makes a full status worth reading only when one instance is the subject.</summary>

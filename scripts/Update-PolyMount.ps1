@@ -74,6 +74,31 @@ function Send-Control([string]$Command, [string]$TargetPipe = $PipeName) {
 # what makes a no-op run possible at all - a running process holds its own folder open, so
 # publishing beside itself to be compared only works while nothing has changed, which is exactly
 # the case that does not need deciding.
+function Set-ControlUsers([string]$ConfigPath) {
+    # The control plane's allowlist, seeded from whoever deploys: this script runs in an
+    # interactive session, and that is the one thing a service started in session 0 cannot learn
+    # about itself. An installation whose list is already there keeps it, and an account already
+    # on it is not added twice.
+    if (-not (Test-Path -LiteralPath $ConfigPath)) { return }
+    try {
+        $parsed = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $sid = $identity.User.Value
+        $users = @()
+        foreach ($entry in @($parsed.ControlUsers)) { if ($entry -and $entry.Sid) { $users += $entry } }
+        if ($users | Where-Object { $_.Sid -eq $sid }) { return }
+        $users += [pscustomobject]@{ Sid = $sid; Name = $identity.Name }
+        $parsed | Add-Member -NotePropertyName ControlUsers -NotePropertyValue @($users) -Force
+        $json = $parsed | ConvertTo-Json -Depth 20
+        $temp = $ConfigPath + '.tmp'
+        [System.IO.File]::WriteAllText($temp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temp -Destination $ConfigPath -Force
+        Write-Host "  added $($identity.Name) to the configuration's ControlUsers" -ForegroundColor DarkGray
+    } catch {
+        Write-Warning "The configuration's ControlUsers was left as it is: $($_.Exception.Message)"
+    }
+}
+
 function Get-SourceState([string[]]$Roots) {
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($root in $Roots) {
@@ -292,6 +317,7 @@ try {
         Publish-Project $serviceProject $serviceDir
         & (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $serviceDir 'plugins') -Configuration $Configuration
         if (-not (Test-Path -LiteralPath $serviceExe)) { throw 'Published service executable was not found.' }
+        Set-ControlUsers (Join-Path $serviceDir 'config.json')
     }
     if ($trayChanged) {
         Write-Host '  stopping the tray...'

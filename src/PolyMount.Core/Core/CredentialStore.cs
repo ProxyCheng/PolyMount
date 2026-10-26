@@ -53,7 +53,7 @@ public sealed class ClientCertificateCredential : Credential
 /// written by another Windows account, or one whose payload no longer parses — which is what
 /// the layer editor warns about where the credential is chosen.</summary>
 public sealed record CredentialRecord(string Id, string Name, string Username,
-    string Kind = CredentialTypes.Password, bool Usable = true);
+    string Kind = CredentialTypes.Password, bool Usable = true, IReadOnlyList<string>? Origins = null);
 
 /// <summary>What the interface asks the store to save. A null password, certificate or
 /// certificate password keeps what the record already holds, so a form that shows only the
@@ -108,7 +108,8 @@ public static class CredentialStore
     {
         lock (Gate) return Load().Items
             .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new CredentialRecord(item.Id, item.Name, item.Username, KindOf(item), IsUsable(item)))
+            .Select(item => new CredentialRecord(item.Id, item.Name, item.Username, KindOf(item), IsUsable(item),
+                item.Origins.ToArray()))
             .ToList();
     }
 
@@ -202,34 +203,77 @@ public static class CredentialStore
         }
     }
 
-    /// <summary>The secret behind a named credential, for a layer that chose it. The result is
-    /// the concrete subclass the record was saved as, which is what lets a consumer name the
-    /// type it accepts and be handed whichever subclass fits.</summary>
+    /// <summary>The secret behind a named credential, for a consumer with no origin to bind it to
+    /// — a share reached by its UNC path, which is an address rather than a URL. A consumer that
+    /// does have an origin uses <see cref="Use"/>, which is where the binding is enforced.</summary>
     public static Credential? FindById(string id)
     {
         lock (Gate)
         {
             var item = Load().Items.FirstOrDefault(entry => entry.Id == id);
-            if (item == null) return null;
-            string? plain = UnprotectSecret(item);
-            if (plain == null) return null;
-            if (KindOf(item) == CredentialTypes.Password)
-                return new PasswordCredential { Username = item.Username, Password = plain };
-
-            var payload = ParseCertificate(plain);
-            if (payload == null) return null;
-            try
-            {
-                return new ClientCertificateCredential
-                {
-                    Username = item.Username,
-                    Password = payload.Account,
-                    Certificate = Convert.FromBase64String(payload.Certificate),
-                    CertificatePassword = payload.Password
-                };
-            }
-            catch (FormatException) { return null; }
+            return item == null ? null : Materialize(item);
         }
+    }
+
+    /// <summary>The secret behind a named credential, checked against the origin it is about to be
+    /// sent to.
+    ///
+    /// A credential belongs to a person rather than to a server — one account usually opens
+    /// several repositories — so it is not stored per address. What it is, is bounded: the first
+    /// origin it is used for is written down with it, and a later layer that names the same
+    /// credential for a different origin is refused. Without that, whoever can change the
+    /// configuration can point a layer at a host of their choosing, name the credential that holds
+    /// somebody's repository password, and read it out of the first 401 the server sends back.
+    ///
+    /// The first use is recorded rather than confirmed: it is the same act as choosing the
+    /// credential for that layer, and a prompt in the middle of a mount is a prompt nobody could
+    /// answer.</summary>
+    public static Credential? Use(string id, string origin)
+    {
+        lock (Gate)
+        {
+            var document = Load();
+            var item = document.Items.FirstOrDefault(entry => entry.Id == id);
+            if (item == null) return null;
+            if (item.Origins.Count == 0)
+            {
+                item.Origins.Add(origin);
+                Save(document);
+            }
+            else if (!item.Origins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "the credential '" + item.Name + "' was entered for " + string.Join(", ", item.Origins)
+                    + " and this layer talks to " + origin
+                    + "; choose another credential, or point this source at the address it was entered for");
+            }
+            return Materialize(item);
+        }
+    }
+
+    /// <summary>The credential a stored record stands for, with its secret opened. A record whose
+    /// secret cannot be opened — written by another Windows account, or damaged — is null, which
+    /// the caller reports as an account that no longer works.</summary>
+    private static Credential? Materialize(StoredCredential item)
+    {
+        string? plain = UnprotectSecret(item);
+        if (plain == null) return null;
+        if (KindOf(item) == CredentialTypes.Password)
+            return new PasswordCredential { Username = item.Username, Password = plain };
+
+        var payload = ParseCertificate(plain);
+        if (payload == null) return null;
+        try
+        {
+            return new ClientCertificateCredential
+            {
+                Username = item.Username,
+                Password = payload.Account,
+                Certificate = Convert.FromBase64String(payload.Certificate),
+                CertificatePassword = payload.Password
+            };
+        }
+        catch (FormatException) { return null; }
     }
 
     /// <summary>The kind a stored record is. Files written before kinds existed are passwords,
@@ -295,6 +339,10 @@ public static class CredentialStore
         /// file written before credentials had kinds is read.</summary>
         public string Kind { get; set; } = "";
         public string Secret { get; set; } = "";
+        /// <summary>The origins this credential has been used for, as <see cref="OriginOf"/>
+        /// spells them. Empty means it has not been used yet, which is also what every record
+        /// written before this existed looks like: the first use records it.</summary>
+        public List<string> Origins { get; set; } = new();
     }
 
     /// <summary>What an older entry held once opened: the pair, protected together.</summary>

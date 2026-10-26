@@ -152,6 +152,9 @@ file; it is ordinary JSON and can be edited by hand. A service started from a bu
 {
   "WinFspBin": "C:\\Program Files (x86)\\WinFsp\\bin",
   "ControlPipe": "PolyMount.Control",
+  "ControlUsers": [
+    { "Sid": "S-1-5-21-…-1001", "Name": "WORKSTATION\\you" }   // who may drive the service; see Security
+  ],
   "Plugins": [
     { "AssemblyPath": "plugins/PolyMount.Plugin.Svn.dll", "Enabled": true }
   ],
@@ -171,7 +174,14 @@ file; it is ordinary JSON and can be edited by hand. A service started from a bu
           "Parameters": { "Writable": false } },
         { "Id": "overlay",      "Type": "overlay",      "Enabled": true },
         { "Id": "svn",          "Type": "svn",          "Enabled": true,
-          "Source": { "Type": "svn", "Url": "https://svn.example.com/repo/trunk" } }
+          "Source": {
+            "Type": "svn",
+            "Url": "https://svn.example.com/repo/trunk",
+            // Certificate failures this source accepts; empty means the certificate must verify.
+            // A self-signed internal server lists them: unknown-ca, cn-mismatch, expired,
+            // not-yet-valid, other.
+            "TrustServerCertFailures": ""
+          } }
       ]
     }
   ]
@@ -202,7 +212,9 @@ layer types (ordinary and cache), source types, presets, prediction strategies, 
 and control operations. A layer can also implement `ILayerActionHandler` to answer the actions its
 own descriptor declares. The service loads **only** the assemblies its configuration names —
 nothing is discovered by scanning a directory — so an installation starts with exactly the
-plugins its operator chose. The tray's Plugins section is the front end for that list: it reports
+plugins its operator chose. A named assembly has to resolve inside the installation directory: a
+plugin is code that runs with the service's rights, and the installation directory is writable only
+by an administrator. The tray's Plugins section is the front end for that list: it reports
 which files are in the folder but not named, and adding one writes the entry. Assemblies built
 against the older `ILayerPlugin` still load: that name remains as an obsolete alias.
 
@@ -269,6 +281,31 @@ the remote-folder plugin adds `get_smb_source`, and the transaction-shim plugin 
 
 `scripts\Test-Mcp.ps1` drives the handshake and the error paths against a supervisor of its own;
 `-Full` also exercises enable → mount → unmount.
+
+## Security
+
+The service holds credentials and reads what the signed-in user may not, while the tray and the
+MCP server run as that user — so what each boundary enforces is written down in
+[SECURITY.md](SECURITY.md). The short version:
+
+- **Who may drive the service** is the `ControlUsers` list, by SID. The installer seeds it from the
+  account that ran setup; an empty list keeps the older behaviour (every interactive local user) and
+  is reported in the service log and in every `status` answer.
+- **A plugin is code from the installation directory.** A path that resolves outside it is refused
+  before anything is loaded, and a configuration that is refused leaves the running plugin set
+  alone.
+- **Certificates must verify** by default. A self-signed internal server names the failures it
+  accepts in its own configuration; a plain `http://` source needs `AllowInsecureTransport`.
+- **A stored credential is bound to the origin it was first used for**, and the repository root the
+  server advertises must stay on the configured origin.
+- **Secrets do not travel with the configuration.** `getConfig` answers with
+  `[redacted]` in the password fields, and a save that still says `[redacted]` keeps the stored
+  value.
+- **The stores are the service's.** Their directory ACL is restricted when an instance mounts, a
+  tampered store catalog cannot name a file outside the store, and a compressed object is decoded
+  no further than its record says.
+- **The mounted volume itself has no per-file ACLs.** The product is single-user by design; a
+  machine shared between accounts should not share one PolyMount installation.
 
 ## Update checks
 

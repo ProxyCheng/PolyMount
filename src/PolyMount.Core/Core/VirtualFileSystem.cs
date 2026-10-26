@@ -820,8 +820,15 @@ public sealed class VirtualFileSystem
         Announce(new FileChange(path, FileChangeKind.RenamedOld));
         Announce(new FileChange(destination, FileChangeKind.RenamedNew));
     }
-    private void CopyTree(string source, string destination, List<ObjectChange> changes, List<Stream> streams)
+    /// <summary>How deep a copy follows a tree. A rename over an existing destination copies it
+    /// first, and the depth is whatever the source says it has: a link chain or a pathological
+    /// source would otherwise recurse until the stack ends the process.</summary>
+    private const int MaxCopyDepth = 512;
+
+    private void CopyTree(string source, string destination, List<ObjectChange> changes, List<Stream> streams, int depth = 0)
     {
+        if (depth >= MaxCopyDepth)
+            throw new IOException("the tree is deeper than " + MaxCopyDepth + " levels: " + source);
         if (!TryLookup(source, out var header)) throw new VfsNotFoundException(source);
         var renamed = new VfsEntry { Name = VfsPath.Name(destination), IsDir = header.IsDir, Size = header.Size, TimeUtc = header.TimeUtc };
         if (!header.IsDir)
@@ -830,7 +837,8 @@ public sealed class VirtualFileSystem
         }
         var children = List(source);
         changes.Add(new(destination, new(renamed, children)));
-        foreach (var child in children) CopyTree(VfsPath.Child(source, child.Name), VfsPath.Child(destination, child.Name), changes, streams);
+        foreach (var child in children)
+            CopyTree(VfsPath.Child(source, child.Name), VfsPath.Child(destination, child.Name), changes, streams, depth + 1);
     }
     /// <summary>
     /// After <paramref name="owner"/> forgot its record of <paramref name="path"/>, makes its

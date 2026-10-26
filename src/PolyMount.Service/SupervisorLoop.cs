@@ -1,4 +1,6 @@
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace PolyMount.Service;
 
@@ -8,8 +10,13 @@ namespace PolyMount.Service;
 public sealed class SupervisorLoop : BackgroundService
 {
     private readonly MountManager _manager;
+    private readonly ILogger<SupervisorLoop> _logger;
 
-    public SupervisorLoop(MountManager manager) => _manager = manager;
+    public SupervisorLoop(MountManager manager, ILogger<SupervisorLoop>? logger = null)
+    {
+        _manager = manager;
+        _logger = logger ?? NullLogger<SupervisorLoop>.Instance;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -18,7 +25,7 @@ public sealed class SupervisorLoop : BackgroundService
         // which process is running it before connecting to that process itself.
         _manager.LocalPipe = _manager.Config.ControlPipe;
 
-        var server = new PipeServer(_manager, _manager.LocalPipe);
+        var server = new PipeServer(_manager, _manager.LocalPipe, _manager.Access, _logger);
         try
         {
             await server.RunAsync(stoppingToken);

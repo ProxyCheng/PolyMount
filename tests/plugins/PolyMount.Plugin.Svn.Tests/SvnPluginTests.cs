@@ -215,7 +215,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
         Check("configured-loading-and-preset", () =>
         {
             var path = typeof(SvnPlugin).Assembly.Location;
-            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            var errors = PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace")) throw new Exception("Missing plugin preset");
             var preset = LayerPresetRegistry.All.Single(p => p.Id == "svn-workspace");
@@ -245,7 +245,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (LayerRegistry.Descriptors.Any(d => d.Type == "svn")) throw new Exception("Disabled plugin metadata remains active");
             if (ControlOperations.Find("get_svn_source") != null || ControlOperations.Find("list_svn_lanes") != null)
                 throw new Exception("A disabled plugin's MCP operations remain registered");
-            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, AppContext.BaseDirectory);
+            PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
         Check("registration", () => { if (!SourceRegistry.Contains("svn")) throw new Exception("SVN was not registered"); });
         Check("mcp-operations", () =>
@@ -505,8 +505,12 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("cn-mismatch was not trusted when listed");
             if (SvnHttpClient.TrustsCertificateFailures("cn-mismatch", certificate, chain, SslPolicyErrors.RemoteCertificateNotAvailable))
                 throw new Exception("A missing certificate was trusted");
-            if (!SvnHttpClient.TrustsCertificateFailures("other", certificate, chain, SslPolicyErrors.RemoteCertificateNotAvailable))
-                throw new Exception("The catch-all failure list did not trust every error");
+            // "other" is the catch-all for a *failure* to validate a certificate, not for a server
+            // that presents none: there is nothing there to accept, whatever the list says.
+            if (SvnHttpClient.TrustsCertificateFailures("other", certificate, chain, SslPolicyErrors.RemoteCertificateNotAvailable))
+                throw new Exception("A missing certificate was trusted by the catch-all list");
+            if (!SvnHttpClient.TrustsCertificateFailures("other", certificate, chain, SslPolicyErrors.RemoteCertificateNameMismatch))
+                throw new Exception("The catch-all list did not trust a name mismatch");
             if (!SvnHttpClient.TrustsCertificateFailures("unknown-ca,cn-mismatch,expired,not-yet-valid,other", certificate, chain, SslPolicyErrors.None))
                 throw new Exception("A valid certificate was rejected");
         });

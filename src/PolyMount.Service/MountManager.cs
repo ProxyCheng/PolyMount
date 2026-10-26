@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -37,12 +38,21 @@ public sealed class MountManager : IControlHost, IDisposable
         _lifetime = lifetime;
         ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
+        Access = AccessOf(Config);
         LoadPlugins(Config);
         _workers = new WorkerPool(ConfigPath, _logger);
     }
 
+    private static ControlAccess AccessOf(AppConfig config) =>
+        new(config.ControlUsers.Select(account => account.Sid));
+
     public AppConfig Config { get; private set; }
     public string ConfigPath { get; }
+
+    /// <summary>Which accounts may drive this process. Rebuilt with the configuration, because
+    /// that is where the list lives: a reload that changes it has to change the pipe too, or the
+    /// file would say one thing and the pipe another.</summary>
+    public ControlAccess Access { get; private set; }
 
     /// <summary>The pipe this process serves on, set by the host before it starts listening: the
     /// one well-known name, where a front-end asks what exists and which process runs it.</summary>
@@ -115,10 +125,36 @@ public sealed class MountManager : IControlHost, IDisposable
         lock (_configGate)
         {
             var next = AppConfig.LoadOrCreate(ConfigPath);
-            LoadPlugins(next);
-            next.Validate();
+            LoadPluginsFor(next, Config);
             Config = next;
+            Access = AccessOf(next);
             _workers.Apply(next);
+        }
+    }
+    /// <summary>Brings the plugin registries in line with a configuration that has not been
+    /// accepted yet, and puts back the running set when it turns out it cannot be.
+    ///
+    /// The registries are process-wide, so loading is destructive: it takes every plugin-provided
+    /// registration back before it reads the next set. A document that is then refused — by
+    /// validation, or by a plugin that will not load — would otherwise leave the process
+    /// answering from a configuration nobody saved. Everything decidable without the plugins runs
+    /// first, so a document naming code this installation does not hold is refused before any of
+    /// it is loaded.</summary>
+    private void LoadPluginsFor(AppConfig candidate, AppConfig running)
+    {
+        try
+        {
+            candidate.ValidateStructure();
+            var pathErrors = PluginLoader.CheckPaths(candidate.Plugins, AppContext.BaseDirectory);
+            if (pathErrors.Count > 0) throw new InvalidOperationException(string.Join("; ", pathErrors));
+            LoadPlugins(candidate);
+            candidate.Validate();
+        }
+        catch (Exception)
+        {
+            try { LoadPlugins(running); }
+            catch (Exception restore) { Log("restoring the previous plugin set", restore); }
+            throw;
         }
     }
 
@@ -237,11 +273,16 @@ public sealed class MountManager : IControlHost, IDisposable
             change(Config);
             try
             {
-                Config.Validate();
+                Config.ValidateStructure();
+                var pathErrors = PluginLoader.CheckPaths(Config.Plugins, AppContext.BaseDirectory);
+                if (pathErrors.Count > 0) throw new InvalidOperationException(string.Join("; ", pathErrors));
                 LoadPlugins(Config);
+                Config.Validate();
             }
             catch (Exception)
             {
+                // The list is put back before the set is loaded again: loading it as it stands
+                // would reload the very entries that were just refused.
                 Config.Plugins = before;
                 try { LoadPlugins(Config); }
                 catch (Exception restore) { Log("restoring the previous plugin set", restore); }
@@ -370,7 +411,12 @@ public sealed class MountManager : IControlHost, IDisposable
                     _workers.Stop(request.Name);
                     break;
                 case ControlCommands.GetConfig:
-                    response.Config = Config.ToJson();
+                    // What leaves this process is the document with its secrets taken out. The
+                    // redaction used to exist only in the MCP front-end, which made the pipe the
+                    // one way to read a stored password — and every front-end and script is on
+                    // this pipe. A save that still carries "[redacted]" puts the stored value back
+                    // by instance and layer identity (see ConfigSecrets).
+                    response.Config = ConfigSecrets.RedactJson(Config.ToJson());
                     // The one answer that is asked for once, when an editor opens, and the only
                     // place these belong: everything else here is polled.
                     ControlEnvelope.WithRegistry(response);
@@ -382,13 +428,22 @@ public sealed class MountManager : IControlHost, IDisposable
                     var parsed = AppConfig.FromJson(request.Config);
                     lock (_configGate)
                     {
-                        LoadPlugins(parsed);
-                        parsed.Validate();
+                        // The document arrives redacted, because that is what getConfig hands out.
+                        // Putting the stored secrets back is what makes that round trip whole; it
+                        // is matched by identity, so a new instance keeps whatever password it
+                        // came with.
+                        var document = JsonNode.Parse(request.Config);
+                        if (document is not null) ConfigSecrets.RestoreRedacted(document, JsonNode.Parse(Config.ToJson()));
+                        parsed = AppConfig.FromJson(document?.ToJsonString() ?? request.Config);
+                        // Validation, then the plugins the document names (which is code), then
+                        // the layer types those plugins provide — and the previous set restored
+                        // if any step refuses it.
+                        LoadPluginsFor(parsed, Config);
                         _suppressReloadUntil = DateTime.UtcNow.AddSeconds(2); // avoid double reload from watcher
                         AppConfig.Save(ConfigPath, parsed);
                         Reload();
                     }
-                    response.Config = Config.ToJson();
+                    response.Config = ConfigSecrets.RedactJson(Config.ToJson());
                     break;
                 }
                 case ControlCommands.SetEnabled:
@@ -487,6 +542,7 @@ public sealed class MountManager : IControlHost, IDisposable
         }
 
         response.Mounts = Statuses();
+        response.SecurityWarning = Access.Warning;
         response.State = _stopping ? ServiceState.Stopping : ServiceState.Running;
         return response;
     }

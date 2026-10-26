@@ -1,5 +1,7 @@
 using PolyMount.Core;
 using System.IO.Enumeration;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace PolyMount.Layers;
 
@@ -13,16 +15,18 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
 {
     private readonly string _root;
     private readonly bool _writable;
+    private readonly bool _followLinks;
     private readonly FileSystemWatcher? _watcher;
     private long _touched;
 
-    public DirectoryLayer(string root, bool writable = false, bool watch = false)
+    public DirectoryLayer(string root, bool writable = false, bool watch = false, bool followLinks = false)
     {
         if (string.IsNullOrWhiteSpace(root))
             throw new ArgumentException("directory layer requires a non-empty path", nameof(root));
 
-        _root = Path.GetFullPath(root);
+        _root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         _writable = writable;
+        _followLinks = followLinks;
         // The root is deliberately not created here. A source that points inside another
         // instance's mount point (a mounting-inside-a-mount layout) would otherwise materialise a
         // real directory at that path whenever this worker starts first, and the mount it lives
@@ -136,7 +140,72 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
         return true;
     }
 
-    public string LocalPath(string rel) => Path.Combine(_root, rel.Replace('/', '\\'));
+    /// <summary>The local file behind a VFS path, refused when it lands outside the root.
+    ///
+    /// The relative path arrives from an interface and from listings, so it is not assumed to be
+    /// a plain relative name: <see cref="Path.Combine(string, string)"/> returns a rooted second
+    /// argument unchanged, a <c>..</c> component walks upward, and this layer runs as the service
+    /// account. A path that canonicalises outside the configured root is not a name this source
+    /// has, and it is refused as missing rather than followed.
+    ///
+    /// This bounds the spelling. It does not decide where the filesystem goes: a junction or
+    /// symbolic link *inside* the root is a reparse point that Windows follows by itself, which is
+    /// why one is not listed, not resolved and not opened unless the source asks for that with
+    /// <c>FollowReparsePoints</c> — see <see cref="OutsideThroughALink"/>.</summary>
+    public string LocalPath(string rel) =>
+        TryLocalPath(rel, out var path) ? path : throw new VfsNotFoundException(rel);
+
+    /// <summary>The same answer without the exception, for the callers whose contract is a
+    /// question: a source asked whether it has a path should say no, not throw.</summary>
+    private bool TryLocalPath(string rel, out string path)
+    {
+        path = Path.GetFullPath(Path.Combine(_root, rel.Replace('/', '\\')));
+        return Inside(path);
+    }
+
+    private bool Inside(string path) =>
+        string.Equals(path, _root, StringComparison.OrdinalIgnoreCase) ||
+        path.StartsWith(_root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Whether a handle was opened on something inside the root.
+    ///
+    /// <see cref="LocalPath"/> compared the name; this asks the filesystem where the handle
+    /// actually points, which is the only answer that accounts for a link in the middle of the
+    /// path. One call per open, and opens are milliseconds of real work around it.
+    ///
+    /// A source that has asked to follow links skips it: following them is then the source's own
+    /// decision, made where somebody can read it.</summary>
+    private bool OutsideThroughALink(Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+    {
+        if (_followLinks) return false;
+        var buffer = new StringBuilder(1024);
+        int length = GetFinalPathNameByHandle(handle, buffer, buffer.Capacity, 0);
+        if (length <= 0 || length > buffer.Capacity) return false; // unknown is not "outside"
+        string final = buffer.ToString(0, length);
+        // The answer is always a fully qualified path, and for anything but a plain local volume
+        // it carries the extended-length prefix: "\\?\C:\..." or "\\?\UNC\server\share". The root
+        // this layer was built from is the plain spelling, so the prefix comes off before they are
+        // compared — a path that is inside the root is inside it whether or not Windows says so
+        // the long way.
+        if (final.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) final = @"\\" + final[8..];
+        else if (final.StartsWith(@"\\?\", StringComparison.Ordinal)) final = final[4..];
+        return !Inside(final);
+    }
+
+    /// <summary>Whether a path is a reparse point. A link inside the root can name any directory on
+    /// the machine, and creating one is a single line for anyone who can write this tree, so a
+    /// source that has not opted into following them reports the path as missing and leaves it out
+    /// of its listings.</summary>
+    private bool IsLink(string path)
+    {
+        if (_followLinks) return false;
+        try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
+        catch (Exception) { return false; }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "GetFinalPathNameByHandleW")]
+    private static extern int GetFinalPathNameByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+        StringBuilder path, int pathLength, int flags);
 
     public bool TryGetEntry(string rel, out VfsEntry entry)
     {
@@ -148,14 +217,16 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
             return true;
         }
 
-        var p = LocalPath(rel);
+        if (!TryLocalPath(rel, out var p)) return false;
         if (Directory.Exists(p))
         {
+            if (IsLink(p)) return false;
             entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = true, TimeUtc = Directory.GetLastWriteTimeUtc(p) };
             return true;
         }
         if (File.Exists(p))
         {
+            if (IsLink(p)) return false;
             var fi = new FileInfo(p);
             entry = new VfsEntry { Name = fi.Name, IsDir = false, Size = fi.Length, TimeUtc = fi.LastWriteTimeUtc };
             return true;
@@ -173,16 +244,25 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
         {
             Name = entry.FileName.ToString(), IsDir = entry.IsDirectory,
             Size = entry.IsDirectory ? 0 : entry.Length, TimeUtc = entry.LastWriteTimeUtc.UtcDateTime
-        }, new EnumerationOptions { RecurseSubdirectories = false, AttributesToSkip = 0,
-            IgnoreInaccessible = false, ReturnSpecialDirectories = false }).ToArray();
+        }, new EnumerationOptions
+        {
+            RecurseSubdirectories = false,
+            // A link is not content this source has; it is a door. Listed, it would be resolvable
+            // through the mount, and everything behind it would be served as the service account.
+            AttributesToSkip = _followLinks ? 0 : FileAttributes.ReparsePoint,
+            IgnoreInaccessible = false,
+            ReturnSpecialDirectories = false
+        }).ToArray();
     }
 
     public bool TryOpenRead(string rel, out VfsEntry entry, out Stream stream)
     {
         stream = null!;
         if (!TryGetEntry(rel, out entry) || entry.IsDir) return false;
-        stream = new FileStream(LocalPath(rel), FileMode.Open, FileAccess.Read,
+        var file = new FileStream(LocalPath(rel), FileMode.Open, FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);
+        if (OutsideThroughALink(file.SafeFileHandle)) { file.Dispose(); return false; }
+        stream = file;
         return true;
     }
 
@@ -192,6 +272,7 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
         var p = LocalPath(rel);
         Directory.CreateDirectory(Path.GetDirectoryName(p)!);
         var stream = new FileStream(p, FileMode.Create, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        if (OutsideThroughALink(stream.SafeFileHandle)) { stream.Dispose(); throw new VfsNotFoundException(rel); }
         entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = false, TimeUtc = DateTime.UtcNow };
         return stream;
     }
@@ -201,6 +282,7 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
         EnsureWritable();
         var p = LocalPath(rel);
         var stream = new FileStream(p, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete);
+        if (OutsideThroughALink(stream.SafeFileHandle)) { stream.Dispose(); throw new VfsNotFoundException(rel); }
         entry = new VfsEntry { Name = VfsPath.Name(rel), IsDir = false, Size = stream.Length, TimeUtc = File.GetLastWriteTimeUtc(p) };
         return stream;
     }
@@ -215,6 +297,7 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
     {
         EnsureWritable();
         var p = LocalPath(rel);
+        if (IsLink(p)) throw new VfsNotFoundException(rel);
         if (Directory.Exists(p)) Directory.Delete(p, true);
         else if (File.Exists(p)) File.Delete(p);
     }
@@ -224,6 +307,7 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
         EnsureWritable();
         var from = LocalPath(rel);
         var to = LocalPath(dst);
+        if (IsLink(from) || IsLink(to)) throw new VfsNotFoundException(rel);
         Directory.CreateDirectory(Path.GetDirectoryName(to)!);
 
         if (Directory.Exists(to))

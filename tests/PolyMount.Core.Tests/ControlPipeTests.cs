@@ -16,8 +16,9 @@ public class ControlPipeTests
     // control client cannot use — the failure reaches the caller as "Access to the path is
     // denied." and looks like a service that is running and unreachable at the same time.
 
-    private static List<PipeAccessRule> Rules() =>
-        ControlPipe.Security().GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
+    private static List<PipeAccessRule> Rules(ControlAccess? access = null) =>
+        ControlPipe.Security(access ?? new ControlAccess(null))
+            .GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
             .Cast<PipeAccessRule>()
             .ToList();
 
@@ -80,10 +81,53 @@ public class ControlPipeTests
     public void A_pipe_created_from_the_rules_accepts_a_duplex_client()
     {
         string name = "polymount-test-" + Guid.NewGuid().ToString("N");
-        using var server = ControlPipe.CreateServer(name);
+        using var server = ControlPipe.CreateServer(name, new ControlAccess(null));
         var waiting = server.WaitForConnectionAsync();
         using var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
         client.Connect(3000);
         Assert.IsTrue(waiting.Wait(3000), "the client connected but the server never saw it");
+    }
+
+    [TestMethod]
+    public void A_configured_list_replaces_the_interactive_grant()
+    {
+        // This is the control plane's authorization: the accounts the setup wrote down. The
+        // interactive rule was every standard local user of the machine, which is the same thing
+        // as no rule at all for a service that can point a layer at any path.
+        var allowed = WindowsIdentity.GetCurrent().User!;
+        var access = new ControlAccess(new[] { allowed.Value });
+        var rules = Rules(access);
+
+        var interactive = new SecurityIdentifier(WellKnownSidType.InteractiveSid, null);
+        Assert.IsNull(rules.SingleOrDefault(r => interactive.Equals(r.IdentityReference)),
+            "a configured installation does not take commands from every interactive session");
+
+        var granted = rules.SingleOrDefault(r => allowed.Equals(r.IdentityReference));
+        Assert.IsNotNull(granted, "the listed account is what the tray connects as");
+        Assert.IsTrue(granted.PipeAccessRights.HasFlag(PipeAccessRights.ReadData));
+        Assert.IsTrue(granted.PipeAccessRights.HasFlag(PipeAccessRights.WriteData));
+        Assert.IsNull(access.Warning, "a configured list is the state the warning points at");
+    }
+
+    [TestMethod]
+    public void An_empty_list_is_reported_rather_than_passed_over()
+    {
+        var access = new ControlAccess(Array.Empty<string>());
+        Assert.IsTrue(access.IsOpen);
+        Assert.IsNotNull(access.Warning);
+        Assert.IsTrue(access.Allows(null), "an open policy accepts a caller it cannot identify");
+    }
+
+    [TestMethod]
+    public void A_listed_account_is_the_only_one_the_policy_accepts()
+    {
+        var me = WindowsIdentity.GetCurrent().User!;
+        var access = new ControlAccess(new[] { me.Value });
+        Assert.IsFalse(access.IsOpen);
+        Assert.IsNull(access.Warning);
+        Assert.IsTrue(access.Allows(me.Value));
+        Assert.IsFalse(access.Allows(new SecurityIdentifier(WellKnownSidType.BuiltinGuestsSid, null).Value));
+        Assert.IsFalse(access.Allows(null));
+        Assert.IsFalse(access.Allows(""), "a caller that could not be identified is not a member");
     }
 }
