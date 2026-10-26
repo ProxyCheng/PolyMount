@@ -30,10 +30,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - QtSharp moved to 0.2.0. The binding is now ten module assemblies with one namespace each, and the
   managed runtime, the Qt runtime and the Charts payload are packages of their own; nothing a
   reader sees changes.
-- The dashboard has no title bar of its own. The tab strip is its first row, and minimize,
-  maximize/restore and close share that row at the window's right edge; dragging the empty strip
-  moves the window, double-clicking it maximizes or restores, and a press on the window's border
-  resizes it. Floating windows keep their native frames.
 - The setup always shows the installation directory page, an upgrade included, so the destination
   is a choice rather than whatever the previous installation remembered.
 - An upgrade replaces the Explorer extension only when the sources it was built from changed, a

@@ -56,9 +56,6 @@ internal sealed class Dashboard : QWidget
     private string _navKey = "overview";
     private DateTime _nextRefresh;
     private readonly TabWorkspace _tabs;
-    /// <summary>The window's own buttons, which share the tab strip's row because the window has
-    /// no title bar of its own.</summary>
-    private readonly WindowChrome _chrome;
     private bool _quietPending;
     /// <summary>A command went out and the state that proves it took effect has not come back yet.
     ///
@@ -111,21 +108,10 @@ internal sealed class Dashboard : QWidget
         
         I18n.Bind(SetWindowTitle, "dashboard.title");
         SetMinimumSize(480, 360);
-        // The tab strip is the window's first row, and the three buttons at its end are the ones a
-        // title bar would have: a title bar of its own would be a row saying nothing the strip does
-        // not already say. The system's own frame is what goes away; the window is still a normal
-        // top-level window to the taskbar, the keyboard and the window menu.
-        SetWindowFlag(Qt.WindowType.FramelessWindowHint, true);
         var shell = new QVBoxLayout(this);
         shell.SetContentsMargins(0, 0, 0, 0);
         _tabs = new TabWorkspace(this);
         shell.AddWidget(_tabs);
-        _chrome = new WindowChrome(this);
-        _tabs.Frameless = true;
-        _tabs.SetWindowChrome(_chrome);
-        var edges = new WindowEdges(this);
-        QCoreApplication.Instance().InstallEventFilter(edges);
-        Destroyed += _ => QCoreApplication.Instance().RemoveEventFilter(edges);
         var overviewPage = new QWidget();
         _tabs.Open("overview", () => overviewPage, () => T("overview"), pinned: true);
         var root = new QHBoxLayout(WindowScrollArea.Create(overviewPage, 1080, out _overviewScroll));
@@ -828,58 +814,6 @@ internal sealed class Dashboard : QWidget
         if (e.type() == QEvent.Type.LanguageChange && _table != null) Translate();
     }
 
-    /// <summary>A maximized and a restored window have different marks to offer, and a window put
-    /// in either state by the keyboard or the window menu never goes through the button.</summary>
-    public override void ResizeEvent(QResizeEvent e)
-    {
-        base.ResizeEvent(e);
-        if (_chrome == null) return;
-        _chrome.Sync();
-        _tabs.RefreshChrome();
-    }
-
-    /// <summary>A window without a frame has no edge to be dragged by either: the system's frame is
-    /// what normally answers "this press is on the border" with a resize. The filter looks for
-    /// those presses itself, before the widget under the pointer handles one, and hands the gesture
-    /// to the window's own resize loop — the same loop a frame would have started.</summary>
-    private sealed class WindowEdges(Dashboard owner) : QObject(owner)
-    {
-        private const int Margin = 6;
-
-        public override bool EventFilter(QObject watched, QEvent e)
-        {
-            if (e.type() != QEvent.Type.MouseButtonPress) return false;
-            if (owner.IsMaximized() || owner.IsFullScreen()) return false;
-            var mouse = QMouseEvent.FromHandle(e.Handle);
-            if (mouse.Button() != Qt.MouseButton.LeftButton) return false;
-            var global = new QPoint(mouse.GlobalX(), mouse.GlobalY());
-            // Which widget the press belongs to is asked of the window under the pointer rather than
-            // of the event's receiver: the filter is installed on the application, and what arrives
-            // here is not necessarily the managed wrapper this window knows its children by.
-            var widget = QApplication.WidgetAt(global);
-            if (widget == null || (widget != owner && !owner.IsAncestorOf(widget))) return false;
-            // The window's own buttons sit inside the top-right margin; a press there is a click.
-            if (owner._chrome.IsAncestorOf(widget)) return false;
-            var edges = EdgesAt(owner, global);
-            if (edges == (Qt.Edges)0) return false;
-            owner.WindowHandle()?.StartSystemResize(edges);
-            return true;
-        }
-
-        /// <summary>Which edges of the window a point is on. A corner is two of them, which is what
-        /// the system's own resize loop expects.</summary>
-        internal static Qt.Edges EdgesAt(QWidget window, QPoint global)
-        {
-            var at = window.MapFromGlobal(global);
-            var edges = (Qt.Edges)0;
-            if (at.X() < Margin) edges |= Qt.Edges.LeftEdge;
-            if (at.X() >= window.Width - Margin) edges |= Qt.Edges.RightEdge;
-            if (at.Y() < Margin) edges |= Qt.Edges.TopEdge;
-            if (at.Y() >= window.Height - Margin) edges |= Qt.Edges.BottomEdge;
-            return edges;
-        }
-    }
-
     private void UpdateFilters()
     {
         int selected = Math.Max(0, _filter.CurrentIndex);
@@ -1178,46 +1112,8 @@ internal sealed class Dashboard : QWidget
     /// the live one when there is one: the editor's key carries its name, so a name written here
     /// that the run did not open is a key that is not there — which is what a machine with an
     /// instance other than the one this used to say hit.</summary>
-    internal void SmokeTabs(string instance)
-    {
+    internal void SmokeTabs(string instance) =>
         _tabs.SmokeInteractions("editor:" + instance, "stats:" + instance, () => new StatsWindow(instance));
-        VerifyChrome();
-    }
-
-    /// <summary>The window has no title bar of its own, and the three buttons that replace it are on
-    /// the tab strip's row at the window's right edge — including after the smoke has split the
-    /// workspace and folded the splits away again, which is when they have to move.</summary>
-    private void VerifyChrome()
-    {
-        // The smoke leaves a split behind it, and a split made a moment ago has not been laid out:
-        // its panes still carry their minimum size and sit at the origin until the event loop gets
-        // a turn. What is checked here is where a reader would see the buttons.
-        for (int round = 0; round < 3; round++) QCoreApplication.ProcessEvents();
-        if ((WindowFlags() & (Qt.WindowFlags)Qt.WindowType.FramelessWindowHint) == 0)
-            throw new InvalidOperationException("The window kept its title bar");
-        if (!_chrome.IsVisible())
-            throw new InvalidOperationException("The window's buttons are not shown");
-        if (_chrome.Window() != this)
-            throw new InvalidOperationException("The window's buttons left the window");
-        var bar = _tabs.TopRightTabBar() ?? throw new InvalidOperationException("No tab strip to host the window's buttons");
-        int barTop = bar.MapTo(this, new QPoint(0, 0)).Y();
-        var corner = _chrome.ParentWidget();
-        if (corner == null || Math.Abs(corner.MapTo(this, new QPoint(0, 0)).Y() - barTop) > 2 || corner.Height != bar.Height)
-            throw new InvalidOperationException(
-                $"The window's buttons are not on the strip's row: bar {barTop}+{bar.Height}, corner {corner?.MapTo(this, new QPoint(0, 0)).Y()}+{corner?.Height}");
-        var center = _chrome.MapTo(this, new QPoint(_chrome.Width / 2, _chrome.Height / 2));
-        if (center.Y() < barTop || center.Y() >= barTop + bar.Height)
-            throw new InvalidOperationException("The window's buttons are not on the tab strip's row");
-        int right = _chrome.MapTo(this, new QPoint(0, 0)).X() + _chrome.Width;
-        if (Width - right > 16)
-            throw new InvalidOperationException($"The window's buttons are not at the window's right edge: {right} of {Width}");
-        // Without a frame nobody else answers "this press is on the border", so the filter's own
-        // reading of the edges is checked here: the top edge it must find, the middle it must not.
-        if ((WindowEdges.EdgesAt(this, MapToGlobal(new QPoint(Width / 2, 2))) & Qt.Edges.TopEdge) == 0)
-            throw new InvalidOperationException("A press on the window's top edge is not read as a resize");
-        if (WindowEdges.EdgesAt(this, MapToGlobal(new QPoint(Width / 2, Height / 2))) != (Qt.Edges)0)
-            throw new InvalidOperationException("A press in the middle of the window is read as a resize");
-    }
 
     private void OnConfigSaved() => Refresh();
 

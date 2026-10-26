@@ -39,9 +39,6 @@ internal sealed class TabWorkspace : QWidget
     private readonly List<FloatingWindow> _windows = new();
     private readonly TabEvents _events;
     private readonly TabDragVisuals _visuals;
-    private readonly Dictionary<QSplitter, Qt.Orientation> _orientations = new();
-    private QWidget? _corner;
-    private Group? _cornerGroup;
     private QWidget _root;
     private Group _active;
     private Page? _pressed;
@@ -64,20 +61,6 @@ internal sealed class TabWorkspace : QWidget
     {
         public TabWorkspace Owner { get; } = owner;
         public FloatingWindow? Host { get; } = window;
-        /// <summary>The container this group offers for the window's own buttons. Every group in
-        /// the main window has one; the buttons are moved into the one at the top-right corner, so
-        /// a split changes where they are without recreating them.</summary>
-        public CornerHost? Corner { get; set; }
-    }
-
-    /// <summary>The corner QTabWidget puts the window's buttons in. It is a tab strip high, not a
-    /// button high: the strip's height comes from the theme's tab padding, and QTabWidget places a
-    /// corner at the bottom of whatever height its hint claims — a button-high hint hangs the
-    /// buttons below the row they share with the tabs. The hint asks for more than the strip so the
-    /// clamp lands it at the strip's top edge.</summary>
-    private sealed class CornerHost(Group group) : QWidget
-    {
-        public override QSize SizeHint() => new QSize(base.SizeHint().Width(), group.TabBar().Height * 2);
     }
 
     public TabWorkspace(QWidget parent) : base(parent)
@@ -134,19 +117,6 @@ internal sealed class TabWorkspace : QWidget
         group.SetSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored);
         group.TabBar().SetExpanding(false);
         group.TabBar().SetToolTip(I18n.T("tabs.hint"));
-        // The window has no title bar of its own: its buttons share the tab strip's row, so every
-        // group in the main window offers the corner they sit in. It starts empty and therefore
-        // takes no room; the group at the top-right receives them (PlaceCorner).
-        if (window == null)
-        {
-            var corner = new CornerHost(group);
-            var cornerRow = new QHBoxLayout(corner);
-            cornerRow.SetContentsMargins(0, 0, 0, 0);
-            cornerRow.SetSpacing(0);
-            corner.SetFixedWidth(0);
-            group.SetCornerWidget(corner, Qt.Corner.TopRightCorner);
-            group.Corner = corner;
-        }
         group.TabCloseRequested += index =>
         {
             var page = PageAt(group, index);
@@ -160,84 +130,6 @@ internal sealed class TabWorkspace : QWidget
 
     private Page? PageAt(Group group, int index) => index < 0 ? null :
         _pages.Values.FirstOrDefault(p => p.Group == group && p.Widget.Handle == group.Widget(index)?.Handle);
-
-    /// <summary>Whether the window this workspace fills has no title bar of its own: the strip's
-    /// empty space is then the window's drag handle, and the corner carries its buttons.</summary>
-    public bool Frameless { get; set; }
-
-    /// <summary>The strip the window's buttons are hosted in, for the check that they are still on
-    /// the tab row after the layout has moved groups around.</summary>
-    internal QTabBar? TopRightTabBar() => TopRightGroup()?.TabBar();
-
-    /// <summary>Hosts the window's own buttons in the strip of the group that owns the top-right
-    /// corner of the window. A split or a pane folding away moves them with it; they keep being the
-    /// same buttons, so nothing a reader is pressing is recreated.</summary>
-    public void SetWindowChrome(QWidget chrome)
-    {
-        _corner = chrome;
-        PlaceCorner();
-    }
-
-    private void PlaceCorner()
-    {
-        if (_corner == null) return;
-        var target = TopRightGroup();
-        if (target == null) return;
-        if (target != _cornerGroup)
-        {
-            if (_cornerGroup?.Corner?.Layout() is { } oldRow)
-            {
-                oldRow.RemoveWidget(_corner);
-                _cornerGroup.Corner.SetFixedWidth(0);
-                _cornerGroup.Corner.SetFixedHeight(0);
-            }
-            if (target.Corner?.Layout() is not { } row) return;
-            row.AddWidget(_corner);
-            _corner.Show();
-            _cornerGroup = target;
-        }
-        // QTabWidget gives the corner the height of its own hint and sits it at the bottom of the
-        // strip; the strip is taller than the buttons (the theme's tab padding), so leaving that
-        // hint alone hangs them a dozen pixels below the tabs they share a row with. The corner is
-        // given the strip's own height, and the buttons centre in it.
-        if (target.Corner is { } corner)
-        {
-            corner.SetFixedWidth(_corner.SizeHint().Width());
-            corner.SetFixedHeight(target.TabBar().Height);
-        }
-    }
-
-    /// <summary>The strip's height follows the theme's tab padding, so the corner is measured again
-    /// whenever the window is laid out or repainted for a new theme.</summary>
-    internal void RefreshChrome() => PlaceCorner();
-
-    private void DetachCorner()
-    {
-        if (_corner == null || _cornerGroup == null) return;
-        _cornerGroup.Corner?.Layout()?.RemoveWidget(_corner);
-        _cornerGroup.Corner?.SetFixedWidth(0);
-        _cornerGroup.Corner?.SetFixedHeight(0);
-        _corner.SetParent(_parking);
-        _corner.Hide();
-        _cornerGroup = null;
-    }
-
-    /// <summary>The group whose tab strip is the window's top-right one: the last child of every
-    /// horizontal split and the first of every vertical one, from the root down.</summary>
-    private Group? TopRightGroup()
-    {
-        QWidget? node = _root;
-        while (node != null)
-        {
-            if (node is Group group) return group.Host == null ? group : null;
-            if (node is not QSplitter split) return null;
-            bool horizontal = !_orientations.TryGetValue(split, out var orientation) ||
-                              orientation == Qt.Orientation.Horizontal;
-            int index = horizontal ? split.Count() - 1 : 0;
-            node = index >= 0 ? split.Widget(index) : null;
-        }
-        return null;
-    }
 
     private void Attach(Page page, Group group, int index = -1)
     {
@@ -390,7 +282,6 @@ internal sealed class TabWorkspace : QWidget
         split.SetHandleWidth(8);
         split.SetSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored);
         _splitters.Add(split);
-        _orientations[split] = orientation;
         if (parent != null) parent.ReplaceWidget(parent.IndexOf(target), split);
         else ReplaceRoot(target.Host, target, split);
         if (zone is Zone.Left or Zone.Top) { split.AddWidget(group); split.AddWidget(target); }
@@ -401,7 +292,6 @@ internal sealed class TabWorkspace : QWidget
         split.SetSizes(new[] { extent / 2, extent / 2 });
         split.Show();
         group.Show();
-        PlaceCorner();
         return group;
     }
 
@@ -435,9 +325,6 @@ internal sealed class TabWorkspace : QWidget
         }
         group.SetParent(_parking);
         _groups.Remove(group);
-        // The buttons live in the top-right group's strip; one folding away hands them to the next
-        // one before it is deleted, not after.
-        if (_cornerGroup == group) DetachCorner();
         group.DeleteLater();
         QWidget sibling = parent.Widget(0);
         var grandparent = ParentSplitter(parent);
@@ -447,7 +334,6 @@ internal sealed class TabWorkspace : QWidget
         _splitters.Remove(parent);
         parent.DeleteLater();
         sibling.Show();
-        PlaceCorner();
         if (!_groups.Contains(_active)) _active = _groups.First(g => g.Host == null);
     }
 
@@ -554,31 +440,12 @@ internal sealed class TabWorkspace : QWidget
             { owner.CancelDrag(); return true; }
             var group = owner._groups.FirstOrDefault(g => g.TabBar().Handle == watched.Handle);
             if (group == null) return false;
-            if (e.type() == QEvent.Type.MouseButtonDblClick)
-            {
-                var mouse = QMouseEvent.FromHandle(e.Handle);
-                if (mouse.Button() != Qt.MouseButton.LeftButton) return false;
-                if (!owner.Frameless || group.Host != null) return false;
-                if (owner.PageAt(group, group.TabBar().TabAt(mouse.Pos())) != null) return false;
-                // The strip is the window's title bar, so its empty space answers a double click
-                // the way a title bar does.
-                var window = owner.Window();
-                if (window.IsMaximized()) window.ShowNormal();
-                else window.ShowMaximized();
-                return true;
-            }
             if (e.type() == QEvent.Type.MouseButtonPress)
             {
                 var mouse = QMouseEvent.FromHandle(e.Handle);
                 if (mouse.Button() != Qt.MouseButton.LeftButton) return false;
                 var pos = mouse.Pos();
                 var page = owner.PageAt(group, group.TabBar().TabAt(pos));
-                if (page == null && owner.Frameless && group.Host == null)
-                {
-                    // Nothing is under the pointer there, as in a title bar: move the window.
-                    owner.Window().WindowHandle()?.StartSystemMove();
-                    return true;
-                }
                 if (page == null) return false;
                 owner._pressed = page;
                 owner._source = group;
