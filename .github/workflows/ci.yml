@@ -173,6 +173,10 @@ jobs:
     runs-on: windows-latest
     needs: package
     if: github.event_name != 'pull_request'
+    # The script bounds its own waits; this is the backstop for anything it cannot see, so a stuck
+    # installation fails in minutes instead of holding a runner until the six-hour limit. A hung
+    # install test skips the release job, which is how 0.8.0 and 0.8.1 were never published.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

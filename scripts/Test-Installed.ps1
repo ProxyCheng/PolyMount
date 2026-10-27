@@ -31,14 +31,23 @@ function Invoke-Setup([string]$path, [string]$arguments) {
     return $process.ExitCode
 }
 function Read-Config { Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
-function Ask-Supervisor([string]$command) {
+# A supervisor that is listening but never answers must not be able to hold this test open: the
+# answer is awaited with a deadline, and its absence is a failure with a name rather than a hang.
+# (0.8.1's install job sat on a bare ReadLine for six hours, until the runner's limit cancelled it
+# and the release was never published.)
+function Ask-Supervisor([string]$command, [int]$timeoutMs = 5000) {
     $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'PolyMount.Control', [System.IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(2000)
         $writer = New-Object System.IO.StreamWriter($pipe); $writer.AutoFlush = $true
         $reader = New-Object System.IO.StreamReader($pipe)
         $writer.WriteLine((@{ Cmd = $command } | ConvertTo-Json -Compress))
-        return $reader.ReadLine() | ConvertFrom-Json
+        $reply = $reader.ReadLineAsync()
+        if (-not $reply.Wait($timeoutMs)) {
+            throw "PolyMount.Control accepted the connection but did not answer '$command' within $timeoutMs ms"
+        }
+        if ($null -eq $reply.Result) { throw "PolyMount.Control closed the connection without answering '$command'" }
+        return $reply.Result | ConvertFrom-Json
     } finally { $pipe.Dispose() }
 }
 # The setup can return before the installation has finished: when it is not already elevated it
@@ -55,8 +64,13 @@ function Wait-Service([int]$seconds = 120) {
 }
 function Wait-Supervisor([int]$seconds = 30) {
     $deadline = (Get-Date).AddSeconds($seconds)
+    $script:supervisorError = ''
     while ((Get-Date) -lt $deadline) {
-        try { $reply = Ask-Supervisor 'status'; if ($reply.Ok) { return $reply } } catch { }
+        try {
+            $reply = Ask-Supervisor 'status'
+            if ($reply.Ok) { return $reply }
+            $script:supervisorError = "answered with an error: $($reply.Error)"
+        } catch { $script:supervisorError = $_.Exception.Message }
         Start-Sleep -Milliseconds 500
     }
     return $null
@@ -90,12 +104,17 @@ if ($registered) {
     Check 'service account' ($registered.StartName -ne '') $registered.StartName
 } else { Check 'service registration readable' $false }
 
-# When the service is missing or is not running, the only things that say why are the installer's
-# log and the host's own.
-if (-not $service -or $service.Status -ne 'Running') {
+# When the service is missing, is not running, or is running but says nothing, the only things that
+# say why are the installer's log and the host's own. This runs for both of those, so a supervisor
+# that is up but silent is as diagnosable as one that never started.
+function Show-BackendDiagnostics {
     Write-Host '--- sc.exe query PolyMount ---'
     & sc.exe query PolyMount 2>&1 | Write-Host
-    if ($service) { & sc.exe qc PolyMount 2>&1 | Write-Host }
+    if (Get-Service -Name PolyMount -ErrorAction SilentlyContinue) { & sc.exe qc PolyMount 2>&1 | Write-Host }
+    Write-Host '--- backend processes ---'
+    @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue) | ForEach-Object {
+        Write-Host ("  pid {0} session {1} started {2}" -f $_.Id, $_.SessionId, $_.StartTime)
+    }
     if (Test-Path -LiteralPath $setupLog) {
         Write-Host "--- tail of $setupLog ---"
         Get-Content -LiteralPath $setupLog -Tail 40 | Write-Host
@@ -119,6 +138,8 @@ if (-not $service -or $service.Status -ne 'Running') {
         Select-Object -First 8 |
         ForEach-Object { Write-Host ("  " + $_.TimeCreated.ToString('HH:mm:ss') + ' ' + $_.ProviderName + ': ' + ($_.Message -split "`n")[0]) }
 }
+
+if (-not $service -or $service.Status -ne 'Running') { Show-BackendDiagnostics }
 
 $running = @(Get-Process -Name PolyMount.Service -ErrorAction SilentlyContinue)
 Check 'exactly one backend process' ($running.Count -eq 1) "$($running.Count) process(es)"
@@ -162,13 +183,15 @@ if (Test-Path -LiteralPath $config) {
 }
 
 $reply = Wait-Supervisor
-Check 'supervisor answers' ($null -ne $reply)
+Check 'supervisor answers' ($null -ne $reply) $script:supervisorError
 if ($reply) {
     $configReply = Ask-Supervisor 'getConfig'
     Check 'SVN source is offered' ($configReply.SourceTypes -contains 'svn') ($configReply.SourceTypes -join ', ')
     $presets = @($configReply.Presets.Id)
     Check 'SVN workspace preset is offered' ($presets -contains 'svn-workspace') ($presets -join ', ')
     Check 'the separate game engine preset is gone' (-not ($presets -contains 'game-engine-workspace')) ($presets -join ', ')
+} else {
+    Show-BackendDiagnostics
 }
 
 Write-Host ''
@@ -200,7 +223,8 @@ Check 'all three bundled plugins are still named once' (
     ($pathsAfter[1] -eq 'plugins/PolyMount.Plugin.Svn.dll') -and
     ($pathsAfter[2] -eq 'plugins/PolyMount.Plugin.TxFShim.dll')) ($pathsAfter -join ', ')
 $reply = Wait-Supervisor
-Check 'supervisor still answers' ($null -ne $reply)
+Check 'supervisor still answers' ($null -ne $reply) $script:supervisorError
+if (-not $reply) { Show-BackendDiagnostics }
 
 if (-not $KeepInstalled) {
     Write-Host ''
