@@ -59,10 +59,14 @@ Where the list comes from:
 locking a working installation out after an upgrade. That state is not silent: the supervisor logs
 it at start, and every `status` answer carries it in `SecurityWarning`.
 
-Beyond the descriptor, the server reads the caller's token from the connection itself
-(`GetNamedPipeClientProcessId` → process token → SID and administrator membership) and refuses a
-caller the policy does not name. The descriptor is the enforcement; this is the same decision made
-again per request, and it is what puts the caller's account in the log.
+Beyond the descriptor, the server reads the caller's account from the connection itself — by
+impersonating the client, which is the kernel's own record of who connected, and falling back to the
+caller's process token when that is not available — and refuses a caller the policy does not name.
+The descriptor is the enforcement; this is the same decision made again per request, and it is what
+puts the caller's account in the log. Impersonation rather than the process token is deliberate: the
+service runs as `LocalService` by default, an account that cannot open a process owned by the user
+who installed the product, so reading the token through the process would refuse that user on every
+request. The identity comes from the connection either way, never from anything the caller says.
 
 ### A configuration leaves with its secrets taken out
 
