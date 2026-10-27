@@ -3,7 +3,6 @@ using System.Text.RegularExpressions;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -227,6 +226,121 @@ internal static class TrayTheme
     public static void Apply()
     {
         if (QCoreApplication.Instance() is QApplication app) app.StyleSheet = StyleSheet;
+    }
+
+    /// <summary>The native style answers "this control has the keyboard" with a dotted rectangle
+    /// drawn inside the control, over whatever the style sheet put there. The theme says the same
+    /// thing with the accent its controls take on <c>:focus</c>, so the style sheet turns the dotted
+    /// one off with <c>outline: none</c> — the property Qt reads exactly where that rectangle would
+    /// be drawn.
+    ///
+    /// Read back here, because a rule that stops matching is a rectangle that comes back quietly:
+    /// each kind of control is asked for the focus rectangle it would paint, and what comes out has
+    /// to be blank — while the control still has to look different with the keyboard on it, or the
+    /// keyboard would be nowhere on the page.</summary>
+    internal static void VerifyNoNativeFocusRect()
+    {
+        (string Name, QWidget Control, QStyle.ControlElement? Says)[] controls =
+        {
+            ("A push button", new QPushButton("OK"), QStyle.ControlElement.CE_PushButton),
+            ("A check box", new QCheckBox("on"), QStyle.ControlElement.CE_CheckBox),
+            ("A combo box", new QComboBox(), null),
+            ("A list", new QListWidget(), null),
+            ("A table", new QTableWidget(), null)
+        };
+        try
+        {
+            foreach (var (name, control, says) in controls)
+            {
+                int rectangle = FocusRectInk(control, currentItem: false);
+                if (rectangle != 0)
+                    throw new InvalidOperationException(
+                        $"{name} still paints the native focus rectangle: {rectangle} pixels of it");
+                // An item view draws a second one around the item it is on, through a different
+                // path (the item view item, not the widget's own rectangle), so that path is asked
+                // separately rather than assumed to follow.
+                if (control is QAbstractItemView)
+                {
+                    int item = FocusRectInk(control, currentItem: true);
+                    if (item != 0)
+                        throw new InvalidOperationException(
+                            $"{name} still paints the native focus rectangle around its current item: {item} pixels of it");
+                }
+                if (says is { } element && !SaysFocused(control, element))
+                    throw new InvalidOperationException(
+                        $"{name} paints the same with the keyboard on it as without, so nothing on it says where the keyboard is");
+            }
+        }
+        finally
+        {
+            foreach (var (_, control, _) in controls) control.Dispose();
+        }
+    }
+
+    /// <summary>Whether the control paints at all differently when it has the keyboard.</summary>
+    private static bool SaysFocused(QWidget control, QStyle.ControlElement element)
+    {
+        using var plain = Render(control, element, focused: false);
+        using var focused = Render(control, element, focused: true);
+        for (int y = 0; y < plain.Height(); y++)
+            for (int x = 0; x < plain.Width(); x++)
+                if (plain.Pixel(x, y) != focused.Pixel(x, y)) return true;
+        return false;
+    }
+
+    /// <summary>The control drawn on its own, focused or not. The words it draws are its own.</summary>
+    private static QImage Render(QWidget control, QStyle.ControlElement element, bool focused)
+    {
+        var canvas = new QImage(160, 40, QImage.Format.Format_ARGB32_Premultiplied);
+        canvas.Fill(0u);
+        var option = new QStyleOptionButton();
+        option.Rect = new QRect(0, 0, 160, 40);
+        option.Text = control is QAbstractButton button ? button.Text : "";
+        option.State = QStyle.State.State_Enabled
+            | (focused ? QStyle.State.State_HasFocus | QStyle.State.State_KeyboardFocusChange : 0);
+        using var painter = new QPainter(canvas);
+        control.Style().DrawControl(element, option, painter, control);
+        return canvas;
+    }
+
+    /// <summary>How much ink the style puts down for <paramref name="control"/>'s focus rectangle,
+    /// either around the control itself or around the item it is on. The option is built here rather
+    /// than borrowed from a live window: the rectangle turns on the control's own kind and its
+    /// focused state, not on a window having the keyboard.</summary>
+    private static int FocusRectInk(QWidget control, bool currentItem)
+    {
+        using var canvas = new QImage(160, 40, QImage.Format.Format_ARGB32_Premultiplied);
+        canvas.Fill(0u);
+        // Keyboard navigation is what a reader does before the dotted rectangle shows up at all, so
+        // it is part of the state the style is asked about.
+        var state = QStyle.State.State_HasFocus | QStyle.State.State_KeyboardFocusChange
+            | QStyle.State.State_Enabled;
+        using (var painter = new QPainter(canvas))
+        {
+            if (currentItem)
+            {
+                var item = new QStyleOptionViewItem();
+                item.Rect = new QRect(0, 0, 160, 40);
+                item.State = state;
+                item.Widget = control;
+                control.Style().DrawControl(QStyle.ControlElement.CE_ItemViewItem, item, painter, control);
+            }
+            else
+            {
+                var option = new QStyleOptionFocusRect();
+                option.Rect = new QRect(0, 0, 160, 40);
+                option.State = state;
+                control.Style().DrawPrimitive(QStyle.PrimitiveElement.PE_FrameFocusRect, option, painter, control);
+            }
+        }
+        int ink = 0;
+        for (int y = 0; y < canvas.Height(); y++)
+            for (int x = 0; x < canvas.Width(); x++)
+            {
+                using var pixel = canvas.PixelColor(x, y);
+                if (pixel.Alpha() > 0) ink++;
+            }
+        return ink;
     }
 
     private static bool SystemIsDark() =>

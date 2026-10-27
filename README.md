@@ -188,8 +188,16 @@ file; it is ordinary JSON and can be edited by hand. A service started from a bu
 }
 ```
 
-The chain above is the layer order of the `svn-workspace` preset. A mount is legal with no source,
-with only a source, or with several sources.
+The chain above is the layer order of the `svn-workspace` preset; applying the preset also brings
+its capacities and read-ahead settings, which the example leaves at defaults. A mount is legal
+with no source, with only a source, or with several sources.
+
+**New mount** builds an instance from one of those presets: the dialog first shows what each preset
+mounts and which values it will ask for, then asks only those — the source's address and account —
+while the name and the mount point follow the address until they are typed over. Everything else
+keeps the preset's defaults and is adjusted afterwards in the editor, which the dialog's last card
+opens directly for a chain built by hand. Nothing is written until the dialog commits, and the
+service's refusal (an address the source will not take) is shown under the field it came from.
 
 The tray's **Plugins** section — beside the mount overview in the sidebar, in the same page —
 shows what each configured plugin adds and keeps that `Plugins` list. **While the service runs it
@@ -218,9 +226,12 @@ by an administrator. The tray's Plugins section is the front end for that list: 
 which files are in the folder but not named, and adding one writes the entry. Assemblies built
 against the older `ILayerPlugin` still load: that name remains as an obsolete alias.
 
-The bundled SVN plugin adds the `svn` source type, the `svn-workspace` and `game-engine-workspace`
-presets, and the `manifests` prediction strategy — a package-family prefetcher for content
-repositories, so one plugin covers a Subversion source whether or not it is a game project. The
+The bundled SVN plugin adds the `svn` source type, the `svn-workspace` preset, and the `manifests`
+prediction strategy — a package-family prefetcher for content repositories, so one plugin covers a
+Subversion source whether or not it is a game project. There is one Subversion preset, not two: it
+carries the configuration a content-repository start-up was measured with (a 1 GiB memory cache, a
+10k listing warm-up, a 256 MiB prediction layer running only `manifests`, and a 16 GiB durable read
+cache) instead of leaving a bare default beside a tuned variant. The
 remote-folder plugin adds the `smb` source type and the `smb-workspace` preset — a folder shared by
 another machine, read through the Windows redirector, with nothing installed over there. Local
 directories are built in (`dir`). The transaction-shim plugin answers a different need: some
@@ -243,7 +254,7 @@ PolyMount.Service                     supervisor (one per machine) + one worker 
 PolyMount.Tray                        Qt tray and windows, charts, config editor, recording UI
 PolyMount.Mcp                         stdio MCP server over the control pipe
 PolyMount.Shell                       native Explorer overlay handler (source badges)
-plugins/PolyMount.Plugin.Svn          Subversion source, manifest prefetcher, and both presets
+plugins/PolyMount.Plugin.Svn          Subversion source, manifest prefetcher, and the svn-workspace preset
 plugins/PolyMount.Plugin.Smb          folder on another machine (SMB) and smb-workspace preset
 plugins/PolyMount.Plugin.TxFShim      transaction-free opens for chosen programs (native shim + launcher)
 PolyMount.Plugin.Testing              test contract for plugin assemblies

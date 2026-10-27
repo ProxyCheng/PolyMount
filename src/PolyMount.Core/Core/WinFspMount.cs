@@ -273,7 +273,9 @@ public sealed class WinFspMount : FileSystemBase
             {
                 if (wantFile) return NtStatus.FileIsADirectory;
                 fileNode = new FsNode { Rel = rel, IsDir = true, LocalPath = null, ProcessId = request?.ProcessId ?? 0 };
-                fileInfo = BuildDirInfo(rel);
+                // From the entry the lookup just answered with: BuildDirInfo would resolve the
+                // whole name a second time for the same handful of fields.
+                fileInfo = BuildEntryInfo(entry, rel);
                 return NtStatus.Success;
             }
 

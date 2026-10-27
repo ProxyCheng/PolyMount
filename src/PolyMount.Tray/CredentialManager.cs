@@ -3,7 +3,6 @@ using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 

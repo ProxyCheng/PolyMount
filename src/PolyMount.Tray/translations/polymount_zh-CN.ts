@@ -1642,5 +1642,37 @@ DLL 会留在插件目录里，之后可以再加回来。</translation>
       <source>plugins.footnote</source>
       <translation>改动只会写入配置，服务启动时才会加载。</translation>
     </message>
+    <message><source>newmount.preset.subtitle</source><translation>先选一个预设——它决定这个实例由哪些层组成，下一步只问它需要的信息。</translation></message>
+    <message><source>newmount.form.subtitle</source><translation>其余参数沿用预设的默认值；创建后可以在编辑器里逐层调整。</translation></message>
+    <message><source>newmount.noPresets</source><translation>没有可用的预设：提供预设的插件没有加载。</translation></message>
+    <message><source>newmount.loading</source><translation>正在读取预设…</translation></message>
+    <message><source>newmount.loadFailed</source><translation>读取配置失败：{0}</translation></message>
+    <message><source>newmount.createFailed</source><translation>创建失败：{0}</translation></message>
+    <message><source>newmount.step</source><translation>第 {0} 步，共 {1} 步</translation></message>
+    <message><source>newmount.needs</source><translation>需要填写：{0}</translation></message>
+    <message><source>newmount.needs.none</source><translation>不需要额外信息</translation></message>
+    <message><source>newmount.chain</source><translation>层栈：{0}</translation></message>
+    <message><source>newmount.custom.title</source><translation>从空白层栈开始</translation></message>
+    <message><source>newmount.custom.description</source><translation>打开完整的配置编辑器，自己选择层和顺序。</translation></message>
+    <message><source>newmount.name</source><translation>名称</translation></message>
+    <message><source>newmount.location</source><translation>挂载位置</translation></message>
+    <message><source>newmount.browse</source><translation>浏览…</translation></message>
+    <message><source>newmount.back</source><translation>上一步</translation></message>
+    <message><source>newmount.next</source><translation>下一步</translation></message>
+    <message><source>newmount.create</source><translation>创建并挂载</translation></message>
+    <message><source>newmount.creating</source><translation>正在创建…</translation></message>
+    <message><source>newmount.created</source><translation>已创建「{0}」，正在启动；第一次读取会向源请求。</translation></message>
+    <message><source>newmount.error.name</source><translation>给这个实例起个名字。</translation></message>
+    <message><source>newmount.error.name.taken</source><translation>已有实例叫「{0}」。</translation></message>
+    <message><source>newmount.error.location</source><translation>选择挂载位置：一个文件夹路径或盘符。</translation></message>
+    <message><source>newmount.error.location.drive</source><translation>盘符 {0} 已被占用。</translation></message>
+    <message><source>newmount.error.location.relative</source><translation>挂载位置要写完整路径，例如 D:\Mounts\work。</translation></message>
+    <message><source>newmount.error.location.taken</source><translation>「{0}」已经挂载在这个位置。</translation></message>
+    <message><source>newmount.error.location.busy</source><translation>这个文件夹已存在且不为空，请换一个空的或不存在的路径。</translation></message>
+    <message><source>newmount.error.required</source><translation>填写{0}。</translation></message>
+    <message><source>newmount.error.url</source><translation>这不是完整地址，形如 https://svn.example.com/repo。</translation></message>
+    <message><source>newmount.error.share</source><translation>共享路径形如 \服务器\共享名，或它下面的文件夹。</translation></message>
+    <message><source>newmount.error.folder</source><translation>这个目录不存在。</translation></message>
+    <message><source>newmount.source.folder</source><translation>选择要挂载的文件夹</translation></message>
   </context>
 </TS>

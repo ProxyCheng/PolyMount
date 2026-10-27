@@ -219,7 +219,16 @@ public sealed class RequestDiagnostics : IDisposable
         internal long Id { get; }
         internal int ProcessId { get; }
         internal bool Trace { get; }
-        internal long ElapsedMs => (Stopwatch.GetTimestamp() - _startedTicks) * 1000L / Stopwatch.Frequency;
+        /// <summary>Whole milliseconds, for the thresholds and the lines a scope writes about
+        /// itself. Truncated on purpose: those are read by a person.</summary>
+        internal long ElapsedMs => (long)ElapsedMilliseconds;
+        /// <summary>The same reading with its fraction kept. A recording accumulates nanoseconds
+        /// because a mount answers most requests in a fraction of a millisecond — the whole reason
+        /// those counts exist is the requests too small to be worth a line, and rounding them to
+        /// whole milliseconds first emptied the total: a warm walk of a large tree recorded
+        /// 1.6 million requests and 67 ms of work between them.</summary>
+        internal double ElapsedMilliseconds =>
+            (Stopwatch.GetTimestamp() - _startedTicks) * 1000.0 / Stopwatch.Frequency;
         internal long LastReportMs = -5000;
 
         internal Scope(RequestDiagnostics owner, Scope? parent, string operation, string path, int processId, bool suppressed)
@@ -262,10 +271,12 @@ public sealed class RequestDiagnostics : IDisposable
         {
             if (Interlocked.Exchange(ref _finished, 1) != 0) return;
             _owner._active.TryRemove(Id, out _);
-            long elapsed = ElapsedMs;
+            double elapsed = ElapsedMilliseconds;
             Emit("END");
             // A recording counts this request whether or not a line was written about it, which is
-            // what lets a window be described exactly without describing every request in it.
+            // what lets a window be described exactly without describing every request in it. It is
+            // handed the fractional reading: the counters keep nanoseconds, and whole milliseconds
+            // would throw away everything a cache hit is worth.
             if (_owner.Recording) _owner.Channel!.Count(_operation, _path, elapsed, ProcessId);
             Current.Value = _parent;
         }

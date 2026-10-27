@@ -2,7 +2,6 @@ using PolyMount.Core;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -118,7 +117,7 @@ internal sealed class PresetPicker : QDialog
             _list.SetItemWidget(item, card);
             // A row with a widget is not sized from that widget; without a hint its height comes
             // from the item's empty text and the card is clipped.
-            item.SetSizeHint(new QSize(0, Math.Max(card.SizeHint().Height(), 64)));
+            item.SetSizeHint(new QSize(0, Math.Max(card.SizeHint.Height(), 64)));
             _cards.Add((preset, item, card));
         }
         SelectCurrent();

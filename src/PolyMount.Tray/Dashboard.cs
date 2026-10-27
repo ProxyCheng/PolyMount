@@ -4,7 +4,6 @@ using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -225,7 +224,7 @@ internal sealed class Dashboard : QWidget
         _refresh = Button("refresh", () => Refresh(), icon: "refresh");
         I18n.Bind(_refresh.SetToolTip, "refresh.tip");
         heading.AddWidget(_refresh);
-        _create = Button("mount.new", () => OpenEditor(create: true), "primary", "plus");
+        _create = Button("mount.new", NewMount, "primary", "plus");
         heading.AddWidget(_create);
         content.AddLayout(heading);
 
@@ -484,8 +483,8 @@ internal sealed class Dashboard : QWidget
         _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
         Resize(1280, 820);
         QCoreApplication.ProcessEvents();
-        int sidebarMinimum = _sidebar.MinimumSizeHint().Height();
-        int sidebarContent = _sidebarBody.MinimumSizeHint().Height();
+        int sidebarMinimum = _sidebar.MinimumSizeHint.Height();
+        int sidebarContent = _sidebarBody.MinimumSizeHint.Height();
         if (sidebarMinimum > 100)
             throw new InvalidOperationException(
                 $"The sidebar still asks the page for {sidebarMinimum} px of height instead of scrolling inside itself");
@@ -493,9 +492,9 @@ internal sealed class Dashboard : QWidget
             throw new InvalidOperationException(
                 $"The sidebar's own column is only {sidebarContent} px tall, so this check would pass without measuring anything");
         int roomy = _workspace.Height;
-        if (roomy <= _workspace.MinimumSizeHint().Height())
+        if (roomy <= _workspace.MinimumSizeHint.Height())
             throw new InvalidOperationException(
-                $"The panels stopped at their minimum ({_workspace.MinimumSizeHint().Height()} px) in a window with {roomy} px to give them");
+                $"The panels stopped at their minimum ({_workspace.MinimumSizeHint.Height()} px) in a window with {roomy} px to give them");
         if (_overviewScroll.VerticalScrollBar().IsVisible())
             throw new InvalidOperationException(
                 $"A window with room to spare scrolled the whole page: {Width}x{Height}, viewport "
@@ -503,7 +502,7 @@ internal sealed class Dashboard : QWidget
                 + $"{_overviewScroll.Widget().Width}x{_overviewScroll.Widget().Height}");
         // What the page needs at least, and how much of the window is not the page (the tabs above
         // it). The window is then asked for exactly that much and a little less.
-        int needed = _overviewScroll.Widget().MinimumSizeHint().Height();
+        int needed = _overviewScroll.Widget().MinimumSizeHint.Height();
         int overhead = Height - _overviewScroll.Viewport().Height;
         Console.WriteLine($"Workspace: the page needs {needed} px; the panels take every pixel above that.");
         Resize(1280, needed + overhead + 40);
@@ -644,7 +643,7 @@ internal sealed class Dashboard : QWidget
                 QCoreApplication.ProcessEvents();
                 foreach (var (name, combo) in new (string Name, QComboBox Combo)[] { ("language", _language), ("theme", _theme) })
                 {
-                    int wanted = combo.SizeHint().Width();
+                    int wanted = combo.SizeHint.Width();
                     if (combo.Width < wanted)
                         throw new InvalidOperationException(
                             $"The {name} picker is {combo.Width} px wide in {language} and its own items want {wanted} of them");
@@ -1070,6 +1069,37 @@ internal sealed class Dashboard : QWidget
         editor.Saved -= OnConfigSaved;
         editor.Saved += OnConfigSaved;
         return editor;
+    }
+
+    /// <summary>Creating an instance starts with what it mounts, not with an empty stack: the
+    /// dialog offers the presets, then asks only for the values the chosen one cannot know. Its
+    /// last card is the way back to the editor, for a chain that is built by hand. The instance is
+    /// written by the dialog — it is the one holding the values, and a refusal belongs beside the
+    /// field that caused it — so all that is left here is to show it.</summary>
+    private void NewMount()
+    {
+        if (_settle || (_pending != null && !_quietPending) || !_connected || _serviceState == ServiceState.Stopping) return;
+        var dialog = new NewMountDialog(this);
+        try
+        {
+            if (dialog.Exec() != 1) return;
+            if (dialog.Custom) { OpenEditor(create: true); return; }
+            if (dialog.Created is not { Length: > 0 } created) return;
+            _selectedName = created;
+            Feedback(I18n.F("newmount.created", created));
+            // The instance's own state is the next question, and it is answered by the service,
+            // not by the save: ask once rather than wait out the ten-second poll, and hold the
+            // buttons flat until that answer is in — the same rule every other command follows.
+            _settle = true;
+            if (_pending == null) Refresh(quiet: true);
+            else _queued = () => Refresh(quiet: true);
+            UpdateActions();
+        }
+        finally
+        {
+            dialog.Hide();
+            dialog.DeleteLater();
+        }
     }
 
     private void OpenPerformance()

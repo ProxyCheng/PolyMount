@@ -34,11 +34,16 @@ public sealed class ManifestFamilyTests : IPluginTestProvider
             if (errors.Count > 0) throw new Exception(string.Join("; ", errors));
             if (!PredictionStrategyRegistry.Names.Contains("manifests", StringComparer.OrdinalIgnoreCase))
                 throw new Exception("The manifests strategy was not registered");
-            var preset = LayerPresetRegistry.All.SingleOrDefault(p => p.Id == "game-engine-workspace")
-                ?? throw new Exception("Missing the game engine preset");
+            // One preset per source type: the SVN workspace carries the manifest prefetcher, and
+            // the separately tuned game-engine preset is gone (it only invited picking the
+            // wrong one).
+            if (LayerPresetRegistry.All.Any(p => p.Id == "game-engine-workspace"))
+                throw new Exception("The game engine preset is back");
+            var preset = LayerPresetRegistry.All.SingleOrDefault(p => p.Id == "svn-workspace")
+                ?? throw new Exception("Missing the SVN workspace preset");
             var order = preset.Layers.Select(l => l.Type).ToArray();
             if (!order.SequenceEqual(new[] { "memory-cache", "warmup", "prediction-cache", "cache", "overlay", "svn" }))
-                throw new Exception("Unexpected game engine workspace layer order: " + string.Join(",", order));
+                throw new Exception("Unexpected SVN workspace layer order: " + string.Join(",", order));
             var predict = preset.Layers.Single(l => l.Type == "prediction-cache");
             if (!predict.Parameters.TryGetValue("Strategies", out var strategies) ||
                 !string.Equals(strategies.GetString(), "manifests", StringComparison.OrdinalIgnoreCase))
@@ -56,7 +61,7 @@ public sealed class ManifestFamilyTests : IPluginTestProvider
             PluginLoader.LoadConfigured(Array.Empty<PluginConfig>(), AppContext.BaseDirectory);
             if (PredictionStrategyRegistry.Names.Count > 0)
                 throw new Exception("A disabled plugin's strategy remains registered");
-            if (LayerPresetRegistry.All.Any(p => p.Id == "game-engine-workspace"))
+            if (LayerPresetRegistry.All.Any(p => p.Id == "svn-workspace"))
                 throw new Exception("A disabled plugin's preset remains registered");
             if (ControlOperations.Find("list_manifest_families") != null)
                 throw new Exception("A disabled plugin's control operation remains registered");

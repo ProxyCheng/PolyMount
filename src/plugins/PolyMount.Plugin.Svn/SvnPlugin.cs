@@ -88,28 +88,37 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
         // by name next to the built-in ones.
         context.RegisterPredictionStrategy("manifests", strategy => new ManifestFamilyPrediction(strategy));
 
+        // One preset per source type: the chain a Subversion workspace wants, carrying the
+        // capacities and read-ahead settings a content-repository start-up was measured with.
+        // A second, separately tuned preset only invited people to pick the wrong one.
         context.RegisterPreset(new()
         {
-            Id = "game-engine-workspace",
-            Titles = SvnTexts.All("preset.game-engine-workspace.title"),
+            Id = "svn-workspace",
+            Titles = SvnTexts.All("preset.svn-workspace.title"),
             Layers = new()
             {
-                // The measured start-up configuration: a gigabyte of block cache in front of the
-                // durable one, listings warmed for three minutes, and a durable read cache that
-                // never takes a write (the overlay is the only write target).
+                // Below the warm-up: warming RAM with listings would spend this budget on
+                // records the first client enumeration fills on demand anyway, and evict the
+                // file blocks the cache exists for. A gigabyte of blocks in front of the
+                // durable cache is what the start-up was measured with.
                 new() { Id = "memory-cache", Type = "memory-cache", Parameters = new()
                 {
                     ["CapacityBytes"] = JsonSerializer.SerializeToElement(1024L * 1024 * 1024),
                     ["BlockSize"] = JsonSerializer.SerializeToElement("65536")
                 } },
+                // Above the overlay, so the walk still sees local deletions. Here it fills the
+                // durable cache — the one that answers a restart.
                 new() { Id = "warmup", Type = "warmup", Parameters = new()
                 {
                     ["Limit"] = JsonSerializer.SerializeToElement(10000),
                     ["Seconds"] = JsonSerializer.SerializeToElement(180),
                     ["QuietMs"] = JsonSerializer.SerializeToElement(250)
                 } },
-                // Above the durable cache, so a guessed manifest fills the cache that answers the
-                // next start; below the warm-up, so listing work stays in RAM.
+                // Predictions read through the overlay, so a guess sees local writes. The
+                // durable read cache sits below it (it caches the chain's view) but above the
+                // overlay, which is the only layer that accepts writes and therefore sits
+                // directly above the source. Only the manifest prefetcher runs: the general
+                // strategies measured no gain on this load and spend the budget on guesses.
                 new() { Id = "predict", Type = "prediction-cache", Parameters = new()
                 {
                     ["CapacityBytes"] = JsonSerializer.SerializeToElement(256L * 1024 * 1024),
@@ -117,13 +126,13 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                 } },
                 // 16 GiB, the size the start-up was measured with: the durable cache is what
                 // answers the next start, and the manifests the strategy prefetches are only
-                // useful if they are still there when the engine asks.
+                // useful if they are still there when the program asks.
                 new() { Id = "cache", Type = "cache", CacheCapacityBytes = 16L * 1024 * 1024 * 1024,
                     Parameters = new() { ["Writable"] = JsonSerializer.SerializeToElement(false) } },
                 new() { Id = "overlay", Type = "overlay" },
-                // Directory enumeration is one round trip each; fetching the next level while the
-                // caller reads the current one is what keeps a cold walk linear in depth rather
-                // than in directory count. The defaults are the ones the editor start-up was
+                // Directory enumeration is one round trip each; fetching the next level while
+                // the caller reads the current one is what keeps a cold walk linear in depth
+                // rather than in directory count. The values are the ones the start-up was
                 // measured with.
                 new() { Id = "svn", Type = "svn", Source = new()
                 {
@@ -136,32 +145,6 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                         ["SpeculativeConcurrency"] = JsonSerializer.SerializeToElement(2)
                     }
                 } }
-            }
-        });
-
-        context.RegisterPreset(new()
-        {
-            Id = "svn-workspace",
-            Titles = SvnTexts.All("preset.svn-workspace.title"),
-            Layers = new()
-            {
-                // Below the memory cache: warming RAM with listings would spend the memory
-                // cache's budget on records the first client enumeration fills on demand
-                // anyway, and evict the file blocks that cache exists for. Above the overlay,
-                // so the walk still sees local deletions. Here it fills the durable cache —
-                // the one that answers a restart.
-                new() { Id = "memory-cache", Type = "memory-cache" },
-                new() { Id = "warmup", Type = "warmup" },
-                // Predictions read through the overlay, so a guess sees local writes. The
-                // durable read cache sits below it (it caches the chain's view) but above the
-                // overlay, which is the only layer that accepts writes and therefore sits
-                // directly above the source.
-                new() { Id = "predict", Type = "prediction-cache", Parameters = new()
-                    { ["CapacityBytes"] = System.Text.Json.JsonSerializer.SerializeToElement(16L * 1048576) } },
-                new() { Id = "cache", Type = "cache", Parameters = new()
-                    { ["Writable"] = System.Text.Json.JsonSerializer.SerializeToElement(false) } },
-                new() { Id = "overlay", Type = "overlay" },
-                new() { Id = "svn", Type = "svn", Source = new() { Type = "svn" } }
             }
         });
         context.RegisterSource("svn", (config, state) =>

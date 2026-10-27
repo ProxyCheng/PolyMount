@@ -48,13 +48,8 @@ public sealed class MountInstance : IDisposable
             Directory.CreateDirectory(layerState);
             string storage = profile.GetLayerStorage(cfg);
             int index = i;
-            var provider = LayerRegistry.Create(cfg, new LayerBuildContext(storage, layerState, () =>
-                {
-                    var lower = built.Skip(index + 1).Select(l => l.Name + ":" + l.Generation);
-                    // Preserve the old revision-based folder for the single-source chain.
-                    if (built.Length - index == 2) return built[index + 1].Generation;
-                    return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join("|", lower))));
-                }));
+            var provider = LayerRegistry.Create(cfg, new LayerBuildContext(storage, layerState,
+                new LowerChainGeneration(built, index).Read));
             _layers.Add(cfg.Id, provider);
             built[i] = provider is ICacheLayer cache ? new NamedCacheLayer(cfg.Id, cache) : new NamedLayer(cfg.Id, provider);
         }
@@ -304,6 +299,61 @@ public sealed class MountInstance : IDisposable
         {
             try { host.Dispose(); }
             finally { lock (_gate) _unmounting = false; }
+        }
+    }
+
+    /// <summary>The generation of everything a layer sits on: the key a cache stores its records
+    /// under, and what it checks before answering at all — the memory cache turns its whole
+    /// directory index over the moment it sees a different one.
+    ///
+    /// Computed once per change of the chain below, not once per ask. Asking is what a warm
+    /// enumeration does most of: every cache lookup asks, so the answer used to be a SHA256 over
+    /// the lower layers' names and generations, five string concatenations and a
+    /// <c>string.Join</c>, taken under the asking cache's own lock. The sampling profiler put it
+    /// at 13% of a worker's samples while the mount served a tree it had entirely in memory.
+    /// </summary>
+    internal sealed class LowerChainGeneration(ILayer[] chain, int index)
+    {
+        /// <summary>What the value was computed from, published with it: two fields written one
+        /// after the other would let a reader pair a fresh key with the previous value.</summary>
+        private sealed record Stamp(string[] Lower, string Value);
+
+        private readonly object _gate = new();
+        private Stamp? _stamp;
+
+        public string Read()
+        {
+            var stamp = Volatile.Read(ref _stamp);
+            if (stamp != null && Unchanged(stamp.Lower)) return stamp.Value;
+            lock (_gate)
+            {
+                stamp = Volatile.Read(ref _stamp);
+                if (stamp != null && Unchanged(stamp.Lower)) return stamp.Value;
+                stamp = Compute();
+                Volatile.Write(ref _stamp, stamp);
+                return stamp.Value;
+            }
+        }
+
+        private bool Unchanged(string[] lower)
+        {
+            for (int i = 0; i < lower.Length; i++)
+                if (!string.Equals(chain[index + 1 + i].Generation, lower[i], StringComparison.Ordinal))
+                    return false;
+            return true;
+        }
+
+        private Stamp Compute()
+        {
+            int count = chain.Length - index - 1;
+            var lower = count == 0 ? Array.Empty<string>() : new string[count];
+            for (int i = 0; i < count; i++) lower[i] = chain[index + 1 + i].Generation;
+            // One layer below is the single-source chain: its own generation is the whole key,
+            // which is the revision-based folder those stores were built with.
+            if (count == 1) return new Stamp(lower, lower[0]);
+            string text = string.Join("|", lower.Select((generation, i) => chain[index + 1 + i].Name + ":" + generation));
+            return new Stamp(lower, Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text))));
         }
     }
 

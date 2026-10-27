@@ -1,5 +1,5 @@
-[CmdletBinding()]
-param([string]$Version = '0.13.0', [string]$Destination)
+﻿[CmdletBinding()]
+param([string]$Version = '0.17.0', [string]$Destination)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 if (-not $Destination) { $Destination = Join-Path $repo 'packages' }

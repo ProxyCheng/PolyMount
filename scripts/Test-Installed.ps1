@@ -167,7 +167,8 @@ if ($reply) {
     $configReply = Ask-Supervisor 'getConfig'
     Check 'SVN source is offered' ($configReply.SourceTypes -contains 'svn') ($configReply.SourceTypes -join ', ')
     $presets = @($configReply.Presets.Id)
-    Check 'game engine preset is offered' ($presets -contains 'game-engine-workspace') ($presets -join ', ')
+    Check 'SVN workspace preset is offered' ($presets -contains 'svn-workspace') ($presets -join ', ')
+    Check 'the separate game engine preset is gone' (-not ($presets -contains 'game-engine-workspace')) ($presets -join ', ')
 }
 
 Write-Host ''

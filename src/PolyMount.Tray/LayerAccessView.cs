@@ -2,7 +2,6 @@ using QtSharp.Charts;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -225,6 +224,12 @@ internal sealed class LayerAccessView : QWidget
     /// <see cref="SetAligned"/> would test the setter and not the wiring the reader uses.</summary>
     internal void SmokeToggle() => Toggle();
 
+    /// <summary>The switch as a button click reaches it: the heading is a button now, and driving
+    /// it through the view's own toggle would skip the control the reader actually presses.</summary>
+    internal void SmokeClickSwitch() => _writes.SmokeClickSwitch();
+
+    internal bool SmokeSwitchFocusable() => _writes.SmokeSwitchFocusable;
+
     /// <summary>What each layer answered and what each caller asked, over the window the page is
     /// reading. Both directions are in every row, each card counts the one it is about, and a row
     /// that answered none of a direction is not in that card's list at all.</summary>
@@ -296,6 +301,12 @@ internal sealed class LayerAccessView : QWidget
 
         private void Toggle() => Switched?.Invoke();
 
+        /// <summary>The heading as a button click reaches it, and whether it takes the keyboard:
+        /// the two facts that make it a control rather than a line of text.</summary>
+        internal void SmokeClickSwitch() => _caption.Click();
+
+        internal bool SmokeSwitchFocusable => _caption.FocusPolicy != Qt.FocusPolicy.NoFocus;
+
         /// <summary>Which way the rows are drawn, said in the heading over them.</summary>
         public void SetAligned(bool aligned)
         {
@@ -308,7 +319,7 @@ internal sealed class LayerAccessView : QWidget
         public void Translate()
         {
             _title = I18n.T(_titleKey);
-            _caption.SetText(I18n.T(_byProcess.Aligned ? "stats.access.byProcess.aligned" : "stats.access.byProcess.stacked"));
+            _caption.SetCaption(I18n.T(_byProcess.Aligned ? "stats.access.byProcess.aligned" : "stats.access.byProcess.stacked"));
             _caption.SetToolTip(I18n.T("stats.access.byProcess.hint"));
             Update();
         }
@@ -325,7 +336,7 @@ internal sealed class LayerAccessView : QWidget
             var column = new QVBoxLayout(holder);
             column.SetContentsMargins(0, 0, 0, 0);
             column.SetSpacing(2);
-            QLabel caption;
+            QWidget caption;
             if (control != null)
             {
                 // The rows are read two ways and the heading says which one is showing, so the
@@ -333,17 +344,17 @@ internal sealed class LayerAccessView : QWidget
                 // word that named this one. The tooltip says so, because a heading that is also a
                 // control is only discoverable if something says it is.
                 control.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
-                control.Clicked += Toggle;
+                control.Clicked += _ => Toggle();
                 caption = control;
             }
             else
             {
                 var plain = new QLabel();
                 I18n.Bind(plain.SetText, subject.AxisKey);
+                plain.SetObjectName("muted");
+                plain.SetAlignment(Qt.Alignment.AlignHCenter);
                 caption = plain;
             }
-            caption.SetObjectName("muted");
-            caption.SetAlignment(Qt.Alignment.AlignHCenter);
             column.AddWidget(caption);
             column.AddWidget((QWidget)subject, 1);
             return holder;
@@ -366,16 +377,56 @@ internal sealed class LayerAccessView : QWidget
     }
 
     /// <summary>A heading that is also a control: it names the subject and, when clicked, shows the
-    /// subject the other way. A label rather than a button because it is a line of text in a column
-    /// of text, and the page's muted style is what it should look like.
-    /// </summary>
-    private sealed class Caption : QLabel
+    /// subject the other way. A button rather than a label now that QtSharp can build one, so the
+    /// switch is reachable from the keyboard — Tab to it, Space or Enter to flip it — and is
+    /// announced as a control; the words are a label inside it, so they keep the page's muted style
+    /// and a click on them falls through to the button.</summary>
+    private sealed class Caption : QAbstractButton
     {
-        internal event Action? Clicked;
+        private readonly QLabel _text = new();
 
-        public override void MousePressEvent(QMouseEvent e)
+        public Caption()
         {
-            if (e.Button() == Qt.MouseButton.LeftButton) Clicked?.Invoke();
+            var layout = new QVBoxLayout(this);
+            layout.SetContentsMargins(0, 0, 0, 0);
+            _text.SetObjectName("muted");
+            _text.SetAlignment(Qt.Alignment.AlignHCenter);
+            _text.SetAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents);
+            layout.AddWidget(_text, 1);
+            SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+            SetFocusPolicy(Qt.FocusPolicy.StrongFocus);
+        }
+
+        /// <summary>The heading's words, and with them the name a screen reader announces.</summary>
+        public void SetCaption(string text)
+        {
+            _text.SetText(text);
+            SetAccessibleName(text);
+            Update();
+        }
+
+        public override void PaintEvent(QPaintEvent e)
+        {
+            // A heading has no body to wear a button's usual edges: a hovered or focused one takes a
+            // faint fill and, while it has the keyboard, a hairline in the accent.
+            bool hover = UnderMouse(), focus = HasFocus();
+            if (!hover && !focus) return;
+            using var painter = new QPainter(AsQPaintDevice());
+            painter.SetRenderHint(QPainter.RenderHint.Antialiasing);
+            if (hover)
+            {
+                using var noPen = new QPen(Qt.PenStyle.NoPen);
+                painter.SetPen(noPen);
+                painter.SetBrush(new QBrush(new QColor(TrayTheme.Tokens.HoverSoft)));
+                painter.DrawRoundedRect(0, 0, Width, Height, 5, 5);
+            }
+            if (focus)
+            {
+                using var pen = new QPen(new QColor(TrayTheme.Tokens.AccentBorder));
+                painter.SetPen(pen);
+                painter.SetBrush(new QBrush(Qt.BrushStyle.NoBrush));
+                painter.DrawRoundedRect(1, 1, Width - 2, Height - 2, 5, 5);
+            }
         }
     }
 

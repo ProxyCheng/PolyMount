@@ -225,6 +225,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (!cacheLayer.Parameters.TryGetValue("Writable", out var writable) ||
                 writable.ValueKind != System.Text.Json.JsonValueKind.False)
                 throw new Exception("The read cache above the overlay must not accept writes");
+            if (cacheLayer.CacheCapacityBytes != 16L * 1024 * 1024 * 1024)
+                throw new Exception("The preset no longer carries the capacity the start-up was measured with");
             var descriptor = LayerRegistry.Describe("svn");
             if (!descriptor.Fields.Any(f => f.Path == "Source.Url" && f.Required)) throw new Exception("Missing SVN property metadata");
             // Credentials are not asked for as a username and password: the picker names one of the

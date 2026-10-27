@@ -5,6 +5,46 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-27
+
+A new instance is built from a preset instead of an empty layer stack, and walking a large tree
+through a mount costs about a third less time.
+
+### Added
+
+- **New mount starts from a preset.** The dialog opens on a gallery of the presets the loaded
+  plugins and the core offer — each card says what it connects to and which values it will want —
+  and the second page asks only those: the source's address and account. The name and the mount
+  point follow the address until they are typed over, everything else keeps the preset's defaults,
+  and the last card opens the editor directly for a chain built by hand. Nothing is written until
+  the dialog commits, and a refusal from the service is shown under the field it came from.
+
+### Changed
+
+- The Subversion plugin ships **one** preset. `svn-workspace` now carries the configuration a
+  content-repository start-up was measured with — a 1 GiB memory cache, a 10,000-directory listing
+  warm-up, a 256 MiB prediction layer running only `manifests`, and a 16 GiB durable read cache —
+  rather than leaving a bare default beside a tuned variant. `game-engine-workspace` is gone; an
+  existing mount is unaffected, because applying a preset writes its layers into the configuration.
+- Controls show keyboard focus with the theme's accent colour instead of the native dotted
+  rectangle; the editor's integer fields accept digits only and its colour field only `#RRGGBB`.
+- The Qt binding moves to QtSharp 0.17.0, a build-time dependency (the setup carries the same Qt
+  runtime as before).
+
+### Fixed
+
+- **Walking a large tree is faster.** Windows asks the file system about one name several times for
+  a single operation — the security lookup, the open, and the parent directory the create resolves
+  its path through — and every ask resolved the whole path again. The resolver now answers
+  consecutive asks about one name from the first answer, and a write or a moved source still
+  invalidates it. The cache layers also rebuilt a hash of the chain below them on every object
+  read; it is computed once per change now. Measured on a 28,600-directory, 214,000-file
+  Subversion-backed subtree: a warm full enumeration 20.2 s → 13.2 s, and a walk that queries
+  attributes for every entry 0.57 → 0.35–0.43 ms per entry.
+- A recording's timing is no longer rounded to whole milliseconds, so a request that takes less
+  than one is counted as what it took rather than as zero — the totals and the per-path table now
+  describe what happened.
+
 ## [0.8.1] - 2026-10-26
 
 ### Fixed

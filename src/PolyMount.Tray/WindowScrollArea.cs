@@ -1,7 +1,6 @@
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -65,6 +64,6 @@ internal static class WindowScrollArea
     /// lists, the tables and the pages' own sections are for.</summary>
     private sealed class FillsWindow : QWidget
     {
-        public override int HeightForWidth(int width) => MinimumSizeHint().Height();
+        public override int HeightForWidth(int width) => MinimumSizeHint.Height();
     }
 }

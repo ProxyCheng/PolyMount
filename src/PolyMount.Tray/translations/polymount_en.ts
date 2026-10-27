@@ -1639,5 +1639,37 @@ The DLL stays in the plugin folder, so it can be added again later.</translation
       <source>plugins.footnote</source>
       <translation>Changes are written to the configuration; the service loads them when it starts.</translation>
     </message>
+    <message><source>newmount.preset.subtitle</source><translation>Choose a preset first — it decides which layers this instance has, and the next page asks only what it needs.</translation></message>
+    <message><source>newmount.form.subtitle</source><translation>Everything else keeps the preset's defaults; the editor adjusts them layer by layer afterwards.</translation></message>
+    <message><source>newmount.noPresets</source><translation>No presets are available: the plugins that provide them are not loaded.</translation></message>
+    <message><source>newmount.loading</source><translation>Reading the presets…</translation></message>
+    <message><source>newmount.loadFailed</source><translation>Could not read the configuration: {0}</translation></message>
+    <message><source>newmount.createFailed</source><translation>Could not create it: {0}</translation></message>
+    <message><source>newmount.step</source><translation>Step {0} of {1}</translation></message>
+    <message><source>newmount.needs</source><translation>Asks for: {0}</translation></message>
+    <message><source>newmount.needs.none</source><translation>No extra details needed</translation></message>
+    <message><source>newmount.chain</source><translation>Layer stack: {0}</translation></message>
+    <message><source>newmount.custom.title</source><translation>Start from an empty stack</translation></message>
+    <message><source>newmount.custom.description</source><translation>Open the full editor and choose the layers and their order yourself.</translation></message>
+    <message><source>newmount.name</source><translation>Name</translation></message>
+    <message><source>newmount.location</source><translation>Mount at</translation></message>
+    <message><source>newmount.browse</source><translation>Browse…</translation></message>
+    <message><source>newmount.back</source><translation>Back</translation></message>
+    <message><source>newmount.next</source><translation>Next</translation></message>
+    <message><source>newmount.create</source><translation>Create and mount</translation></message>
+    <message><source>newmount.creating</source><translation>Creating…</translation></message>
+    <message><source>newmount.created</source><translation>Created “{0}”. It is starting now; its first reads come from the source.</translation></message>
+    <message><source>newmount.error.name</source><translation>Enter a name for this instance.</translation></message>
+    <message><source>newmount.error.name.taken</source><translation>An instance is already named “{0}”.</translation></message>
+    <message><source>newmount.error.location</source><translation>Choose where it mounts: a folder path, or a drive letter.</translation></message>
+    <message><source>newmount.error.location.drive</source><translation>Drive {0} is in use.</translation></message>
+    <message><source>newmount.error.location.relative</source><translation>The mount point has to be a full path, such as D:\Mounts\work.</translation></message>
+    <message><source>newmount.error.location.taken</source><translation>“{0}” already mounts there.</translation></message>
+    <message><source>newmount.error.location.busy</source><translation>That folder exists and is not empty; choose an empty or a new path.</translation></message>
+    <message><source>newmount.error.required</source><translation>Enter {0}.</translation></message>
+    <message><source>newmount.error.url</source><translation>That is not a full address; it looks like https://svn.example.com/repo.</translation></message>
+    <message><source>newmount.error.share</source><translation>A share is written \server\share, or a folder under one.</translation></message>
+    <message><source>newmount.error.folder</source><translation>That folder does not exist.</translation></message>
+    <message><source>newmount.source.folder</source><translation>Choose the folder to mount</translation></message>
   </context>
 </TS>

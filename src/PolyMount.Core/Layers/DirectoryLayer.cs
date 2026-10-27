@@ -92,6 +92,11 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
     private long _ticksAt;
     private bool _ticksKnown;
     private readonly object _ticksGate = new();
+    /// <summary>The text of the last generation handed out, with the pair it was made from. Every
+    /// cache above this source asks for it once per lookup, and building it allocated two strings
+    /// each time; on a warm enumeration that is one ask per object read per cache layer.</summary>
+    private GenerationText? _generationText;
+    private sealed record GenerationText(long Ticks, long Touched, string Text);
     public string Generation
     {
         get
@@ -111,7 +116,12 @@ public sealed class DirectoryLayer : ILayer, ILocalSource, IDisposable
                     }
                 }
             }
-            return Interlocked.Read(ref _ticks) + ":" + touched;
+            long ticks = Interlocked.Read(ref _ticks);
+            var kept = Volatile.Read(ref _generationText);
+            if (kept != null && kept.Ticks == ticks && kept.Touched == touched) return kept.Text;
+            var text = new GenerationText(ticks, touched, ticks + ":" + touched);
+            Volatile.Write(ref _generationText, text);
+            return text.Text;
         }
     }
 

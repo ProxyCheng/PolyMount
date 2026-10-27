@@ -4,7 +4,6 @@ using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 
 namespace PolyMount.Tray;
 
@@ -184,6 +183,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         colorLayout.AddLayout(palette);
         _color = new QLineEdit();
         _color.SetPlaceholderText("#RRGGBB");
+        // The field takes a colour spelled as six hex digits, with the hash optional; constraining
+        // the shape while the reader types keeps a typo from becoming a config value, and the
+        // normalising check on save still decides whether six digits were actually given.
+        _color.SetValidator(new QRegularExpressionValidator(
+            new QRegularExpression("^#?[0-9A-Fa-f]{0,6}$"), _color));
         _color.TextChanged += _ => UpdateColor();
         colorLayout.AddWidget(_color);
         Row(common, "layer.color", colorPanel);
@@ -252,7 +256,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     /// the layout asks for against the budget rather than against a window nobody sized.</summary>
     internal void VerifyPageFits()
     {
-        int needed = _page.MinimumSizeHint().Height();
+        int needed = _page.MinimumSizeHint.Height();
         if (needed > 650)
             throw new InvalidOperationException(
                 $"The editor asks for {needed} px of height where a 700 px window has about 650 for it");
@@ -350,6 +354,18 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 _layer.Parameters["Secret"].GetString() != " secret " || !_layer.Parameters["Enabled"].GetBoolean() ||
                 _layer.Parameters["Count"].GetInt64() != 1 || _layer.Parameters["Mode"].GetString() != "fast")
                 throw new InvalidOperationException("Descriptor-driven form did not preserve or bind plugin parameters");
+            // An integer field constrains what can be typed into it: digits only, and not limited to
+            // int's range (a cache capacity in MiB goes past it).
+            if (_propertyEditors[2].Editor is not QLineEdit count || count.Validator() is not { } digits)
+                throw new InvalidOperationException("The integer field carries no validator");
+            string rejected = "12a";
+            int at = 0;
+            if (digits.Validate(ref rejected, ref at) != QValidator.State.Invalid)
+                throw new InvalidOperationException("The integer field accepts a letter");
+            string accepted = "12";
+            at = 0;
+            if (digits.Validate(ref accepted, ref at) != QValidator.State.Acceptable)
+                throw new InvalidOperationException("The integer field rejects its own value");
         }
         finally
         {
@@ -720,6 +736,13 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             {
                 var edit = new QLineEdit();
                 if (field.Kind == LayerFieldKind.Secret) edit.SetEchoMode(QLineEdit.EchoMode.Password);
+                if (field.Kind == LayerFieldKind.Integer)
+                    // Digits only, while typing and on paste. The values do not fit
+                    // QIntValidator's int range (a cache capacity is shown in MiB and may be much
+                    // larger), so the shape is what the field constrains; the field's own
+                    // Minimum/Maximum is still applied when the page is saved.
+                    edit.SetValidator(new QRegularExpressionValidator(
+                        new QRegularExpression("^[0-9]{0,19}$"), edit));
                 edit.SetText(value);
                 edit.SetPlaceholderText(field.Placeholder.Resolve(I18n.Language));
                 edit.TextChanged += _ => Dirty();

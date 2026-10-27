@@ -45,8 +45,8 @@ Qt Charts 6.12.0 (Qt6Charts.dll)
     The Qt Company Ltd. and contributors — GPL v3, or a commercial Qt licence
     (See the section above.) Redistributed in the QtSharp.Charts.Qt6 package.
 
-QtSharp.Api 0.13.0, QtSharp.Runtime 0.13.0, QtSharp.Qt6 0.13.0, QtSharp.Charts 0.13.0 and
-QtSharp.Charts.Qt6 0.13.0 (managed bindings, their native glue and the Qt runtime payload)
+QtSharp.Api 0.17.0, QtSharp.Runtime 0.17.0, QtSharp.Qt6 0.17.0, QtSharp.Charts 0.17.0 and
+QtSharp.Charts.Qt6 0.17.0 (managed bindings, their native glue and the Qt runtime payload)
     ProxyCheng and contributors — MIT
     <https://github.com/ProxyCheng/QtSharp>
 

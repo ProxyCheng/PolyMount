@@ -147,12 +147,17 @@ public sealed class HeaderRecordTests
         Assert.AreEqual(0, source.EntryLookups.Count(p => p == "dir/video.bin"));
         Assert.AreEqual("fake", vfs.Metrics.Snapshot("test", 60).Layers.Single(l => l.Hits > 0).Name);
 
+        int listings = source.ListedDirectories.Count(p => p == "dir");
         Assert.IsTrue(vfs.TryLookup("dir/video.bin", out _, recordAccess: true));
 
+        // The second ask, with nothing written and the source where it was, is answered by the
+        // first answer rather than by resolving the name again (see the resolver's
+        // RecentResolution): not even the memory layer is consulted, so the listing is not
+        // rebuilt and no cache is walked to.
         var metrics = vfs.Metrics.Snapshot("test", 60);
         Assert.AreEqual(0, source.EntryLookups.Count(p => p == "dir/video.bin"), "no lookup ever reached the source by name");
-        Assert.AreEqual(1L, metrics.Layers.Single(l => l.Name == "memory-cache").Hits,
-            "the memory layer is what answered the second lookup");
+        Assert.AreEqual(listings, source.ListedDirectories.Count(p => p == "dir"),
+            "the second ask did not resolve the parent again");
         Assert.IsFalse(metrics.Layers.Any(l => l.Name == "cache" && l.Hits > 0), "and the disk cache was not walked to at all");
     }
 

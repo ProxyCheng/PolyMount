@@ -317,6 +317,43 @@ public sealed class VirtualFileSystem
         if (path.Length == 0) { entry = new VfsEntry { Name = "", IsDir = true }; return true; }
         return false;
     }
+    /// <summary>The name resolved last, the layer that answered it, and the pair the answer is
+    /// only good under. Windows asks the file system about one name several times for one
+    /// operation: the security lookup, the open itself, and the parent-directory open the
+    /// create resolves its path through. Each ask walked every ancestor again — an enumeration
+    /// that stats one entry per name measured ~10 resolutions for it — while nothing could have
+    /// changed in between: a write through this chain moves the epoch, and the source moving
+    /// moves its generation, so the answer is the one it would resolve to anyway.
+    ///
+    /// One slot, not a table: the asks are consecutive, and a caller that asks about another
+    /// name in between gets a miss and resolves normally. A file opened for writing never gets
+    /// here — its staging handle answers first (see <see cref="TryLookup"/>), so its size and
+    /// timestamp stay live.
+    /// </summary>
+    private sealed record RecentResolution(string Path, VfsEntry Entry, int Index, long Epoch, string? Generation);
+    private RecentResolution? _recent;
+
+    private bool TryReuseResolution(string path, out VfsEntry entry, out int index)
+    {
+        entry = null!;
+        index = -1;
+        var recent = Volatile.Read(ref _recent);
+        if (recent == null) return false;
+        if (!(ReferenceEquals(recent.Path, path) || string.Equals(recent.Path, path, StringComparison.OrdinalIgnoreCase)))
+            return false;
+        if (recent.Epoch != Interlocked.Read(ref _resolutionEpoch)) return false;
+        // A chain with no layers has no source to have moved.
+        if (_layers.Count > 0)
+        {
+            string now = _layers[^1].Generation;
+            if (!(ReferenceEquals(now, recent.Generation) || string.Equals(now, recent.Generation, StringComparison.Ordinal)))
+                return false;
+        }
+        entry = recent.Entry;
+        index = recent.Index;
+        return true;
+    }
+
     /// <summary>Resolves a file or a folder for whoever asked. <paramref name="recordAccess"/> is
     /// set by the mount adapter, where this is the request being served: listing and opening were
     /// counted, so an attribute query that reaches the source was the one resolution whose wait
@@ -329,6 +366,11 @@ public sealed class VirtualFileSystem
         if (_openFiles.TryGetValue(path, out var open) && open.TryGetHeader(VfsPath.Name(path), out entry))
         {
             if (recordAccess) Metrics?.RecordRead(open.LayerName, TimeSpan.Zero, entry.Size);
+            return true;
+        }
+        if (TryReuseResolution(path, out entry, out int reused))
+        {
+            if (recordAccess) Metrics?.RecordRead(_layers[reused].Name, TimeSpan.Zero, entry.Size, _layers[reused] is ICacheLayer);
             return true;
         }
         request?.Stage("resolving metadata");
@@ -346,10 +388,13 @@ public sealed class VirtualFileSystem
         if (recordAccess && index < _layers.Count)
             Metrics?.RecordRead(_layers[index].Name, watch.Elapsed, 0, _layers[index] is ICacheLayer);
         if (found && index < _layers.Count)
+        {
+            Volatile.Write(ref _recent, new RecentResolution(path, entry, index, token.Epoch, token.Generation));
             lock (_cacheUpdateGate)
                 // A write that landed while this was resolving already told the caches what
                 // changed; publishing the older answer over it would undo that.
                 if (StillCurrent(token)) FillHeader(path, entry, index);
+        }
         return found;
     }
     /// <summary>Read either payload kind through the same object-loading boundary.

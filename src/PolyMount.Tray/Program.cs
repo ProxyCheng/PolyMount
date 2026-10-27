@@ -574,6 +574,9 @@ internal static class Program
         DateTime rangeChangedAt = DateTime.MinValue;
         double rateBefore = 0;
         string? failure = null;
+        // The theme is not a page, so this is not an area: it holds for every window, and it runs
+        // whatever the run was asked for.
+        try { TrayTheme.VerifyNoNativeFocusRect(); } catch (Exception ex) { failure = ex.ToString(); }
         ApiRuntime.UnhandledCallbackException += (context, ex) => failure = context + ": " + ex;
         timer.Timeout += () =>
         {
@@ -653,6 +656,16 @@ internal static class Program
                     try { editor.SmokeLayerPicker(capture == null ? null : Path.Combine(capture, "layer-picker.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }
                     try { editor.SmokePresetPicker(capture == null ? null : Path.Combine(capture, "preset-picker.png")); }
+                    catch (Exception ex) { failure = ex.ToString(); }
+                    // The way a first instance is made: presets first, then only the values the
+                    // chosen one asks for. The fixture presets are the ones this process holds —
+                    // the dialog's pages are what is driven, not the service behind them.
+                    try
+                    {
+                        NewMountDialog.Smoke(editor, PolyMount.Core.LayerPresetRegistry.All,
+                            PolyMount.Core.LayerRegistry.Descriptors, PolyMount.Core.SourceRegistry.Types,
+                            capture == null ? null : Path.Combine(capture, "new-mount.png"));
+                    }
                     catch (Exception ex) { failure = ex.ToString(); }
                     try { CredentialPicker.Smoke(editor, capture == null ? null : Path.Combine(capture, "credential-picker.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }

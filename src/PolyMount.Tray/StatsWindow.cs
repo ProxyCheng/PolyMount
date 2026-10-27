@@ -4,7 +4,6 @@ using QtSharp.Charts;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
-using Qt = QtSharp.QtCore.Qt;
 using System.Diagnostics;
 using System.Text.Json;
 
@@ -1051,6 +1050,16 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         _accessView.SmokeToggle();
         if (_accessView.Aligned != before || _accessAligned != before)
             throw new InvalidOperationException("Switching the access drawing twice did not come back to where it started");
+        // The heading that switches the rows is a button now: drive it the way the keyboard does,
+        // not through the view's own toggle, and check it can take the keyboard at all.
+        if (!_accessView.SmokeSwitchFocusable())
+            throw new InvalidOperationException("The access switch cannot take the keyboard");
+        _accessView.SmokeClickSwitch();
+        if (_accessView.Aligned == before)
+            throw new InvalidOperationException("Clicking the access switch did not change the drawing");
+        _accessView.SmokeClickSwitch();
+        if (_accessView.Aligned != before)
+            throw new InvalidOperationException("Clicking the access switch twice did not come back to where it started");
     }
 
     /// <summary>How the access card lays its columns out, held to by arithmetic rather than by

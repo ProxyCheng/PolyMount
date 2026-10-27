@@ -41,6 +41,9 @@ QLabel#layerChain { background: @SurfaceAlt; border: 1px solid @Border; border-r
 QLabel#emptyState { color: @Muted; padding: 12px; font-size: 14px; }
 QLabel#errorBox { color: @Danger; background: @DangerSoft; border-radius: 8px; padding: 12px; }
 QLabel#credentialWarning { color: @Danger; background: @DangerSoft; border-radius: 6px; padding: 6px 8px; }
+/* What is wrong with one field, under that field: red enough to be found while reading down a
+   form, and absent when there is nothing wrong, so the form carries no red at rest. */
+QLabel#fieldError { color: @Danger; font-size: 12px; padding: 0 2px; }
 QPushButton { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 9px 13px; font-weight: 600; color: @Text; }
 QPushButton:hover { background: @HoverSoft; border-color: @AccentBorder; }
 QPushButton:pressed { background: @PrimaryTint; }
@@ -61,6 +64,16 @@ QPushButton#navButton:hover { background: @SidebarActive; border-color: @AccentB
 QPushButton#navButton:disabled { color: @SidebarDisabled; border-color: @SidebarBorder; }
 QLineEdit, QComboBox { background: @Surface; border: 1px solid @BorderStrong; border-radius: 7px; padding: 8px 10px; color: @Text; selection-background-color: @Primary; selection-color: @OnPrimary; }
 QLineEdit:focus, QComboBox:focus { border-color: @Primary; }
+/* Having the keyboard is already said here with the accent border these controls take on :focus;
+   the native style's dotted rectangle drawn inside them on top of that is the one indicator this
+   theme does not want. `outline` is the property Qt reads exactly where that rectangle would be
+   painted: "none" paints it as nothing instead of handing it to the base style.
+   It is spelled on QWidget rather than on each control because that is the only selector that
+   reaches it (measured: a QListWidget's own `QListWidget { outline: none }` leaves the rectangle in
+   place, and so does `QAbstractItemView:focus`; `QFrame:focus` and `QWidget:focus` both take it
+   away). It is also spelled from a :focus rule rather than from the bare `QWidget` rule above, so
+   that no widget counts as modified by the style sheet merely for existing. */
+QWidget:focus { outline: none; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 22px; border: none; background: transparent; }
 QComboBox::down-arrow { image: url(@ChevronDown); width: 12px; height: 12px; }
 QComboBox::down-arrow:disabled { opacity: 0.4; }
@@ -111,6 +124,9 @@ QCheckBox { spacing: 8px; background: transparent; padding: 3px 0; color: @Text;
 QCheckBox:disabled { color: @Disabled; }
 QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid @ControlBorder; border-radius: 4px; background: @Surface; }
 QCheckBox::indicator:hover { border-color: @Primary; background: @HoverSoft; }
+/* The one control whose "focused" is not a border around the whole control: the keyboard is on it
+   when the box itself takes the accent. */
+QCheckBox::indicator:focus { border-color: @Primary; }
 QCheckBox::indicator:checked { background: @Primary; border-color: @Primary; image: url(:/polymount/check.png); }
 QCheckBox::indicator:checked:hover { background: @PrimaryHover; border-color: @PrimaryHover; }
 QCheckBox::indicator:pressed { background: @PrimaryTint; border-color: @Primary; }
