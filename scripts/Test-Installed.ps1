@@ -31,24 +31,55 @@ function Invoke-Setup([string]$path, [string]$arguments) {
     return $process.ExitCode
 }
 function Read-Config { Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
-# A supervisor that is listening but never answers must not be able to hold this test open: the
-# answer is awaited with a deadline, and its absence is a failure with a name rather than a hang.
-# (0.8.1's install job sat on a bare ReadLine for six hours, until the runner's limit cancelled it
-# and the release was never published.)
-function Ask-Supervisor([string]$command, [int]$timeoutMs = 5000) {
-    $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'PolyMount.Control', [System.IO.Pipes.PipeDirection]::InOut)
-    try {
-        $pipe.Connect(2000)
-        $writer = New-Object System.IO.StreamWriter($pipe); $writer.AutoFlush = $true
-        $reader = New-Object System.IO.StreamReader($pipe)
-        $writer.WriteLine((@{ Cmd = $command } | ConvertTo-Json -Compress))
-        $reply = $reader.ReadLineAsync()
-        if (-not $reply.Wait($timeoutMs)) {
-            throw "PolyMount.Control accepted the connection but did not answer '$command' within $timeoutMs ms"
-        }
-        if ($null -eq $reply.Result) { throw "PolyMount.Control closed the connection without answering '$command'" }
-        return $reply.Result | ConvertFrom-Json
-    } finally { $pipe.Dispose() }
+
+# One control request, asked of a process of its own so that nothing the read does can hold this
+# test open. A deadline inside the same process was not enough: the install job sat on a blocking
+# read for six hours even though that read had one (0.8.1/0.9.0 — the release job was skipped both
+# times). A child that hangs is killed with the wall clock, and its silence becomes a failure with a
+# name instead of a stuck runner.
+$probeScript = @'
+param([string]$pipeName, [string]$command, [int]$connectMs)
+$pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $pipeName, [System.IO.Pipes.PipeDirection]::InOut)
+try {
+    $pipe.Connect($connectMs)
+    $writer = New-Object System.IO.StreamWriter($pipe)
+    $writer.AutoFlush = $true
+    $reader = New-Object System.IO.StreamReader($pipe)
+    $writer.WriteLine((@{ Cmd = $command } | ConvertTo-Json -Compress))
+    $answer = $reader.ReadLine()
+    if ($null -eq $answer) { [Console]::Error.WriteLine('closed without answering'); exit 3 }
+    [Console]::Out.Write($answer)
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 2
+} finally { $pipe.Dispose() }
+'@
+$probePath = Join-Path $env:TEMP 'polymount-control-probe.ps1'
+Set-Content -LiteralPath $probePath -Value $probeScript -Encoding UTF8
+
+function Ask-Supervisor([string]$command, [int]$timeoutSeconds = 10) {
+    $start = New-Object System.Diagnostics.ProcessStartInfo
+    $start.FileName = (Get-Process -Id $PID).Path
+    # The command is a bare word ('status', 'getConfig'), so nothing here needs quoting beyond the
+    # script's own path. The payload is built in the child.
+    $start.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}" PolyMount.Control {1} 2000' -f $probePath, $command
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $child = [System.Diagnostics.Process]::Start($start)
+    $out = $child.StandardOutput.ReadToEndAsync()
+    $err = $child.StandardError.ReadToEndAsync()
+    if (-not $child.WaitForExit($timeoutSeconds * 1000)) {
+        try { $child.Kill() } catch { }
+        throw "PolyMount.Control did not answer '$command' within $timeoutSeconds s (the probe was stopped)"
+    }
+    $text = $out.Result
+    $reason = $err.Result
+    if ($child.ExitCode -ne 0) {
+        throw ("PolyMount.Control did not answer '{0}': {1}" -f $command, ($reason.Trim() -replace '\s+', ' '))
+    }
+    return $text | ConvertFrom-Json
 }
 # The setup can return before the installation has finished: when it is not already elevated it
 # starts an elevated copy of itself and the first process exits at once. Waiting for the service is
@@ -65,7 +96,9 @@ function Wait-Service([int]$seconds = 120) {
 function Wait-Supervisor([int]$seconds = 30) {
     $deadline = (Get-Date).AddSeconds($seconds)
     $script:supervisorError = ''
-    while ((Get-Date) -lt $deadline) {
+    # Each attempt is a process of its own, so a dead service costs a handful of them rather than
+    # one per half second.
+    for ($attempt = 0; $attempt -lt 12 -and (Get-Date) -lt $deadline; $attempt++) {
         try {
             $reply = Ask-Supervisor 'status'
             if ($reply.Ok) { return $reply }
