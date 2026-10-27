@@ -59,14 +59,22 @@ Where the list comes from:
 locking a working installation out after an upgrade. That state is not silent: the supervisor logs
 it at start, and every `status` answer carries it in `SecurityWarning`.
 
-Beyond the descriptor, the server reads the caller's account from the connection itself — by
-impersonating the client, which is the kernel's own record of who connected, and falling back to the
-caller's process token when that is not available — and refuses a caller the policy does not name.
-The descriptor is the enforcement; this is the same decision made again per request, and it is what
-puts the caller's account in the log. Impersonation rather than the process token is deliberate: the
-service runs as `LocalService` by default, an account that cannot open a process owned by the user
-who installed the product, so reading the token through the process would refuse that user on every
-request. The identity comes from the connection either way, never from anything the caller says.
+Beyond the descriptor, the server identifies the caller by opening the process on the other end of
+the connection (`GetNamedPipeClientProcessId` → process token → SID and administrator membership)
+and refuses a caller the policy does not name. The descriptor is the enforcement; this is the same
+decision made again per request, and it is what puts the caller's account in the log.
+
+**When the caller cannot be read, the request is served and the log says so.** Reading a token needs
+access to a process owned by another account, and the account the setup creates — `LocalService` —
+does not have it, while impersonating the connection is not available to a `NamedPipeClientStream`
+client (it connects anonymously, and asking for an impersonation level means writing the client by
+hand). A product that refuses what it cannot name is a product that does not work after it is
+installed, which is exactly what 0.8.0 did: every front-end was refused by its own service. The
+descriptor already decided who may connect, from the same list this check uses; the check still
+refuses whenever it can read the caller, which is the case the descriptor cannot cover — a policy
+reloaded after the pipe was created. Serving the request without naming the caller is logged once
+per process, and running the service as an account that can read other users' processes puts the
+caller back in the log.
 
 ### A configuration leaves with its secrets taken out
 

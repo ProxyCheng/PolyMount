@@ -25,47 +25,31 @@ public static class PipeCaller
 
     /// <summary>The process on the client side of a server connection.
     ///
-    /// The account is taken by impersonating the connection, not by opening the caller's process.
-    /// Opening it needs PROCESS_QUERY_LIMITED_INFORMATION on a process owned by somebody else, and
-    /// the account the service runs under by default — LocalService, written by the installer —
-    /// has neither SeDebugPrivilege nor a grant in that process's descriptor. Every request was
-    /// therefore "unidentifiable", and a configuration that names its accounts (which the installer
-    /// seeds, and which the security pass made the normal case) refused all of them: the tray, the
-    /// MCP server and the install check each got "the caller's token could not be read" from a
-    /// service that was running perfectly well.
+    /// This reads the caller's token through its process, which needs
+    /// PROCESS_QUERY_LIMITED_INFORMATION on a process owned by somebody else. The account the
+    /// service runs under by default — LocalService, written by the installer — has neither
+    /// SeDebugPrivilege nor a grant in that process's descriptor, so on an installation it cannot
+    /// read the caller at all.
     ///
-    /// Impersonation is the kernel's own record of who connected. The pipe's descriptor has already
-    /// decided that this account may, the token comes from the connection rather than from
-    /// anything the caller says, and no access to its process is involved. The process route stays
-    /// as the fallback for a pipe the server cannot impersonate on.</summary>
-    public static Identity? Client(NamedPipeServerStream pipe)
-    {
-        uint pid = GetNamedPipeClientProcessId(pipe.SafePipeHandle, out uint id) ? id : 0;
-        if (ImpersonateNamedPipeClient(pipe.SafePipeHandle))
-        {
-            try
-            {
-                using var identity = WindowsIdentity.GetCurrent();
-                string sid = identity.User?.Value ?? "";
-                if (sid.Length > 0)
-                {
-                    bool admin;
-                    try { admin = new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator); }
-                    catch (Exception) { admin = false; }
-                    // The image path is only ever logged, and reading it is exactly the process
-                    // access this path exists to avoid.
-                    return new Identity((int)pid, sid, AccountOf(identity, sid), admin, "");
-                }
-            }
-            catch (Exception) { }
-            finally { RevertToSelf(); }
-        }
-        return Identify(pipe.SafePipeHandle, GetNamedPipeClientProcessId);
-    }
+    /// Impersonating the connection would not need that access, and it is not the answer either:
+    /// measured on this machine, `ImpersonateNamedPipeClient` answers
+    /// <c>ERROR_CANNOT_IMPERSONATE</c> (1368) because a <see cref="NamedPipeClientStream"/> connects
+    /// with the anonymous impersonation level and never asks for one — the tray, the MCP server and
+    /// every script would have to open their own handle to change that. So the caller is identified
+    /// when it can be, the reason is returned when it cannot, and the decision about what that
+    /// means belongs to the server (see PipeServer.Allowed).</summary>
+    public static Identity? Client(NamedPipeServerStream pipe) => Client(pipe, out _);
+
+    /// <summary>The same question, with the reason it could not be answered. A refusal nobody can
+    /// explain is what this cost the first time: the service said "the caller's token could not be
+    /// read" every ten seconds for six hours and the install job hung instead of reporting it, so
+    /// the message now carries which call failed and with what error.</summary>
+    public static Identity? Client(NamedPipeServerStream pipe, out string reason) =>
+        Identify(pipe.SafePipeHandle, GetNamedPipeClientProcessId, out reason);
 
     /// <summary>The process on the server side of a client connection.</summary>
     public static Identity? Server(NamedPipeClientStream pipe) =>
-        Identify(pipe.SafePipeHandle, GetNamedPipeServerProcessId);
+        Identify(pipe.SafePipeHandle, GetNamedPipeServerProcessId, out _);
 
     /// <summary>Whether some process already owns this pipe name. A server that finds its name
     /// taken is sharing it with something nobody configured: the caller then knows it may be
@@ -88,11 +72,20 @@ public static class PipeCaller
 
     private delegate bool PipeIdQuery(SafePipeHandle pipe, out uint id);
 
-    private static Identity? Identify(SafePipeHandle handle, PipeIdQuery which)
+    private static Identity? Identify(SafePipeHandle handle, PipeIdQuery which, out string reason)
     {
-        if (!which(handle, out uint pid) || pid == 0) return null;
+        reason = "";
+        if (!which(handle, out uint pid) || pid == 0)
+        {
+            reason = "the connection does not name a process";
+            return null;
+        }
         IntPtr process = OpenProcess(ProcessQueryLimitedInformation, false, pid);
-        if (process == IntPtr.Zero) return null;
+        if (process == IntPtr.Zero)
+        {
+            reason = $"process {pid} cannot be opened (error {Marshal.GetLastWin32Error()})";
+            return null;
+        }
         try
         {
             string image = ImagePath(process);
@@ -100,7 +93,10 @@ public static class PipeCaller
             // identity of its own, and the process it connects to is the one whose account the
             // request will run as.
             if (!OpenProcessToken(process, TokenQuery, out IntPtr token) || token == IntPtr.Zero)
+            {
+                reason = $"the token of process {pid} cannot be opened (error {Marshal.GetLastWin32Error()})";
                 return new Identity((int)pid, "", "", false, image);
+            }
             using var safe = new SafeAccessTokenHandle(token);
             using var identity = new WindowsIdentity(safe.DangerousGetHandle());
             string sid = identity.User?.Value ?? "";
@@ -109,7 +105,7 @@ public static class PipeCaller
             catch (Exception) { admin = false; }
             return new Identity((int)pid, sid, AccountOf(identity, sid), admin, image);
         }
-        catch (Exception) { return null; }
+        catch (Exception ex) { reason = "the caller's process could not be read: " + ex.Message; return null; }
         finally { CloseHandle(process); }
     }
 
@@ -143,12 +139,6 @@ public static class PipeCaller
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "QueryFullProcessImageNameW")]
     private static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder name, ref int size);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool ImpersonateNamedPipeClient(SafePipeHandle pipe);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    private static extern bool RevertToSelf();
 
     [DllImport("advapi32.dll", SetLastError = true)]
     private static extern bool OpenProcessToken(IntPtr process, uint desiredAccess, out IntPtr token);

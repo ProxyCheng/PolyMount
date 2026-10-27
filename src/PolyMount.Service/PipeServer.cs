@@ -39,6 +39,9 @@ public sealed class PipeServer
     private readonly string _pipeName;
     private readonly ControlAccess _access;
     private readonly ILogger _logger;
+    /// <summary>Whether the "served without naming the caller" warning has been written. It is a
+    /// property of the installation, not of a request.</summary>
+    private int _unidentifiedReported;
 
     public PipeServer(IControlHost host, string pipeName, ControlAccess access, ILogger? logger = null)
     {
@@ -134,18 +137,12 @@ public sealed class PipeServer
         {
             try
             {
-                var caller = PipeCaller.Client(pipe);
-                if (!Allowed(caller, out string reason))
-                {
-                    _logger.LogWarning("Refused a control request on '{Pipe}' from {Caller}: {Reason}",
-                        _pipeName, Describe(caller), reason);
-                    await Refuse(pipe, "this account may not drive PolyMount: " + reason);
-                    return;
-                }
-                if (caller is { } who)
-                    _logger.LogDebug("Control request from {Account} ({Sid}) in {Image}",
-                        who.Account, who.UserSid, who.ImagePath);
-
+                // The request line is read before the caller is judged. A refusal written the
+                // instant the connection arrives has nobody waiting for it: the client is still
+                // writing its own line, and a synchronous client never comes back from a read
+                // that follows — which is how a service that refused every request for a day
+                // looked like a service that hung. Reading first costs one bounded line from a
+                // caller the pipe's descriptor already admitted.
                 string? line;
                 using (var timeout = new CancellationTokenSource(IdleTimeout))
                 {
@@ -158,6 +155,18 @@ public sealed class PipeServer
                     catch (OperationCanceledException) { return; }
                 }
                 if (line == null) return;
+
+                var caller = PipeCaller.Client(pipe, out string unidentified);
+                if (!Allowed(caller, unidentified, out string reason))
+                {
+                    _logger.LogWarning("Refused a control request on '{Pipe}' from {Caller}: {Reason}",
+                        _pipeName, Describe(caller), reason);
+                    await Refuse(pipe, "this account may not drive PolyMount: " + reason);
+                    return;
+                }
+                if (caller is { } who)
+                    _logger.LogDebug("Control request from {Account} ({Sid}) in {Image}",
+                        who.Account, who.UserSid, who.ImagePath);
 
                 ControlRequest request;
                 try { request = JsonSerializer.Deserialize<ControlRequest>(line) ?? new ControlRequest(); }
@@ -184,17 +193,32 @@ public sealed class PipeServer
     ///
     /// An open policy accepts anybody — that is what open means, and the rules on the pipe already
     /// limited it to the local interactive session. A configured policy accepts the accounts it
-    /// names, administrators, and the account this process runs as; anything else is refused,
-    /// including a caller whose token cannot be read, because a policy that cannot be evaluated is
-    /// not one that can be satisfied.</summary>
-    private bool Allowed(PipeCaller.Identity? caller, out string reason)
+    /// names, administrators, and the account this process runs as.
+    ///
+    /// A caller whose account cannot be read is **served**, and that is a deliberate reversal. The
+    /// descriptor is the enforcement: it is built from the same list this method checks, so an
+    /// account that is not named could not have connected. Refusing an unreadable caller therefore
+    /// enforces nothing and, on the installation the setup actually creates — the service as
+    /// LocalService, which cannot open a process owned by the user who installed it — refused
+    /// *every* request from *every* front-end for as long as 0.8.0 was installed. What the check is
+    /// still worth when the caller can be read is the case the descriptor cannot cover: a policy
+    /// reloaded after the pipe was created, whose new list the old descriptor does not reflect. The
+    /// service says once, at warning level, that it is serving callers it cannot name.</summary>
+    private bool Allowed(PipeCaller.Identity? caller, string unidentified, out string reason)
     {
         reason = "";
         if (_access.IsOpen) return true;
         if (caller == null)
         {
-            reason = "the caller's token could not be read";
-            return false;
+            if (Interlocked.Exchange(ref _unidentifiedReported, 1) == 0)
+            {
+                _logger.LogWarning("Control requests on '{Pipe}' are served without naming the caller ({Reason}). "
+                    + "The pipe's descriptor already decided who may connect; the per-request check is what "
+                    + "cannot be made here. Run the service as an account that can read other users' "
+                    + "processes — LocalSystem — to have each request's account in the log.",
+                    _pipeName, unidentified);
+            }
+            return true;
         }
         if (_access.Allows(caller.UserSid) || caller.IsAdministrator) return true;
         if (string.Equals(caller.UserSid, ControlAccess.CurrentSid(), StringComparison.OrdinalIgnoreCase)) return true;
