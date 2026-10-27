@@ -195,15 +195,15 @@ public sealed class PipeServer
     /// limited it to the local interactive session. A configured policy accepts the accounts it
     /// names, administrators, and the account this process runs as.
     ///
-    /// A caller whose account cannot be read is **served**, and that is a deliberate reversal. The
-    /// descriptor is the enforcement: it is built from the same list this method checks, so an
-    /// account that is not named could not have connected. Refusing an unreadable caller therefore
-    /// enforces nothing and, on the installation the setup actually creates — the service as
-    /// LocalService, which cannot open a process owned by the user who installed it — refused
-    /// *every* request from *every* front-end for as long as 0.8.0 was installed. What the check is
-    /// still worth when the caller can be read is the case the descriptor cannot cover: a policy
-    /// reloaded after the pipe was created, whose new list the old descriptor does not reflect. The
-    /// service says once, at warning level, that it is serving callers it cannot name.</summary>
+    /// A caller whose account cannot be read at all is **served**, and that is a deliberate
+    /// reversal. The descriptor is the enforcement: it is built from the same list this method
+    /// checks — both take the list the process started with — so an account that is not named could
+    /// not have connected, and refusing an unreadable caller enforces nothing. On the installation
+    /// the setup creates (the service as LocalService) it enforced the opposite: it refused *every*
+    /// request from *every* front-end for as long as the product was installed. What the check is
+    /// still for is what the descriptor cannot do — name the account in the log, and refuse one the
+    /// list does not hold. The service says once, at warning level, that it is serving callers it
+    /// cannot name.</summary>
     private bool Allowed(PipeCaller.Identity? caller, string unidentified, out string reason)
     {
         reason = "";
@@ -213,9 +213,11 @@ public sealed class PipeServer
             if (Interlocked.Exchange(ref _unidentifiedReported, 1) == 0)
             {
                 _logger.LogWarning("Control requests on '{Pipe}' are served without naming the caller ({Reason}). "
-                    + "The pipe's descriptor already decided who may connect; the per-request check is what "
-                    + "cannot be made here. Run the service as an account that can read other users' "
-                    + "processes — LocalSystem — to have each request's account in the log.",
+                    + "The pipe's descriptor already decided who may connect, so this is the same decision; what "
+                    + "cannot be done here is putting the account in the log. PolyMount's own front-ends ask for "
+                    + "identification on the connection, which is read without opening anything; a caller that "
+                    + "connected anonymously can only be read through its process, and an account like "
+                    + "LocalService cannot open one owned by the user who installed the product.",
                     _pipeName, unidentified);
             }
             return true;

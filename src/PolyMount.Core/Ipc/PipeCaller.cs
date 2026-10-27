@@ -16,8 +16,8 @@ namespace PolyMount.Core.Ipc;
 /// created the pipe name first.
 ///
 /// Everything here returns null instead of throwing: a caller that cannot be identified is the
-/// server's decision to make (an open policy accepts it, a configured one does not), and a
-/// server that cannot be identified is the client's.</summary>
+/// server's decision to make (see PipeServer.Allowed), and a server that cannot be identified is
+/// the client's.</summary>
 public static class PipeCaller
 {
     /// <summary>What the connection says about one side of it.</summary>
@@ -25,19 +25,27 @@ public static class PipeCaller
 
     /// <summary>The process on the client side of a server connection.
     ///
-    /// This reads the caller's token through its process, which needs
-    /// PROCESS_QUERY_LIMITED_INFORMATION on a process owned by somebody else. The account the
-    /// service runs under by default — LocalService, written by the installer — has neither
-    /// SeDebugPrivilege nor a grant in that process's descriptor, so on an installation it cannot
-    /// read the caller at all.
+    /// The account is read through the caller's process: <c>GetNamedPipeClientProcessId</c>, then
+    /// that process's token. It needs PROCESS_QUERY_LIMITED_INFORMATION on a process owned by
+    /// somebody else, and the account the installer actually creates — LocalService — has neither
+    /// SeDebugPrivilege nor a grant in a user process's descriptor, so on an installation it cannot
+    /// answer at all. The server serves a caller it cannot name rather than refusing it; see
+    /// PipeServer.Allowed for why the descriptor makes that the same decision.
     ///
-    /// Impersonating the connection would not need that access, and it is not the answer either:
-    /// measured on this machine, `ImpersonateNamedPipeClient` answers
-    /// <c>ERROR_CANNOT_IMPERSONATE</c> (1368) because a <see cref="NamedPipeClientStream"/> connects
-    /// with the anonymous impersonation level and never asks for one — the tray, the MCP server and
-    /// every script would have to open their own handle to change that. So the caller is identified
-    /// when it can be, the reason is returned when it cannot, and the decision about what that
-    /// means belongs to the server (see PipeServer.Allowed).</summary>
+    /// The connection itself carries the answer and is not read (2026-10-27). A named pipe client
+    /// can ask for identification (<c>NamedPipeClientStream</c> takes a TokenImpersonationLevel),
+    /// and `ImpersonateNamedPipeClient` then gives the server the caller's token without opening
+    /// anything the caller owns — which is exactly the access LocalService lacks. It was
+    /// implemented, measured and taken back out: the impersonation does not stay on the thread that
+    /// asked. After an identified caller had been impersonated, a later anonymous one left the
+    /// thread holding an identification-level token even with <c>RevertToSelf</c> on every path
+    /// out — the next directory that thread created failed with ERROR_BAD_IMPERSONATION_LEVEL, and
+    /// unrelated tests elsewhere in the process failed the same way. A request handler goes on to
+    /// do the service's work on that thread, so a token left behind runs that work as the previous
+    /// caller. The account in the log is not worth that.
+    ///
+    /// So the caller is identified when its process can be read, the reason is returned when it
+    /// cannot, and the decision about what that means belongs to the server.</summary>
     public static Identity? Client(NamedPipeServerStream pipe) => Client(pipe, out _);
 
     /// <summary>The same question, with the reason it could not be answered. A refusal nobody can
@@ -94,8 +102,11 @@ public static class PipeCaller
             // request will run as.
             if (!OpenProcessToken(process, TokenQuery, out IntPtr token) || token == IntPtr.Zero)
             {
+                // Not an identity with an empty SID: a caller whose account could not be read is
+                // "unidentified" like any other, and saying so is what keeps the server's decision
+                // in one place instead of refusing this half of the same failure.
                 reason = $"the token of process {pid} cannot be opened (error {Marshal.GetLastWin32Error()})";
-                return new Identity((int)pid, "", "", false, image);
+                return null;
             }
             using var safe = new SafeAccessTokenHandle(token);
             using var identity = new WindowsIdentity(safe.DangerousGetHandle());

@@ -5,6 +5,33 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-27
+
+The service answers its own front-ends again, an update no longer waits for another checkout's
+service, and the volume's numbers come from the driver's cache.
+
+### Fixed
+
+- **A control request the service cannot attribute is served rather than refused.** Who may connect
+  is the pipe's descriptor, built from `ControlUsers`; the account read on each request is what puts
+  a name in the log, and it cannot be read when the service runs as `LocalService` — an account with
+  no grant in a process owned by the user who installed it. That case was refused, which refused
+  every request from every front-end of an installed service; it is served now, with one warning per
+  process. `SECURITY.md` says which two routes name a caller, and why reading the identity from the
+  connection itself is not one of them.
+- **A caller whose token cannot be opened is unidentified.** It used to be answered as an identity
+  carrying an empty SID, which sent it down the "not one of the accounts in `ControlUsers`" branch —
+  a refusal for a caller the server had just failed to read, with a reason about the wrong thing.
+- **`Update.bat` stops this checkout's service.** The stop step waited on every process named
+  `PolyMount.Service`, so a second checkout or a lab installation on the same machine never let it
+  finish and the deployment was cancelled.
+
+### Changed
+
+- **The volume's size and serial are cached for a second** (`VolumeInfoTimeout`). While it was zero
+  the driver asked the file system for them on every file-information query — one round trip for
+  each `GetFileInformationByHandle`.
+
 ## [0.9.0] - 2026-10-27
 
 A new instance is built from a preset instead of an empty layer stack, and walking a large tree

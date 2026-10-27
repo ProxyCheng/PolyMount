@@ -148,8 +148,22 @@ function Start-Tray {
     Start-Process -FilePath $trayExe -WorkingDirectory $trayDir | Out-Null
 }
 
+# The supervisor and its instance workers, both started from the executable this run replaces.
+# Another checkout or a lab config on the same machine runs a process under the same name from a
+# different path; waiting for that one never ends, and counting it as "the service is running"
+# would skip the restart this run was asked for.
+function Get-ManagedServiceProcesses {
+    @(Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue | Where-Object {
+        $exePath = $null
+        try { $exePath = $_.Path } catch { }
+        # A path that cannot be read is treated as ours: waiting on it is cheaper than replacing
+        # binaries it may be holding.
+        (-not $exePath) -or [string]::Equals($exePath, $serviceExe, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
 function Stop-Supervisor {
-    $running = @(Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue)
+    $running = @(Get-ManagedServiceProcesses)
     if ($running.Count -eq 0) { return }
     try { Send-Control 'shutdown' | Out-Null }
     catch {
@@ -157,10 +171,10 @@ function Stop-Supervisor {
         else { throw "Service did not accept graceful shutdown ($($_.Exception.Message)); update cancelled." }
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(30)
-    while ((Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+    while ((Get-ManagedServiceProcesses).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Milliseconds 250
     }
-    if (Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) {
+    if ((Get-ManagedServiceProcesses).Count -gt 0) {
         throw 'Service did not exit within 30 seconds; refusing to overwrite locked binaries.'
     }
 }
@@ -213,7 +227,7 @@ function Assert-Administrator {
     }
 }
 
-function ServiceRunning { return [bool](Get-Process -Name 'PolyMount.Service' -ErrorAction SilentlyContinue) }
+function ServiceRunning { return [bool](Get-ManagedServiceProcesses) }
 function TrayRunning { return [bool](Get-Process -Name 'PolyMount.Tray' -ErrorAction SilentlyContinue) }
 
 try {
