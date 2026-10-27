@@ -481,6 +481,11 @@ public sealed class MountManager : IControlHost, IDisposable
                         payload.Username, payload.Password, certificate, payload.CertificatePassword,
                         payload.Origins));
                     response.Credentials = CredentialStore.List();
+                    // A credential is not part of an instance's configuration, so the workers that
+                    // named it do not restart when it changes — and one that failed because of it
+                    // was left down. The act of writing the record is what makes its reason out of
+                    // date, so it is the act that lets those instances try again.
+                    _workers.RetryFailed();
                     break;
                 }
                 case ControlCommands.DeleteCredential:
@@ -579,7 +584,8 @@ public sealed class MountManager : IControlHost, IDisposable
                 WorkerPid = state?.Pid ?? 0,
                 Restarts = state?.Restarts ?? 0,
                 Error = state?.Error,
-                ErrorKind = state?.ErrorKind
+                ErrorKind = state?.ErrorKind,
+                Failed = state?.Failed ?? false
             });
         }
         return rows;

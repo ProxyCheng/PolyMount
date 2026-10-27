@@ -474,6 +474,10 @@ On disk: {2}</translation>
       <translation>Error</translation>
     </message>
     <message>
+      <source>state.failed</source>
+      <translation>Start failed</translation>
+    </message>
+    <message>
       <source>state.disabled</source>
       <translation>Disabled</translation>
     </message>
@@ -560,6 +564,18 @@ On disk: {2}</translation>
     <message>
       <source>instance.error</source>
       <translation>Instance error</translation>
+    </message>
+    <message>
+      <source>instance.remedy.auth</source>
+      <translation>It needs an account: add or choose one under Credentials, then select it for this layer in the instance's editor.</translation>
+    </message>
+    <message>
+      <source>instance.remedy.origin</source>
+      <translation>This credential does not allow the address this layer talks to. Edit it under Credentials and add that address to Servers, then mount the instance again.</translation>
+    </message>
+    <message>
+      <source>instance.remedy.retry</source>
+      <translation>Automatic restarts have stopped. Fix the reason, then mount the instance again, or reload the configuration.</translation>
     </message>
     <message>
       <source>disable</source>
@@ -713,6 +729,30 @@ The remote view changes. Local modifications are kept.</translation>
     <message>
       <source>credential.username.hint</source>
       <translation>e.g. alice</translation>
+    </message>
+    <message>
+      <source>credential.origins</source>
+      <translation>Servers</translation>
+    </message>
+    <message>
+      <source>credential.origins.hint</source>
+      <translation>The origins this account may be presented to (http(s)://host[:port]), separated by commas. Leave it empty and the first source to use the credential records its own.</translation>
+    </message>
+    <message>
+      <source>credential.origins.placeholder</source>
+      <translation>https://svn.example.com</translation>
+    </message>
+    <message>
+      <source>credential.origins.count</source>
+      <translation>{0} servers</translation>
+    </message>
+    <message>
+      <source>credential.origins.tip</source>
+      <translation>May be presented to:</translation>
+    </message>
+    <message>
+      <source>credential.origins.none</source>
+      <translation>nothing yet; the first use records it</translation>
     </message>
     <message>
       <source>credential.password</source>

@@ -646,6 +646,7 @@ internal static class Program
                     dashboard.VerifyPickers();
                     try { dashboard.VerifyPanelsTakeTheHeight(); } catch (Exception ex) { failure = ex.ToString(); }
                     try { dashboard.VerifyActionsWaitForTheState(); } catch (Exception ex) { failure = ex.ToString(); }
+                    try { Dashboard.VerifyFailureTexts(); } catch (Exception ex) { failure = ex.ToString(); }
                 }
                 if (Runs("object"))
                 {

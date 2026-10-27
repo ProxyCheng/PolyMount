@@ -89,6 +89,8 @@ public static class InstanceView
         worker.Pipe = supervisor.Pipe;
         worker.WorkerPid = supervisor.WorkerPid;
         worker.Restarts = supervisor.Restarts;
+        // Only the supervisor restarts processes, so only it can say it has stopped trying.
+        worker.Failed = supervisor.Failed;
         // The supervisor's error describes a process that ended. A worker that is serving now is a
         // different process and has said what it makes of itself; carrying the old failure onto a
         // mounted instance would show an error for a minute after a sign-in repaired it.

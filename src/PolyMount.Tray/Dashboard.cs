@@ -926,7 +926,7 @@ internal sealed class Dashboard : QWidget
                     m.WarmedDirectories, m.WarmupLimit));
             SetText(_layers, string.Join("\n↓\n", m.Providers.Select((p, i) => $"{i + 1:00}  {(string.IsNullOrEmpty(p.DisplayName) ? p.Name : p.DisplayName)}   ·   {T(p.Writable ? "writable" : "readonly")}")));
             _detailError.SetVisible(!string.IsNullOrWhiteSpace(m.Error));
-            SetText(_detailError, T("instance.error") + "\n" + m.Error);
+            SetText(_detailError, FailureText(m));
         }
         UpdateActions();
     }
@@ -1201,8 +1201,61 @@ internal sealed class Dashboard : QWidget
         return item;
     }
     private static void SetText(QLabel label, string text) { if (label.Text != text) label.SetText(text); }
-    private static string StateText(MountStatus m) => T(!string.IsNullOrWhiteSpace(m.Error) ? "state.error" : m.Mounted ? "state.mounted" : !m.Enabled ? "state.disabled" : "state.unmounted");
+    private static string StateText(MountStatus m) => T(m.Failed ? "state.failed"
+        : !string.IsNullOrWhiteSpace(m.Error) ? "state.error" : m.Mounted ? "state.mounted" : !m.Enabled ? "state.disabled" : "state.unmounted");
     private static string StateColor(MountStatus m) => !string.IsNullOrWhiteSpace(m.Error) ? TrayTheme.Tokens.DangerStrong : m.Mounted ? TrayTheme.Tokens.Success : TrayTheme.Tokens.Muted;
+
+    /// <summary>What the panel says about an instance that is not mounted: the reason whoever
+    /// refused gave, then the action that answers it, chosen by kind. The reason on its own was all
+    /// this showed, and "the credential may only be presented to …" is a sentence a reader cannot
+    /// act on without knowing that the list it names is a field this product has.</summary>
+    private static string FailureText(MountStatus m)
+    {
+        if (string.IsNullOrWhiteSpace(m.Error)) return "";
+        var lines = new List<string> { T("instance.error"), m.Error };
+        if (RemedyKey(m) is { } key) { lines.Add(""); lines.Add(T(key)); }
+        // Said only once the supervisor has actually stopped: an instance it is still restarting
+        // needs no button pressed, and a line telling the reader to press one would be wrong.
+        if (m.Failed) lines.Add(T("instance.remedy.retry"));
+        return string.Join("\n", lines);
+    }
+
+    private static string? RemedyKey(MountStatus m) => m.ErrorKind switch
+    {
+        FailureKinds.Auth => "instance.remedy.auth",
+        FailureKinds.Origin => "instance.remedy.origin",
+        _ => null
+    };
+
+    /// <summary>Self-check for what a failed instance says, against fixtures: the reason, the remedy
+    /// for the kind it reported, and the retry line only when the supervisor has given up. It needs
+    /// no service, which is the point — the states it asserts on cannot be produced on demand.</summary>
+    internal static void VerifyFailureTexts()
+    {
+        var gaveUp = new MountStatus
+        {
+            Name = "check", Error = "the credential was entered for https://a", ErrorKind = FailureKinds.Origin, Failed = true
+        };
+        string text = FailureText(gaveUp);
+        if (!text.Contains(gaveUp.Error, StringComparison.Ordinal))
+            throw new InvalidOperationException("A failed instance does not show why: " + text);
+        if (!text.Contains(T("instance.remedy.origin"), StringComparison.Ordinal))
+            throw new InvalidOperationException("An instance refused on a credential's origins does not say how to allow the address: " + text);
+        if (!text.Contains(T("instance.remedy.retry"), StringComparison.Ordinal))
+            throw new InvalidOperationException("An instance the supervisor stopped restarting does not say so: " + text);
+        if (StateText(gaveUp) != T("state.failed"))
+            throw new InvalidOperationException("An instance that stopped being restarted is listed as '" + StateText(gaveUp) + "'");
+        var retrying = new MountStatus { Name = "check", Error = "the store is in use", ErrorKind = FailureKinds.Startup };
+        if (FailureText(retrying).Contains(T("instance.remedy.retry"), StringComparison.Ordinal))
+            throw new InvalidOperationException("An instance that is still being restarted already says it gave up");
+        if (StateText(retrying) != T("state.error"))
+            throw new InvalidOperationException("A failed instance that is being restarted is listed as '" + StateText(retrying) + "'");
+        var signed = new MountStatus { Name = "check", Error = "sign in", ErrorKind = FailureKinds.Auth };
+        if (!FailureText(signed).Contains(T("instance.remedy.auth"), StringComparison.Ordinal))
+            throw new InvalidOperationException("An instance that needs an account does not say where accounts are: " + FailureText(signed));
+        if (FailureText(new MountStatus { Name = "check", Mounted = true }) != "")
+            throw new InvalidOperationException("An instance with no failure has a failure paragraph");
+    }
 
     private static QWidget Panel(string name)
     {

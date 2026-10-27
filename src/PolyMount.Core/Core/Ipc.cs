@@ -118,10 +118,17 @@ public sealed class MountStatus
     /// <summary>Warm-up progress in the reader's language, formatted with the two counts above.</summary>
     public LocalizedText? WarmupDetail { get; set; }
     public string? Error { get; set; }
-    /// <summary>What kind of failure <see cref="Error"/> is, when the producer can say. "auth"
-    /// means the source asked for credentials the machine did not have; anything else is empty and
-    /// is only a message.</summary>
+    /// <summary>What kind of failure <see cref="Error"/> is, when the producer can say: "auth" when
+    /// the source asked for credentials the machine did not have, "origin" when the credential the
+    /// layer names is not allowed to open the address it talks to, "startup" for everything else
+    /// that stops the instance from being built. A front-end chooses the remedy it offers from
+    /// this rather than from the message.</summary>
     public string? ErrorKind { get; set; }
+    /// <summary>The supervisor has stopped restarting this instance: the same failure ended it
+    /// several times in a row, and nothing about it can change by waiting. The last error stays in
+    /// <see cref="Error"/>. Starting the instance again — or reloading the configuration — is what
+    /// clears this, so it says "look at the reason" rather than "this instance is broken".</summary>
+    public bool Failed { get; set; }
 
     // What the supervisor knows about the process running this instance: the pipe it answers on
     // (empty when nothing is running it), which process it is (0 when none is), and how many times
@@ -135,6 +142,22 @@ public sealed class MountStatus
     // show it without asking a second question.
     public bool Recording { get; set; }
     public string? RecordingStartedUtc { get; set; }
+}
+
+/// <summary>The values <see cref="MountStatus.ErrorKind"/> takes. A front-end picks its remedy from
+/// one of these rather than from the message, which is written by whoever refused and in whatever
+/// words that layer had.</summary>
+public static class FailureKinds
+{
+    /// <summary>The source asked for an account, or refused the one it was given.</summary>
+    public const string Auth = "auth";
+
+    /// <summary>The credential the layer names is bound to other origins: its secret is intact, and
+    /// the address has to be added to the record before it may be presented here.</summary>
+    public const string Origin = "origin";
+
+    /// <summary>Anything else that stopped the instance from being built.</summary>
+    public const string Startup = "startup";
 }
 
 /// <summary>One named credential as the interface submits it. A null password on an update means

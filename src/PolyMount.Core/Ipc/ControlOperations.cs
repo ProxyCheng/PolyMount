@@ -280,7 +280,9 @@ public static class ControlOperations
 
         Mutation("mount_instance", "Mount an instance",
             "Starts the instance's process and mounts it. A disabled instance cannot be mounted — enable it with set_instance_enabled first. "
-            + "This does not change the configuration, so the instance comes back on its own next time.",
+            + "This does not change the configuration, so the instance comes back on its own next time. "
+            + "It is also how a start-up that keeps failing is retried: such an instance is left down with failed=true and errorKind set "
+            + "in list_instances, and calling this tries once more without any configuration change.",
             InstanceSchema,
             idempotent: true,
             (link, args) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Mount, Name = args.String("instance") }),
@@ -615,7 +617,7 @@ public static class ControlOperations
     private static IEnumerable<InstanceRow> Compact(IEnumerable<MountStatus> mounts) =>
         mounts.Select(m => new InstanceRow(
             m.Name, m.Enabled, m.Mounted, m.MountPoint, m.SourceType, m.Url, m.Revision,
-            m.CacheBytes, m.CacheCapacity, m.WorkerPid, m.Restarts, m.Recording, m.Error));
+            m.CacheBytes, m.CacheCapacity, m.WorkerPid, m.Restarts, m.Recording, m.Error, m.ErrorKind, m.Failed));
 
     private sealed record InstanceRow(
         string Name,
@@ -630,5 +632,11 @@ public static class ControlOperations
         int WorkerPid,
         int Restarts,
         bool Recording,
-        string? Error);
+        /// <summary>Why it is not mounted, in the words of whoever refused. <paramref name="ErrorKind"/>
+        /// says what kind it is ("auth", "origin", "startup") and <paramref name="Failed"/> that the
+        /// supervisor has stopped restarting it, so a caller can tell "wait for it" from "this needs
+        /// a change".</summary>
+        string? Error,
+        string? ErrorKind,
+        bool Failed);
 }

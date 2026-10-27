@@ -7,6 +7,34 @@ public sealed class AuthRequiredException : Exception
     public AuthRequiredException(string message, Exception? inner = null) : base(message, inner) { }
 }
 
+/// <summary>The credential a layer names may not be presented to the address that layer talks to:
+/// it is bound to the origins recorded with it. The secret is intact and the record is whole —
+/// what is missing is the record's permission to be used here, which the credential manager can
+/// add. A failure of its own, so the reader is told that one thing instead of being handed "the
+/// mount failed" and left to work out that the account was fine all along.</summary>
+public sealed class CredentialOriginException : InvalidOperationException
+{
+    public CredentialOriginException(string credentialId, string credentialName,
+        IReadOnlyList<string> origins, string origin)
+        : base("the credential '" + credentialName + "' (id " + credentialId + ") may only be presented to "
+               + string.Join(", ", origins) + ", and this layer talks to " + origin
+               + "; add " + origin + " to that credential in the credential manager, or choose another "
+               + "credential for this layer")
+    {
+        CredentialId = credentialId;
+        CredentialName = credentialName;
+        Origins = origins;
+        Origin = origin;
+    }
+
+    public string CredentialId { get; }
+    public string CredentialName { get; }
+    /// <summary>Every origin the credential may currently be presented to.</summary>
+    public IReadOnlyList<string> Origins { get; }
+    /// <summary>The origin that was refused.</summary>
+    public string Origin { get; }
+}
+
 /// <summary>
 /// How a source that needs credentials finds them.
 ///

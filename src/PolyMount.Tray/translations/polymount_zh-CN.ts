@@ -477,6 +477,10 @@
       <translation>有错误</translation>
     </message>
     <message>
+      <source>state.failed</source>
+      <translation>启动失败</translation>
+    </message>
+    <message>
       <source>state.disabled</source>
       <translation>已禁用</translation>
     </message>
@@ -563,6 +567,18 @@
     <message>
       <source>instance.error</source>
       <translation>实例错误</translation>
+    </message>
+    <message>
+      <source>instance.remedy.auth</source>
+      <translation>需要账户：在「凭据…」里新增或选择一个账户，然后在实例编辑器的层设置里把它选给这一层。</translation>
+    </message>
+    <message>
+      <source>instance.remedy.origin</source>
+      <translation>这个凭据没有登记当前源站：在「凭据…」里编辑它，把该地址加到「允许的服务器」，然后点「挂载」重试。</translation>
+    </message>
+    <message>
+      <source>instance.remedy.retry</source>
+      <translation>已停止自动重试。修正原因后点「挂载」重新尝试，或重新加载配置。</translation>
     </message>
     <message>
       <source>disable</source>
@@ -716,6 +732,30 @@
     <message>
       <source>credential.username.hint</source>
       <translation>例如：alice</translation>
+    </message>
+    <message>
+      <source>credential.origins</source>
+      <translation>允许的服务器</translation>
+    </message>
+    <message>
+      <source>credential.origins.hint</source>
+      <translation>这个账户可以出示给这些源站（http(s)://主机[:端口]），用逗号分隔。留空表示第一次使用时自动记下当时的源站。</translation>
+    </message>
+    <message>
+      <source>credential.origins.placeholder</source>
+      <translation>https://svn.example.com</translation>
+    </message>
+    <message>
+      <source>credential.origins.count</source>
+      <translation>{0} 个源站</translation>
+    </message>
+    <message>
+      <source>credential.origins.tip</source>
+      <translation>可出示给：</translation>
+    </message>
+    <message>
+      <source>credential.origins.none</source>
+      <translation>尚未登记（第一次使用时自动记下）</translation>
     </message>
     <message>
       <source>credential.password</source>

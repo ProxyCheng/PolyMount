@@ -73,7 +73,11 @@ keeps file content, and only the overlay takes writes.
 - **Pinning**: a mount can stay on a fixed revision even as the repository moves.
 
 Each mount instance runs as **its own worker process** under a small supervisor, so one instance
-restarting, crashing, or being reconfigured cannot take another with it.
+restarting, crashing, or being reconfigured cannot take another with it. A worker that dies for the
+same reason three times over a minute is left down with that reason on its row — the supervisor log
+says what it was, the dashboard shows it beside the instance, and mounting the instance again (or
+saving a credential, or writing the configuration) tries once more. A process that dies without a
+reason is a crash and is still restarted indefinitely.
 
 ## Requirements
 
@@ -308,7 +312,9 @@ MCP server run as that user — so what each boundary enforces is written down i
 - **Certificates must verify** by default. A self-signed internal server names the failures it
   accepts in its own configuration; a plain `http://` source needs `AllowInsecureTransport`.
 - **A stored credential is bound to the origin it was first used for**, and the repository root the
-  server advertises must stay on the configured origin.
+  server advertises must stay on the configured origin. The credential's **Servers** field — in the
+  tray's credential manager — is where a second server sharing that account is named; a mount that
+  was refused because of the binding says so, with both addresses, and points there.
 - **Secrets do not travel with the configuration.** `getConfig` answers with
   `[redacted]` in the password fields, and a save that still says `[redacted]` keeps the stored
   value.

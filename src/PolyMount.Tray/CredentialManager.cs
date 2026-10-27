@@ -173,6 +173,12 @@ internal abstract class CredentialListDialog : QDialog
             row.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(item.Id));
             UsedBy.TryGetValue(item.Id, out var usedBy);
             string detail = Describe(item);
+            // Where it may be presented, spelled out: the count on the row is what makes a reader
+            // look here, and the addresses are what they have to compare against a failing source.
+            string origins = item.Origins is { Count: > 0 } list
+                ? string.Join(", ", list)
+                : T("credential.origins.none");
+            detail += Environment.NewLine + T("credential.origins.tip") + " " + origins;
             if (!item.Usable) detail += Environment.NewLine + T("credential.unusable.hint");
             if (usedBy is { Count: > 0 })
                 detail += Environment.NewLine + string.Join(Environment.NewLine, usedBy);
@@ -197,13 +203,17 @@ internal abstract class CredentialListDialog : QDialog
     }
 
     /// <summary>The row's one line: the name, what kind of secret it is, and who it signs in as.
-    /// A record this account cannot use is marked here, with the reason in the tooltip.</summary>
+    /// A record this account cannot use is marked here, with the reason in the tooltip. How many
+    /// servers it may be presented to is the one fact about a credential that explains a mount
+    /// failing, so it is counted here and listed in the tooltip.</summary>
     protected static string Describe(CredentialRecord item)
     {
         string identity = item.Kind == CredentialTypes.Certificate
             ? I18n.T("credential.kind.certificate")
             : item.Username;
         string text = item.Name + " · " + identity;
+        if (item.Origins is { Count: > 0 } origins)
+            text += " · " + I18n.F("credential.origins.count", origins.Count);
         return item.Usable ? text : text + "  ⚠";
     }
 
@@ -322,6 +332,19 @@ internal sealed class CredentialManager : CredentialListDialog
         QCoreApplication.ProcessEvents();
         if (certificate.Kind != CredentialTypes.Certificate)
             throw new InvalidOperationException("switching back to the certificate kind was lost");
+        // The servers field: shown as stored, and carried by the save after an edit. A form that
+        // dropped it would send nothing, which the store reads as "keep" — so a reader who removed
+        // one address would watch the mount keep failing at it.
+        var shared = new CredentialForm(manager, new CredentialRecord("d", "Shared", "carol",
+            CredentialTypes.Password, true, new[] { "https://svn.example.invalid" }), items);
+        if (!shared.OriginsField.Contains("https://svn.example.invalid", StringComparison.Ordinal))
+            throw new InvalidOperationException("A stored credential's servers are not shown in the form: " + shared.OriginsField);
+        shared.OriginsField = "https://a.example.invalid; https://b.example.invalid";
+        var edited = shared.ToPayload("d");
+        if (edited.Origins is not { Count: 2 } || edited.Origins[1] != "https://b.example.invalid")
+            throw new InvalidOperationException(
+                "An edited servers field does not reach the save: " + string.Join(", ", edited.Origins ?? new List<string>()));
+        shared.Hide();
         form.Hide();
         certificate.Hide();
         try
@@ -346,7 +369,7 @@ internal sealed class CredentialManager : CredentialListDialog
                 throw new InvalidOperationException("A selected credential cannot be edited or removed");
             if (capture != null) { using var image = manager.Grab(); image.Save(capture); }
         }
-        finally { form.DeleteLater(); certificate.DeleteLater(); manager.Hide(); manager.DeleteLater(); }
+        finally { shared.DeleteLater(); form.DeleteLater(); certificate.DeleteLater(); manager.Hide(); manager.DeleteLater(); }
     }
 }
 
@@ -354,7 +377,7 @@ internal sealed class CredentialManager : CredentialListDialog
 internal sealed class CredentialForm : QDialog
 {
     private readonly QComboBox _kind;
-    private readonly QLineEdit _name, _username, _password, _certificatePath, _certificatePassword;
+    private readonly QLineEdit _name, _username, _password, _origins, _certificatePath, _certificatePassword;
     private readonly QWidget _certificateRows;
     private readonly QLabel _error;
     private readonly bool _isNew;
@@ -400,6 +423,14 @@ internal sealed class CredentialForm : QDialog
         _username = new QLineEdit();
         _username.SetText(existing?.Username ?? "");
         _username.SetPlaceholderText(I18n.T("credential.username.hint"));
+        // The servers this account may be presented to. It is the credential's own record of where
+        // it belongs: the first source that uses it writes its origin down, and a second one is
+        // refused until it is named here. That refusal is what a mount reports as an error, so this
+        // field is the one place its remedy can be carried out.
+        _origins = new QLineEdit();
+        _origins.SetText(existing?.Origins is { Count: > 0 } origins ? string.Join(", ", origins) : "");
+        _origins.SetPlaceholderText(I18n.T("credential.origins.placeholder"));
+        I18n.Bind(_origins.SetToolTip, "credential.origins.hint");
         _password = new QLineEdit();
         _password.SetEchoMode(QLineEdit.EchoMode.Password);
         _password.SetPlaceholderText(existing == null ? "" : I18n.T("credential.password.keep"));
@@ -408,6 +439,7 @@ internal sealed class CredentialForm : QDialog
         form.AddRow(Label("credential.kind"), _kind);
         form.AddRow(Label("credential.name"), _name);
         form.AddRow(Label("credential.username"), _username);
+        form.AddRow(Label("credential.origins"), _origins);
         form.AddRow(Label("credential.password"), Reveal(_password));
 
         // The certificate lives in its own block: a password credential leaves it hidden, and a
@@ -509,8 +541,28 @@ internal sealed class CredentialForm : QDialog
         Username = Username,
         Password = Password,
         Certificate = Certificate is { Length: > 0 } certificate ? Convert.ToBase64String(certificate) : null,
-        CertificatePassword = CertificatePassword
+        CertificatePassword = CertificatePassword,
+        // Always the list the form shows, not null: null means "keep what the record has", and a
+        // reader who removed an address would then watch it come back. Empty is a real answer — it
+        // says this account is bound to nothing, and the next source to use it writes its origin.
+        Origins = Origins()
     };
+
+    /// <summary>The addresses in the field, split on whatever separates them. The store checks each
+    /// one and refuses anything that is not an origin, so a typo is reported rather than stored as
+    /// an entry that can never match.</summary>
+    private List<string> Origins() => _origins.Text
+        .Split(new[] { ',', ';', ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .ToList();
+
+    /// <summary>The servers field, for a self-check: what the form shows when a record is opened,
+    /// and what a save carries after it is edited. This field is the remedy a mount's error names,
+    /// so it has to round-trip.</summary>
+    internal string OriginsField
+    {
+        get => _origins.Text;
+        set => _origins.SetText(value);
+    }
 
     private void RefreshKind()
     {

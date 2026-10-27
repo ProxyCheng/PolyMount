@@ -5,6 +5,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-27
+
+An instance that cannot start stops being restarted and says why, and a credential's servers can
+be edited where the account lives.
+
+### Added
+
+- **The servers a credential may be presented to are shown and edited where the account lives.**
+  A record has carried its origins since the binding was introduced, and the first source to use it
+  writes one down — but nothing displayed them and nothing could add one, so a second repository
+  sharing an account was refused at start-up with advice ("choose another credential") and the one
+  act that repairs it was reachable only by hand-written control calls. The credential form now has
+  a `Servers` field (comma separated, empty meaning "bind on first use"), the list row counts them
+  and the tooltip spells them out. Saving a credential also lets the instances that gave up on it
+  try again.
+
+### Fixed
+
+- **An instance that cannot start stops being restarted, and the reason is written down.** A worker
+  that died for the same reason three times over at least a minute was started again every thirty
+  seconds for as long as the service ran, and the service log said only "exited with code 2": the
+  sentence that identified the failure was in the worker's own log, which is a file nobody knows to
+  open. It is on the supervisor's line now, the instance is left in an explicit failed state with
+  that reason on it, and mounting it again, writing the configuration, or saving a credential is
+  what clears it.
+- **A failure's kind reaches the reader.** The tray read the message but never the kind, so a mount
+  that needed an account and one whose credential was bound to another server both read as "error"
+  with no way forward. The detail panel now puts the repairing sentence beside the reason, the list
+  says "start failed" once the supervisor has given up, and `list_instances` carries `errorKind` and
+  `failed` so an agent can tell "wait for it" from "this needs a change".
+
 ## [0.9.1] - 2026-10-27
 
 The service answers its own front-ends again, an update no longer waits for another checkout's

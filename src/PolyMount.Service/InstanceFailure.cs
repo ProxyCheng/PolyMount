@@ -19,10 +19,20 @@ internal static class InstanceFailure
     /// <summary>The source refused to serve without credentials, or refused the ones it was given.</summary>
     public const string AuthRequired = "auth";
 
+    /// <summary>The credential the layer names may not be presented to the address the layer talks
+    /// to. Separate from <see cref="AuthRequired"/>: the account is there and its secret is intact,
+    /// and the one action that repairs it is adding this address to the credential.</summary>
+    public const string Origin = "origin";
+
     /// <summary>Anything else, with the message as the only description.</summary>
     public const string Startup = "startup";
 
-    public static string KindOf(Exception ex) => ex is AuthRequiredException ? AuthRequired : Startup;
+    public static string KindOf(Exception ex) => ex switch
+    {
+        AuthRequiredException => AuthRequired,
+        CredentialOriginException => Origin,
+        _ => Startup
+    };
 
     private static string PathOf(string instanceId) => ServiceLogs.PathOf("startup-" + instanceId + ".json");
 

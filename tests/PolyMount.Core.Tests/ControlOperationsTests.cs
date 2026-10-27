@@ -244,6 +244,23 @@ public sealed class ControlOperationsTests
         StringAssert.Contains(json, "\"revision\":123456");
         // The per-layer detail is what get_instance is for; a list of instances must stay a list.
         Assert.IsFalse(json.Contains("providers", StringComparison.OrdinalIgnoreCase));
+
+        // An instance that is not mounted says why, what kind of failure it is, and whether waiting
+        // is still worth anything: those three are what a caller decides its next action with.
+        string failed = JsonSerializer.Serialize(operation.Present(new ControlResponse
+        {
+            Mounts =
+            {
+                new MountStatus
+                {
+                    Name = "demo", Enabled = true, Error = "the credential may only be presented to https://a.example.invalid",
+                    ErrorKind = FailureKinds.Origin, Failed = true
+                }
+            }
+        }), Json);
+        StringAssert.Contains(failed, "\"errorKind\":\"origin\"");
+        StringAssert.Contains(failed, "\"failed\":true");
+        StringAssert.Contains(failed, "\"error\":\"the credential may only be presented to https://a.example.invalid\"");
     }
 
     [TestMethod]

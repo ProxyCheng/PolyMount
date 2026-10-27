@@ -89,8 +89,11 @@ public static class CredentialStore
     };
 
     /// <summary>Where the entries live: with the configuration and the stores, under the common
-    /// application data folder the installer has already given the service account.</summary>
-    public static string Path { get; } = System.IO.Path.Combine(
+    /// application data folder the installer has already given the service account. The setter is
+    /// internal so a test can point it at a temporary directory: everything below treats this path
+    /// as the only file it reads or writes, and a test that used the machine's own store would be
+    /// writing to the account it runs as.</summary>
+    public static string Path { get; internal set; } = System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PolyMount", "credentials.json");
 
     /// <summary>The key an origin credential is stored under: scheme and host in lower case, and a
@@ -248,10 +251,7 @@ public static class CredentialStore
             }
             else if (!item.Origins.Contains(origin, StringComparer.OrdinalIgnoreCase))
             {
-                throw new InvalidOperationException(
-                    "the credential '" + item.Name + "' was entered for " + string.Join(", ", item.Origins)
-                    + " and this layer talks to " + origin
-                    + "; choose another credential, or point this source at the address it was entered for");
+                throw new CredentialOriginException(item.Id, item.Name, item.Origins.ToArray(), origin);
             }
             return Materialize(item);
         }

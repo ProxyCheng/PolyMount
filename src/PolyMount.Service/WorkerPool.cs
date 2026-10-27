@@ -10,7 +10,7 @@ namespace PolyMount.Service;
 /// facts, and nothing else. Whether the mount came up, and what its layers are serving, is the
 /// worker's own answer — the supervisor does not ask it and does not answer for it, so a status
 /// call here costs no round trips at all.</summary>
-public sealed record WorkerState(string Id, string Name, bool Running, int Pid, string Pipe, string StartedUtc, int Restarts, string? Error, string? ErrorKind = null);
+public sealed record WorkerState(string Id, string Name, bool Running, int Pid, string Pipe, string StartedUtc, int Restarts, string? Error, string? ErrorKind = null, bool Failed = false);
 
 /// <summary>
 /// The worker processes the supervisor is running: one per enabled instance, each in a job object
@@ -31,6 +31,20 @@ public sealed class WorkerPool : IDisposable
     /// failure starts counting from scratch.</summary>
     private static readonly TimeSpan HealthyUptime = TimeSpan.FromSeconds(60);
 
+    /// <summary>How many times in a row the same startup failure ends a worker before it is left
+    /// down. A configuration that is refused — a credential bound elsewhere, a layer type this
+    /// installation does not have, a store it may not open — is refused again the next time, and
+    /// starting a process every 30 seconds forever says so nowhere: the reason is in a file nobody
+    /// opens, and a mount that keeps flickering reads as "still starting".</summary>
+    private const int IdenticalFailuresBeforeGivingUp = 3;
+
+    /// <summary>And how long the same failure has to have gone on before it counts as a condition.
+    /// With the backoff above the attempts land at 0, 1, 3, 7, 15, 31 and 61 seconds, so a minute is
+    /// what it takes to stop: long enough that a store a killed worker is still letting go of, or a
+    /// share that is briefly unreachable, is ridden out by the retry loop the way it always was —
+    /// and short enough that nobody waits six minutes for a sentence that never comes.</summary>
+    private static readonly TimeSpan SameFailureWindow = TimeSpan.FromSeconds(60);
+
     private sealed class Worker
     {
         public string Id = "", Name = "", Pipe = "", MountPoint = "", Signature = "";
@@ -46,6 +60,22 @@ public sealed class WorkerPool : IDisposable
 
         /// <summary>What kind of failure the error is, when the worker said.</summary>
         public string? ErrorKind;
+
+        /// <summary>The last failure, as something two failures can be equal by: the kind and the
+        /// message. A message that changes between attempts (a port, a path, a timestamp) is a
+        /// different failure each time, and is left to the retry loop.</summary>
+        public string? FailureKey;
+
+        /// <summary>How many times in a row <see cref="FailureKey"/> has ended this worker.</summary>
+        public int SameFailure;
+
+        /// <summary>When that run of identical failures started.</summary>
+        public DateTime FirstFailureUtc;
+
+        /// <summary>Gave up restarting it: the same failure has ended it
+        /// <see cref="IdenticalFailuresBeforeGivingUp"/> times. A mount command, or a reload of the
+        /// configuration, clears this — those are acts that say the reason may be gone.</summary>
+        public bool GivenUp;
     }
 
     private readonly List<Worker> _workers = new();
@@ -85,7 +115,8 @@ public sealed class WorkerPool : IDisposable
     {
         lock (_gate)
             return _workers.Select(worker => new WorkerState(worker.Id, worker.Name, IsRunning(worker),
-                PidOf(worker), worker.Pipe, worker.StartedUtc, worker.Restarts, worker.Error, worker.ErrorKind)).ToList();
+                PidOf(worker), worker.Pipe, worker.StartedUtc, worker.Restarts, worker.Error, worker.ErrorKind,
+                worker.GivenUp)).ToList();
     }
 
     /// <summary>Brings the running set in line with the configuration: an instance that was added
@@ -121,7 +152,15 @@ public sealed class WorkerPool : IDisposable
                 }
 
                 string signature = Signature(global, profile);
-                if (signature == worker.Signature) continue;
+                if (signature == worker.Signature)
+                {
+                    // A configuration that was written is a statement that something changed, so a
+                    // worker that gave up is given another go even when this instance's own settings
+                    // are the same ones: the credential it names may have been edited, and the
+                    // plugin set is part of the signature above.
+                    Retry(worker);
+                    continue;
+                }
                 _logger.LogInformation("Restarting the worker for {Instance}: its configuration changed", worker.Name);
                 Stop(worker);
                 _workers.Remove(worker);
@@ -150,9 +189,26 @@ public sealed class WorkerPool : IDisposable
             var worker = ByName(instance);
             if (IsRunning(worker)) return;
             worker.Stopping = false;
-            worker.NextStartUtc = DateTime.MinValue;
+            // Asking for it is an answer to whatever it said last time: the reason may have been
+            // repaired in a window this process does not watch.
+            Retry(worker);
             StartWorker(worker);
         }
+    }
+
+    /// <summary>Lets every worker that gave up try again. For a change that is outside the
+    /// configuration a worker is built from but is exactly what such a failure was about — a
+    /// credential whose origins were edited, which the mount that names it cannot see.</summary>
+    public void RetryFailed()
+    {
+        lock (_gate)
+            foreach (var worker in _workers.Where(worker => worker.GivenUp))
+            {
+                _logger.LogInformation("The worker for {Instance} failed for the same reason {Count} times; " +
+                    "trying again because something it depends on has changed", worker.Name, worker.SameFailure);
+                Retry(worker);
+            }
+        Reconcile();
     }
 
     /// <summary>Stops the named instance's worker, and leaves it stopped: this is what the
@@ -186,19 +242,26 @@ public sealed class WorkerPool : IDisposable
 
     /// <summary>Restarts whatever should be running and is not. A worker that keeps dying is
     /// started again behind a growing delay, so a crash loop costs one process a minute rather than
-    /// one a second.</summary>
+    /// one a second — until it dies the same way often enough to be a condition rather than an
+    /// accident, which is where the loop stops and the reason is left in place.</summary>
     private void Reconcile()
     {
         lock (_gate)
             foreach (var worker in _workers)
             {
                 if (worker.Stopping) continue;
+                // Left down on purpose, with its reason still on the row. Nothing here can clear
+                // that: only an act that says the reason may have changed does (see Retry).
+                if (worker.GivenUp) continue;
                 if (IsRunning(worker))
                 {
                     if (worker.Error != null && DateTime.UtcNow - worker.StartedAtUtc >= HealthyUptime)
                     {
                         worker.Error = null;
                         worker.ErrorKind = null;
+                        worker.FailureKey = null;
+                        worker.SameFailure = 0;
+                        worker.FirstFailureUtc = default;
                     }
                     continue;
                 }
@@ -214,7 +277,7 @@ public sealed class WorkerPool : IDisposable
                     var failure = InstanceFailure.Take(worker.Id);
                     worker.Error = failure?.Message ?? "the worker exited with code " + exitCode;
                     worker.ErrorKind = failure?.Kind;
-                    _logger.LogWarning("The worker for {Instance} exited with code {Code}; restarting it", worker.Name, exitCode);
+                    CountFailure(worker, failure, exitCode);
                     worker.Job?.Dispose();
                     worker.Job = null;
                     process.Dispose();
@@ -224,6 +287,55 @@ public sealed class WorkerPool : IDisposable
 
                 if (DateTime.UtcNow >= worker.NextStartUtc) StartWorker(worker);
             }
+    }
+
+    /// <summary>Counts a failure against the one before it, and decides whether the loop is worth
+    /// continuing. The reason is in hand here — the worker wrote it down before it exited — so this
+    /// is also where it reaches the log a reader actually opens: the per-instance log it came from
+    /// is a second file, and "exited with code 2" on its own has never told anybody anything.
+    ///
+    /// Only a failure the worker described can be given up on. A process that dies without a reason
+    /// is a crash, and a crash is what the retry loop is for.</summary>
+    private void CountFailure(Worker worker, InstanceFailure.Detail? failure, int exitCode)
+    {
+        string key = (failure?.Kind ?? "") + "\n" + (failure?.Message ?? "");
+        bool same = string.Equals(key, worker.FailureKey, StringComparison.Ordinal);
+        worker.SameFailure = same ? worker.SameFailure + 1 : 1;
+        if (!same) worker.FirstFailureUtc = DateTime.UtcNow;
+        worker.FailureKey = key;
+
+        if (failure == null)
+        {
+            _logger.LogWarning("The worker for {Instance} exited with code {Code}; restarting it",
+                worker.Name, exitCode);
+            return;
+        }
+
+        if (worker.SameFailure < IdenticalFailuresBeforeGivingUp ||
+            DateTime.UtcNow - worker.FirstFailureUtc < SameFailureWindow)
+        {
+            _logger.LogWarning("The worker for {Instance} exited with code {Code}: {Reason}; restarting it",
+                worker.Name, exitCode, worker.Error);
+            return;
+        }
+
+        worker.GivenUp = true;
+        _logger.LogError("The worker for {Instance} has stopped for the same reason {Count} times over " +
+            "{Seconds:0} seconds and is not being restarted: {Reason}. Start the instance again, or reload " +
+            "the configuration, to retry", worker.Name, worker.SameFailure,
+            (DateTime.UtcNow - worker.FirstFailureUtc).TotalSeconds, worker.Error);
+    }
+
+    /// <summary>Forgets that a worker gave up, and the failures behind it. Something said the reason
+    /// may be gone — the configuration was written, the instance was asked for — and a retry is
+    /// cheaper than the reader working out which of the two does it.</summary>
+    private static void Retry(Worker worker)
+    {
+        worker.GivenUp = false;
+        worker.FailureKey = null;
+        worker.SameFailure = 0;
+        worker.FirstFailureUtc = default;
+        worker.NextStartUtc = DateTime.MinValue;
     }
 
     private void StartWorker(Worker worker)
