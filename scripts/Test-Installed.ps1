@@ -185,12 +185,9 @@ foreach ($relative in 'Service\PolyMount.Service.exe', 'Tray\PolyMount.Tray.exe'
                         'Shell\PolyMount.Shell.dll', 'Service\plugins\PolyMount.Plugin.Svn.dll',
                         'Service\plugins\PolyMount.Plugin.Smb.dll',
                         'Service\plugins\PolyMount.Plugin.TxFShim.dll',
-                        # What each plugin says about itself before it is loaded: the plugin page
-                        # reads these, and a setup that shipped the DLL without one would leave
-                        # every plugin unnamed while disabled.
-                        'Service\plugins\PolyMount.Plugin.Svn.plugin.json',
-                        'Service\plugins\PolyMount.Plugin.Smb.plugin.json',
-                        'Service\plugins\PolyMount.Plugin.TxFShim.plugin.json',
+                        # No `plugin.json` beside them: since contract 2.1 a plugin's manifest is a
+                        # resource inside the assembly, and the setup reads the name and the
+                        # contract it was built against out of the file's own metadata.
                         'installer\Install-Host.ps1', 'install.json', 'THIRD-PARTY-NOTICES.txt') {
     Check "installed $relative" (Test-Path -LiteralPath (Join-Path $app $relative))
 }
@@ -203,7 +200,7 @@ if (Test-Path -LiteralPath $mcp) {
     $describe = & $mcp --describe 2>$null
     Check 'the MCP server starts from the installed copy' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
     $toolCount = @(((($describe -join [Environment]::NewLine)) | ConvertFrom-Json).tools).Count
-    Check 'the MCP server offers its 27 tools' ($toolCount -eq 27) "$toolCount tool(s)"
+    Check 'the MCP server offers its 29 tools' ($toolCount -eq 29) "$toolCount tool(s)"
 }
 
 $entry = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
