@@ -234,6 +234,12 @@ internal abstract class CredentialListDialog : QDialog
                 ? string.Join(", ", list)
                 : T("credential.origins.none");
             detail += Environment.NewLine + T("credential.origins.tip") + " " + origins;
+            if (item.Children is { Count: > 0 } children)
+                detail += Environment.NewLine + T("credential.children.tip") + " "
+                    + string.Join(", ", children.Select(NameOf));
+            if (CompositeHolders(item.Id) is { Count: > 0 } holders)
+                detail += Environment.NewLine + T("credential.composed.tip") + " "
+                    + string.Join(", ", holders);
             if (!item.Usable) detail += Environment.NewLine + T("credential.unusable.hint");
             if (usedBy is { Count: > 0 })
                 detail += Environment.NewLine + string.Join(Environment.NewLine, usedBy);
@@ -276,8 +282,30 @@ internal abstract class CredentialListDialog : QDialog
         // where a refused mount sends them anyway.
         if (UsedBy.GetValueOrDefault(item.Id) is { Count: > 0 } usedBy)
             text += " · " + I18n.F("credential.used.count", usedBy.Count);
+        // A composite is a list of other records, and how long that list is is the one thing about
+        // it a reader needs from the row: what is in it is in the tooltip.
+        if (item.Children is { Count: > 0 } children)
+            text += " · " + I18n.F("credential.children.count", children.Count);
+        // And being inside one is a use of its own: a composite names its children, a layer names
+        // only the composite, so the count above says nothing about what is in it.
+        if (CompositeHolders(item.Id) is { Count: > 0 } holders)
+            text += " · " + I18n.F("credential.composed.count", holders.Count);
         return item.Usable ? text : text + "  ⚠";
     }
+
+    /// <summary>The name of a record, or the words for one this store no longer holds — a composite
+    /// whose child was deleted says so instead of showing a bare id.</summary>
+    protected string NameOf(string id) =>
+        Items.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal))?.Name
+        ?? T("credential.missing");
+
+    /// <summary>The composites this record is inside, by name. A child is named by a record rather
+    /// than by a layer, so <see cref="CredentialUsage"/> cannot see it: this is where that use is
+    /// counted and shown, and the delete confirmation names the same records.</summary>
+    protected List<string> CompositeHolders(string id) =>
+        Items.Where(other => other.Children.Contains(id, StringComparer.Ordinal))
+            .Select(other => other.Name)
+            .ToList();
 
     /// <summary>What a kind is called in this window: the built-in names it ships with, or the
     /// title the plugin gave it. Empty for a password credential, whose row shows the account.</summary>
@@ -285,6 +313,10 @@ internal abstract class CredentialListDialog : QDialog
     {
         if (string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase))
             return I18n.T("credential.kind.certificate");
+        if (string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase))
+            return I18n.T("credential.kind.composite");
+        if (string.Equals(kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase))
+            return I18n.T("credential.kind.installed");
         if (string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase))
             return "";
         return Kinds.FirstOrDefault(item => string.Equals(item.Kind, kind, StringComparison.OrdinalIgnoreCase))
@@ -345,12 +377,22 @@ internal abstract class CredentialListDialog : QDialog
     protected void RemoveSelected()
     {
         if (CurrentId() is not { } id) return;
-        string question = UsedBy.GetValueOrDefault(id) is { Count: > 0 } usedBy
-            ? I18n.F("credential.delete.confirm", string.Join(", ", usedBy))
-            : T("credential.delete.plain");
-        if (QMessageBox.Question(this, T(TitleKey), question, T("credential.remove"), T("cancel"), null, 1, 1) != 0) return;
+        if (QMessageBox.Question(this, T(TitleKey), DeleteQuestion(id), T("credential.remove"), T("cancel"), null, 1, 1) != 0) return;
         try { SupervisorClient.Default.DeleteCredential(id); } catch (Exception) { }
         Reload(null);
+    }
+
+    /// <summary>What removing this record affects, said before it happens: the composite that is
+    /// made of it stops working until it is edited, and the layers that name it stop until another
+    /// credential is chosen. Both are truer than "are you sure".</summary>
+    private string DeleteQuestion(string id)
+    {
+        var holders = CompositeHolders(id);
+        if (holders.Count > 0)
+            return I18n.F("credential.delete.composite", string.Join(", ", holders));
+        return UsedBy.GetValueOrDefault(id) is { Count: > 0 } usedBy
+            ? I18n.F("credential.delete.confirm", string.Join(", ", usedBy))
+            : T("credential.delete.plain");
     }
 
     /// <summary>Reads the store again after a save or a delete. A window that holds a selection
@@ -413,8 +455,21 @@ internal static class CredentialMarks
             // caller of TrayIcons, not a blank: a badge is a summary.
             ? (TrayIcons.Names.Contains(named, StringComparer.OrdinalIgnoreCase) ? named : "credential")
             : string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase) ? "certificate"
+            : string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase) ? "layers"
+            : string.Equals(kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase) ? "certificate-store"
             : string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase) ? "key"
             : "credential";
+
+    /// <summary>What a field that names a credential says: the record's name and what it signs in
+    /// as — or the kind, when it signs in as nothing. A record with no account used to end at the
+    /// separator, which read as a field that had not finished loading.</summary>
+    internal static string Label(CredentialRecord record) =>
+        string.Equals(record.Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase)
+            ? record.Name + " · " + I18n.T("credential.kind.certificate")
+        : string.Equals(record.Kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase)
+            ? record.Name + " · " + I18n.T("credential.kind.composite")
+        : record.Username.Length > 0 ? record.Name + " · " + record.Username
+        : record.Name;
 
     /// <summary>The mark itself, in the scheme's ink unless a colour is given: a record this
     /// account cannot use is drawn in the warning one.</summary>
@@ -475,7 +530,9 @@ internal sealed class CredentialManager : CredentialListDialog
             new("b", "Personal", "bob"),
             new("c", "Client certificate", "carol", CredentialTypes.Certificate),
             new("e", "TortoiseSVN (alice)", "alice", "svn-cached"),
-            new("d", "Sign-in", "dave", "sso-check", false)
+            new("d", "Sign-in", "dave", "sso-check", false),
+            // One row of the shape this change adds: a record that is a list of two others.
+            new("g", "Pair", "", CredentialTypes.Composite, true, null) { Children = new[] { "c", "a" } }
         };
         var usage = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase) { ["a"] = 2 };
         var manager = new CredentialManager(parent, load: false);
@@ -542,6 +599,95 @@ internal sealed class CredentialManager : CredentialListDialog
         QCoreApplication.ProcessEvents();
         if (certificate.Kind != CredentialTypes.Certificate)
             throw new InvalidOperationException("switching back to the certificate kind was lost");
+        // What each kind is asked for. A certificate is a file and a composite is a list of other
+        // records: neither names an account of its own, and the rows that do belong to the account
+        // kind alone — a form that kept asking would be the shape this kind was given to replace.
+        if (certificate.AccountRowsVisible)
+            throw new InvalidOperationException("a certificate form still asks for an account");
+        if (certificate.ChildrenRowVisible)
+            throw new InvalidOperationException("a certificate form offers a list of children it does not have");
+        if (!form.AccountRowsVisible)
+            throw new InvalidOperationException("an account form does not ask for the account");
+        var composite = new CredentialForm(manager, new CredentialRecord("g", "Pair", "",
+            CredentialTypes.Composite) { Children = new[] { "c", "a" } }, items);
+        composite.SelectKind(CredentialTypes.Composite);
+        QCoreApplication.ProcessEvents();
+        if (!composite.ChildrenRowVisible)
+            throw new InvalidOperationException("a composite form has no list to put credentials in");
+        if (composite.AccountRowsVisible)
+            throw new InvalidOperationException("a composite form asks for an account of its own");
+        // The installed certificate is a kind of its own: its form picks from what the service can
+        // present, and asks for no file.
+        var installedForm = new CredentialForm(manager, new CredentialRecord("h", "Machine certificate",
+            "", CredentialTypes.InstalledCertificate), items);
+        installedForm.SelectKind(CredentialTypes.InstalledCertificate);
+        QCoreApplication.ProcessEvents();
+        if (!installedForm.InstalledRowVisible)
+            throw new InvalidOperationException("an installed-certificate form has no certificate to pick");
+        if (installedForm.AccountRowsVisible)
+            throw new InvalidOperationException("an installed-certificate form asks for an account");
+        var installedPayload = installedForm.ToPayload("h");
+        if (installedPayload.CertificateStore != null || installedPayload.CertificateThumbprint != null)
+            throw new InvalidOperationException("a form with no certificate chosen saves a pair anyway");
+
+        if (composite.ChildrenButtons is { Add.Length: 0 } or { Remove.Length: 0 })
+            throw new InvalidOperationException(
+                $"a composite form's list buttons have no words: add='{composite.ChildrenButtons.Add}' remove='{composite.ChildrenButtons.Remove}'");
+        if (composite.ChildIds.Count != 2)
+            throw new InvalidOperationException($"a composite form shows {composite.ChildIds.Count} children, expected 2");
+        // The list is what a save carries: null would mean "keep", and a reader who took a
+        // credential out would watch it come back.
+        if (composite.ToPayload("g").Children is not { Count: 2 })
+            throw new InvalidOperationException("a composite's children do not reach the save");
+
+        // What the picker behind "add" offers. Everything, with the records it cannot take greyed
+        // and the reason written beside them: three of these six cannot be chosen here — this
+        // record itself, the one already in the list, and another composite — and leaving them out
+        // would leave a picker with three rows that reads as "the certificate is not allowed".
+        // Deleted rather than disposed: a wrapper disposed while Qt still has events for it is the
+        // crash this repository has already paid for twice (a pending event finds a dead object).
+        var picker = new AttachPicker(composite, items, "g", new[] { "c" });
+        try
+        {
+            if (picker.RowCount != items.Count)
+                throw new InvalidOperationException(
+                    $"the children picker lists {picker.RowCount} of {items.Count} records");
+            int enabled = Enumerable.Range(0, picker.RowCount).Count(picker.IsEnabled);
+            if (enabled != items.Count - 3)
+                throw new InvalidOperationException(
+                    $"the children picker offers {enabled} records, expected {items.Count - 3}");
+        }
+        finally { picker.DeleteLater(); }
+
+        // What "used by N" counts: one entry per instance, from the layer that talks to the
+        // source. Two instances used to report twice, because a credential left on a storage
+        // layer's Source counted as a second user — six for five instances, and no sixth to find.
+        var usageConfig = new AppConfig
+        {
+            Mounts = new List<MountProfile>
+            {
+                new()
+                {
+                    Name = "A", Layers = new List<LayerConfig>
+                    {
+                        new() { Id = "warmup", Type = "warmup", Source = new SourceConfig { CredentialId = "x" } },
+                        new() { Id = "svn", Type = "svn", Source = new SourceConfig { CredentialId = "x" } }
+                    }
+                },
+                new()
+                {
+                    Name = "B", Layers = new List<LayerConfig>
+                    {
+                        new() { Id = "svn", Type = "svn", Source = new SourceConfig { CredentialId = "x" } }
+                    }
+                }
+            }
+        };
+        var counted = CredentialUsage.Of(usageConfig);
+        if (counted["x"].Count != 2)
+            throw new InvalidOperationException(
+                "a credential is counted " + counted["x"].Count + " times for 2 instances: "
+                + string.Join(", ", counted["x"]));
         // The servers field: shown as stored, and carried by the save after an edit. A form that
         // dropped it would send nothing, which the store reads as "keep" — so a reader who removed
         // one address would watch the mount keep failing at it.
@@ -560,7 +706,11 @@ internal sealed class CredentialManager : CredentialListDialog
         // The form is a window of its own, and it was never in the picture set: a label that sits in
         // another column than the field beside it is not visible from the list behind it. All three
         // shapes are checked, because which rows a kind shows is what changes the form's columns.
-        foreach (var (window, name) in new[] { (form, "form"), (certificate, "form-certificate"), (plugin, "form-plugin") })
+        foreach (var (window, name) in new[]
+                 {
+                     (form, "form"), (certificate, "form-certificate"), (plugin, "form-plugin"),
+                     (composite, "form-composite"), (installedForm, "form-installed")
+                 })
         {
             window.Show();
             QCoreApplication.ProcessEvents();
@@ -593,10 +743,32 @@ internal sealed class CredentialManager : CredentialListDialog
                     throw new InvalidOperationException(
                         $"Credential manager row {i} is {height}px tall, shorter than its {line}px line");
             }
+            // The two numbers a row can carry, from the two places a reference lives: a layer names
+            // a record, and a composite names its children. The fixture's certificate is inside the
+            // fixture's composite, and nothing else in this list carries that line.
+            string composedMark = I18n.F("credential.composed.count", 1);
+            var composed = new List<string>();
+            for (int i = 0; i < manager._list.Count; i++)
+                if (manager._list.Item(i)!.Text().Contains(composedMark, StringComparison.Ordinal))
+                    composed.Add(manager._list.Item(i)!.Text());
+            // The fixture's composite is made of the certificate and one account: those two rows
+            // say so, and no other row does.
+            bool Explained(string text) =>
+                text.StartsWith("Client certificate", StringComparison.Ordinal) ||
+                text.StartsWith("Work SVN", StringComparison.Ordinal);
+            if (composed.Count != 2 || !composed.All(Explained))
+                throw new InvalidOperationException(
+                    "the rows for the records inside a composite do not say so: "
+                    + (composed.Count == 0 ? "none of the rows carry it" : string.Join(" | ", composed)));
+
             // Two kinds that drew the same picture would leave a reader where they were before the
             // marks existed. The four the fixtures cover are the four shapes: an account, a
             // certificate, a kind that named its glyph (the tortoise), and one that named none.
-            var kinds4 = new[] { CredentialTypes.Password, CredentialTypes.Certificate, "svn-cached", "sso-check" };
+            var kinds4 = new[]
+            {
+                CredentialTypes.Password, CredentialTypes.Certificate, CredentialTypes.InstalledCertificate,
+                CredentialTypes.Composite, "svn-cached", "sso-check"
+            };
             var marks = kinds4.Select(CredentialMarks.GlyphOf).Distinct(StringComparer.Ordinal).Count();
             if (marks != kinds4.Length)
                 throw new InvalidOperationException(
@@ -613,7 +785,12 @@ internal sealed class CredentialManager : CredentialListDialog
                 throw new InvalidOperationException("A selected credential cannot be edited or removed");
             if (capture != null) { using var image = manager.Grab(); image.Save(capture); }
         }
-        finally { shared.DeleteLater(); plugin.DeleteLater(); form.DeleteLater(); certificate.DeleteLater(); manager.Hide(); manager.DeleteLater(); }
+        finally
+        {
+            shared.DeleteLater(); plugin.DeleteLater(); form.DeleteLater();
+            certificate.DeleteLater(); composite.DeleteLater(); installedForm.DeleteLater();
+            manager.Hide(); manager.DeleteLater();
+        }
     }
 }
 
@@ -626,6 +803,28 @@ internal sealed class CredentialForm : QDialog
     private readonly List<string> _kindIds = new();
     private readonly Dictionary<string, CredentialKindDescriptor> _descriptors = new(StringComparer.OrdinalIgnoreCase);
     private readonly QLineEdit _name, _username, _password, _origins, _certificatePath, _certificatePassword;
+    /// <summary>The records this one is presented with, by id, as the form will save them: the ones
+    /// the record already holds plus what was added here, minus what was removed. A list rather
+    /// than a field, because a certificate carries one of each kind of proof and there may be
+    /// several — an account and a sign-in token.</summary>
+    private readonly List<string> _attach = new();
+    private readonly QListWidget _attachList;
+    private readonly QPushButton _attachAdd, _attachRemove;
+    /// <summary>The certificates this account could name, as the service sees them, and the pair
+    /// behind each row. Only the service can list them: the tray runs as the signed-in user, and
+    /// its stores are not the ones a service presenting a certificate would use.</summary>
+    private readonly QComboBox _installed;
+    private readonly List<(string Store, string Thumbprint)> _installedIds = new();
+    private readonly string _savedThumbprint;
+    private int _installedRow;
+    private bool _installedLoaded;
+    private readonly string? _editingId;
+    /// <summary>What the picker behind "add" offers: every record of the store, so one that this
+    /// form may not carry — a certificate, one this record already has — can be ruled out where a
+    /// reader can see why.</summary>
+    private readonly IReadOnlyList<CredentialRecord> _all;
+    private int _attachRow;
+    private bool _accountRowsShown, _childrenRowShown, _installedRowShown;
     /// <summary>The one layout every row lives in, and the rows that come and go with the kind.
     ///
     /// The account, password and certificate rows used to be blocks with form layouts of their
@@ -663,6 +862,10 @@ internal sealed class CredentialForm : QDialog
         _takenNames = all.Where(item => item.Id != existing?.Id).Select(item => item.Name).ToList();
         _isNew = existing == null;
         _originalKind = existing?.Kind ?? CredentialTypes.Password;
+        _all = all;
+        _editingId = existing?.Id;
+        _savedThumbprint = existing?.CertificateThumbprint ?? "";
+        if (existing?.Children is { Count: > 0 } attached) _attach.AddRange(attached);
 
         var root = new QVBoxLayout(this);
         root.SetContentsMargins(24, 22, 24, 20);
@@ -678,6 +881,14 @@ internal sealed class CredentialForm : QDialog
         _kind.AddItem(CredentialMarks.Of(CredentialTypes.Password), I18n.T("credential.kind.password"));
         _kindIds.Add(CredentialTypes.Certificate);
         _kind.AddItem(CredentialMarks.Of(CredentialTypes.Certificate), I18n.T("credential.kind.certificate"));
+        // A certificate the machine already has. Its own kind rather than a second shape of the
+        // one above: the two hold different things and fail in different words.
+        _kindIds.Add(CredentialTypes.InstalledCertificate);
+        _kind.AddItem(CredentialMarks.Of(CredentialTypes.InstalledCertificate), I18n.T("credential.kind.installed"));
+        // The kind whose record is a list of other records: how a certificate and an account are
+        // chosen as one thing, since neither of them names the other.
+        _kindIds.Add(CredentialTypes.Composite);
+        _kind.AddItem(CredentialMarks.Of(CredentialTypes.Composite), I18n.T("credential.kind.composite"));
         foreach (var descriptor in kinds ?? Array.Empty<CredentialKindDescriptor>())
         {
             string kind = descriptor.Kind ?? "";
@@ -756,6 +967,54 @@ internal sealed class CredentialForm : QDialog
             ? "" : I18n.T("credential.password.keep"));
         _certificatePasswordRow = _form.RowCount();
         Row("credential.certificate.password", Reveal(_certificatePassword));
+
+        // The certificate a record of the installed kind names: picked from what this account can
+        // actually present, because the list is only useful if it is the one that will be used.
+        _installed = ContinuousScrolling.Combo();
+        _installed.SetIconSize(new QSize(CredentialMarks.Size, CredentialMarks.Size));
+        _installed.SetMinimumWidth(220);
+        var installedRefresh = new QPushButton();
+        I18n.Bind(installedRefresh.SetText, "credential.installed.refresh");
+        installedRefresh.Clicked += _ => LoadInstalled(force: true);
+        var installedPanel = new QWidget();
+        var installedLayout = new QHBoxLayout(installedPanel);
+        installedLayout.SetContentsMargins(0, 0, 0, 0);
+        installedLayout.SetSpacing(8);
+        installedLayout.AddWidget(_installed, 1);
+        installedLayout.AddWidget(installedRefresh);
+        _installedRow = _form.RowCount();
+        Row("credential.installed", installedPanel);
+
+        // What this record is presented with. A certificate is the kind that carries others — the
+        // account the server also asks for, a sign-in token — and the row is hidden for every
+        // kind that does not: what goes beside a certificate is another record, not a field of
+        // this one, so it is chosen here and owned there.
+        _attachList = ContinuousScrolling.List();
+        _attachList.SetIconSize(new QSize(CredentialMarks.Size, CredentialMarks.Size));
+        _attachList.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
+        _attachList.SetMinimumHeight(64);
+        _attachList.SetMaximumHeight(112);
+        _attachAdd = new QPushButton();
+        I18n.Bind(_attachAdd.SetText, "credential.children.add");
+        _attachAdd.Clicked += _ => AddAttachment();
+        _attachRemove = new QPushButton();
+        I18n.Bind(_attachRemove.SetText, "credential.children.remove");
+        _attachRemove.Clicked += _ => RemoveAttachment();
+        var attachPanel = new QWidget();
+        var attachLayout = new QVBoxLayout(attachPanel);
+        attachLayout.SetContentsMargins(0, 0, 0, 0);
+        attachLayout.SetSpacing(6);
+        attachLayout.AddWidget(_attachList);
+        var attachButtons = new QHBoxLayout();
+        attachButtons.SetContentsMargins(0, 0, 0, 0);
+        attachButtons.SetSpacing(8);
+        attachButtons.AddWidget(_attachAdd);
+        attachButtons.AddWidget(_attachRemove);
+        attachButtons.AddStretch(1);
+        attachLayout.AddLayout(attachButtons);
+        _attachRow = _form.RowCount();
+        Row("credential.attach", attachPanel);
+        RefreshAttachments();
 
         // One row per field of every plugin kind, built now and shown when that kind is chosen: the
         // form is a single window for every kind, the way it has always been for the two built-ins.
@@ -905,6 +1164,13 @@ internal sealed class CredentialForm : QDialog
         // reader who removed an address would then watch it come back. Empty is a real answer — it
         // says this account is bound to nothing, and the next source to use it writes its origin.
         Origins = Origins(),
+        // A composite's list, always sent for the same reason the servers are: null means "keep",
+        // and a reader who took a credential out would watch it come back.
+        Children = _attach.ToList(),
+        // The pair, for the kind that names an installed certificate. Null — every other kind —
+        // means the record's own shape is what it was.
+        CertificateStore = InstalledSelection()?.Store,
+        CertificateThumbprint = InstalledSelection()?.Thumbprint,
         // A plugin kind's values go beside the built-in fields rather than instead of them: the
         // store reads the ones the kind has, and ignores the rest.
         Values = IsPluginKind ? Values() : null
@@ -929,13 +1195,25 @@ internal sealed class CredentialForm : QDialog
     private void RefreshKind()
     {
         bool plugin = IsPluginKind;
+        bool password = string.Equals(Kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase);
         bool certificate = string.Equals(Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase);
-        // The account and the password belong to the kinds the product ships; the certificate is
-        // the one of those that also needs a file, and it may still name an account.
-        _form.SetRowVisible(_usernameRow, !plugin);
-        _form.SetRowVisible(_passwordRow, !plugin);
+        // The account belongs to the account kind alone: a certificate is a file, and a composite
+        // is a list of other records — neither names an account of its own.
+        _form.SetRowVisible(_usernameRow, !plugin && password);
+        _form.SetRowVisible(_passwordRow, !plugin && password);
         _form.SetRowVisible(_certificateFileRow, !plugin && certificate);
         _form.SetRowVisible(_certificatePasswordRow, !plugin && certificate);
+        // What the record is made of, for the kinds that are made of something — the composite the
+        // product ships, and a plugin kind that says so on its descriptor.
+        _form.SetRowVisible(_attachRow, !plugin && CredentialTypes.Attaches(Kind));
+        bool installed = string.Equals(Kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase);
+        _form.SetRowVisible(_installedRow, !plugin && installed);
+        if (installed) LoadInstalled();
+        // Remembered rather than asked back from the layout: what the smoke checks is which rows
+        // this form decided to show, and that is the same answer the two calls above gave.
+        _accountRowsShown = !plugin && password;
+        _childrenRowShown = !plugin && CredentialTypes.Attaches(Kind);
+        _installedRowShown = !plugin && installed;
         // A plugin kind's own rows are hidden until that kind is the chosen one. Hidden rather
         // than removed: a row's index is what says where it is when the kind changes back.
         foreach (var pair in _kindRows)
@@ -947,14 +1225,127 @@ internal sealed class CredentialForm : QDialog
     /// uses it to check that all of them start in one column (see <see cref="FormColumns"/>).</summary>
     internal IReadOnlyList<(string Title, QWidget Field)> Rows => _rows;
 
+    /// <summary>Whether the rows that name an account are on the form: they belong to the account
+    /// kind alone, and a certificate or a composite that kept asking for one would be the shape
+    /// this change is undoing.</summary>
+    internal bool AccountRowsVisible => _accountRowsShown;
+
+    /// <summary>Whether the list of child credentials is on the form.</summary>
+    internal bool ChildrenRowVisible => _childrenRowShown;
+
+    /// <summary>Whether the picker of installed certificates is on the form.</summary>
+    internal bool InstalledRowVisible => _installedRowShown;
+
+    /// <summary>The children as the form will save them, for a check that they round-trip.</summary>
+    internal IReadOnlyList<string> ChildIds => _attach;
+
+    /// <summary>What the two buttons under the list say. A key no translation carries draws an
+    /// empty button — a control a reader can press and cannot read — which is not visible from the
+    /// code and was not visible in a screenshot until somebody sent one.</summary>
+    internal (string Add, string Remove) ChildrenButtons => (_attachAdd.Text, _attachRemove.Text);
+
     private void HideKind(string kind, bool hidden)
     {
         if (!_kindRows.TryGetValue(kind, out var rows)) return;
         foreach (int row in rows) _form.SetRowVisible(row, !hidden);
     }
 
-    private void ChooseCertificate()
+    /// <summary>The certificate the picker is showing, or null when it shows none. A record that
+    /// already named one keeps it while the list is still loading or the service is away, so a
+    /// save cannot silently turn an installed certificate into nothing.</summary>
+    private (string Store, string Thumbprint)? InstalledSelection()
     {
+        if (!string.Equals(Kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase))
+            return null;
+        int index = _installed.CurrentIndex;
+        if (index >= 0 && index < _installedIds.Count) return _installedIds[index];
+        return null;
+    }
+
+    /// <summary>Fills the picker from the service. Once per form: the list is what this account can
+    /// present, and asking again is the refresh button's job.</summary>
+    private void LoadInstalled(bool force = false)
+    {
+        if (_installedLoaded && !force) return;
+        _installedLoaded = true;
+        _installed.Clear();
+        _installedIds.Clear();
+        try
+        {
+            var response = SupervisorClient.Default.Certificates();
+            if (!response.Ok) throw new InvalidOperationException(response.Error);
+            foreach (var certificate in response.Certificates)
+            {
+                _installedIds.Add((certificate.Store, certificate.Thumbprint));
+                _installed.AddItem(CredentialMarks.Of(CredentialTypes.InstalledCertificate),
+                    CertificateLine(certificate));
+            }
+            int wanted = _installedIds.FindIndex(pair =>
+                string.Equals(pair.Thumbprint, _savedThumbprint, StringComparison.OrdinalIgnoreCase));
+            if (wanted >= 0) _installed.SetCurrentIndex(wanted);
+        }
+        catch (Exception ex)
+        {
+            // The window still opens: what it cannot do is name a certificate, and it says why.
+            _installed.AddItem(I18n.T("credential.installed.none"));
+            Explain(I18n.F("credential.installed.unavailable", ex.Message));
+        }
+        if (_installed.Count == 0) _installed.AddItem(I18n.T("credential.installed.none"));
+    }
+
+    /// <summary>How a certificate is read in a list: who it is for, where it lives, and when it
+    /// stops working — the three things that tell two of them apart.</summary>
+    private static string CertificateLine(InstalledCertificateInfo certificate)
+    {
+        string subject = certificate.Subject.Length > 0 ? certificate.Subject : certificate.Thumbprint;
+        return subject + " · " + certificate.Store + " · " + certificate.NotAfter.ToString("yyyy-MM-dd");
+    }
+
+    /// <summary>Adds a record to the composite.
+    ///
+    /// Every record is offered, and the ones that cannot be added are shown greyed with the reason
+    /// beside them rather than left out. Leaving them out is what makes a picker look broken: with
+    /// the two records already in this composite the list held a single row, which reads as "the
+    /// certificate is not allowed here" rather than "it is already here".
+    /// </summary>
+    private void AddAttachment()
+    {
+        using var picker = new AttachPicker(this, _all, _editingId, _attach);
+        if (picker.Exec() != 1 || picker.Chosen is not { } chosen) return;
+        _attach.Add(chosen);
+        RefreshAttachments();
+        _error.SetVisible(false);
+    }
+
+    private void RemoveAttachment()
+    {
+        string? id = _attachList.CurrentItem()?.Data((int)Qt.ItemDataRole.UserRole).ToString();
+        if (id is null) return;
+        _attach.Remove(id);
+        RefreshAttachments();
+    }
+
+    /// <summary>Draws the list from the ids, not from a copy of the names: a record renamed while
+    /// this form is open reads its new name the next time the row is drawn.</summary>
+    private void RefreshAttachments()
+    {
+        _attachList.Clear();
+        foreach (string id in _attach)
+        {
+            var record = _all.FirstOrDefault(item => string.Equals(item.Id, id, StringComparison.Ordinal));
+            var row = new QListWidgetItem(record is null
+                ? I18n.T("credential.missing")
+                : record.Username.Length > 0 ? record.Name + " · " + record.Username : record.Name);
+            row.SetData((int)Qt.ItemDataRole.UserRole, id);
+            row.SetIcon(record is null
+                ? CredentialMarks.Blank
+                : CredentialMarks.Of(record.Kind, record.Usable ? null : TrayTheme.Tokens.Warning));
+            _attachList.AddItem(row);
+        }
+        if (_attachList.Count > 0) _attachList.SetCurrentRow(0);
+    }
+
+    private void ChooseCertificate()    {
         string path = QFileDialog.GetOpenFileName(this, I18n.T("credential.certificate.browse"), "",
             I18n.T("credential.certificate.filter"));
         if (string.IsNullOrEmpty(path)) return;
@@ -985,6 +1376,16 @@ internal sealed class CredentialForm : QDialog
             if (Username.Length == 0) { ExplainKey("credential.username.required"); return; }
             bool keepsPassword = !_isNew && _originalKind == CredentialTypes.Password;
             if (Password == null && !keepsPassword) { ExplainKey("credential.password.required"); return; }
+        }
+        else if (Kind == CredentialTypes.InstalledCertificate)
+        {
+            if (InstalledSelection() == null) { ExplainKey("credential.installed.required"); return; }
+        }
+        else if (Kind == CredentialTypes.Composite)
+        {
+            // A list of nothing proves nothing, and the store refuses it too; here it can say so
+            // before a save is attempted.
+            if (_attach.Count == 0) { ExplainKey("credential.children.required"); return; }
         }
         else if (_kindEditors.TryGetValue(Kind, out var editors))
         {
@@ -1018,4 +1419,87 @@ internal sealed class CredentialForm : QDialog
         _error.SetText(text);
         _error.SetVisible(true);
     }
+}
+
+/// <summary>Picks one record to put inside a composite. A list rather than a combo box, for the
+/// reason the credential list itself is one: a reader recognises an account by its name and who it
+/// signs in as, and the marks beside them are how such a list is scanned rather than read.
+///
+/// What it is offered is decided by the caller: this window does not know what a composite may be
+/// made of, and the store is the one that says no.</summary>
+internal sealed class AttachPicker : QDialog
+{
+    /// <summary>The id chosen, or null when the window was closed without one.</summary>
+    internal string? Chosen { get; private set; }
+
+    private readonly QListWidget _list;
+
+    /// <summary>What makes a record unchoosable, or null when it can be chosen. The rules are the
+    /// store's; this only says which one applies so the row can carry it.</summary>
+    private static string? Reason(CredentialRecord record, string? editingId, IReadOnlyList<string> chosen) =>
+        string.Equals(record.Id, editingId, StringComparison.Ordinal) ? I18n.T("credential.children.reason.self")
+        : chosen.Contains(record.Id, StringComparer.Ordinal) ? I18n.T("credential.children.reason.present")
+        : CredentialTypes.Attaches(record.Kind) ? I18n.T("credential.children.reason.composite")
+        : !record.Usable ? I18n.T("credential.children.reason.unusable")
+        : null;
+
+    public AttachPicker(QWidget? parent, IReadOnlyList<CredentialRecord> records, string? editingId,
+        IReadOnlyList<string> chosen) : base(parent)
+    {
+        SetWindowTitle(I18n.T("credential.children.title"));
+        SetWindowIcon(TrayIcons.App);
+        Resize(420, 360);
+        var root = new QVBoxLayout(this);
+        root.SetContentsMargins(20, 18, 20, 16);
+        root.SetSpacing(10);
+        _list = ContinuousScrolling.List();
+        _list.SetIconSize(new QSize(CredentialMarks.Size, CredentialMarks.Size));
+        _list.SetSelectionMode(QAbstractItemView.SelectionMode.SingleSelection);
+        _list.ItemActivated += _ => Take();
+        int first = -1;
+        foreach (var record in records)
+        {
+            string label = record.Username.Length > 0 ? record.Name + " · " + record.Username : record.Name;
+            string? reason = Reason(record, editingId, chosen);
+            var row = new QListWidgetItem(reason is null ? label : label + "  ·  " + reason);
+            row.SetData((int)Qt.ItemDataRole.UserRole, record.Id);
+            row.SetIcon(CredentialMarks.Of(record.Kind, reason is null ? null : TrayTheme.Tokens.Muted));
+            // Disabled rather than absent: a row that cannot be chosen still says why.
+            if (reason is not null) row.SetFlags(Qt.ItemFlags.NoItemFlags);
+            else if (first < 0) first = _list.Count;
+            _list.AddItem(row);
+        }
+        if (first >= 0) _list.SetCurrentRow(first);
+        root.AddWidget(_list, 1);
+        var buttons = new QHBoxLayout();
+        buttons.AddStretch(1);
+        var cancel = new QPushButton();
+        I18n.Bind(cancel.SetText, "cancel");
+        cancel.Clicked += _ => Reject();
+        buttons.AddWidget(cancel);
+        var take = new QPushButton();
+        I18n.Bind(take.SetText, "credential.pick.use");
+        take.SetObjectName("primary");
+        take.SetDefault(true);
+        take.Clicked += _ => Take();
+        buttons.AddWidget(take);
+        root.AddLayout(buttons);
+    }
+
+    private void Take()
+    {
+        var row = _list.CurrentItem();
+        // A greyed row is one the store would refuse; taking it would only produce that refusal
+        // later, in words further from the reason already printed beside it.
+        if (row is null || ((int)(row.Flags() & Qt.ItemFlags.ItemIsEnabled)) == 0) return;
+        Chosen = row.Data((int)Qt.ItemDataRole.UserRole).ToString();
+        if (Chosen is not null) Accept();
+    }
+
+    /// <summary>How many rows the picker drew, and whether one of them can be chosen — for the
+    /// self-check that greys out what it cannot offer instead of hiding it.</summary>
+    internal int RowCount => _list.Count;
+
+    internal bool IsEnabled(int row) =>
+        ((int)(_list.Item(row)!.Flags() & Qt.ItemFlags.ItemIsEnabled)) != 0;
 }

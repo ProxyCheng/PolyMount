@@ -790,6 +790,14 @@
       <translation>被 {0} 个层使用</translation>
     </message>
     <message>
+      <source>credential.composed.count</source>
+      <translation>用于组合凭据：{0}</translation>
+    </message>
+    <message>
+      <source>credential.composed.tip</source>
+      <translation>在组合凭据中：</translation>
+    </message>
+    <message>
       <source>credential.origins.tip</source>
       <translation>可出示给：</translation>
     </message>
@@ -852,6 +860,66 @@
     <message>
       <source>credential.kind.certificate</source>
       <translation>客户端证书</translation>
+    </message>
+    <message>
+      <source>credential.kind.installed</source>
+      <translation>已安装的证书</translation>
+    </message>
+    <message>
+      <source>credential.installed</source>
+      <translation>证书</translation>
+    </message>
+    <message>
+      <source>credential.installed.refresh</source>
+      <translation>刷新</translation>
+    </message>
+    <message>
+      <source>credential.installed.none</source>
+      <translation>没有这个账户可用的、带私钥的证书</translation>
+    </message>
+    <message>
+      <source>credential.installed.required</source>
+      <translation>请选择一张证书。</translation>
+    </message>
+    <message>
+      <source>credential.installed.unavailable</source>
+      <translation>读取证书失败：{0}</translation>
+    </message>
+    <message>
+      <source>credential.kind.composite</source>
+      <translation>组合凭据</translation>
+    </message>
+    <message>
+      <source>credential.children</source>
+      <translation>包含</translation>
+    </message>
+    <message>
+      <source>credential.children.add</source>
+      <translation>添加…</translation>
+    </message>
+    <message>
+      <source>credential.children.remove</source>
+      <translation>移除</translation>
+    </message>
+    <message>
+      <source>credential.children.title</source>
+      <translation>选择要加入的凭据</translation>
+    </message>
+    <message>
+      <source>credential.children.count</source>
+      <translation>{0} 项</translation>
+    </message>
+    <message>
+      <source>credential.children.required</source>
+      <translation>至少加入一条凭据。</translation>
+    </message>
+    <message>
+      <source>credential.children.none</source>
+      <translation>没有可加入的其他凭据。</translation>
+    </message>
+    <message>
+      <source>credential.children.tip</source>
+      <translation>包含：</translation>
     </message>
     <message>
       <source>credential.certificate</source>
@@ -920,6 +988,10 @@
     <message>
       <source>credential.delete.plain</source>
       <translation>删除这个凭据？</translation>
+    </message>
+    <message>
+      <source>credential.delete.composite</source>
+      <translation>它被组合凭据 {0} 使用；在修改那条记录之前，它将无法工作。</translation>
     </message>
     <message>
       <source>credential.delete.failed</source>

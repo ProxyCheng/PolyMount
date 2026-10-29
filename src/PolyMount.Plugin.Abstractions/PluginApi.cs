@@ -45,7 +45,29 @@ public static class PluginApi
     /// 3.2 added <see cref="CredentialKindDescriptor.Icon"/>: a kind names the mark its records
     /// wear, which is how a credential that reads another program's own cache comes to wear that
     /// program's glyph. Additive — a kind that names none draws the generic pass.
-    public const string Version = "3.2";
+    ///
+    /// 4.2 added <see cref="IInstalledCertificate"/> and the kind that builds one: a certificate
+    /// the machine already has, named by store and thumbprint, whose private key never leaves
+    /// Windows. Additive — a consumer that does not ask for it simply sees a credential that
+    /// proves nothing it knows how to present, and is told so by name.
+    ///
+    /// 4.0 made a credential something that can be presented together with others.
+    /// <see cref="ClientCertificateCredential"/> no longer implements
+    /// <see cref="IPasswordAuthentication"/> and no longer holds an account: the account a server
+    /// asks for beside a certificate is a record of its own hanging under it
+    /// (<see cref="CompositeCredential"/>, <see cref="CredentialKindDescriptor.Attaches"/>), and a
+    /// consumer asks <see cref="CredentialParts"/> rather than <c>credential is X</c> — no object
+    /// can answer for parts of another type, and a plugin's own credential class is exactly one of
+    /// those. Breaking: a plugin that cast a certificate to <see cref="IPasswordAuthentication"/>
+    /// sees no account now. Certificates written before this still present their account, as a
+    /// part, until the record is saved again.
+    ///
+    /// 4.1 added <see cref="PluginTexts"/>: a plugin's user-visible text is one embedded table with
+    /// a key per string, read by the same loader Core uses for its own built-in texts — <c>Get</c>
+    /// for a sentence, <c>Format</c> for one with values in it. Additive — a plugin that builds
+    /// <see cref="LocalizedText"/> values by hand keeps working, it just keeps its two languages in
+    /// code.
+    public const string Version = "4.2";
 
     /// <summary>The major part of <see cref="Version"/>: the number that has to match.</summary>
     public static int Major => Parse(Version).Major;

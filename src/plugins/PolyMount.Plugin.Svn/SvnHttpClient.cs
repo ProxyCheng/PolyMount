@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Net.Security;
@@ -504,6 +504,34 @@ internal sealed class SvnHttpClient : ISvnBackend
     /// cannot use an ephemeral key for client authentication ("the platform does not support
     /// ephemeral keys"), which is what the handshake reports. The key container lives only as
     /// long as this certificate does.</summary>
+    /// <summary>Opens the certificate a record names from the store it names — the shape where the
+    /// private key never left Windows. A thumbprint that is not there, or one whose key this
+    /// account may not use, is said plainly here: at the handshake it would read as the server
+    /// dropping the connection.</summary>
+    internal static X509Certificate2Collection InstalledCertificates(string store, string thumbprint)
+    {
+        var location = string.Equals(store, "CurrentUser", StringComparison.OrdinalIgnoreCase)
+            ? StoreLocation.CurrentUser
+            : StoreLocation.LocalMachine;
+        var usable = new X509Certificate2Collection();
+        try
+        {
+            using var opened = new X509Store(StoreName.My, location);
+            opened.Open(OpenFlags.ReadOnly);
+            foreach (var certificate in opened.Certificates.Find(X509FindType.FindByThumbprint, thumbprint, validOnly: false))
+                if (certificate.HasPrivateKey && AllowsClientAuthentication(certificate))
+                    usable.Add(certificate);
+        }
+        catch (CryptographicException ex)
+        {
+            throw new InvalidOperationException("the certificate store " + store + @"\My could not be opened: " + ex.Message, ex);
+        }
+        if (usable.Count == 0)
+            throw new InvalidOperationException("the certificate " + thumbprint + " is not in " + store
+                + @"\My, or its private key is not one this account may use; choose another in the credential manager");
+        return usable;
+    }
+
     internal static X509Certificate2Collection LoadClientCertificates(byte[] pfx, string? password)
     {
         X509Certificate2Collection loaded;

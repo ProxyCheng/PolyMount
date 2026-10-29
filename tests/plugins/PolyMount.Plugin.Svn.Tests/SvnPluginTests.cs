@@ -259,6 +259,13 @@ public sealed class SvnPluginTests : IPluginTestProvider
             PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
         Check("registration", () => { if (!SourceRegistry.Contains("svn")) throw new Exception("SVN was not registered"); });
+        Check("the-texts-are-written-in-both-languages", () =>
+        {
+            // Every string a person reads about this plugin comes out of the embedded table, and a
+            // key written in one language only is invisible in the language it was written in.
+            var problems = PluginTextChecks.Verify(typeof(SvnPlugin), "PolyMount.Plugin.Svn.Texts");
+            if (problems.Count > 0) throw new Exception(PluginTextChecks.Describe(problems));
+        });
         Check("the-client-cache-is-a-credential-kind", () =>
         {
             // The account TortoiseSVN saved is chosen like any other credential, so a reader sees
@@ -280,6 +287,12 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 throw new Exception("the svn layer does not accept an account with a password");
             if (!Takes(new ClientCertificateCredential()))
                 throw new Exception("the svn layer does not accept a client certificate");
+            // A composite is a list of records, and the question is asked of what it holds: a
+            // certificate paired with an account is presentable even though the pairing itself
+            // proves nothing.
+            if (!Takes(new CompositeCredential(new ClientCertificateCredential(),
+                    new PasswordCredential { Username = "alice", Password = "secret" })))
+                throw new Exception("the svn layer does not accept a certificate paired with an account");
             if (!Takes(kind.Create(new Dictionary<string, string>())))
                 throw new Exception("the svn layer does not accept the client cache it registers");
             if (Takes(new TokenCredential()))

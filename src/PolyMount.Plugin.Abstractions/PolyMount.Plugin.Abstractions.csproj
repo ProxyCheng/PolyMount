@@ -17,7 +17,7 @@
       built from.</Description>
     <!-- The contract's own version, independent of the product's. A plugin records the value it
          was compiled against in its manifest; the host refuses a major it does not speak. -->
-    <PluginApiVersion>3.2</PluginApiVersion>
+    <PluginApiVersion>4.2</PluginApiVersion>
     <PluginApiPatch>0</PluginApiPatch>
     <Version>$(PluginApiVersion).$(PluginApiPatch)</Version>
   </PropertyGroup>

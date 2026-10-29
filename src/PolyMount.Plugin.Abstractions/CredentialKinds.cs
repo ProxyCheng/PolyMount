@@ -1,4 +1,4 @@
-namespace PolyMount.Plugins;
+﻿namespace PolyMount.Plugins;
 
 /// <summary>
 /// The credential kinds plugins have contributed, beside the two the product ships.
@@ -29,7 +29,9 @@ public static class CredentialKinds
     /// <summary>Whether the product itself knows this kind, without asking a plugin.</summary>
     public static bool IsBuiltIn(string kind) =>
         string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase);
+        string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Whether a stored record of this kind can be understood at all: built in, or
     /// described by a plugin loaded now.</summary>

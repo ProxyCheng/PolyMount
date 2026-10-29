@@ -705,9 +705,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             if (string.IsNullOrWhiteSpace(text)) text = T("credential.none");
         }
         else if (record is { } credential)
-            text = credential.Kind == CredentialTypes.Certificate
-                ? credential.Name + " · " + T("credential.kind.certificate")
-                : credential.Name + " · " + credential.Username;
+            text = CredentialMarks.Label(credential);
         button.SetText(string.IsNullOrEmpty(text) ? T("credential.missing") : text);
         // The same mark the picker draws beside the account it was chosen from: the row is the
         // answer to a question asked one window ago.

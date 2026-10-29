@@ -787,6 +787,14 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>used by {0}</translation>
     </message>
     <message>
+      <source>credential.composed.count</source>
+      <translation>used in composites: {0}</translation>
+    </message>
+    <message>
+      <source>credential.composed.tip</source>
+      <translation>In:</translation>
+    </message>
+    <message>
       <source>credential.origins.tip</source>
       <translation>May be presented to:</translation>
     </message>
@@ -849,6 +857,66 @@ The remote view changes. Local modifications are kept.</translation>
     <message>
       <source>credential.kind.certificate</source>
       <translation>Client certificate</translation>
+    </message>
+    <message>
+      <source>credential.kind.installed</source>
+      <translation>Installed certificate</translation>
+    </message>
+    <message>
+      <source>credential.installed</source>
+      <translation>Certificate</translation>
+    </message>
+    <message>
+      <source>credential.installed.refresh</source>
+      <translation>Refresh</translation>
+    </message>
+    <message>
+      <source>credential.installed.none</source>
+      <translation>No certificate with a private key that this account can use</translation>
+    </message>
+    <message>
+      <source>credential.installed.required</source>
+      <translation>Choose a certificate.</translation>
+    </message>
+    <message>
+      <source>credential.installed.unavailable</source>
+      <translation>The certificates could not be read: {0}</translation>
+    </message>
+    <message>
+      <source>credential.kind.composite</source>
+      <translation>Composite credential</translation>
+    </message>
+    <message>
+      <source>credential.children</source>
+      <translation>Contains</translation>
+    </message>
+    <message>
+      <source>credential.children.add</source>
+      <translation>Add...</translation>
+    </message>
+    <message>
+      <source>credential.children.remove</source>
+      <translation>Remove</translation>
+    </message>
+    <message>
+      <source>credential.children.title</source>
+      <translation>Choose a credential to add</translation>
+    </message>
+    <message>
+      <source>credential.children.count</source>
+      <translation>{0} credentials</translation>
+    </message>
+    <message>
+      <source>credential.children.required</source>
+      <translation>Add at least one credential.</translation>
+    </message>
+    <message>
+      <source>credential.children.none</source>
+      <translation>There is no other credential to add.</translation>
+    </message>
+    <message>
+      <source>credential.children.tip</source>
+      <translation>Contains:</translation>
     </message>
     <message>
       <source>credential.certificate</source>
@@ -917,6 +985,10 @@ The remote view changes. Local modifications are kept.</translation>
     <message>
       <source>credential.delete.plain</source>
       <translation>Remove this credential?</translation>
+    </message>
+    <message>
+      <source>credential.delete.composite</source>
+      <translation>Used by {0}; that credential will stop working until it is edited.</translation>
     </message>
     <message>
       <source>credential.delete.failed</source>

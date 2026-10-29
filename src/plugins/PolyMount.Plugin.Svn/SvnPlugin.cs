@@ -85,11 +85,14 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
         });
 
         // What this source can present, asked with the credential itself: an account for a
-        // repository that asks for one, a certificate for one behind mutual TLS (which names an
-        // account as well), and the client's own cache — a record that carries no secret and
-        // becomes an account when a repository is built, so the transport can present it too.
+        // repository that asks for one, a certificate for one behind mutual TLS, and the client's
+        // own cache — a record that carries no secret and becomes an account when a repository is
+        // built, so the transport can present it too. The parts are what is asked, not one object:
+        // a certificate carries the account it is presented with as a record of its own.
         context.RegisterCredentialConsumer("svn", credential =>
-            credential is IPasswordAuthentication or ICertificateAuthentication or SubversionCacheCredential);
+            CredentialParts.Of(credential).Any(part =>
+                part is IPasswordAuthentication or ICertificateAuthentication or SubversionCacheCredential)
+            || CredentialParts.Installed(credential) != null);
 
         context.RegisterControlOperation(new ControlOperation(
             Name: "list_manifest_families",

@@ -526,6 +526,12 @@ public sealed class MountManager : IControlHost, IDisposable
                 case ControlCommands.Logs:
                     response.Logs = CollectLogs();
                     break;
+                case ControlCommands.Certificates:
+                    // Answered here for the same reason credentials are: this is the account that
+                    // will present them, and a list read anywhere else would be somebody else's
+                    // stores.
+                    response.Certificates = CredentialStore.Certificates();
+                    break;
                 case ControlCommands.Credentials:
                     response.Credentials = CredentialStore.List();
                     // The kinds loaded plugins describe travel with the list: the window that
@@ -549,7 +555,8 @@ public sealed class MountManager : IControlHost, IDisposable
                     CredentialStore.Save(new CredentialInput(
                         payload.Id, payload.Name, payload.Kind,
                         payload.Username, payload.Password, certificate, payload.CertificatePassword,
-                        payload.Origins, payload.Values));
+                        payload.Origins, payload.Values, payload.Children,
+                        payload.CertificateStore, payload.CertificateThumbprint));
                     response.Credentials = CredentialStore.List();
                     // A credential is not part of an instance's configuration, so the workers that
                     // named it do not restart when it changes — and one that failed because of it

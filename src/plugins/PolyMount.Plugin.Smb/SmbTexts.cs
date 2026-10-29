@@ -1,24 +1,22 @@
-using System.Text.Json;
-using PolyMount.Plugins;
-
 namespace PolyMount.Plugins.Smb;
 
 /// <summary>
-/// Localized text for this plugin's descriptors. The strings live in the embedded resource so no
-/// user-visible text is written in code; the keys are resolved like Core's own.
+/// Localized text for this plugin's descriptors, from <c>Resources/plugin-texts.json</c> — embedded
+/// in the assembly, so the plugin stays one file. No user-visible text is written in code; the keys
+/// are resolved by the contract's loader, the same way Core's own layer texts are.
 /// </summary>
 internal static class SmbTexts
 {
-    private static readonly Dictionary<string, Dictionary<string, string>> Texts = Load();
+    public const string ResourceName = "PolyMount.Plugin.Smb.Texts";
 
-    private static Dictionary<string, Dictionary<string, string>> Load()
-    {
-        using var stream = typeof(SmbTexts).Assembly.GetManifestResourceStream("PolyMount.Plugin.Smb.Texts")
-            ?? throw new InvalidOperationException("Missing plugin text resource");
-        return JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(stream)
-            ?? throw new InvalidDataException("Invalid plugin text resource");
-    }
+    private static readonly PluginTexts Texts = PluginTexts.Load(typeof(SmbTexts), ResourceName);
 
-    public static LocalizedText Get(string key) => new() { Values = All(key) };
-    public static Dictionary<string, string> All(string key) => new(Texts[key]);
+    public static LocalizedText Get(string key) => Texts.Get(key);
+
+    /// <summary>Every language a key was written in, for a preset's title.</summary>
+    public static Dictionary<string, string> All(string key) => Texts.All(key);
+
+    /// <summary>The table itself, so a test can check that every key is written in the languages
+    /// the product speaks.</summary>
+    public static PluginTexts Table => Texts;
 }

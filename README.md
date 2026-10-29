@@ -86,7 +86,9 @@ reason is a crash and is still restarted indefinitely.
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None to install by hand. The setup ships a self-contained .NET runtime, the Qt runtime and the Visual C++ runtime. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). The **client cache** kind stores no secret at all: it names the Windows account whose TortoiseSVN credentials to use, and the service borrows that account's identity for the length of the read — so a service running as LocalSystem can use what a person saved with TortoiseSVN, as long as that person is signed in. A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). The **client cache** kind stores no secret at all: it names the Windows account whose TortoiseSVN credentials to use, and the service borrows that account's identity for the length of the read — so a service running as LocalSystem can use what a person saved with TortoiseSVN, as long as that person is signed in. A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. A certificate the machine already has can be named instead of a file — **installed certificate**,
+store plus thumbprint, with the private key left in Windows — which is how a key that cannot be
+exported still opens a repository. A server that also asks for an account takes a **composite credential**: a record whose content is a list of other credentials, so the certificate and the account are each a record of their own and the layer names the pairing as one thing. |
 | Remote folder source | an SMB share on another Windows machine — `\\host\share\folder`, or an administrative share such as `\\host\d$`. **Nothing is installed on that machine**: a share the chosen account may read is the whole setup. Choose a credential on the layer; leave it unchosen to use the account the service runs as. Port 445 has to be reachable, and an administrative share needs an account that is an administrator over there. |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension and the transaction shim), Inno Setup 6 |
 
@@ -219,8 +221,21 @@ copying a file alone does not load it. Writing the configuration may need admini
 
 Plugins are the extension point, and a data source is one thing they can add. A plugin is an
 assembly with a class implementing `IPolyMountPlugin`, compiled against **one package** —
-`PolyMount.Plugin.Abstractions` — and shipped with a manifest beside it. It may also implement the
-optional `IPluginMetadata` to give the tray a localized title and description and a line-icon name.
+`PolyMount.Plugin.Abstractions` — and carrying its manifest inside it (see below). It may also
+implement the optional `IPluginMetadata` to give the tray a localized title and description and a
+line-icon name.
+
+A plugin's **words are a table, not code**. Every string a person reads about it — a layer's title,
+the sentence under a field, a preset's name — lives in `Resources/plugin-texts.json`, marked as an
+`EmbeddedResource` and read through the contract's `PluginTexts`, one key per string with each
+language beside it: `"svn.title": { "en": "SVN repository", "zh-CN": "SVN 仓库" }`. It is the same
+shape and the same loader the product's own built-in layer texts use, and because it is embedded a
+plugin is still one file to hand out. A key the table does not have is answered with the key itself
+— a visible miss in the window rather than a blank label or a plugin that refuses to load.
+Completeness is a test's job: `PluginTextChecks` in `PolyMount.Plugin.Testing` reports keys that are
+not written in every language their table declares, and a manifest that does not name and describe
+the plugin in both. Deliberately **not** translated: log lines, exception text, control operations
+(they describe a tool to an agent, in English) and configuration keys.
 
 The `IPluginContext` it is given registers layer types (ordinary and cache), source types, presets,
 prediction strategies, credential kinds, control commands, control operations, notices and
@@ -257,6 +272,15 @@ by implementing `IPasswordAuthentication`, `ICertificateAuthentication` or
 `IBearerAuthentication`, and a source asks for the capability it needs rather than for a class — so
 a kind added after a source was written is never a type that source has to learn, and one it cannot
 use is refused by name while the instance is built.
+
+A record can also be **made of other records**. The product ships one such kind, the composite
+credential: it proves nothing itself and holds a list of credentials, which is how a certificate and
+the account a server asks for beside it are chosen once and named by a layer as one thing. A source
+asks the record for its parts (`CredentialParts`) rather than casting it to an interface, because
+the object that answers for the account is the account's own credential — often a plugin's class the
+host was never compiled against — and its origins are still checked, one child at a time, against
+the address the layer talks to. A plugin kind says it works the same way by setting `Attaches` and
+building a `CompositeCredential`. One level by rule: a composite is never inside another one.
 
 A plugin is **one file**: its assembly. `plugin.json` in the source tree carries the identifier,
 the name and description in each language, the icon, and the permissions the plugin declares
@@ -456,7 +480,7 @@ pointing it at a file server needs no code change. Tags are compared as versions
 
 ## Which build is running
 
-The bottom of the sidebar names the release the tray was built as — `PolyMount 0.10.0` — and
+The bottom of the sidebar names the release the tray was built as — `PolyMount 0.11.0` — and
 hovering it shows the whole informational version, source revision included. The sidebar's
 **About** section, beside the mount overview and the plugins, has the rest: the commit, whether
 this copy came from the setup or runs from a development tree, the .NET, Qt and WinFsp versions,

@@ -1,0 +1,59 @@
+{
+  "txf.title": { "en": "Transactional opens", "zh-CN": "事务性打开" },
+
+  "txf.notice.unshimmed": {
+    "en": "{0} is using the mount {1} and can open a file inside a transaction.\n\nThis volume cannot accept a transactional open, so saving through it fails with error 6832 (the image {2}). Start it through the compatibility layer?\n\nA program that is already running keeps the behaviour it started with until it is restarted.",
+    "zh-CN": "{0} 正在使用挂载 {1}，并且能够在事务中打开文件。\n\n这个卷无法接受事务性打开，经由它的保存会失败（错误 6832，依据：{2}）。要让它经由兼容层启动吗？\n\n已经在运行的程序要保持到重启后才生效。"
+  },
+  "txf.notice.unshimmed.action": { "en": "Enable compatibility", "zh-CN": "启用兼容层" },
+  "txf.notice.restart": {
+    "en": "{0} was started before the compatibility layer was enabled, so it is still running without it.\n\nRestart it for the change to take effect.",
+    "zh-CN": "{0} 在启用兼容层之前就已经启动，因此现在仍在没有兼容层的情况下运行。\n\n请重启它，改动才会生效。"
+  },
+
+  "txf.panel.summary.one": {
+    "en": "1 program starts through the compatibility layer",
+    "zh-CN": "{0} 个程序经由兼容层启动"
+  },
+  "txf.panel.summary.many": {
+    "en": "{0} programs start through the compatibility layer",
+    "zh-CN": "{0} 个程序经由兼容层启动"
+  },
+  "txf.panel.empty": {
+    "en": "No program is started through the shim yet. Add the folder the program's executables are in.",
+    "zh-CN": "还没有程序经由兼容层启动。把那个程序的可执行文件所在目录加进来。"
+  },
+  "txf.panel.payload": { "en": "Native shim", "zh-CN": "原生载荷" },
+  "txf.panel.payload.present": { "en": "deployed", "zh-CN": "在位" },
+  "txf.panel.payload.missing": {
+    "en": "missing: nothing can be instrumented",
+    "zh-CN": "缺失：无法插桩"
+  },
+  "txf.panel.log": { "en": "Hit log", "zh-CN": "命中日志" },
+  "txf.panel.log.empty": { "en": "empty", "zh-CN": "空" },
+  "txf.panel.drift": { "en": "Record and registry", "zh-CN": "记录与注册表" },
+  "txf.panel.drift.agree": { "en": "agree", "zh-CN": "一致" },
+  "txf.panel.drift.disagree": { "en": "{0} disagree", "zh-CN": "{0} 处不一致" },
+  "txf.drift.missing": {
+    "en": "the record says this image is instrumented, but its Debugger value is gone",
+    "zh-CN": "记录说这个程序已经插桩，但它的 Debugger 值已经不在了"
+  },
+  "txf.drift.changed": {
+    "en": "the Debugger value points at '{0}', not at '{1}'",
+    "zh-CN": "Debugger 值指向 '{0}'，而不是 '{1}'"
+  },
+  "txf.drift.unrecorded": {
+    "en": "a Debugger value points at this plugin's launcher, but the record has no entry for it",
+    "zh-CN": "有个 Debugger 值指向本插件的启动器，但记录里没有对应的条目"
+  },
+  "txf.panel.column.program": { "en": "Program", "zh-CN": "程序" },
+  "txf.panel.column.path": { "en": "Path", "zh-CN": "路径" },
+  "txf.panel.column.installed": { "en": "Installed", "zh-CN": "安装时间" },
+  "txf.panel.evidence": { "en": "Why: {0}", "zh-CN": "依据：{0}" },
+  "txf.panel.remove": { "en": "Stop instrumenting", "zh-CN": "撤销" },
+  "txf.panel.remove.confirm": {
+    "en": "{0} will start as it did before the shim was installed. A program that is running now keeps the shim until it is restarted.",
+    "zh-CN": "{0} 会恢复成安装兼容层之前的样子启动。正在运行的程序要保持到重启后才生效。"
+  },
+  "txf.panel.add": { "en": "Add a folder…", "zh-CN": "添加目录…" }
+}

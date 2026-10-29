@@ -15,13 +15,13 @@
     published before the resource existed.
 
     A plugin declares:
-      <PluginApiVersion>3.2</PluginApiVersion>   (optional; defaults to the SDK's own)
+      <PluginApiVersion>4.2</PluginApiVersion>   (optional; defaults to the SDK's own)
       plugin.json                                (its manifest, beside the csproj)
   -->
   <PropertyGroup>
     <!-- The contract version this SDK packages. A plugin that leaves it alone gets this one; a
          plugin built against an older SDK keeps its own. -->
-    <PluginApiVersion Condition="'$(PluginApiVersion)' == ''">3.2</PluginApiVersion>
+    <PluginApiVersion Condition="'$(PluginApiVersion)' == ''">4.2</PluginApiVersion>
     <GeneratePluginApiAttribute Condition="'$(GeneratePluginApiAttribute)' == ''">true</GeneratePluginApiAttribute>
     <!-- One file: a dependency file describes how to lay a program out beside itself, and a
          plugin is loaded into a host that has already done that. -->

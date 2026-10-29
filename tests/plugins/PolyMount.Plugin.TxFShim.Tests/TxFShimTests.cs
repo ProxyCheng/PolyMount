@@ -26,6 +26,15 @@ public sealed class TxFShimTests : IPluginTestProvider
             catch (Exception ex) { results.Add(new(PluginName, name, PluginTestOutcome.Failed, ex.Message)); }
         }
 
+        Check("the-texts-are-written-in-both-languages", () =>
+        {
+            // The notices and the management page are the only surface this plugin has, and every
+            // word on them comes out of the embedded table: a key written in one language only is
+            // invisible in the language it was left out of.
+            var problems = PluginTextChecks.Verify(typeof(TxFShimPlugin), "PolyMount.Plugin.TxFShim.Texts");
+            if (problems.Count > 0) throw new Exception(PluginTextChecks.Describe(problems));
+        });
+
         Check("registrations", () =>
         {
             string path = typeof(TxFShimPlugin).Assembly.Location;

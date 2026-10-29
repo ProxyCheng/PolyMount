@@ -11,6 +11,10 @@
   <ItemGroup>
     <InternalsVisibleTo Include="PolyMount.Plugin.TxFShim.Tests" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The text table is embedded, so the plugin is still one assembly to copy. -->
+    <EmbeddedResource Include="Resources\plugin-texts.json" LogicalName="PolyMount.Plugin.TxFShim.Texts" />
+  </ItemGroup>
   <!-- The native half ships beside the assembly; scripts\Build-TxFShim.ps1 puts it in native\.
        A checkout without the C++ build publishes the plugin without it, and install refuses,
        which is the right failure for a shim that could not start anything. The probe is a test

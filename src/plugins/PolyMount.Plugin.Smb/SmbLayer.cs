@@ -75,11 +75,11 @@ public sealed class SmbLayer : ILayer, IDisposable
     }
 
     /// <summary>A share is opened with an account and a password, and nothing else. Asking the
-    /// credential for that capability — instead of reading two fields off it — is what turns "a
+    /// record's parts for that capability — instead of reading two fields off it — is what turns "a
     /// bearer token was chosen here" into this sentence rather than into a connection attempt
-    /// with empty strings.</summary>
+    /// with empty strings, and what lets a certificate that carries an account open a share.</summary>
     internal static (string Username, string Password) AccountOf(Credential credential) =>
-        credential is IPasswordAuthentication account
+        CredentialParts.Password(credential) is { } account
             ? (account.UserName, account.Password)
             : throw new InvalidOperationException("the credential '" + credential.Username
                 + "' cannot open a share: a remote folder needs an account and a password, and this one is a '"

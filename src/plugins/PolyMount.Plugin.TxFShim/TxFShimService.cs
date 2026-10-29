@@ -16,8 +16,11 @@ internal sealed class ShimEntry
     public string Launcher { get; set; } = "";
 }
 
-/// <summary>A disagreement between the record of what we installed and the registry itself.</summary>
-internal sealed record ShimDrift(string Image, string Kind, string Detail);
+/// <summary>A disagreement between the record of what we installed and the registry itself.
+/// <see cref="Detail"/> is the sentence a tool reports; <see cref="Actual"/> and
+/// <see cref="Expected"/> are the values behind it, so a window can say the same thing in either
+/// language instead of showing the one it was computed in.</summary>
+internal sealed record ShimDrift(string Image, string Kind, string Detail, string? Actual = null, string? Expected = null);
 
 internal sealed record ShimTargetView(string Image, string Path, string Evidence);
 
@@ -101,7 +104,7 @@ internal sealed class TxFShimService
                         "the record says this image is instrumented, but its Debugger value is gone"));
                 else if (!SamePath(current, entry.Launcher))
                     drift.Add(new ShimDrift(entry.ImageName, "changed",
-                        $"the Debugger value points at '{current}', not at '{entry.Launcher}'"));
+                        $"the Debugger value points at '{current}', not at '{entry.Launcher}'", current, entry.Launcher));
             }
             var recorded = state.Entries.Select(e => e.ImageName).ToHashSet(StringComparer.OrdinalIgnoreCase);
             foreach (string image in _registry.Instrumented())
@@ -168,16 +171,8 @@ internal sealed class TxFShimService
                 notices.Add(new PluginNotice(
                     $"txf-shim:unshimmed:{image.ToLowerInvariant()}",
                     WindowTitle,
-                    Text(
-                        $"{name} is using the mount {status.MountPoint} and can open a file inside a transaction.\n\n" +
-                        $"This volume cannot accept a transactional open, so saving through it fails with error 6832 " +
-                        $"(the image {evidence}). Start it through the compatibility layer?\n\n" +
-                        "A program that is already running keeps the behaviour it started with until it is restarted.",
-                        $"{name} 正在使用挂载 {status.MountPoint}，并且能够在事务中打开文件。\n\n" +
-                        $"这个卷无法接受事务性打开，经由它的保存会失败（错误 6832，依据：{evidence}）。" +
-                        "要让它经由兼容层启动吗？\n\n" +
-                        "已经在运行的程序要保持到重启后才生效。"),
-                    Text("Enable compatibility", "启用兼容层"),
+                    TxFShimTexts.Format("txf.notice.unshimmed", name, status.MountPoint, evidence),
+                    TxFShimTexts.Get("txf.notice.unshimmed.action"),
                     new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "install", Path = image }));
                 continue;
             }
@@ -195,18 +190,12 @@ internal sealed class TxFShimService
             notices.Add(new PluginNotice(
                 $"txf-shim:restart:{image.ToLowerInvariant()}",
                 WindowTitle,
-                Text(
-                    $"{name} was started before the compatibility layer was enabled, so it is still running without it.\n\n" +
-                    "Restart it for the change to take effect.",
-                    $"{name} 在启用兼容层之前就已经启动，因此现在仍在没有兼容层的情况下运行。\n\n" +
-                    "请重启它，改动才会生效。")));
+                TxFShimTexts.Format("txf.notice.restart", name)));
         }
         return notices;
     }
 
-    private static readonly LocalizedText WindowTitle = new("Transactional opens", "事务性打开");
-
-    private static LocalizedText Text(string en, string zh) => new(en, zh);
+    private static LocalizedText WindowTitle => TxFShimTexts.Get("txf.title");
 
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Size, DateTime Modified, string? Evidence)> _scans =
         new(StringComparer.OrdinalIgnoreCase);
@@ -352,38 +341,33 @@ internal sealed class TxFShimService
     internal PluginPanelView Panel()
     {
         var status = Status();
+        int installed = status.Installed.Count;
         var view = new PluginPanelView
         {
-            Summary = new LocalizedText(
-                status.Installed.Count == 1
-                    ? "1 program starts through the compatibility layer"
-                    : status.Installed.Count + " programs start through the compatibility layer",
-                status.Installed.Count + " 个程序经由兼容层启动"),
-            Empty = new LocalizedText(
-                "No program is started through the shim yet. Add the folder the program's executables are in.",
-                "还没有程序经由兼容层启动。把那个程序的可执行文件所在目录加进来。"),
+            Summary = TxFShimTexts.Format(installed == 1 ? "txf.panel.summary.one" : "txf.panel.summary.many", installed),
+            Empty = TxFShimTexts.Get("txf.panel.empty"),
         };
 
-        view.Facts.Add(Fact(new LocalizedText("Native shim", "原生载荷"),
+        view.Facts.Add(Fact(TxFShimTexts.Get("txf.panel.payload"),
             status.PayloadPresent
-                ? Both("deployed", "在位", " · " + status.Dll)
-                : new LocalizedText("missing: nothing can be instrumented", "缺失：无法插桩")));
-        view.Facts.Add(Fact(new LocalizedText("Hit log", "命中日志"),
+                ? TxFShimTexts.With(TxFShimTexts.Get("txf.panel.payload.present"), " · " + status.Dll)
+                : TxFShimTexts.Get("txf.panel.payload.missing")));
+        view.Facts.Add(Fact(TxFShimTexts.Get("txf.panel.log"),
             status.LogBytes > 0
-                ? Both(Size(status.LogBytes), Size(status.LogBytes), " · " + status.Log)
-                : new LocalizedText("empty", "空")));
-        view.Facts.Add(Fact(new LocalizedText("Record and registry", "记录与注册表"),
+                ? TxFShimTexts.With(new LocalizedText(Size(status.LogBytes)), " · " + status.Log)
+                : TxFShimTexts.Get("txf.panel.log.empty")));
+        view.Facts.Add(Fact(TxFShimTexts.Get("txf.panel.drift"),
             status.Drift.Count == 0
-                ? new LocalizedText("agree", "一致")
-                : Both(status.Drift.Count + " disagree", status.Drift.Count + " 处不一致")));
+                ? TxFShimTexts.Get("txf.panel.drift.agree")
+                : TxFShimTexts.Format("txf.panel.drift.disagree", status.Drift.Count)));
         foreach (var disagreement in status.Drift)
-            view.Facts.Add(Fact(new LocalizedText(disagreement.Image), new LocalizedText(disagreement.Detail)));
+            view.Facts.Add(Fact(new LocalizedText(disagreement.Image), Describe(disagreement)));
 
         view.Columns.AddRange(new[]
         {
-            new LocalizedText("Program", "程序"),
-            new LocalizedText("Path", "路径"),
-            new LocalizedText("Installed", "安装时间")
+            TxFShimTexts.Get("txf.panel.column.program"),
+            TxFShimTexts.Get("txf.panel.column.path"),
+            TxFShimTexts.Get("txf.panel.column.installed")
         });
 
         foreach (var entry in status.Installed)
@@ -399,17 +383,14 @@ internal sealed class TxFShimService
                 },
                 // Why this image is here, on hover: it is the one thing about a row that a reader
                 // asks once, and it is long.
-                Tooltip = new LocalizedText("Why: " + entry.Evidence, "依据：" + entry.Evidence)
+                Tooltip = TxFShimTexts.Format("txf.panel.evidence", entry.Evidence)
             };
             row.Actions.Add(new PluginPanelAction
             {
                 Id = "remove:" + entry.ImageName,
-                Label = new LocalizedText("Stop instrumenting", "撤销"),
+                Label = TxFShimTexts.Get("txf.panel.remove"),
                 Request = new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "remove", Path = entry.ImagePath },
-                Confirm = new LocalizedText(
-                    entry.ImageName + " will start as it did before the shim was installed. A program that is "
-                    + "running now keeps the shim until it is restarted.",
-                    entry.ImageName + " 会恢复成安装兼容层之前的样子启动。正在运行的程序要保持到重启后才生效。")
+                Confirm = TxFShimTexts.Format("txf.panel.remove.confirm", entry.ImageName)
             });
             view.Rows.Add(row);
         }
@@ -417,7 +398,7 @@ internal sealed class TxFShimService
         view.Actions.Add(new PluginPanelAction
         {
             Id = "install",
-            Label = new LocalizedText("Add a folder…", "添加目录…"),
+            Label = TxFShimTexts.Get("txf.panel.add"),
             Icon = "plus",
             Input = PluginPanelInput.Directory,
             Request = new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "install" }
@@ -428,10 +409,16 @@ internal sealed class TxFShimService
     private static PluginPanelFact Fact(LocalizedText label, LocalizedText value) =>
         new() { Label = label, Value = value };
 
-    /// <summary>The same words in both languages, which is what a value made of a number and a
-    /// path needs: nothing in it is a word of the interface.</summary>
-    private static LocalizedText Both(string en, string zh, string suffix = "") =>
-        new(en + suffix, zh + suffix);
+    /// <summary>One disagreement, in the reader's language. The record carries the sentence a tool
+    /// reports and the values behind it; a window gets the second, so it does not have to show a
+    /// sentence that was written in one language. An unrecognised kind falls back to that
+    /// sentence rather than to a key nobody has seen before.</summary>
+    private static LocalizedText Describe(ShimDrift drift) => drift.Kind switch
+    {
+        "changed" => TxFShimTexts.Format("txf.drift.changed", drift.Actual ?? "", drift.Expected ?? ""),
+        "missing" or "unrecorded" => TxFShimTexts.Get("txf.drift." + drift.Kind),
+        _ => new LocalizedText(drift.Detail)
+    };
 
     private static string Installed(string utc) =>
         DateTime.TryParse(utc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var when)

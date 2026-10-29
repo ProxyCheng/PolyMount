@@ -1,4 +1,6 @@
 ﻿using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 
@@ -10,13 +12,30 @@ public static class CredentialTypes
 {
     public const string Password = "password";
     public const string Certificate = "certificate";
+    /// <summary>A certificate installed in a Windows store, named by store and thumbprint: the
+    /// private key stays where Windows keeps it, and the record holds no secret at all.</summary>
+    public const string InstalledCertificate = "installed-certificate";
+    /// <summary>The kind whose record is a list of other records: a certificate and the account it
+    /// is presented with, a certificate and a sign-in token. It proves nothing itself — what it
+    /// is, is a way to choose several credentials as one thing a layer names.</summary>
+    public const string Composite = "composite";
 
     /// <summary>The kinds the product ships.</summary>
-    public static IReadOnlyList<string> All { get; } = new[] { Password, Certificate };
+    public static IReadOnlyList<string> All { get; } = new[] { Password, Certificate, InstalledCertificate, Composite };
 
-    /// <summary>Whether a record of this kind can be read: one of the two above, or one a loaded
+    /// <summary>Whether a record of this kind can be read: one of the three above, or one a loaded
     /// plugin describes (see <see cref="CredentialKinds"/>).</summary>
     public static bool IsKnown(string kind) => CredentialKinds.IsKnown(kind);
+
+    /// <summary>Whether records of this kind are made of other records — the composite is, and a
+    /// plugin kind says so on its descriptor (<see cref="CredentialKindDescriptor.Attaches"/>).
+    ///
+    /// The store accepts children on those records and the form draws the row that picks them. One
+    /// level by rule: a child may not itself be made of others, which is what makes a chain
+    /// impossible and spares everyone a depth limit.</summary>
+    public static bool Attaches(string kind) =>
+        string.Equals(kind, Composite, StringComparison.OrdinalIgnoreCase) ||
+        CredentialKinds.Find(kind)?.Attaches == true;
 }
 
 /// <summary>
@@ -27,7 +46,7 @@ public static class CredentialTypes
 /// authenticating look like a password with extra fields, and made every consumer ask "which
 /// concrete type is this?" before it could use one. A credential now declares what it can do by
 /// implementing one or more of the interfaces below, and a consumer asks for the capability it
-/// needs (<c>credential as IBearerAuthentication</c>) instead of for a class.
+/// needs (<see cref="CredentialParts.Bearer"/>) instead of for a class.
 ///
 /// <see cref="Username"/> stays because it is not a secret and it is not a mechanism: it is who
 /// the record is for, which is what a list shows and what a server usually names.
@@ -40,6 +59,20 @@ public abstract class Credential
     /// <summary>The account this record is for, when it names one. Display and routing only: a
     /// credential that authenticates without an account leaves it empty.</summary>
     public string Username { get; init; } = "";
+
+    /// <summary>What this record is made of — itself, unless it was built from other records as
+    /// well.
+    ///
+    /// This is the question a consumer has to ask instead of <c>credential is X</c>: a record that
+    /// carries a certificate *and* the account to go with it is one record and two ways of
+    /// authenticating, and no single object can answer "am I a password?" for both halves — the
+    /// half that answers is a different object, often of a type the host has never heard of (a
+    /// plugin's own credential class). So the record hands out its parts and the consumer looks
+    /// for the capability it presents among them (<see cref="CredentialParts"/>).
+    ///
+    /// The object itself is always the first part: a consumer that ignores parts — a plugin built
+    /// before this existed — still sees everything the record can do on its own.</summary>
+    public virtual IReadOnlyList<Credential> Parts => new[] { this };
 }
 
 /// <summary>Authenticates by an account and the secret that proves it (HTTP Basic, an SMB logon,
@@ -51,12 +84,34 @@ public interface IPasswordAuthentication
     string Password { get; }
 }
 
-/// <summary>Authenticates by presenting a client certificate (mutual TLS).</summary>
+/// <summary>Authenticates by presenting a client certificate (mutual TLS), from a file the
+/// record holds.</summary>
 public interface ICertificateAuthentication
 {
     /// <summary>The PKCS#12 file and the password that opens it.</summary>
     byte[] Certificate { get; }
     string CertificatePassword { get; }
+}
+
+/// <summary>Authenticates by presenting a client certificate that is already installed in a
+/// Windows certificate store.
+///
+/// The difference from <see cref="ICertificateAuthentication"/> is where the private key lives: in
+/// the store, under the protection Windows gives it, rather than in a file whose password this
+/// product would have to keep. A key that cannot be exported works this way, which is the point —
+/// and a record that names one holds no secret at all, only a thumbprint.
+///
+/// The store is the one the process can see: <c>LocalMachine</c> is the machine's, and every
+/// account can read it, while <c>CurrentUser</c> is the account the service runs as. A certificate
+/// in somebody else's user store is not reachable from here and is not meant to be.</summary>
+public interface IInstalledCertificate
+{
+    /// <summary><c>LocalMachine</c> or <c>CurrentUser</c>.</summary>
+    string Store { get; }
+
+    /// <summary>The certificate's thumbprint, upper-case hexadecimal without separators — what a
+    /// store is searched by, and the whole of what the record holds.</summary>
+    string Thumbprint { get; }
 }
 
 /// <summary>Authenticates by presenting a bearer token — an access token from an identity
@@ -76,21 +131,82 @@ public sealed class PasswordCredential : Credential, IPasswordAuthentication
     public string Password { get; init; } = "";
 }
 
-/// <summary>A PKCS#12 file for mutual TLS, the password that opens it, and the account the
-/// server may ask for as well. The account is optional: some servers authenticate on the
-/// certificate alone, and the ones that ask for both get the pair through
-/// <see cref="IPasswordAuthentication"/> — that is why this class implements both.</summary>
-public sealed class ClientCertificateCredential : Credential, ICertificateAuthentication, IPasswordAuthentication
+/// <summary>A credential that is made of others: a list of records a layer names as one thing, and
+/// a server is shown each of them — the client certificate during the TLS handshake, the account in
+/// an Authorization header on every request after it.
+///
+/// It exists because a pairing is a decision somebody makes and may want to see, name and reuse: the
+/// certificate and the account are records of their own (one certificate can be paired with two
+/// accounts, one account with none), and this is the record that says "these together, here". The
+/// alternative — a certificate that holds an account — made one kind answer for two proofs, made
+/// every other pairing (a token, a client cache) inexpressible, and could not be asked about except
+/// by casting the object to a type.
+///
+/// One level by rule: a child is never itself made of others, so a chain cannot form and there is
+/// nothing to detect or limit.</summary>
+public class CompositeCredential : Credential
+{
+    public CompositeCredential() { }
+
+    /// <summary>A composite already holding records — for a caller that has them in hand: a test
+    /// asking a layer what it would present, or a plugin that builds one itself. The store fills
+    /// <see cref="Children"/> for the records it opens; this is the same object, built the other
+    /// way round.</summary>
+    public CompositeCredential(params Credential[] children) => Children = children;
+
+    public override string Kind => CredentialTypes.Composite;
+
+    /// <summary>The records this one is made of, in the order they were put here, as the store
+    /// opened them. Filled by the store, which is the only thing that can look a record up.</summary>
+    public IReadOnlyList<Credential> Children { get; internal set; } = Array.Empty<Credential>();
+
+    /// <summary>Itself and its children, itself first: a consumer asking for an account finds the
+    /// one someone put here, and one that knows nothing of composites still gets a credential it
+    /// can ask about — an empty one, which is what "this record is not an account" looks like.</summary>
+    public override IReadOnlyList<Credential> Parts => Children.Count == 0
+        ? new Credential[] { this }
+        : new[] { (Credential)this }.Concat(Children).ToArray();
+}
+
+/// <summary>A PKCS#12 file for mutual TLS, the password that opens it.
+///
+/// The account a server may ask for beside the certificate used to live in this record, which made
+/// the class answer <c>IPasswordAuthentication</c> whatever it held. It answers for the certificate
+/// and nothing else now: the pairing is a <see cref="CompositeCredential"/> those records are put
+/// into, which is visible in the manager and reusable.</summary>
+public sealed class ClientCertificateCredential : Credential, ICertificateAuthentication
 {
     public override string Kind => CredentialTypes.Certificate;
     byte[] ICertificateAuthentication.Certificate => Certificate;
     string ICertificateAuthentication.CertificatePassword => CertificatePassword;
     public byte[] Certificate { get; init; } = Array.Empty<byte>();
     public string CertificatePassword { get; init; } = "";
-    string IPasswordAuthentication.UserName => Username;
-    /// <summary>The account's password, when the certificate names an account as well. Empty for
-    /// a server that authenticates on the certificate alone.</summary>
-    public string Password { get; init; } = "";
+}
+
+/// <summary>A certificate the machine already has, named by where it lives and its thumbprint.
+///
+/// Its own kind rather than a second shape of the one above: a record that holds a file and a
+/// record that points into a store hold different things, are filled in by different forms, and go
+/// wrong in different ways — "the password does not open this file" against "that thumbprint is not
+/// in this account's store". One class that is both would have to answer "which am I?" before it
+/// could be used, which is the question the capability interfaces exist to replace.</summary>
+public sealed class InstalledCertificateCredential : Credential, IInstalledCertificate
+{
+    public override string Kind => CredentialTypes.InstalledCertificate;
+    public string Store { get; init; } = "";
+    public string Thumbprint { get; init; } = "";
+}
+
+/// <summary>One certificate this account could name, as the form that picks one shows it: where it
+/// lives, which one it is, and the three facts a reader recognises a certificate by.</summary>
+public sealed class InstalledCertificateInfo
+{
+    /// <summary><c>LocalMachine</c> or <c>CurrentUser</c>.</summary>
+    public string Store { get; set; } = "";
+    public string Thumbprint { get; set; } = "";
+    public string Subject { get; set; } = "";
+    public string Issuer { get; set; } = "";
+    public DateTime NotAfter { get; set; }
 }
 
 /// <summary>What a credential looks like to the interface: everything except the secret.
@@ -105,6 +221,17 @@ public sealed record CredentialRecord(string Id, string Name, string Username,
     /// being edited only when its type is on this list; empty means no loaded layer can present it,
     /// which is what a record whose kind's plugin is gone looks like.</summary>
     public IReadOnlyList<string> UseFor { get; init; } = Array.Empty<string>();
+
+    /// <summary>The record is made of others when it says so: the composite is, and so is any
+    /// plugin kind that set <see cref="CredentialKindDescriptor.Attaches"/>.</summary>
+    public IReadOnlyList<string> Children { get; init; } = Array.Empty<string>();
+
+    /// <summary>Where a certificate credential's certificate comes from. Empty for the PKCS#12 the
+    /// record holds; otherwise the store an installed certificate was named in, with its
+    /// thumbprint. Neither is a secret — a thumbprint is public — and the form needs them to open
+    /// showing the choice the record was saved with.</summary>
+    public string CertificateStore { get; init; } = "";
+    public string CertificateThumbprint { get; init; } = "";
 }
 
 /// <summary>What the interface asks the store to save. A null password, certificate or
@@ -113,11 +240,16 @@ public sealed record CredentialRecord(string Id, string Name, string Username,
 /// <param name="Values">The fields of a plugin kind (<see cref="CredentialKindDescriptor.Fields"/>),
 /// keyed by their paths. An empty value on an edit keeps the stored one, for the same reason a
 /// null password does. Unused by the two kinds the product ships.</param>
+/// <param name="Children">The records a composite is made of, in the order they are presented,
+/// replacing what it holds. Null keeps them — a client that does not offer them sends nothing, and
+/// an empty list is an answer: the person took them all out.</param>
 public sealed record CredentialInput(
     string? Id, string Name, string Kind, string Username,
     string? Password, byte[]? Certificate, string? CertificatePassword,
     IReadOnlyList<string>? Origins = null,
-    IReadOnlyDictionary<string, string>? Values = null);
+    IReadOnlyDictionary<string, string>? Values = null,
+    IReadOnlyList<string>? Children = null,
+    string? CertificateStore = null, string? CertificateThumbprint = null);
 
 /// <summary>
 /// The accounts this product keeps: one list of credentials, each with a name, an id, a user name
@@ -166,14 +298,19 @@ public static class CredentialStore
 
     public static List<CredentialRecord> List()
     {
-        lock (Gate) return Load().Items
-            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(item => new CredentialRecord(item.Id, item.Name, item.Username, KindOf(item), IsUsable(item),
-                item.Origins.ToArray())
-            {
-                UseFor = Consumers(item)
-            })
-            .ToList();
+        lock (Gate)
+        {
+            var document = Load();
+            return document.Items
+                .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(item => new CredentialRecord(item.Id, item.Name, item.Username, KindOf(item),
+                    IsUsable(document, item), item.Origins.ToArray())
+                {
+                    UseFor = Consumers(document, item),
+                    Children = item.Children.ToArray()
+                })
+                .ToList();
+        }
     }
 
     /// <summary>Which layer types would present a record, for the list. The secret is opened once
@@ -181,11 +318,11 @@ public static class CredentialStore
     /// single pass that answered both questions would have to carry the reason for each one.
     /// A record that cannot be opened, or whose kind has no loaded code, has no answer: empty,
     /// rather than an exception thrown into a window that is drawing a list.</summary>
-    private static IReadOnlyList<string> Consumers(StoredCredential item)
+    private static IReadOnlyList<string> Consumers(Document document, StoredCredential item)
     {
         try
         {
-            return Materialize(item) is { } credential
+            return Materialize(document, item) is { } credential
                 ? CredentialConsumers.Of(credential)
                 : Array.Empty<string>();
         }
@@ -196,25 +333,36 @@ public static class CredentialStore
     }
 
     /// <summary>Whether this account can actually use a record: the secret is a blob it can
-    /// open, and a certificate credential still names a certificate. The layer editor shows the
-    /// answer where the credential is chosen, before a mount has to fail to say so.</summary>
-    private static bool IsUsable(StoredCredential item)
+    /// open, a certificate credential still names a certificate, and everything attached to it is
+    /// still there to be presented. The layer editor shows the answer where the credential is
+    /// chosen, before a mount has to fail to say so.
+    ///
+    /// An attachment that has been deleted or that cannot be built makes the whole record
+    /// unusable rather than quietly dropping that half: a certificate that was paired with an
+    /// account, presented alone, is a 401 nobody can explain.</summary>
+    private static bool IsUsable(Document document, StoredCredential item)
     {
-        string? plain = UnprotectSecret(item);
-        if (plain == null) return false;
-        string kind = KindOf(item);
-        if (string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase))
-            return plain.Length > 0;
-        if (string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase))
-            return ParseCertificate(plain) is { Certificate.Length: > 0 };
-        // A plugin kind: the code that builds the credential decides. A record whose plugin is not
-        // loaded now has nothing to build it, and the manager shows it as unusable rather than as
-        // missing — the record is intact, what is gone is the description of it.
-        var descriptor = CredentialKinds.Find(kind);
-        if (descriptor == null) return false;
-        try { return descriptor.Create(ParseValues(plain)) != null; }
-        catch (Exception) { return false; }
+        try
+        {
+            return Materialize(document, item) is { } credential && PartIsUsable(credential);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
+
+    private static bool PartIsUsable(Credential credential) =>
+        credential.Parts.All(part => part switch
+        {
+            // A certificate without its file, and an account without a password, are records that
+            // say nothing a server can ask for.
+            ClientCertificateCredential certificate => certificate.Certificate.Length > 0,
+            InstalledCertificateCredential installed => installed.Thumbprint.Length > 0,
+            PasswordCredential account => account.Password.Length > 0,
+            // A plugin kind that could not build its credential threw while materializing, above.
+            _ => true
+        });
 
     /// <summary>Adds or changes a named credential and returns the record the interface can show.
     /// Names are what the picker shows, so they are unique: two rows reading the same thing would
@@ -242,8 +390,11 @@ public static class CredentialStore
             // the same kind: switching from a password to a certificate has nothing to keep.
             bool keeps = item != null && string.Equals(KindOf(item), kind, StringComparison.OrdinalIgnoreCase);
             bool certificate = string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase);
+            bool composite = string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase);
+            bool installed = string.Equals(kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase);
             var descriptor = CredentialKinds.Find(kind);
             var current = keeps && certificate ? CertificateOf(item!) : null;
+            var currentInstalled = keeps && installed ? CertificateOf(item!) : null;
             string secret;
             string account = input.Username.Trim();
             if (certificate)
@@ -261,10 +412,33 @@ public static class CredentialStore
                 if (input.Certificate is { Length: > 0 }) ValidateCertificate(input.Certificate, certificatePassword);
                 secret = JsonSerializer.Serialize(new CertificateSecret
                 {
-                    Account = input.Password ?? current?.Account ?? string.Empty,
                     Certificate = certificateBytes,
                     Password = certificatePassword
                 }, Options);
+            }
+            else if (installed)
+            {
+                // A reference, not a copy: the record holds where the certificate lives and which
+                // one it is, and the private key never leaves the store. Checked here, in the
+                // account that will present it — a thumbprint this account cannot open is refused
+                // while the form is still open to say which one.
+                string store = (input.CertificateStore ?? (keeps ? currentInstalled?.Store : null) ?? "").Trim();
+                string thumbprint = NormalizeThumbprint(
+                    input.CertificateThumbprint ?? (keeps ? currentInstalled?.Thumbprint : null) ?? "");
+                ValidateInstalled(store, thumbprint);
+                secret = JsonSerializer.Serialize(new CertificateSecret
+                {
+                    Store = store == "CurrentUser" ? "CurrentUser" : "LocalMachine",
+                    Thumbprint = thumbprint
+                }, Options);
+            }
+            else if (composite)
+            {
+                // A composite holds no secret of its own — what it proves is in the records it
+                // names. The blob is still written, empty: a record is one shape, and "can this
+                // account open it" stays one question for every kind.
+                secret = "{}";
+                account = "";
             }
             else if (descriptor == null)
             {
@@ -301,11 +475,84 @@ public static class CredentialStore
             // kinds existed reads; the other kinds are written as the name they answer to.
             item.Kind = string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase)
                 ? ""
-                : descriptor?.Kind ?? CredentialTypes.Certificate;
+                : descriptor?.Kind ?? kind;
+            // What this record is presented with. Only a certificate is presented with anything: it
+            // is the one kind that says nothing about the account beside it, and a certificate is
+            // never among these, which is what keeps the chain one level deep.
+            var children = input.Children is { } asked
+                ? asked
+                : keeps ? item.Children.ToArray() : Array.Empty<string>();
+            children = children.Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct(StringComparer.Ordinal).ToArray();
+            // A kind that is not made of records keeps none, whatever a client sent: a record
+            // switched from a composite to an account would otherwise hold a list nothing reads.
+            if (!CredentialTypes.Attaches(kind)) children = Array.Empty<string>();
+            if (composite && children.Count == 0)
+                throw new ArgumentException("a composite credential needs at least one credential in it");
+            ValidateChildren(document, item, children);
+            item.Children = children.ToList();
             item.Secret = Convert.ToBase64String(protected_);
             if (added) document.Items.Add(item);
             if (!Save(document)) throw new InvalidOperationException("the credential could not be written");
-            return new CredentialRecord(item.Id, item.Name, item.Username, kind);
+            var stored = installed ? ParseCertificate(secret) : null;
+            return new CredentialRecord(item.Id, item.Name, item.Username, kind)
+            {
+                Children = item.Children.ToArray(),
+                CertificateStore = stored?.Store ?? "",
+                CertificateThumbprint = stored?.Thumbprint ?? ""
+            };
+        }
+    }
+
+    /// <summary>Checks what a composite is about to be made of, while a form is still open to be
+    /// told which record is wrong.
+    ///
+    /// Three rules, each of which would otherwise be discovered by a mount failing: nothing that
+    /// no longer exists, nothing unusable (the account that was paired with the certificate is
+    /// exactly the half whose absence reads as a 401), and nothing that answers the same question
+    /// as another — two accounts, or two sign-in tokens, would leave the order of the list deciding
+    /// which one a server sees and the other silently never presented. One of each is what a
+    /// server can be shown.</summary>
+    private static void ValidateChildren(Document document, StoredCredential item, IReadOnlyList<string> children)
+    {
+        if (children.Count == 0) return;
+        var capabilities = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string id in children)
+        {
+            if (string.Equals(id, item.Id, StringComparison.Ordinal))
+                throw new ArgumentException("a credential cannot contain itself");
+            var child = document.Items.FirstOrDefault(entry => entry.Id == id)
+                ?? throw new ArgumentException("no credential with id '" + id
+                    + "' to put in this one; choose another in the credential manager");
+            if (CredentialTypes.Attaches(KindOf(child)))
+                throw new ArgumentException("'" + child.Name
+                    + "' is made of other credentials; it cannot be put inside another one");
+            if (!IsUsable(document, child))
+                throw new ArgumentException("'" + child.Name
+                    + "' cannot be used: this account cannot open it, or it is not complete");
+            foreach (string capability in Capabilities(document, child))
+                if (capabilities.TryGetValue(capability, out string? holder))
+                    throw new ArgumentException("'" + child.Name + "' and '" + holder + "' both provide "
+                        + capability + "; put one of each in a composite credential");
+                else capabilities[capability] = child.Name;
+        }
+    }
+
+    /// <summary>What one record can prove, in words a refusal can use: the capabilities its parts
+    /// implement, and the type each part is — which is the only name a plugin's own kind has.</summary>
+    private static IEnumerable<string> Capabilities(Document document, StoredCredential item)
+    {
+        var credential = Materialize(document, item)
+            ?? throw new ArgumentException("'" + item.Name + "' cannot be opened by this account");
+        foreach (var part in credential.Parts)
+        {
+            if (part is IPasswordAuthentication) yield return "an account";
+            if (part is ICertificateAuthentication) yield return "a client certificate";
+            if (part is IBearerAuthentication) yield return "a sign-in token";
+            // A kind that implements none of the three is recognised by its own type, which is
+            // what a consumer names when it asks for that kind (<see cref="CredentialParts.Find"/>).
+            if (part is not IPasswordAuthentication and not ICertificateAuthentication and not IBearerAuthentication)
+                yield return part.GetType().FullName ?? part.GetType().Name;
         }
     }
 
@@ -365,8 +612,9 @@ public static class CredentialStore
     {
         lock (Gate)
         {
-            var item = Load().Items.FirstOrDefault(entry => entry.Id == id);
-            return item == null ? null : Materialize(item);
+            var document = Load();
+            var item = document.Items.FirstOrDefault(entry => entry.Id == id);
+            return item == null ? null : Materialize(document, item);
         }
     }
 
@@ -383,28 +631,7 @@ public static class CredentialStore
     /// The first use is recorded rather than confirmed: it is the same act as choosing the
     /// credential for that layer, and a prompt in the middle of a mount is a prompt nobody could
     /// answer.</summary>
-    public static Credential? Use(string id, string origin)
-    {
-        lock (Gate)
-        {
-            var document = Load();
-            var item = document.Items.FirstOrDefault(entry => entry.Id == id);
-            if (item == null) return null;
-            if (BindsOrigins(KindOf(item)))
-            {
-                if (item.Origins.Count == 0)
-                {
-                    item.Origins.Add(origin);
-                    Save(document);
-                }
-                else if (!item.Origins.Contains(origin, StringComparer.OrdinalIgnoreCase))
-                {
-                    throw new CredentialOriginException(item.Id, item.Name, item.Origins.ToArray(), origin);
-                }
-            }
-            return Materialize(item);
-        }
-    }
+    public static Credential? Use(string id, string origin) => Resolve(id, origin, write: true);
 
     /// <summary>The secret behind a named credential, checked against the origin it is about to be
     /// presented at — the same rule <see cref="Use"/> applies — without recording the origin.
@@ -414,18 +641,7 @@ public static class CredentialStore
     /// is trying an account against an address they may still be editing. A form that asked "does
     /// this work?" would otherwise leave a credential bound to a host nobody meant.
     /// </summary>
-    public static Credential? Check(string id, string origin)
-    {
-        lock (Gate)
-        {
-            var item = Load().Items.FirstOrDefault(entry => entry.Id == id);
-            if (item == null) return null;
-            if (BindsOrigins(KindOf(item)) && item.Origins.Count > 0 &&
-                !item.Origins.Contains(origin, StringComparer.OrdinalIgnoreCase))
-                throw new CredentialOriginException(item.Id, item.Name, item.Origins.ToArray(), origin);
-            return Materialize(item);
-        }
-    }
+    public static Credential? Check(string id, string origin) => Resolve(id, origin, write: false);
 
     /// <summary>Whether the origin binding applies to a record of this kind at all.
     ///
@@ -438,6 +654,10 @@ public static class CredentialStore
     /// it should not see a list that was never a decision.</summary>
     private static bool BindsOrigins(string kind)
     {
+        // A composite holds no secret of its own, so there is nothing of it to bind: everything it
+        // is made of is bound by the walk below, one child at a time, and each child keeps its own
+        // list of the hosts it may be shown to.
+        if (string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase)) return false;
         var descriptor = CredentialKinds.Find(kind);
         // The two kinds the product ships have no descriptor here — a password record is the shape
         // every file written before kinds existed has — and an unknown kind is treated as one that
@@ -448,16 +668,118 @@ public static class CredentialStore
         return false;
     }
 
-    /// <summary>The credential a stored record stands for, with its secret opened. A record whose
-    /// secret cannot be opened — written by another Windows account, or damaged — is null, which
-    /// the caller reports as an account that no longer works.</summary>
-    private static Credential? Materialize(StoredCredential item)
+    /// <summary>Checks an origin against a record and everything presented beside it, writing the
+    /// first use down when <paramref name="write"/> allows it.
+    ///
+    /// The walk is the point: a password hanging under a certificate is still a secret somebody
+    /// bound to a host, so without this the pairing would be a way to carry that password to the
+    /// certificate's host instead. A record that holds no secret is not bound, the same rule as
+    /// for a record used on its own.</summary>
+    private static bool Bind(Document document, StoredCredential item, string origin, bool write,
+        HashSet<string> open)
+    {
+        if (!open.Add(item.Id)) return false;
+        bool changed = false;
+        if (BindsOrigins(KindOf(item)))
+        {
+            if (item.Origins.Count == 0)
+            {
+                if (write)
+                {
+                    item.Origins.Add(origin);
+                    changed = true;
+                }
+            }
+            else if (!item.Origins.Contains(origin, StringComparer.OrdinalIgnoreCase))
+            {
+                throw new CredentialOriginException(item.Id, item.Name, item.Origins.ToArray(), origin);
+            }
+        }
+        // A child that is gone is not checked here: materializing says so, in a sentence that
+        // names the record the reader can go and fix.
+        foreach (string id in item.Children)
+            if (document.Items.FirstOrDefault(entry => entry.Id == id) is { } child)
+                changed |= Bind(document, child, origin, write, open);
+        return changed;
+    }
+
+    private static Credential? Resolve(string id, string origin, bool write)
+    {
+        lock (Gate)
+        {
+            var document = Load();
+            var item = document.Items.FirstOrDefault(entry => entry.Id == id);
+            if (item == null) return null;
+            bool changed = Bind(document, item, origin, write, new HashSet<string>(StringComparer.Ordinal));
+            if (changed) Save(document);
+            return Materialize(document, item);
+        }
+    }
+
+    /// <summary>The credential a stored record stands for: its own secret opened, and — for a
+    /// record made of others — each child opened as well.
+    ///
+    /// The two steps are separate because only one of them is per record. <see cref="Own"/> is the
+    /// record on its own, what a file holds; <see cref="Composed"/> fills in what it is made of, so
+    /// that a consumer asking "do you have an account?" is answered by the account someone put
+    /// there rather than by a record that has none. A record whose secret cannot be opened, or a
+    /// child that cannot be built, throws with a sentence naming which one: the caller reports it
+    /// as an account that no longer works.
+    /// </summary>
+    private static Credential? Materialize(Document document, StoredCredential item) =>
+        Composed(document, item, new HashSet<string>(StringComparer.Ordinal));
+
+    private static Credential? Composed(Document document, StoredCredential item, HashSet<string> open)
+    {
+        var own = Own(item);
+        if (own is not CompositeCredential composite || item.Children.Count == 0) return own;
+        // One level is all the model allows (see CompositeCredential); a file edited by hand could
+        // still name a chain that comes back on itself, and following it would be a hang rather
+        // than an answer.
+        if (!open.Add(item.Id))
+            throw new InvalidOperationException("the credential '" + item.Name
+                + "' contains itself; remove that in the credential manager");
+        try
+        {
+            var children = new List<Credential>(item.Children.Count);
+            foreach (string id in item.Children)
+            {
+                var child = document.Items.FirstOrDefault(entry => entry.Id == id)
+                    ?? throw new InvalidOperationException("the credential '" + item.Name
+                        + "' contains a credential that no longer exists; choose another in the credential manager");
+                if (Composed(document, child, open) is { } part) children.Add(part);
+            }
+            composite.Children = children;
+            return composite;
+        }
+        finally { open.Remove(item.Id); }
+    }
+
+    /// <summary>One record's own secret, without what it is made of.</summary>
+    private static Credential? Own(StoredCredential item)
     {
         string? plain = UnprotectSecret(item);
         if (plain == null) return null;
         string kind = KindOf(item);
         if (string.Equals(kind, CredentialTypes.Password, StringComparison.OrdinalIgnoreCase))
             return new PasswordCredential { Username = item.Username, Password = plain };
+        // The composite proves nothing by itself: it is the list that <see cref="Composed"/> fills
+        // in. The empty object is still a credential a consumer can ask about.
+        if (string.Equals(kind, CredentialTypes.Composite, StringComparison.OrdinalIgnoreCase))
+            return new CompositeCredential { Username = item.Username };
+        // A certificate the machine already has: the record is a pointer, so opening it is reading
+        // two strings rather than a key.
+        if (string.Equals(kind, CredentialTypes.InstalledCertificate, StringComparison.OrdinalIgnoreCase))
+        {
+            var reference = ParseCertificate(plain);
+            if (reference == null || reference.Thumbprint.Length == 0) return null;
+            return new InstalledCertificateCredential
+            {
+                Username = item.Username,
+                Store = reference.Store.Length > 0 ? reference.Store : "LocalMachine",
+                Thumbprint = reference.Thumbprint
+            };
+        }
 
         if (!string.Equals(kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase))
         {
@@ -482,7 +804,6 @@ public static class CredentialStore
             return new ClientCertificateCredential
             {
                 Username = item.Username,
-                Password = payload.Account,
                 Certificate = Convert.FromBase64String(payload.Certificate),
                 CertificatePassword = payload.Password
             };
@@ -496,13 +817,21 @@ public static class CredentialStore
     private static string KindOf(StoredCredential item) =>
         string.IsNullOrEmpty(item.Kind) ? CredentialTypes.Password : item.Kind;
 
-    /// <summary>What a certificate credential holds, protected as one blob: the account password
-    /// (which may be empty), the PKCS#12 bytes in base64 and the password that opens them.</summary>
+    /// <summary>What a certificate credential holds, protected as one blob: the PKCS#12 bytes in
+    /// base64 and the password that opens them.
+    ///
+    /// A record written before certificates stopped holding an account also carries <c>Account</c>
+    /// here. It is not read any more — a pairing is a composite credential now — and not written:
+    /// the next save of such a record drops it.</summary>
     private sealed class CertificateSecret
     {
-        public string Account { get; set; } = "";
+        /// <summary>The file, for a record that holds one.</summary>
         public string Certificate { get; set; } = "";
         public string Password { get; set; } = "";
+        /// <summary>The store and thumbprint, for a record that names an installed certificate.
+        /// Empty in the other shape.</summary>
+        public string Store { get; set; } = "";
+        public string Thumbprint { get; set; } = "";
     }
 
     private static CertificateSecret? CertificateOf(StoredCredential item) =>
@@ -512,6 +841,80 @@ public static class CredentialStore
     {
         try { return JsonSerializer.Deserialize<CertificateSecret>(json, Options); }
         catch (JsonException) { return null; }
+    }
+
+    /// <summary>A thumbprint as a store is searched by: hexadecimal, upper case, no separators —
+    /// the form of <c>X509Certificate2.Thumbprint</c>, so a value copied out of certmgr or typed
+    /// with spaces and lower case still names the same certificate.</summary>
+    private static string NormalizeThumbprint(string thumbprint) =>
+        new string(thumbprint.Where(Uri.IsHexDigit).ToArray()).ToUpperInvariant();
+
+    /// <summary>Finds the certificate a record names, in the store it names, as this account.
+    ///
+    /// Null when this account cannot see it. A certificate is only a client credential if its
+    /// private key opens for the process presenting it, and a store can hold one whose key belongs
+    /// to somebody else.</summary>
+    private static X509Certificate2? FindInstalled(string store, string thumbprint)
+    {
+        var location = string.Equals(store, "CurrentUser", StringComparison.OrdinalIgnoreCase)
+            ? StoreLocation.CurrentUser
+            : StoreLocation.LocalMachine;
+        try
+        {
+            using var opened = new X509Store(StoreName.My, location);
+            opened.Open(OpenFlags.ReadOnly);
+            foreach (var candidate in opened.Certificates)
+                if (string.Equals(candidate.Thumbprint, thumbprint, StringComparison.OrdinalIgnoreCase))
+                    return candidate;
+        }
+        catch (CryptographicException) { }
+        return null;
+    }
+
+    /// <summary>Refuses an installed certificate this account cannot present, in the words of the
+    /// thing that is missing.</summary>
+    private static void ValidateInstalled(string store, string thumbprint)
+    {
+        if (thumbprint.Length == 0)
+            throw new ArgumentException("an installed certificate credential needs the certificate's thumbprint");
+        bool known = string.Equals(store, "LocalMachine", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(store, "CurrentUser", StringComparison.OrdinalIgnoreCase);
+        if (!known)
+            throw new ArgumentException("'" + store + "' is not a certificate store; use LocalMachine or CurrentUser");
+        var found = FindInstalled(store, thumbprint)
+            ?? throw new ArgumentException("no certificate with thumbprint " + thumbprint
+                + " in " + store + @"\My, as the account this service runs as");
+        if (!found.HasPrivateKey)
+            throw new ArgumentException("the certificate " + thumbprint
+                + " is in " + store + @"\My but has no private key this account can use");
+    }
+
+    /// <summary>The certificates this account could name, for the form that picks one: the two
+    /// stores a service can see — the machine's, and its own — and only what has a private key,
+    /// since a certificate without one cannot present anything.</summary>
+    public static List<InstalledCertificateInfo> Certificates()
+    {
+        var found = new List<InstalledCertificateInfo>();
+        foreach (var location in new[] { StoreLocation.LocalMachine, StoreLocation.CurrentUser })
+        {
+            try
+            {
+                using var opened = new X509Store(StoreName.My, location);
+                opened.Open(OpenFlags.ReadOnly);
+                foreach (var certificate in opened.Certificates)
+                    if (certificate.HasPrivateKey)
+                        found.Add(new InstalledCertificateInfo
+                        {
+                            Store = location.ToString(),
+                            Thumbprint = certificate.Thumbprint,
+                            Subject = certificate.Subject,
+                            Issuer = certificate.Issuer,
+                            NotAfter = certificate.NotAfter
+                        });
+            }
+            catch (CryptographicException) { }
+        }
+        return found;
     }
 
     /// <summary>Opens the file with the password it will be used with. The private key stays in
@@ -577,6 +980,9 @@ public static class CredentialStore
         /// spells them. Empty means it has not been used yet, which is also what every record
         /// written before this existed looks like: the first use records it.</summary>
         public List<string> Origins { get; set; } = new();
+        /// <summary>The records this one is presented with, by id. Only a certificate names any;
+        /// what it names is never another certificate, so the chain is one level deep.</summary>
+        public List<string> Children { get; set; } = new();
     }
 
     /// <summary>What an older entry held once opened: the pair, protected together.</summary>

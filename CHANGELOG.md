@@ -3,6 +3,77 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] - 2026-10-29
+
+A credential can be made of other credentials, and a plugin's words come from its own table.
+
+### Added
+
+- **A composite credential: one record whose content is a list of other records.** A client
+  certificate used to carry an account and a password of its own, which made one kind answer for
+  two proofs, made every other pairing — a sign-in token, whatever the Subversion client saved —
+  inexpressible, and could only be asked about by casting the object to a type. Now the pairing is
+  its own thing: a record whose list you pick in the credential manager, which a layer names the
+  same way it names any credential. The certificate is a file again. The store opens the children
+  when it opens the composite, and a source asks what the record can present (`CredentialParts`)
+  instead of `credential is X`: no wrapper can be an instance of a plugin's own credential class,
+  which is what a child often is. Rules worth knowing: a child is never itself a composite, never
+  the record itself, and one of each capability — two accounts would leave the list order deciding
+  which one a server sees. The composite holds no secret of its own and is not bound to an origin,
+  but every child is checked against the address the layer talks to, so a password bound to one
+  host cannot ride a certificate to another. A child that is gone makes the whole record unusable
+  rather than presenting half a pair, and the delete confirmation names the composites it is in.
+- **A certificate the machine already has, as its own kind.** A record can now name a certificate
+  installed in a Windows store — `LocalMachine\My` or the service account's own — by store and
+  thumbprint, instead of holding a PKCS#12 file and its password. The private key never leaves the
+  store, so a key that cannot be exported can still open a repository; the record holds no secret
+  at all, only the thumbprint. It is a separate kind rather than a second shape of the certificate
+  one: the two hold different things and fail in different words, and the file kind is unchanged.
+  The list a form picks from is answered by the service, not drawn in the tray — the account that
+  will present the certificate is the one that can say whose keys it may use — and a thumbprint
+  this account cannot open is refused while the form is still open. Contract 4.2, additive.
+- **A plugin's text is one embedded table.** `PluginTexts` in the contract loads
+  `Resources/plugin-texts.json` from the plugin's own assembly; a key the table lacks is answered
+  with the key itself, which is visible in the window and findable in a translation tool, instead
+  of failing `Register` and taking the whole plugin down. The bundled source plugins and the
+  transaction shim moved onto it, and `PluginTextChecks` in the test contract checks that every key
+  is written in every language and that a manifest names and describes them.
+
+### Changed
+
+- **A credential kind draws its own mark.** The installed certificate wears the shield with a
+  keyhole where the file certificate has a tick: one picture for two kinds was the thing the marks
+  were added to stop.
+- **The credential list counts two kinds of reference.** A layer names a credential and a composite
+  names its children; both are shown now ("used by 2" beside "used in composites: 1"), because a
+  record that is genuinely in use inside a composite used to read "used by 0".
+- **The children picker offers every record.** The ones it cannot take — this record itself, one
+  already in the list, another composite, one this account cannot open — are greyed with the reason
+  beside them instead of being left out, which read as "the certificate is not allowed here".
+- **A certificate credential no longer asks for an account or a password**, and the layer editor's
+  credential row labels a record by its kind when it signs in as nothing.
+- **The transaction shim's notices and its page come from its own text table**, so both languages
+  live beside the sentences that use them.
+- **Plugins must be rebuilt for contract 4.x.** 4.0 is breaking: a certificate credential no longer
+  implements `IPasswordAuthentication` and carries no account — a pairing is a composite record
+  now, and a plugin that asked a credential what it can do must ask its parts. 4.1 is additive.
+
+### Fixed
+
+- **"Used by 6 layers" for five instances.** Two of them still had a credential written on their
+  `warmup` layer — leftover data nothing reads, since a storage layer never presents one. The count
+  takes one entry per instance now, from the deepest layer that names a credential.
+- **The composite form's two list buttons had no words**: they asked for translation keys nothing
+  carries, so they drew as empty boxes. The self-check asks for their text now, which is what would
+  have caught it.
+- **A path asked about right after its instance starts is answered.** The directory that maps an
+  instance to its pipe believes its list for five seconds, so a call made just after enabling or
+  mounting was routed to the supervisor and answered "not running" about something that had just
+  started; that answer now makes it forget the list and ask once more.
+- **Two checks had outlived their subject**: the plugin-upgrade check now writes the manifest it
+  copies instead of finding a leftover, and the installed-copy check expects what the setup and the
+  MCP server actually ship.
+
 ## [0.10.0] - 2026-10-29
 
 A plugin's own page unfolds inside the window, a mount says how busy it is, and a credential says

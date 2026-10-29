@@ -76,6 +76,19 @@ public sealed class CredentialKindDescriptor
     /// the credential list and searched by. Empty for a kind that names no account.</summary>
     public string AccountField { get; set; } = "";
 
+    /// <summary>Whether a record of this kind is presented together with other records — a
+    /// credential that is one way of authenticating of several (<see
+    /// cref="CompositeCredential"/>).
+    ///
+    /// True means the store lets those records name attachments, and the form draws the row that
+    /// picks them; the kind's <see cref="Create"/> must build a <see cref="CompositeCredential"/>,
+    /// which is how the store hands it what hangs underneath. The product's certificate sets the
+    /// same thing without a descriptor, because it is built in.
+    ///
+    /// It is part of the description rather than a fact the host knows about one class for the
+    /// same reason <see cref="Icon"/> is: a window draws a kind it was never compiled against.</summary>
+    public bool Attaches { get; set; }
+
     public List<CredentialFieldDescriptor> Fields { get; set; } = new();
 
     /// <summary>

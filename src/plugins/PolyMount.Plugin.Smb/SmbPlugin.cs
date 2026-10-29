@@ -65,10 +65,11 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
         });
 
         // What this source can present: a share is opened with an account, and that is all it
-        // knows how to do with a credential. The filter is asked with the credential itself, so a
+        // knows how to do with a credential. The filter is asked with the record's parts, so a
         // kind another plugin adds that builds an account is offered here without this plugin
-        // naming it.
-        context.RegisterCredentialConsumer("smb", credential => credential is IPasswordAuthentication);
+        // naming it — and a certificate that carries an account is offered too, because what the
+        // share needs is the account, not the file it hung under.
+        context.RegisterCredentialConsumer("smb", credential => CredentialParts.Password(credential) != null);
 
         context.RegisterSource("smb",
             (config, _) => SmbLayer.Create(config),
@@ -76,12 +77,14 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
             {
                 SmbPath.Parse(config.Path);
                 SmbOptions.From(config.Parameters);
-                // A certificate credential cannot open a share; refusing it here is better than
-                // building a layer that will present an empty password.
+                // A share is opened with an account, whatever record the account comes from: an
+                // account credential, or a certificate that carries one. Refusing here is better
+                // than building a layer that will present an empty password.
                 if (!string.IsNullOrWhiteSpace(config.CredentialId) &&
                     CredentialStore.FindById(config.CredentialId) is { } credential &&
-                    credential.Kind != CredentialTypes.Password)
-                    throw new ArgumentException("a share is opened with an account and password; choose a password credential");
+                    CredentialParts.Password(credential) is null)
+                    throw new ArgumentException(
+                        "a share is opened with an account and password; choose an account credential, or a certificate that carries one");
             },
             new LayerDescriptor
             {

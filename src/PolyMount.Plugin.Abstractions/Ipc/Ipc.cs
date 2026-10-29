@@ -212,6 +212,16 @@ public sealed class CredentialPayload
     /// know the kind sends; an empty value on an update keeps the stored one, the same rule as a
     /// null <see cref="Password"/>.</summary>
     public Dictionary<string, string>? Values { get; set; }
+    /// <summary>The records this one is presented together with, by id — what a certificate names
+    /// beside its file. Null keeps the stored list; an empty list is an answer: nothing hangs
+    /// under it any more.</summary>
+    public List<string>? Children { get; set; }
+    /// <summary>Where an installed certificate lives — <c>LocalMachine</c> or <c>CurrentUser</c> —
+    /// for a credential of that kind.</summary>
+    public string? CertificateStore { get; set; }
+    /// <summary>Which certificate it is. Neither is a secret: the pair is what the record holds
+    /// instead of a key.</summary>
+    public string? CertificateThumbprint { get; set; }
 }
 
 /// <summary>A sign-in a plugin asks a front end to perform on its behalf.
@@ -398,6 +408,9 @@ public sealed class ControlResponse
     // Populated by "credentials": the accounts this product keeps. Never a secret — the
     // interface does not see one, so it can neither leak nor echo it.
     public List<CredentialRecord> Credentials { get; set; } = new();
+    /// <summary>Answered by <see cref="ControlCommands.Certificates"/>: the installed certificates
+    /// with a private key this account can use.</summary>
+    public List<InstalledCertificateInfo> Certificates { get; set; } = new();
 
     // Populated by "credentials": the credential kinds loaded plugins describe, so the window
     // that edits an account can draw the kind it does not ship. The two built-in kinds are not
@@ -615,6 +628,11 @@ public static class ControlCommands
     /// <summary>The one list of credentials this product keeps. Answered by the supervisor, which
     /// is the process that owns the file and the only one that can decrypt it.</summary>
     public const string Credentials = "credentials";
+    /// <summary>The certificates this account could name — what an installed-certificate
+    /// credential is picked from. Answered by the supervisor, the process that will present them:
+    /// a list read in the tray would be the signed-in user's stores, which is not what a service
+    /// running as LocalSystem can use.</summary>
+    public const string Certificates = "certificates";
     /// <summary>Adds or changes a named credential. A missing password keeps the stored one.</summary>
     public const string SaveCredential = "saveCredential";
     public const string DeleteCredential = "deleteCredential";

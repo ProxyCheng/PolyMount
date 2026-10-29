@@ -19,11 +19,14 @@ type PolyMount.Plugins.CacheLayer : PolyMount.Plugins.ILayer, PolyMount.Plugins.
   property System.Boolean Writable get
   property System.String Generation get
   property System.String Name get
-type PolyMount.Plugins.ClientCertificateCredential : PolyMount.Plugins.Credential, PolyMount.Plugins.ICertificateAuthentication, PolyMount.Plugins.IPasswordAuthentication
+type PolyMount.Plugins.ClientCertificateCredential : PolyMount.Plugins.Credential, PolyMount.Plugins.ICertificateAuthentication
   property System.Byte[] Certificate get set
   property System.String CertificatePassword get set
   property System.String Kind get
-  property System.String Password get set
+type PolyMount.Plugins.CompositeCredential : PolyMount.Plugins.Credential
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.Credential> Children get
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.Credential> Parts get
+  property System.String Kind get
 type PolyMount.Plugins.CompositePrediction : PolyMount.Plugins.IPredictionModel, System.IDisposable
   method System.IDisposable Observe(System.String, System.Int64, System.Boolean)
   method System.Void Dispose()
@@ -35,6 +38,7 @@ type PolyMount.Plugins.CompositePrediction : PolyMount.Plugins.IPredictionModel,
   property PolyMount.Plugins.PredictionModelStats Stats get
   property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.IPredictionModel> Models get
 type PolyMount.Plugins.Credential : 
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.Credential> Parts get
   property System.String Kind get
   property System.String Username get set
 type PolyMount.Plugins.CredentialConsumers : 
@@ -59,11 +63,14 @@ type PolyMount.Plugins.CredentialInput : System.IEquatable<PolyMount.Plugins.Cre
   method System.Boolean Equals(System.Object)
   method System.Int32 GetHashCode()
   method System.String ToString()
-  method System.Void Deconstruct(System.String&, System.String&, System.String&, System.String&, System.String&, System.Byte[]&, System.String&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&, System.Collections.Generic.IReadOnlyDictionary`2[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  method System.Void Deconstruct(System.String&, System.String&, System.String&, System.String&, System.String&, System.Byte[]&, System.String&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&, System.Collections.Generic.IReadOnlyDictionary`2[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&, System.String&, System.String&)
   property System.Byte[] Certificate get set
   property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String> Values get set
+  property System.Collections.Generic.IReadOnlyList<System.String> Children get set
   property System.Collections.Generic.IReadOnlyList<System.String> Origins get set
   property System.String CertificatePassword get set
+  property System.String CertificateStore get set
+  property System.String CertificateThumbprint get set
   property System.String Id get set
   property System.String Kind get set
   property System.String Name get set
@@ -72,6 +79,7 @@ type PolyMount.Plugins.CredentialInput : System.IEquatable<PolyMount.Plugins.Cre
 type PolyMount.Plugins.CredentialKindDescriptor : 
   property PolyMount.Plugins.LocalizedText Description get set
   property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean Attaches get set
   property System.Collections.Generic.List<PolyMount.Plugins.CredentialFieldDescriptor> Fields get set
   property System.Func<System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>, PolyMount.Plugins.Credential> Create get set
   property System.String AccountField get set
@@ -87,6 +95,13 @@ type PolyMount.Plugins.CredentialOriginException : System.InvalidOperationExcept
   property System.String CredentialId get
   property System.String CredentialName get
   property System.String Origin get
+type PolyMount.Plugins.CredentialParts : 
+  method PolyMount.Plugins.IBearerAuthentication Bearer(PolyMount.Plugins.Credential) static
+  method PolyMount.Plugins.ICertificateAuthentication Certificate(PolyMount.Plugins.Credential) static
+  method PolyMount.Plugins.IInstalledCertificate Installed(PolyMount.Plugins.Credential) static
+  method PolyMount.Plugins.IPasswordAuthentication Password(PolyMount.Plugins.Credential) static
+  method System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.Credential> Of(PolyMount.Plugins.Credential) static
+  method T Find(PolyMount.Plugins.Credential) static
 type PolyMount.Plugins.CredentialRecord : System.IEquatable<PolyMount.Plugins.CredentialRecord>
   method PolyMount.Plugins.CredentialRecord <Clone>$()
   method System.Boolean Equals(PolyMount.Plugins.CredentialRecord)
@@ -95,8 +110,11 @@ type PolyMount.Plugins.CredentialRecord : System.IEquatable<PolyMount.Plugins.Cr
   method System.String ToString()
   method System.Void Deconstruct(System.String&, System.String&, System.String&, System.String&, System.Boolean&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
   property System.Boolean Usable get set
+  property System.Collections.Generic.IReadOnlyList<System.String> Children get set
   property System.Collections.Generic.IReadOnlyList<System.String> Origins get set
   property System.Collections.Generic.IReadOnlyList<System.String> UseFor get set
+  property System.String CertificateStore get set
+  property System.String CertificateThumbprint get set
   property System.String Id get set
   property System.String Kind get set
   property System.String Name get set
@@ -108,13 +126,17 @@ type PolyMount.Plugins.CredentialStore :
   method PolyMount.Plugins.CredentialRecord Save(PolyMount.Plugins.CredentialInput) static
   method System.Byte[] Protect(System.String) static
   method System.Collections.Generic.List<PolyMount.Plugins.CredentialRecord> List() static
+  method System.Collections.Generic.List<PolyMount.Plugins.InstalledCertificateInfo> Certificates() static
   method System.String OriginOf(System.Uri) static
   method System.String Unprotect(System.Byte[]) static
   method System.Void RemoveCredential(System.String) static
   property System.String Path get
 type PolyMount.Plugins.CredentialTypes : 
   field System.String Certificate static
+  field System.String Composite static
+  field System.String InstalledCertificate static
   field System.String Password static
+  method System.Boolean Attaches(System.String) static
   method System.Boolean IsKnown(System.String) static
   property System.Collections.Generic.IReadOnlyList<System.String> All get
 type PolyMount.Plugins.CredentialedSource : 
@@ -150,6 +172,9 @@ type PolyMount.Plugins.ICertificateAuthentication :
   property System.String CertificatePassword get
 type PolyMount.Plugins.IContentVersionCache : 
   method System.Boolean TryOpenVersioned(System.String, PolyMount.Plugins.VfsEntry, PolyMount.Plugins.VfsEntry&, System.IO.Stream&)
+type PolyMount.Plugins.IInstalledCertificate : 
+  property System.String Store get
+  property System.String Thumbprint get
 type PolyMount.Plugins.ILayer : PolyMount.Plugins.IObjectLayer
   method System.Boolean TryGetEntry(System.String, PolyMount.Plugins.VfsEntry&)
   method System.Boolean TryOpenRead(System.String, PolyMount.Plugins.VfsEntry&, System.IO.Stream&)
@@ -245,6 +270,16 @@ type PolyMount.Plugins.IRevisionSource : PolyMount.Plugins.ILayer, PolyMount.Plu
   method System.Int64 HeadRevision()
   method System.Void SetRevision(System.Int64)
   property System.Int64 Revision get
+type PolyMount.Plugins.InstalledCertificateCredential : PolyMount.Plugins.Credential, PolyMount.Plugins.IInstalledCertificate
+  property System.String Kind get
+  property System.String Store get set
+  property System.String Thumbprint get set
+type PolyMount.Plugins.InstalledCertificateInfo : 
+  property System.DateTime NotAfter get set
+  property System.String Issuer get set
+  property System.String Store get set
+  property System.String Subject get set
+  property System.String Thumbprint get set
 type PolyMount.Plugins.Ipc.BrowserLogin : 
   property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LoginValue> Values get set
   property System.String CredentialId get set
@@ -266,6 +301,7 @@ type PolyMount.Plugins.Ipc.BuildInfo :
   property System.String WinFsp get set
 type PolyMount.Plugins.Ipc.ControlCommands : 
   field System.String Build static
+  field System.String Certificates static
   field System.String CheckSource static
   field System.String ClearCache static
   field System.String ClearLocalChanges static
@@ -350,6 +386,7 @@ type PolyMount.Plugins.Ipc.ControlResponse :
   property System.Boolean Ok get set
   property System.Collections.Generic.List<PolyMount.Plugins.CredentialKindDescriptor> CredentialKinds get set
   property System.Collections.Generic.List<PolyMount.Plugins.CredentialRecord> Credentials get set
+  property System.Collections.Generic.List<PolyMount.Plugins.InstalledCertificateInfo> Certificates get set
   property System.Collections.Generic.List<PolyMount.Plugins.Ipc.InstanceEndpoint> Instances get set
   property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LogFile> Logs get set
   property System.Collections.Generic.List<PolyMount.Plugins.Ipc.MountMetrics> Metrics get set
@@ -371,9 +408,12 @@ type PolyMount.Plugins.Ipc.ControlResponse :
   property System.String SecurityWarning get set
 type PolyMount.Plugins.Ipc.CredentialPayload : 
   property System.Collections.Generic.Dictionary<System.String, System.String> Values get set
+  property System.Collections.Generic.List<System.String> Children get set
   property System.Collections.Generic.List<System.String> Origins get set
   property System.String Certificate get set
   property System.String CertificatePassword get set
+  property System.String CertificateStore get set
+  property System.String CertificateThumbprint get set
   property System.String Id get set
   property System.String Kind get set
   property System.String Name get set
@@ -887,6 +927,18 @@ type PolyMount.Plugins.PluginRoles : System.Enum, System.IComparable, System.ICo
   field PolyMount.Plugins.PluginRoles Frontend static
   field PolyMount.Plugins.PluginRoles None static
   field System.Int32 value__
+type PolyMount.Plugins.PluginTexts : 
+  method PolyMount.Plugins.LocalizedText Format(System.String, System.Object[])
+  method PolyMount.Plugins.LocalizedText Get(System.String)
+  method PolyMount.Plugins.PluginTexts Load(System.Reflection.Assembly, System.String) static
+  method PolyMount.Plugins.PluginTexts Load(System.Type, System.String) static
+  method PolyMount.Plugins.PluginTexts Parse(System.IO.Stream, System.String) static
+  method System.Boolean Contains(System.String)
+  method System.Boolean TryGet(System.String, System.Collections.Generic.Dictionary`2[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  method System.Collections.Generic.Dictionary<System.String, System.String> All(System.String)
+  property PolyMount.Plugins.PluginTexts Empty get
+  property System.Collections.Generic.IReadOnlyList<System.String> Keys get
+  property System.Collections.Generic.IReadOnlyList<System.String> Languages get
 type PolyMount.Plugins.PredictionModelStats : System.ValueType, System.IEquatable<PolyMount.Plugins.PredictionModelStats>
   method System.Boolean Equals(PolyMount.Plugins.PredictionModelStats)
   method System.Boolean Equals(System.Object)

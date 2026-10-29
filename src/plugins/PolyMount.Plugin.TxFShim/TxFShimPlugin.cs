@@ -44,7 +44,7 @@ public sealed class TxFShimPlugin : IPolyMountPlugin, IPluginMetadata
         // person does about it. Machine-wide, so it reads no mount.
         context.RegisterPanel(new PluginPanel(
             "txf-shim",
-            new LocalizedText("Transactional opens", "事务性打开"),
+            TxFShimTexts.Get("txf.title"),
             "plugin",
             _ => Service.Panel()));
 

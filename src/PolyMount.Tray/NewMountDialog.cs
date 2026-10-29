@@ -666,9 +666,7 @@ internal sealed class NewMountDialog : QDialog
             : _credentials.FirstOrDefault(item => item.Id == id);
         string text = T("credential.none");
         if (!string.IsNullOrWhiteSpace(id))
-            text = record == null ? T("credential.missing")
-                : record.Kind == CredentialTypes.Certificate ? record.Name + " · " + T("credential.kind.certificate")
-                : record.Name + " · " + record.Username;
+            text = record == null ? T("credential.missing") : CredentialMarks.Label(record);
         else if (field.Placeholder.Resolve(I18n.Language) is { Length: > 0 } placeholder) text = placeholder;
         button.SetText(text);
         // The mark the picker drew beside the account this row stands for.

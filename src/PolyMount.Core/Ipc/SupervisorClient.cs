@@ -1,4 +1,4 @@
-namespace PolyMount.Core.Ipc;
+﻿namespace PolyMount.Core.Ipc;
 
 /// <summary>
 /// The supervisor: the one process a front-end finds without being told where it is, and the only
@@ -34,6 +34,11 @@ public sealed class SupervisorClient : ControlClient
     /// supervisor owns that file and is the only process that can open it.</summary>
     public ControlResponse Credentials()
         => Send(new ControlRequest { Cmd = ControlCommands.Credentials });
+
+    /// <summary>The certificates this account could present, from the process that will present
+    /// them — see <see cref="ControlCommands.Certificates"/>.</summary>
+    public ControlResponse Certificates()
+        => Send(new ControlRequest { Cmd = ControlCommands.Certificates });
 
     public ControlResponse SaveCredential(CredentialPayload credential)
         => Send(new ControlRequest { Cmd = ControlCommands.SaveCredential, Credential = credential });

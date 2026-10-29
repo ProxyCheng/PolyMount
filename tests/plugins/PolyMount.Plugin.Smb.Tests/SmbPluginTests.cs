@@ -44,6 +44,14 @@ public sealed class SmbPluginTests : IPluginTestProvider
             catch (Exception ex) { results.Add(new(PluginName, name, PluginTestOutcome.Failed, ex.Message)); }
         }
 
+        Check("the-texts-are-written-in-both-languages", () =>
+        {
+            // Every string a person reads about this plugin comes out of the embedded table, and a
+            // key written in one language only is invisible in the language it was written in.
+            var problems = PluginTextChecks.Verify(typeof(SmbPlugin), "PolyMount.Plugin.Smb.Texts");
+            if (problems.Count > 0) throw new Exception(PluginTextChecks.Describe(problems));
+        });
+
         Check("the-manifest-travels-inside-the-assembly", () =>
         {
             // A plugin is one file to hand out. The check copies the assembly somewhere with

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
@@ -125,13 +125,19 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         // question, and a kind this plugin has never heard of is simply one that answers neither —
         // it is not silently read as an account with an empty password.
         var credential = new SvnCredentialedSource(source).Resolve();
+        // One record can be several things to present at once, and they are presented on different
+        // layers of the exchange: a client certificate rides the TLS handshake, an account rides
+        // an Authorization header on every request after it. The server can want both, so both are
+        // taken from the record's parts — the certificate off the record itself, the account from
+        // a record hanging under it.
+        var parts = CredentialParts.Of(credential).ToList();
         // "Use what the Subversion client saved": the record holds no secret, so this is where it
         // becomes one — against this repository, because the client keys its cache by realm and a
         // record cannot know which repository it will be used for. The cache is a Windows
         // account's, and the record says whose: empty means the account this service runs as,
         // which is usually not the one somebody signed in with, so a record is worth naming.
         // Nothing found is said plainly rather than left to a 401.
-        if (credential is SubversionCacheCredential clientCache)
+        if (CredentialParts.Find<SubversionCacheCredential>(credential) is { } clientCache)
         {
             var cached = SvnCredentialedSource.FromCache(repository, clientCache.Account)
                 ?? throw new AuthRequiredException(string.IsNullOrWhiteSpace(clientCache.Account)
@@ -142,12 +148,21 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
                     : "no Subversion credential is cached for " + repository.Host + " under the Windows account '"
                         + clientCache.Account + "'; sign in once with TortoiseSVN or the svn command line as that "
                         + "account, or correct the account this credential names");
-            credential = new PasswordCredential { Username = cached.Username, Password = cached.Password };
+            parts.Remove(clientCache);
+            parts.Add(new PasswordCredential { Username = cached.Username, Password = cached.Password });
         }
-        var certificates = credential is ICertificateAuthentication { Certificate.Length: > 0 } clientCertificate
-            ? SvnHttpClient.LoadClientCertificates(clientCertificate.Certificate, clientCertificate.CertificatePassword)
-            : null;
-        var account = credential as IPasswordAuthentication;
+        var account = parts.OfType<IPasswordAuthentication>().FirstOrDefault(item => item.Password.Length > 0);
+        // The certificate is one of two things: a file the record holds, or a certificate the
+        // machine already has. The second is a reference and is opened here, in the process that
+        // will present it — which is also the only process that can say whether its key is one
+        // this account may use.
+        var certificates =
+            CredentialParts.Installed(credential) is { } reference
+                ? SvnHttpClient.InstalledCertificates(reference.Store, reference.Thumbprint)
+                : parts.OfType<ICertificateAuthentication>()
+                      .FirstOrDefault(item => item.Certificate.Length > 0) is { } clientCertificate
+                    ? SvnHttpClient.LoadClientCertificates(clientCertificate.Certificate, clientCertificate.CertificatePassword)
+                    : null;
         // A chosen credential that offers neither way of authenticating is refused here, while the
         // instance is being built, rather than sent as an anonymous request that the server answers
         // with a 401 nobody can explain.

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Setup,
     # Leaves the product installed and running when the test finishes, for a machine somebody is

@@ -14,7 +14,7 @@ internal static class TrayIcons
     /// here with no case below is an icon that comes out empty.</summary>
     internal static IReadOnlyList<string> Names { get; } = new[]
     {
-        "close", "app", "layers", "plugin", "drive", "info", "key", "certificate", "credential",
+        "close", "app", "layers", "plugin", "drive", "info", "key", "certificate", "certificate-store", "credential",
         "tortoise", "sign-in", "folder", "edit-layer", "disk-cache", "memory-chip", "predict-path",
         "warm-listings", "repository", "plus", "chevron-right", "chevron-down", "check", "alert",
         "play", "stop", "chart", "trash", "refresh", "export", "record", "save", "settings", "default"
@@ -104,6 +104,15 @@ internal static class TrayIcons
             case "certificate":
                 Path((12, 2), (20, 5), (20, 11), (12, 22), (4, 11), (4, 5), (12, 2));
                 Path((8.5, 11), (11, 13.5), (15.5, 9));
+                break;
+            // The same shield with a keyhole where the tick was: a certificate whose private key
+            // never left the store it was installed in. The difference from the certificate above
+            // has to survive eighteen pixels, and a tick against a keyhole does; a second outline
+            // or an added corner would not.
+            case "certificate-store":
+                Path((12, 2), (20, 5), (20, 11), (12, 22), (4, 11), (4, 5), (12, 2));
+                p.DrawEllipse(10, 8, 4, 4);
+                Line(12, 12, 12, 16);
                 break;
             // A pass: the generic credential, worn by a kind a plugin described — the window got
             // fields and a title for it, never a picture. A card with a portrait and the name

@@ -1,4 +1,4 @@
-using PolyMount.Core;
+﻿using PolyMount.Core;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
 using QtSharp.QtWidgets;
@@ -145,15 +145,18 @@ internal sealed class LayerPicker : QDialog
         _search.SetFocus();
     }
 
+    /// <summary>What a card is searched by: the type, and the words either language describes it
+    /// with. One function because two would drift, and the check below asks the same question the
+    /// filter answers.</summary>
+    internal static string SearchText(LayerDescriptor descriptor) =>
+        descriptor.Type + " " + string.Join(" ", descriptor.Title.Values.Values) + " " +
+        string.Join(" ", descriptor.Description.Values.Values);
+
     private void Filter()
     {
         string query = _search.Text.Trim();
         foreach (var (descriptor, item, _, _, _) in _cards)
-        {
-            string text = descriptor.Type + " " + string.Join(" ", descriptor.Title.Values.Values) + " " +
-                string.Join(" ", descriptor.Description.Values.Values);
-            item.SetHidden(!text.Contains(query, StringComparison.OrdinalIgnoreCase));
-        }
+            item.SetHidden(!SearchText(descriptor).Contains(query, StringComparison.OrdinalIgnoreCase));
         int count = _cards.Count(c => !c.Item.IsHidden());
         _count.SetText(I18n.F("picker.count", count));
         _empty.SetVisible(count == 0);
@@ -208,7 +211,13 @@ internal sealed class LayerPicker : QDialog
             if (picker._descriptors.Count == 0) throw new InvalidOperationException("Layer picker received no provider metadata");
             picker._search.SetText("no-provider-with-this-name");
             if (picker.Selected != null || picker._add.IsEnabled()) throw new InvalidOperationException("Empty search still allows adding a layer");
-            var target = picker._descriptors[^1];
+            // A type that only one card mentions. Short type names ("dir", "svn") turn up inside
+            // other cards' prose, and the filter selects the first match — so searching for the
+            // last descriptor's type used to select an earlier one whenever somebody edited a
+            // description, which is a check that fails for a reason that is not about the picker.
+            var target = picker._descriptors.LastOrDefault(candidate => picker._descriptors
+                .Count(other => SearchText(other).Contains(candidate.Type, StringComparison.OrdinalIgnoreCase)) == 1)
+                ?? picker._descriptors[^1];
             picker._search.SetText(target.Type);
             if (picker.Selected?.Type != target.Type) throw new InvalidOperationException("Provider search selected the wrong layer");
             picker._search.Clear();

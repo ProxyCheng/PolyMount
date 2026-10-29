@@ -21,6 +21,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PolyMount.Core\PolyMount.Core.csproj" />
+    <!-- The checks a plugin's tests run against its own text table: the product's built-in layer
+         texts are held to the same standard. -->
+    <ProjectReference Include="..\..\src\PolyMount.Plugin.Testing\PolyMount.Plugin.Testing.csproj" />
     <!-- A real plugin, so a test can check what a process loads: it registers a layer type and
          declares backend only. Never shipped, never published. -->
     <ProjectReference Include="..\plugins\PolyMount.Plugin.Puppet\PolyMount.Plugin.Puppet.csproj" />
