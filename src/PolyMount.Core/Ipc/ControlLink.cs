@@ -7,10 +7,29 @@ public sealed class PipeControlLink : IControlLink
     public ControlResponse Supervisor(ControlRequest request) => SupervisorClient.Default.Send(request);
 
     public ControlResponse Instance(string? name, ControlRequest request) =>
-        InstanceDirectory.ClientFor(name).Send(request);
+        AgainAfterStaleDirectory(() => InstanceDirectory.ClientFor(name), request);
 
     public ControlResponse ForPath(string fullPath, ControlRequest request) =>
-        InstanceDirectory.ClientForPath(fullPath).Send(request);
+        AgainAfterStaleDirectory(() => InstanceDirectory.ClientForPath(fullPath), request);
+
+    /// <summary>Sends a command to the process that should serve it, and once more if the
+    /// supervisor was the one that answered "that is an instance's question".
+    ///
+    /// That answer means the request went to the supervisor because the directory had not yet
+    /// heard of the instance — its list is believed for five seconds, and an instance that was
+    /// enabled, mounted or restarted a moment ago is not in it. A caller that enables an instance
+    /// and immediately asks about a path under it is the ordinary case, not an exotic one: it
+    /// would be told "not running" about something that is running. Nothing executed the request
+    /// (the supervisor does not answer for an instance), so asking again after forgetting the list
+    /// is safe for a write as well as for a read.</summary>
+    private static ControlResponse AgainAfterStaleDirectory(Func<InstanceClient> client, ControlRequest request)
+    {
+        var response = client().Send(request);
+        if (response.Ok || response.Error is not { } error ||
+            !ControlOperations.IsNotRunning(error)) return response;
+        InstanceDirectory.Invalidate();
+        return client().Send(request);
+    }
 
     public string? OwnerOf(string fullPath)
     {

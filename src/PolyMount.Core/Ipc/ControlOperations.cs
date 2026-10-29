@@ -88,7 +88,10 @@ public static class ControlOperations
         return error;
     }
 
-    private static bool IsNotRunning(string error) =>
+    /// <summary>Whether a refusal means the request should have gone to an instance's own process
+    /// and no instance was running to take it. Two phrases say it: a supervisor that does not have
+    /// an instance-only command at all, and one that has it and answers "ask the instance".</summary>
+    internal static bool IsNotRunning(string error) =>
         error.StartsWith("unknown command:", StringComparison.Ordinal) ||
         error.Contains("is answered by the instance's own process", StringComparison.Ordinal);
 
