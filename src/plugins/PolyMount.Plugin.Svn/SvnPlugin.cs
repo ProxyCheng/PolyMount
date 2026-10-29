@@ -1,8 +1,5 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
-using PolyMount.Core;
-using PolyMount.Core.Ipc;
-using PolyMount.Layers;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -43,10 +40,56 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
             var model = FindFamilyModel(command.Instance);
             command.Response.Result = JsonSerializer.Serialize(new
             {
-                instance = command.Instance.Profile.Name,
+                instance = command.Instance.Name,
                 families = model?.Snapshot() ?? Array.Empty<ManifestFamilyPrediction.FamilySnapshot>()
             }, Json);
         });
+
+        // A credential that is not a secret at all: the account the Subversion client on this
+        // machine already saved. Whoever signs in with TortoiseSVN or the svn command line once
+        // does not have to type the password into PolyMount as well, and the password never
+        // reaches this product's configuration or its store.
+        context.RegisterCredentialKind(new CredentialKindDescriptor
+        {
+            Kind = SubversionCacheCredential.KindName,
+            Title = SvnTexts.Get("svn.credential.cached.title"),
+            Description = SvnTexts.Get("svn.credential.cached.description"),
+            // A tortoise, because the record says whose TortoiseSVN saved it: a list of accounts is
+            // scanned, and the one thing that tells this kind apart from a password is the program
+            // it belongs to.
+            Icon = "tortoise",
+            // Whose cache. Windows protects the password with the key of the account that saved
+            // it, and a service runs as an account of its own, so "the cache on this machine" is
+            // never enough to say: the record names a person. The form starts it at %USERNAME%,
+            // the person filling it, and an empty value keeps the old meaning — this process's own
+            // cache — which is right when the service already runs as that person.
+            AccountField = SubversionCacheCredential.AccountField,
+            Fields = new()
+            {
+                new()
+                {
+                    Path = SubversionCacheCredential.AccountField,
+                    Title = SvnTexts.Get("svn.credential.cached.account.title"),
+                    Description = SvnTexts.Get("svn.credential.cached.account.description"),
+                    Placeholder = SvnTexts.Get("svn.credential.cached.account.placeholder"),
+                    DefaultValue = "%USERNAME%"
+                }
+            },
+            // No endpoint and no realm: which repository credential comes out of the cache is
+            // decided when a layer is built, because the client keys its cache by realm and a
+            // credential record cannot know which repository it will be used for.
+            Create = values => new SubversionCacheCredential
+            {
+                Account = values.GetValueOrDefault(SubversionCacheCredential.AccountField, "").Trim()
+            }
+        });
+
+        // What this source can present, asked with the credential itself: an account for a
+        // repository that asks for one, a certificate for one behind mutual TLS (which names an
+        // account as well), and the client's own cache — a record that carries no secret and
+        // becomes an account when a repository is built, so the transport can present it too.
+        context.RegisterCredentialConsumer("svn", credential =>
+            credential is IPasswordAuthentication or ICertificateAuthentication or SubversionCacheCredential);
 
         context.RegisterControlOperation(new ControlOperation(
             Name: "list_manifest_families",
@@ -150,7 +193,7 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
         context.RegisterSource("svn", (config, state) =>
             SvnLayer.Create(config.Url, config.TrustServerCertFailures, Path.Combine(state, "pin.txt"), config.Username,
                 config.Password, SvnPrefetchOptions.From(config.Parameters), config.CredentialId,
-                config.AllowInsecureTransport),
+                config.AllowInsecureTransport, config.VerifyOnly),
             config =>
             {
                 if (!Uri.TryCreate(config.Url, UriKind.Absolute, out var repository) || config.PinnedRevision < 0)
@@ -180,10 +223,6 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                     new() { Path = "Source.TrustServerCertFailures", Title = SvnTexts.Get("svn.field.trust"),
                         Description = SvnTexts.Get("svn.field.trust.description") },
                     new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
-                        // Both kinds fill this: an account for a repository that asks for one,
-                        // or a certificate credential for one behind mutual TLS (which may name
-                        // an account as well).
-                        CredentialKinds = new() { CredentialTypes.Password, CredentialTypes.Certificate },
                         Title = SvnTexts.Get("svn.field.credential"),
                         Placeholder = SvnTexts.Get("svn.field.credential.placeholder"),
                         Description = SvnTexts.Get("svn.field.credential.description") },
@@ -213,7 +252,7 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                         DefaultValue = "2", Title = SvnTexts.Get("svn.field.lane"),
                         Description = SvnTexts.Get("svn.field.lane.description") }
                 },
-                Actions = new() { new() { Command = PolyMount.Core.Ipc.ControlCommands.RefreshHead,
+                Actions = new() { new() { Command = PolyMount.Plugins.Ipc.ControlCommands.RefreshHead,
                     Field = "Source.PinnedRevision",
                     Title = SvnTexts.Get("svn.action.refreshHead"),
                     Confirmation = SvnTexts.Get("svn.action.refreshHead.confirmation") } }
@@ -222,9 +261,9 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
 
     /// <summary>The family model inside an instance's prediction layer: this plugin's strategy,
     /// or the one inside a composite when several strategies share the layer.</summary>
-    private static ManifestFamilyPrediction? FindFamilyModel(MountInstance instance)
+    private static ManifestFamilyPrediction? FindFamilyModel(IPluginInstance instance)
     {
-        foreach (var layer in instance.Layers.Values.OfType<PredictionLayerBase>())
+        foreach (var layer in instance.Layers.Values.OfType<IPredictionModelHost>())
             if (FindStrategy(layer.Strategy) is { } model) return model;
         return null;
     }
@@ -239,7 +278,7 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
     /// <summary>The instance's SVN layers, keyed by the configuration id the status reports.
     /// <paramref name="only"/> narrows the answer to one layer, or to none when that id is not
     /// an SVN layer of this instance.</summary>
-    private static IEnumerable<(string Id, SvnLayer Layer)> SvnLayers(MountInstance instance, string? only)
+    private static IEnumerable<(string Id, SvnLayer Layer)> SvnLayers(IPluginInstance instance, string? only)
     {
         foreach (var pair in instance.Layers)
         {
@@ -249,9 +288,9 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
         }
     }
 
-    private static object Describe(MountInstance instance, string? only)
+    private static object Describe(IPluginInstance instance, string? only)
     {
-        var configs = instance.Profile.GetLayers().ToDictionary(layer => layer.Id, StringComparer.OrdinalIgnoreCase);
+        var configs = instance.LayerConfigs.ToDictionary(layer => layer.Id, StringComparer.OrdinalIgnoreCase);
         var layers = new List<object>();
         foreach (var (id, layer) in SvnLayers(instance, only))
         {
@@ -280,12 +319,12 @@ public sealed class SvnPlugin : IPolyMountPlugin, IPluginMetadata
                 lanes = layer.Lanes.Snapshot()
             });
         }
-        return new { instance = instance.Profile.Name, layers };
+        return new { instance = instance.Name, layers };
     }
 
-    private static object LaneReport(MountInstance instance, string? only) => new
+    private static object LaneReport(IPluginInstance instance, string? only) => new
     {
-        instance = instance.Profile.Name,
+        instance = instance.Name,
         layers = SvnLayers(instance, only).Select(entry => new { layer = entry.Id, lanes = entry.Layer.Lanes.Snapshot() }).ToArray()
     };
 }

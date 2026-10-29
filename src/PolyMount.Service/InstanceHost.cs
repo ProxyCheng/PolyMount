@@ -46,7 +46,9 @@ public sealed class InstanceHost : IControlHost
             var config = AppConfig.FromJson(File.ReadAllText(configPath));
             var profile = config.Mounts.FirstOrDefault(m => string.Equals(m.Id, instanceId, StringComparison.OrdinalIgnoreCase))
                 ?? throw new InvalidOperationException("the configuration has no instance with id '" + instanceId + "'");
-            var pluginErrors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory);
+            // A worker runs layers, sources and commands — the server half. A plugin that only offers
+            // tools has nothing here to be reached through, so it is not loaded.
+            var pluginErrors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory, PluginRoles.Backend);
             if (pluginErrors.Count > 0) throw new InvalidOperationException(string.Join("; ", pluginErrors));
 
             return await new InstanceHost(config, profile, logger).ServeAsync();

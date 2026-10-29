@@ -15,12 +15,20 @@ namespace PolyMount.Core;
 /// something else is not answered with the old name. A process that ended while it was being
 /// counted keeps the name it was last seen under — the window is a minute wide and a reader is owed
 /// the name of who did the work — and one that was never caught alive reads as its own id.
+///
+/// The name and the start time do not cost the same. A name is read out of a system-wide snapshot
+/// and is available to any account, while the start time — like the image path — means opening the
+/// process, which only works for one that belongs to the reader. The account the installed service
+/// runs under (LocalService) is not in the descriptor of a program in a user's session, so there
+/// the start time is refused and the name is not: an answer without a start time is recorded, and
+/// the pid-reuse check it would have carried is left to the minute the answer is kept for.
 /// </summary>
 internal static class ProcessNames
 {
     /// <summary>One process as it was last read: what it is called, where its image is, and when it
     /// started. <see cref="Path"/> is null when the image could not be read — a process of another
-    /// account, or one that ended between the two questions — which is a case and not an error.</summary>
+    /// account, or one that ended between the two questions — which is a case and not an error, and
+    /// <see cref="StartTicks"/> is 0 for the same reason.</summary>
     internal sealed record Entry(string Name, string? Path, long StartTicks, long ResolvedAtMs, bool PathAsked);
 
     private static readonly ConcurrentDictionary<int, Entry> Known = new();
@@ -50,14 +58,14 @@ internal static class ProcessNames
         {
             using var process = Process.GetProcessById(processId);
             string name = process.ProcessName;
-            long startTicks = process.StartTime.Ticks;
+            long startTicks = ReadStartTicks(process);
             string? path = null;
             bool asked = false;
             if (wantPath || known is { Path: not null })
             {
                 asked = true;
                 try { path = process.MainModule?.FileName; }
-                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) { }
+                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException or ArgumentException) { }
             }
             var entry = new Entry(name, path, startTicks, now, asked);
             Known[processId] = entry;
@@ -76,6 +84,16 @@ internal static class ProcessNames
             return stale;
         }
         return null;
+    }
+
+    /// <summary>When the process started, or 0 when it cannot be read. This is the one field that
+    /// needs the process to be opened, and a caller counting on a mount is usually a program in
+    /// somebody else's session — the account the service runs under may name it and not open it.
+    /// 0 means "not known", which only costs the pid-reuse check inside the answer's own minute.</summary>
+    private static long ReadStartTicks(Process process)
+    {
+        try { return process.StartTime.Ticks; }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException or ArgumentException) { return 0; }
     }
 
     /// <summary>Drops the entries that have gone stale, which is every entry a window can no longer

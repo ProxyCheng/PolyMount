@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -15,7 +15,7 @@ namespace PolyMount.Plugins.Svn;
 /// </summary>
 internal sealed class SvnListingPrefetch : IDisposable
 {
-    private readonly record struct Request(long Revision, string Path, RequestDiagnostics? Diagnostics);
+    private readonly record struct Request(long Revision, string Path, IRequestTracing? Tracing);
 
     private const int FailureLimit = 3;
 
@@ -23,7 +23,7 @@ internal sealed class SvnListingPrefetch : IDisposable
     private readonly Task[] _workers;
     private readonly CancellationTokenSource _stop = new();
     private readonly Func<long> _revision;
-    private readonly Func<string, RequestDiagnostics?, bool> _fetch;
+    private readonly Func<string, IRequestTracing?, bool> _fetch;
     private long _started, _fetched, _skipped, _stale, _failures;
     private int _outstanding, _tripped;
     // Set before anything is released so a caller that is still handing work over
@@ -31,7 +31,7 @@ internal sealed class SvnListingPrefetch : IDisposable
     private volatile bool _closed;
 
     public SvnListingPrefetch(int concurrency, int queueDepth, Func<long> revision,
-        Func<string, RequestDiagnostics?, bool> fetch)
+        Func<string, IRequestTracing?, bool> fetch)
     {
         _queue = new BlockingCollection<Request>(queueDepth);
         _revision = revision;
@@ -49,13 +49,13 @@ internal sealed class SvnListingPrefetch : IDisposable
 
     /// <summary>Queues directories to fetch. Items beyond the queue depth are dropped rather
     /// than queued: read-ahead that has fallen behind is worth less than the memory. The
-    /// caller's diagnostics travel with the item, since the worker has no scope of its own.</summary>
-    public void Enqueue(long revision, IReadOnlyList<string> directories, RequestDiagnostics? diagnostics)
+    /// caller's tracing travel with the item, since the worker has no scope of its own.</summary>
+    public void Enqueue(long revision, IReadOnlyList<string> directories, IRequestTracing? tracing)
     {
         if (_closed || Volatile.Read(ref _tripped) != 0) return;
         foreach (string path in directories)
         {
-            if (_closed || !_queue.TryAdd(new Request(revision, path, diagnostics))) return;
+            if (_closed || !_queue.TryAdd(new Request(revision, path, tracing))) return;
             Interlocked.Increment(ref _outstanding);
         }
     }
@@ -89,7 +89,7 @@ internal sealed class SvnListingPrefetch : IDisposable
                     // The mount left this revision while the item waited, so the answer
                     // would be discarded on arrival; drop it instead of spending a request.
                     if (request.Revision != _revision()) Interlocked.Increment(ref _stale);
-                    else if (_fetch(request.Path, request.Diagnostics))
+                    else if (_fetch(request.Path, request.Tracing))
                     {
                         Interlocked.Increment(ref _fetched);
                         Interlocked.Exchange(ref _failures, 0);

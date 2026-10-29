@@ -1,7 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
-using PolyMount.Core;
-using PolyMount.Core.Ipc;
+using PolyMount.Plugins;
+
 
 namespace PolyMount.Plugins.Smb;
 
@@ -11,7 +11,7 @@ namespace PolyMount.Plugins.Smb;
 /// Setup on the far side is a share and an account that may read it — nothing else is installed
 /// there. What this plugin owns is the part that is specific to SMB: the session (an account the
 /// service presents, since session 0 has none of its own), the generation a remote folder can
-/// offer, and the diagnostics that say which of "unreachable", "refused" and "gone" happened.
+/// offer, and the tracing that say which of "unreachable", "refused" and "gone" happened.
 /// </summary>
 public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
 {
@@ -64,6 +64,12 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
             }
         });
 
+        // What this source can present: a share is opened with an account, and that is all it
+        // knows how to do with a credential. The filter is asked with the credential itself, so a
+        // kind another plugin adds that builds an account is offered here without this plugin
+        // naming it.
+        context.RegisterCredentialConsumer("smb", credential => credential is IPasswordAuthentication);
+
         context.RegisterSource("smb",
             (config, _) => SmbLayer.Create(config),
             config =>
@@ -91,7 +97,6 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
                     // username field for the same reason SVN's is: a password typed into a layer
                     // would be written to the configuration file.
                     new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
-                        CredentialKinds = new() { CredentialTypes.Password },
                         Title = SmbTexts.Get("smb.field.credential"),
                         Placeholder = SmbTexts.Get("smb.field.credential.placeholder"),
                         Description = SmbTexts.Get("smb.field.credential.description") },
@@ -109,7 +114,7 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
 
     /// <summary>The instance's remote-folder layers, keyed by the configuration id the status
     /// reports. <paramref name="only"/> narrows the answer to one layer.</summary>
-    private static IEnumerable<(string Id, SmbLayer Layer)> Layers(MountInstance instance, string? only)
+    private static IEnumerable<(string Id, SmbLayer Layer)> Layers(IPluginInstance instance, string? only)
     {
         foreach (var pair in instance.Layers)
         {
@@ -119,9 +124,9 @@ public sealed class SmbPlugin : IPolyMountPlugin, IPluginMetadata
         }
     }
 
-    private static object Describe(MountInstance instance, string? only) => new
+    private static object Describe(IPluginInstance instance, string? only) => new
     {
-        instance = instance.Profile.Name,
+        instance = instance.Name,
         layers = Layers(instance, only).Select(entry => entry.Layer.Describe(entry.Id)).ToArray()
     };
 }

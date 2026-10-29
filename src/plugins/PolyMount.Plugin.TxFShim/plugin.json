@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "polymount.txfshim",
+  "name": { "en": "Transactional opens", "zh-CN": "事务性打开" },
+  "description": {
+    "en": "Starts chosen programs through a shim that replaces the transactional file APIs a WinFsp volume cannot provide.",
+    "zh-CN": "让选定的程序经由 shim 启动，用它替换 WinFsp 卷无法提供的事务性文件 API。"
+  },
+  "icon": "plugin",
+  "publisher": "PolyMount",
+  "license": "MIT",
+  "permissions": ["registry", "native"],
+  "host": ">=0.9.5"
+}

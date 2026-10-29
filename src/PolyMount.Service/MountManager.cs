@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -32,16 +32,33 @@ public sealed class MountManager : IControlHost, IDisposable
     private volatile bool _stopping;
 
     private readonly ILogger<MountManager> _logger;
-    public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null)
+    /// <summary>Whether this process was started as a development host. It owns no installed
+    /// service's pipe, and its workers are started with the same allowance.</summary>
+    public bool Dev { get; }
+
+    public MountManager(IHostApplicationLifetime? lifetime = null, string? configPath = null, ILogger<MountManager>? logger = null,
+        ServiceOptions? options = null)
     {
         _logger = logger ?? NullLogger<MountManager>.Instance;
         _lifetime = lifetime;
+        options ??= ServiceOptions.None;
+        Dev = options.Dev;
         ConfigPath = configPath ?? Path.Combine(AppContext.BaseDirectory, "config.json");
         Config = AppConfig.LoadOrCreate(ConfigPath);
+        // A development host must not answer on the installed service's pipe: whoever connected
+        // to that name would be talking to a supervisor with different plugins, a different store
+        // root and no service registration behind it. The name is the whole separation, so it is
+        // checked rather than assumed.
+        if (Dev && !Config.ControlPipe.StartsWith(DevPipePrefix, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"a development host needs a control pipe named {DevPipePrefix}... ; this configuration names '{Config.ControlPipe}'");
         Access = AccessOf(Config);
         LoadPlugins(Config);
-        _workers = new WorkerPool(ConfigPath, _logger);
+        _workers = new WorkerPool(ConfigPath, _logger, options.WorkerArguments());
     }
+
+    /// <summary>The pipe-name prefix a development host insists on.</summary>
+    public const string DevPipePrefix = "PolyMount.Dev.";
 
     private static ControlAccess AccessOf(AppConfig config) =>
         new(config.ControlUsers.Select(account => account.Sid));
@@ -101,7 +118,10 @@ public sealed class MountManager : IControlHost, IDisposable
 
     private static void LoadPlugins(AppConfig config)
     {
-        var errors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory);
+        // Both halves: this process answers the plugin list, so it has to be able to describe a
+        // plugin it will never run. It is also where a configuration is validated, and a preset or
+        // a layer type only exists while its plugin is loaded.
+        var errors = PluginLoader.LoadConfigured(config.Plugins, AppContext.BaseDirectory, PluginRoles.Both);
         if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
     }
 
@@ -223,13 +243,54 @@ public sealed class MountManager : IControlHost, IDisposable
                 Title = result?.Title,
                 Description = result?.Description,
                 Icon = result?.Icon ?? "",
+                Id = result?.Manifest?.Id ?? "",
+                ApiVersion = result?.ApiVersion ?? "",
+                Permissions = result?.Manifest?.Permissions.ToList() ?? new(),
+                Roles = result?.Manifest is { } manifest ? PluginRoleNames.Names(manifest.RoleSet).ToList() : new(),
+
+                HasManifest = result?.Manifest != null,
                 Error = result?.Error,
                 SourceTypes = result?.SourceTypes.ToList() ?? new(),
                 LayerTypes = result?.LayerTypes.ToList() ?? new(),
                 Presets = result?.Presets.ToList() ?? new(),
                 Strategies = result?.Strategies.ToList() ?? new(),
                 Commands = result?.Commands.ToList() ?? new(),
-                Operations = result?.Operations.ToList() ?? new()
+                Operations = result?.Operations.ToList() ?? new(),
+                CredentialKinds = result?.CredentialKinds?.ToList() ?? new(),
+                Panels = result?.Panels?.ToList() ?? new()
+            });
+        }
+
+        // Assemblies named on the command line are loaded but not configured: they have no entry
+        // to join, and a plugin page that hid them would be describing a process that is not the
+        // one running. They are listed as enabled, which is what naming them meant.
+        foreach (var row in report.Plugins.Where(row => !Config.Plugins.Any(entry => SamePlugin(row.AssemblyPath, entry.AssemblyPath))))
+        {
+            response.Plugins.Add(new PluginView
+            {
+                AssemblyPath = row.AssemblyPath,
+                FileName = Path.GetFileName(row.AssemblyPath.Replace('\\', '/')),
+                FullPath = row.FullPath,
+                Enabled = true,
+                Present = row.Present,
+                Loaded = row.Loaded,
+                Version = row.Version,
+                Title = row.Title,
+                Description = row.Description,
+                Icon = row.Icon,
+                Id = row.Manifest?.Id ?? "",
+                ApiVersion = row.ApiVersion,
+                Permissions = row.Manifest?.Permissions.ToList() ?? new(),
+                Roles = row.Manifest is { } declared ? PluginRoleNames.Names(declared.RoleSet).ToList() : new(),
+
+                HasManifest = row.Manifest != null,
+                Error = row.Error,
+                SourceTypes = row.SourceTypes.ToList(),
+                LayerTypes = row.LayerTypes.ToList(),
+                Presets = row.Presets.ToList(),
+                Strategies = row.Strategies.ToList(),
+                Commands = row.Commands.ToList(),
+                Operations = row.Operations.ToList()
             });
         }
 
@@ -404,6 +465,9 @@ public sealed class MountManager : IControlHost, IDisposable
                 case ControlCommands.Instances:
                     response.Instances = _workers.Endpoints();
                     break;
+                case ControlCommands.Build:
+                    response.Build = BuildFacts.Describe(Dev, ConfigPath);
+                    break;
                 case ControlCommands.Mount:
                     _workers.Start(request.Name);
                     break;
@@ -464,6 +528,12 @@ public sealed class MountManager : IControlHost, IDisposable
                     break;
                 case ControlCommands.Credentials:
                     response.Credentials = CredentialStore.List();
+                    // The kinds loaded plugins describe travel with the list: the window that
+                    // edits an account draws the fields of a kind it was never compiled with.
+                    response.CredentialKinds = CredentialKinds.All.ToList();
+                    // Which layer types answer the "which records would you present" question at
+                    // all: a picker treats a type that is missing here as unconstrained.
+                    response.CredentialConsumers = CredentialConsumers.All.ToList();
                     break;
                 case ControlCommands.SaveCredential:
                 {
@@ -474,12 +544,12 @@ public sealed class MountManager : IControlHost, IDisposable
                         try { certificate = Convert.FromBase64String(payload.Certificate); }
                         catch (FormatException) { throw new ArgumentException("the certificate payload is not base64"); }
                     }
+                    // The kind travels as the client sent it — one of the built-in two, or one a
+                    // plugin describes — and the store is what decides whether it is known.
                     CredentialStore.Save(new CredentialInput(
-                        payload.Id, payload.Name,
-                        string.Equals(payload.Kind, CredentialTypes.Certificate, StringComparison.OrdinalIgnoreCase)
-                            ? CredentialTypes.Certificate : CredentialTypes.Password,
+                        payload.Id, payload.Name, payload.Kind,
                         payload.Username, payload.Password, certificate, payload.CertificatePassword,
-                        payload.Origins));
+                        payload.Origins, payload.Values));
                     response.Credentials = CredentialStore.List();
                     // A credential is not part of an instance's configuration, so the workers that
                     // named it do not restart when it changes — and one that failed because of it
@@ -494,8 +564,38 @@ public sealed class MountManager : IControlHost, IDisposable
                     CredentialStore.RemoveCredential(request.CredentialId);
                     response.Credentials = CredentialStore.List();
                     break;
+                case ControlCommands.CheckSource:
+                {
+                    // Answered here rather than by a worker: the settings are a draft that no
+                    // instance holds yet, and this is the process that can open a credential. The
+                    // answer is always a result, refusal included — a check whose failure arrived
+                    // as a transport error would leave the window with nothing to show.
+                    var source = request.Source
+                        ?? throw new InvalidOperationException("checkSource requires the source to check");
+                    // A credential is about to be offered to an address, and nothing else in the log
+                    // says who asked for that: one line, so an operator can see it happened and
+                    // which account was presented. The credential is an id, never a secret, and
+                    // neither is its account — the source resolver reads those itself.
+                    _logger.LogInformation("Checking a {Type} source at '{Address}' with credential '{Credential}'",
+                        source.Type,
+                        string.IsNullOrWhiteSpace(source.Url) ? source.Path : source.Url,
+                        string.IsNullOrWhiteSpace(source.CredentialId) ? "(the source's own)" : source.CredentialId);
+                    response.Check = SourceCheck.Run(source);
+                    break;
+                }
                 case ControlCommands.Plugins:
                     FillPlugins(response);
+                    // The pages ride along: the plugin manager is where a plugin's own page is
+                    // shown (unfolded under its row), so the page that needs the list is the page
+                    // that is already asking for the plugins. "pluginPanels" stays for a front end
+                    // that wants the list without the rows.
+                    response.Panels = PluginPanels.Descriptors().ToList();
+                    break;
+                case ControlCommands.PluginPanels:
+                    // The list, not the pages: what a sidebar is built from. It lives here
+                    // because it is a fact about what this process loaded, while a page is
+                    // answered by the process that owns an instance.
+                    response.Panels = PluginPanels.Descriptors().ToList();
                     break;
                 case ControlCommands.SetPluginEnabled:
                     if (string.IsNullOrWhiteSpace(request.AssemblyPath))

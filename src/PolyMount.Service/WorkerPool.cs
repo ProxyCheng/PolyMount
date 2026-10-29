@@ -84,10 +84,15 @@ public sealed class WorkerPool : IDisposable
     private readonly string _configPath;
     private readonly string _executable;
     private readonly ILogger _logger;
+    private readonly IReadOnlyList<string> _arguments;
 
-    public WorkerPool(string configPath, ILogger logger)
+    /// <param name="arguments">Extra command-line arguments every worker is started with — a
+    /// development host's <c>--dev</c> and <c>--plugin</c> paths, which are facts about how this
+    /// process was started rather than what the configuration says.</param>
+    public WorkerPool(string configPath, ILogger logger, IReadOnlyList<string>? arguments = null)
     {
         _configPath = configPath;
+        _arguments = arguments ?? Array.Empty<string>();
         _logger = logger;
         _executable = Environment.ProcessPath
             ?? throw new InvalidOperationException("the supervisor has no executable path to start workers from");
@@ -359,6 +364,7 @@ public sealed class WorkerPool : IDisposable
             start.ArgumentList.Add(worker.Id);
             start.ArgumentList.Add("--config");
             start.ArgumentList.Add(_configPath);
+            foreach (string argument in _arguments) start.ArgumentList.Add(argument);
 
             var process = Process.Start(start) ?? throw new IOException("the worker process did not start");
             worker.Process = process;

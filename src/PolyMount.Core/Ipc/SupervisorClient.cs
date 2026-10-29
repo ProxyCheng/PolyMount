@@ -41,6 +41,13 @@ public sealed class SupervisorClient : ControlClient
     public ControlResponse DeleteCredential(string id)
         => Send(new ControlRequest { Cmd = ControlCommands.DeleteCredential, CredentialId = id });
 
+    /// <summary>Asks the service whether a source will serve with these settings — an address and
+    /// the credential a draft names — and gets back what it said. Nothing is mounted and nothing is
+    /// saved; a source that needs a network round trip takes as long as one does, so a window runs
+    /// this off its own thread rather than in a click handler.</summary>
+    public ControlResponse CheckSource(SourceConfig source)
+        => Send(new ControlRequest { Cmd = ControlCommands.CheckSource, Source = source });
+
     /// <summary>Reloads the configuration from disk and applies it.</summary>
     public ControlResponse Reload()
         => Send(new ControlRequest { Cmd = ControlCommands.Reload });

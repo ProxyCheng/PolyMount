@@ -42,9 +42,20 @@ public sealed class TxFShimTests : IPluginTestProvider
                 throw new Exception("get_txf_shim is not declared as a read");
             if (typeof(TxFShimPlugin).Assembly == typeof(ILayer).Assembly) throw new Exception("Plugin is not independent");
 
+            // The management page is an extension point like the operations: a plugin that offers
+            // one has to be listed, and a plugin that is switched off may not keep offering it.
+            var page = PluginPanels.Descriptors().FirstOrDefault(panel => panel.Id == "txf-shim")
+                ?? throw new Exception("the management page was not registered");
+            // It belongs to the plugin's row in the plugin manager, not to a destination of its own
+            // in the sidebar: this is what is managed here, and the plugin page is where a reader
+            // goes looking for what a plugin adds.
+            if (page.OwnPage) throw new Exception("the page asked for a sidebar destination of its own");
+
             PluginLoader.LoadConfigured(Array.Empty<PluginConfig>(), AppContext.BaseDirectory);
             if (ControlOperations.Find("get_txf_shim") != null)
                 throw new Exception("A disabled plugin's operation remains registered");
+            if (PluginPanels.Ids.Contains("txf-shim"))
+                throw new Exception("A disabled plugin's management page remains registered");
             PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
 
@@ -235,6 +246,47 @@ public sealed class TxFShimTests : IPluginTestProvider
                 var removed = service.Remove(@"D:\engine", null);
                 if (registry.Launcher("Editor.exe") != null) throw new Exception("the Debugger value survived removal");
                 if (removed.Installed.Count != 0) throw new Exception("the record still lists the image");
+            }
+            finally { Directory.Delete(temp, recursive: true); }
+        });
+
+        Check("panel", () =>
+        {
+            string temp = TempDirectory();
+            try
+            {
+                DeployPayload(temp);
+                var registry = new FakeImageFileExecutionOptions();
+                var service = new TxFShimService(temp, registry, ScanOf(OneTarget()));
+                service.Install(@"D:\engine");
+
+                var view = service.Panel();
+                if (view.Rows.Count != 1) throw new Exception("the page did not list the instrumented image");
+                var row = view.Rows[0];
+                if (row.Cells.Count != 3) throw new Exception("a row does not fill the three columns it is given");
+                if (row.Cells[0] != "Editor.exe") throw new Exception("the row does not name the program: " + row.Cells[0]);
+                if (row.Tooltip == null) throw new Exception("the row does not say why that program is here");
+                var remove = row.Actions.FirstOrDefault();
+                if (remove == null) throw new Exception("an instrumented image cannot be taken out from the page");
+                if (remove.Request.Cmd != TxFShimPlugin.Command || remove.Request.Action != "remove")
+                    throw new Exception("the row's button does not ask the plugin to remove that image");
+                if (remove.Request.Path != row.Cells[1])
+                    throw new Exception("the button names a different image than the row shows");
+                if (remove.Confirm == null)
+                    throw new Exception("removing a shim a running program keeps until restart is asked without a word");
+
+                var install = view.Actions.FirstOrDefault(action => action.Id == "install");
+                if (install == null) throw new Exception("the page cannot put a folder's programs under the shim");
+                if (install.Input != PluginPanelInput.Directory)
+                    throw new Exception("adding a folder does not ask the window for one");
+                if (install.Request.Action != "install") throw new Exception("the folder is asked for and not used");
+                if (view.Facts.Count == 0) throw new Exception("the page says nothing about the payload it depends on");
+
+                service.Remove(@"D:\engine", null);
+                var empty = service.Panel();
+                if (empty.Rows.Count != 0) throw new Exception("a removed image is still listed");
+                if (empty.Empty == null) throw new Exception("an empty page does not say what to do");
+                if (empty.Actions.All(action => action.Id != "install")) throw new Exception("an empty page cannot add anything");
             }
             finally { Directory.Delete(temp, recursive: true); }
         });

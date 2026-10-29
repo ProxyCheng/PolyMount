@@ -101,6 +101,44 @@ public class CredentialOriginTests
         }
     }
 
+    [TestMethod]
+    public void Asking_whether_an_account_works_does_not_bind_it_to_the_address_that_was_asked()
+    {
+        // The editor's verify button builds the source to ask its question. That is not the act of
+        // pointing a layer at an address — the reader may still be editing it — so the answer must
+        // not be the thing that decides where the credential may be presented from then on.
+        var saved = Save("Work");
+        var question = new SourceConfig
+        {
+            Type = "probe", Url = "https://a.example.invalid/repo", CredentialId = saved.Id, VerifyOnly = true
+        };
+        Assert.AreEqual("alice", new ProbeSource(question).Resolve()?.Username);
+        Assert.AreEqual(0, Record(saved.Id).Origins!.Count, "asking wrote the origin down");
+
+        // A layer being built for real is the other act, and still writes it.
+        var mount = new SourceConfig { Type = "probe", Url = "https://a.example.invalid/repo", CredentialId = saved.Id };
+        Assert.AreEqual("alice", new ProbeSource(mount).Resolve()?.Username);
+        CollectionAssert.AreEqual(new[] { "https://a.example.invalid" }, Record(saved.Id).Origins!.ToArray());
+    }
+
+    [TestMethod]
+    public void A_check_still_refuses_the_servers_the_credential_was_not_bound_for()
+    {
+        var saved = Save("Work", "https://a.example.invalid");
+        var question = new SourceConfig
+        {
+            Type = "probe", Url = "https://b.example.invalid/repo", CredentialId = saved.Id, VerifyOnly = true
+        };
+        // Refusing to ask is the same refusal a mount would give; what differs is only that the
+        // check leaves the record exactly as it found it.
+        Assert.ThrowsException<CredentialOriginException>(() => new ProbeSource(question).Resolve());
+        CollectionAssert.AreEqual(new[] { "https://a.example.invalid" }, Record(saved.Id).Origins!.ToArray());
+    }
+
+    /// <summary>A source that resolves a credential and does nothing else, so the resolution is
+    /// what a test is looking at.</summary>
+    private sealed class ProbeSource(SourceConfig source) : CredentialedSource(source.Url, source);
+
     private static CredentialRecord Save(string name, params string[] origins) =>
         CredentialStore.Save(new CredentialInput(null, name, CredentialTypes.Password, "alice", "secret", null, null, origins));
 

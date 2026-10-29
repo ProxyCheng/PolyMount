@@ -1,9 +1,20 @@
-﻿using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using PolyMount.Service;
 using Microsoft.Extensions.Logging;
 using PolyMount.Core;
 using Serilog;
+
+var options = ServiceOptions.Parse(args);
+// A development host carries the two facts that let it run a plugin built outside the
+// installation — and nothing else about the host changes. It is set before anything reads the
+// configuration, because loading is where it matters.
+PluginLoader.AllowExternalPlugins = options.Dev;
+ControlEnvelope.Dev = options.Dev;
+PluginLoader.ExtraPaths = options.PluginPaths;
+if (options.Dev && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("POLYMOUNT_LOG_DIR")))
+    Environment.SetEnvironmentVariable("POLYMOUNT_LOG_DIR",
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PolyMount", "dev", "logs"));
 
 int configIndex = Array.IndexOf(args, "--config");
 string configPath = configIndex >= 0 && configIndex + 1 < args.Length
@@ -29,7 +40,7 @@ builder.Logging.ClearProviders();
 builder.Services.AddSerilog(AsyncFileLog.Create(ServiceLogs.PathOf(MountManager.ServiceLogName)), dispose: true);
 builder.Services.AddWindowsService(options => options.ServiceName = "PolyMount");
 builder.Services.AddSingleton<MountManager>(services => new MountManager(services.GetRequiredService<IHostApplicationLifetime>(), configPath,
-    services.GetRequiredService<ILogger<MountManager>>()));
+    services.GetRequiredService<ILogger<MountManager>>(), options));
 builder.Services.AddHostedService<SupervisorLoop>();
 
 var host = builder.Build();

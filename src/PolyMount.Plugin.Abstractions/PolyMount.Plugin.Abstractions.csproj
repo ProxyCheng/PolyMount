@@ -1,0 +1,47 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <!-- The types live in PolyMount.Plugins even though the assembly is PolyMount.Plugin.*: a
+         plugin names one namespace for the contract, and the assembly name says which package it
+         comes from. Keeping the two separate is what lets the package version move independently
+         of the product version. -->
+    <RootNamespace>PolyMount.Plugins</RootNamespace>
+    <AssemblyName>PolyMount.Plugin.Abstractions</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>PolyMount.Plugin.Abstractions</PackageId>
+    <Description>What a PolyMount plugin may use: the layer and source contracts, the configuration
+      and descriptor models, the plugin entry point, and the control-plane types its operations are
+      built from.</Description>
+    <!-- The contract's own version, independent of the product's. A plugin records the value it
+         was compiled against in its manifest; the host refuses a major it does not speak. -->
+    <PluginApiVersion>3.2</PluginApiVersion>
+    <PluginApiPatch>0</PluginApiPatch>
+    <Version>$(PluginApiVersion).$(PluginApiPatch)</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" Condition="Exists('README.md')" />
+  </ItemGroup>
+
+  <!-- The contract stamps itself with the same attribute a plugin carries, so that every
+       assembly built against a contract can say which one, and a test can hold PluginApi.Version
+       to the property it is declared from. -->
+  <PropertyGroup>
+    <IsPolyMountPlugin>false</IsPolyMountPlugin>
+  </PropertyGroup>
+
+  <Import Project="..\PolyMount.Plugin.Sdk\targets\PolyMount.Plugin.Sdk.targets" />
+  <ItemGroup>
+    <!-- The engine's own tests drive the credential store's file location directly; the store
+         moved here with the rest of what a source may use. -->
+    <InternalsVisibleTo Include="PolyMount.Core.Tests" />
+    <!-- The registries a plugin contributes to are the host's bookkeeping: a plugin arrives
+         through IPluginContext, and the loader takes its registrations back when the plugin is
+         switched off. Those members stay internal to the product pair rather than becoming
+         something a plugin could call. -->
+    <InternalsVisibleTo Include="PolyMount.Core" />
+  </ItemGroup>
+</Project>

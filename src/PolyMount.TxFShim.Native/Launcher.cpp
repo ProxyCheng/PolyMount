@@ -35,6 +35,13 @@
 // call, and an ordinary argument for a caller that passed the image through lpApplicationName with
 // an arguments-only command line. Both shapes are tried below, because the second one is a legitimate
 // call and used to fail here with PATH_NOT_FOUND.
+//
+// It is linked as a console program, and leaves the console it was handed when that console is its
+// own (LeaveOurOwnConsole below). Started by Windows in front of a program that has none, this image
+// would otherwise carry an empty black window with its name for as long as the program behind it
+// runs -- and it outlives that program by design, because it waits for the exit code to pass it on.
+// A console the caller is using is a different matter and stays: that is where the printed lines and
+// the exit code are read from.
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -252,10 +259,34 @@ bool PrepareInjection(HANDLE process, DWORD processId, const std::wstring& dll,
     return true;
 }
 
+/// <summary>
+/// Leaves the console this process was given when that console is its own.
+///
+/// A console program started from a program that has no console is allocated one, and that is a
+/// black window with this image's name sitting on somebody's screen for as long as the program
+/// behind it runs. Ours alone is exactly the case to walk away from: GetConsoleProcessList answers
+/// with a single entry, this process. A console shared with the caller — a terminal, or a script
+/// that redirected this program's output — belongs to the caller and is left untouched, which is
+/// what keeps the printed lines and the exit code readable from there.
+///
+/// Nothing is lost with it: the record is launcher.log, and a child that wants a console gets the
+/// one it would have got without this launcher in the way -- a program that had no console before
+/// the shim does not silently gain an invisible one.
+/// </summary>
+void LeaveOurOwnConsole()
+{
+    if (GetConsoleWindow() == nullptr) return;
+    DWORD attached[2] = {};
+    if (GetConsoleProcessList(attached, 2) != 1) return;
+    FreeConsole();
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t** argv)
 {
+    LeaveOurOwnConsole();
+
     if (argc < 2)
     {
         fwprintf(stderr, L"usage: %s <program> [arguments...]\n", argc > 0 ? argv[0] : L"PolyMount.TxFShim");

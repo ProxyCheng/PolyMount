@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -54,7 +54,7 @@ public sealed class ManifestFamilyPrediction : IPredictionModel
         public Dictionary<string, FamilyFile> Families { get; set; } = new();
     }
 
-    private readonly VirtualFileSystem _lower;
+    private readonly ILowerChain _lower;
     private readonly PreloadRequest _preload;
     private readonly ManifestFamilyOptions _options;
     private readonly string _modelPath;
@@ -125,7 +125,7 @@ public sealed class ManifestFamilyPrediction : IPredictionModel
         string repository = VfsPath.Parent(packageDirectory);
         if (packageDirectory.Length == 0 || repository.Length == 0) return null;
         string family = FamilyOf(VfsPath.Name(packageDirectory));
-        int process = RequestDiagnostics.ProcessOfStream(streamId);
+        int process = RequestTracing.ProcessOfStream(streamId);
         lock (_gate)
         {
             if (_processes.Count < 256 || _processes.Contains(process)) _processes.Add(process);
@@ -175,7 +175,7 @@ public sealed class ManifestFamilyPrediction : IPredictionModel
                 {
                     if (!_families.TryGetValue(job.Family, out var state) || state.Disabled) return;
                 }
-                using var trace = RequestDiagnostics.Begin("Predict.Manifest", path, _lower.Diagnostics);
+                using var trace = RequestTracing.Begin("Predict.Manifest", path, _lower.Tracing);
                 if (!_preload(path, job.Stream, PreloadOrigin.Burst, job.Family)) continue;
                 lock (_gate)
                 {
@@ -190,7 +190,7 @@ public sealed class ManifestFamilyPrediction : IPredictionModel
         catch (IOException) { }
         catch (Exception ex)
         {
-            using var trace = RequestDiagnostics.Begin("Predict.Failed", job.Repository, _lower.Diagnostics);
+            using var trace = RequestTracing.Begin("Predict.Failed", job.Repository, _lower.Tracing);
             trace?.Stage(ex.GetType().Name);
         }
     }

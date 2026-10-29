@@ -1,4 +1,4 @@
-# PolyMount
+﻿# PolyMount
 
 **Mount a remote repository as a drive letter — on demand, without a full checkout.**
 
@@ -86,7 +86,7 @@ reason is a crash and is still restarted indefinitely.
 | OS | Windows 10 or 11, x64 |
 | Driver | [WinFsp](https://winfsp.dev/) 2.x — the installer installs it if it is missing |
 | Runtime | None to install by hand. The setup ships a self-contained .NET runtime, the Qt runtime and the Visual C++ runtime. |
-| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. |
+| SVN source | an `http(s)` repository (served over WebDAV); no client is needed. Add a credential in the tray's credential manager and choose it on the layer. Secrets are protected with Windows DPAPI for the account that saved them, so run the service under that account (the setup offers this). The **client cache** kind stores no secret at all: it names the Windows account whose TortoiseSVN credentials to use, and the service borrows that account's identity for the length of the read — so a service running as LocalSystem can use what a person saved with TortoiseSVN, as long as that person is signed in. A repository behind mutual TLS uses a **certificate credential** — a `.pfx`/`.p12` file and the password that opens it, kept in the credential store — which works even under a service account that cannot see the user's personal store or export the user's key. |
 | Remote folder source | an SMB share on another Windows machine — `\\host\share\folder`, or an administrative share such as `\\host\d$`. **Nothing is installed on that machine**: a share the chosen account may read is the whole setup. Choose a credential on the layer; leave it unchosen to use the account the service runs as. Port 445 has to be reachable, and an administrative share needs an account that is an administrator over there. |
 | Building | .NET 10 SDK, Visual Studio C++ build tools (the Explorer extension and the transaction shim), Inno Setup 6 |
 
@@ -198,10 +198,12 @@ with no source, with only a source, or with several sources.
 
 **New mount** builds an instance from one of those presets: the dialog first shows what each preset
 mounts and which values it will ask for, then asks only those — the source's address and account —
-while the name and the mount point follow the address until they are typed over. Everything else
-keeps the preset's defaults and is adjusted afterwards in the editor, which the dialog's last card
-opens directly for a chain built by hand. Nothing is written until the dialog commits, and the
-service's refusal (an address the source will not take) is shown under the field it came from.
+while the name and the mount point follow the address until they are typed over. Each card carries
+the mark of the source it mounts, in that source's colour, so the presets are told apart before
+their descriptions are read. Everything else keeps the preset's defaults and is adjusted afterwards
+in the editor, which the dialog's last card opens directly for a chain built by hand. Nothing is
+written until the dialog commits, and the service's refusal (an address the source will not take) is
+shown under the field it came from.
 
 The tray's **Plugins** section — beside the mount overview in the sidebar, in the same page —
 shows what each configured plugin adds and keeps that `Plugins` list. **While the service runs it
@@ -216,19 +218,106 @@ copying a file alone does not load it. Writing the configuration may need admini
 ## Plugins
 
 Plugins are the extension point, and a data source is one thing they can add. A plugin is an
-assembly with a class implementing `IPolyMountPlugin`; it may also implement the optional
-`IPluginMetadata` to give the tray a localized title and description and the name of one of its
-line icons, so the plugin page shows what the plugin calls itself rather than a file name.
-The `IPluginContext` it is given registers
-layer types (ordinary and cache), source types, presets, prediction strategies, control commands
-and control operations. A layer can also implement `ILayerActionHandler` to answer the actions its
-own descriptor declares. The service loads **only** the assemblies its configuration names —
-nothing is discovered by scanning a directory — so an installation starts with exactly the
-plugins its operator chose. A named assembly has to resolve inside the installation directory: a
-plugin is code that runs with the service's rights, and the installation directory is writable only
-by an administrator. The tray's Plugins section is the front end for that list: it reports
-which files are in the folder but not named, and adding one writes the entry. Assemblies built
-against the older `ILayerPlugin` still load: that name remains as an obsolete alias.
+assembly with a class implementing `IPolyMountPlugin`, compiled against **one package** —
+`PolyMount.Plugin.Abstractions` — and shipped with a manifest beside it. It may also implement the
+optional `IPluginMetadata` to give the tray a localized title and description and a line-icon name.
+
+The `IPluginContext` it is given registers layer types (ordinary and cache), source types, presets,
+prediction strategies, credential kinds, control commands, control operations, notices and
+management pages; a layer can implement `ILayerActionHandler` to answer the actions its own
+descriptor declares. Nothing else of the product is on offer: `ILowerChain`, `IPluginInstance` and
+`IRequestTracing` stand where the engine's own file system, mount and diagnostics used to, so a
+plugin cannot depend on the engine.
+
+A **management page** is how a plugin that changes the machine becomes something a person can look
+at: `RegisterPanel` gives it a `Render` that returns what to show — a sentence, a few named facts, a
+list with a button per row, and buttons for the page as a whole. Each button is an ordinary control
+request sent back to the instance the page was drawn for; a button that needs a folder or a file
+makes the window ask for one. The page is unfolded inside the plugin manager, under the plugin's own
+row, so everything about one plugin is in one place and the sidebar does not grow with the number of
+plugins installed; a plugin whose page a person opens often asks for `OwnPage` and also gets a
+destination of its own. The window draws the page and knows nothing about what it manages, and the
+shape is deliberately a list page rather than a widget protocol: plugins supply data, never controls.
+
+A **credential kind** is how a plugin adds a way of authenticating that the product does not ship.
+Its descriptor lists the fields the credential manager draws, the account it recognises a record by,
+and the mark the record wears in the credential list — one of the tray's line icons, so a kind that
+reads another program's own cache can wear that program's glyph (the Subversion cache credential
+wears a tortoise) instead of the generic pass. The plugin's own code turns the stored values into
+what its source presents; the record
+itself lives in the same DPAPI-protected store, is bound to the same origins and is chosen on a
+layer the same way an account and a password are. Which records a layer is offered is the layer's
+own answer, not a list of kind names written beside it: it registers what it can present
+(`RegisterCredentialConsumer`), the store asks that filter for every record, and each record says
+which layer types would take it. A kind added after a layer was written is therefore offered to it
+as soon as the credential it builds is something that layer can present. Disabling a plugin leaves
+its records intact and marked unusable rather than deleting them — the file belongs to the person, not
+to the plugin. What a credential *is* stays out of its kind's name: it declares how it authenticates
+by implementing `IPasswordAuthentication`, `ICertificateAuthentication` or
+`IBearerAuthentication`, and a source asks for the capability it needs rather than for a class — so
+a kind added after a source was written is never a type that source has to learn, and one it cannot
+use is refused by name while the instance is built.
+
+A plugin is **one file**: its assembly. `plugin.json` in the source tree carries the identifier,
+the name and description in each language, the icon, and the permissions the plugin declares
+(`network`, `filesystem`, `registry`, `native`); the SDK embeds it into the assembly as a resource,
+and stamps the contract version into the assembly's version resource, which is what a file's
+properties show. The host reads both **before it loads anything** — out of the file's metadata, so
+a plugin built against another contract is described without being run — so a disabled plugin is
+still named in the list, and a manifest that cannot be used is refused rather than half-loaded. The
+permissions are a declaration shown to whoever enables the plugin, not a
+sandbox: a plugin runs with the service account's rights. The real boundaries are that the assembly
+has to be inside the installation directory — a plugin is code that runs with the service's rights,
+and that directory is writable only by an administrator — and that the contract version has to
+match. The service loads **only** the assemblies its configuration names — nothing is discovered by
+scanning a directory — so an installation starts with exactly the plugins its operator chose. The
+tray's Plugins section is the front end for that list: it reports which files are in the folder but
+not named, and adding one writes the entry. An assembly built against another contract **major**
+cannot run here: the tray lists it as **Incompatible**, greys it and answers why, and the setup's
+plugin page keeps the choice — it decides whether the file is installed, not whether it will load.
+Assemblies built against the older `ILayerPlugin` still
+load: that name remains as an obsolete alias.
+
+A manifest also says **where the plugin's code runs**, because the product is several processes: a
+layer or a source only ever runs in a mount's worker, and a control operation only ever runs in a
+front-end. `"roles": ["backend"]` (servers), `["frontend"]` (tools), or both — which is what a
+manifest that says nothing means. A worker loads only the plugins that declare the server half, the
+MCP server only the ones that declare the tool half, and the service loads everything because the
+plugin list is answered from it. A role the host does not know is refused rather than ignored: a
+plugin loaded where its code is never reached fails silently, and that is the hardest kind of
+failure to find.
+
+That version is a second number, separate from the product's. The build stamps every plugin with
+the contract it compiled against (`1.0`), and the host compares before it touches a type: a plugin
+built against another major, or a minor this host has not reached, is refused with both numbers and
+the package to rebuild against, instead of failing later as "could not load type". Additions raise
+the minor; only a break raises the major. A checked-in baseline
+(`tests/PolyMount.Core.Tests/PublicApi.txt`) holds the contract's public surface, so changing it is
+a decision rather than an accident.
+
+Writing a plugin:
+
+```
+poly new acme.widget --kind source   # a project that builds: the contract, the SDK, a manifest
+dotnet build
+poly verify bin/Debug/net10.0-windows/*.dll   # manifest, contract version, what Register adds
+poly dev    bin/Debug/net10.0-windows/*.dll   # a host of its own, on its own pipe
+poly pack   bin/Debug/net10.0-windows         # one file to hand over
+```
+
+`poly dev` starts a second supervisor with `--dev`: its own pipe (`PolyMount.Dev.*`, never the
+installed one), its own store and logs, and the plugin loaded from wherever it was built. The
+installed service is not stopped, and the next build can replace the DLL because nothing is holding
+it. Point the tray at it with `POLYMOUNT_PIPE`. `poly verify` is the check worth making a habit: it
+calls the plugin's own `Register` against a recording context, so a missing manifest, a mismatched
+contract, a type that no longer loads or a plugin that registers nothing shows up before an
+installation does.
+
+The packages are not on nuget.org: each release publishes `PolyMount.Plugin.Abstractions` and
+`PolyMount.Plugin.Sdk` as assets, and `scripts/Fetch-PluginSdk.ps1` puts them in the repository's
+own `packages` feed. `PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests
+against; the test projects live under `tests/plugins` and are not shipped with the production
+plugin.
 
 The bundled SVN plugin adds the `svn` source type, the `svn-workspace` preset, and the `manifests`
 prediction strategy — a package-family prefetcher for content repositories, so one plugin covers a
@@ -252,10 +341,6 @@ boundary ever sees that failure, the tray watches instead for the condition: a p
 using a mount and whose own image can open a file inside a transaction. When one turns up
 uninstrumented it says so — with a button that instruments that one program — rather than leaving
 the save to fail unexplained.
-Writing another source means writing a plugin that registers a
-source type: reference `PolyMount.Core`, implement `IPolyMountPlugin`, and ship a DLL.
-`PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests against; the test
-projects live under `tests/plugins` and are not shipped with the production plugin.
 
 ## Architecture
 
@@ -283,21 +368,33 @@ PolyMount.Plugin.Testing              test contract for plugin assemblies
 `PolyMount.Mcp.exe` is a stdio MCP server an agent starts. It speaks the control protocol over the
 same named pipe the tray uses, so it adds a caller, not a listening port: an agent can list
 instances, inspect a path across the layers, read metrics, mount or unmount, pin a revision, start
-a recording, and edit the configuration. The setup installs it under `{app}\Mcp`; nothing starts
-it automatically.
+a recording, ask a source whether an address and an account work before writing them into the
+configuration (`check_source`), ask which build the service is (`get_version`), read the
+accounts the product keeps, read what a plugin wants a person told about a mount, and edit
+the configuration. The setup installs it under `{app}\Mcp`; nothing starts it automatically.
 
-The catalog is `PolyMount.Core`'s control operations: 26 built in, plus whatever enabled plugins
+The catalog is `PolyMount.Core`'s control operations: 29 built in, plus whatever enabled plugins
 contribute (the SVN plugin adds `get_svn_source`, `list_svn_lanes` and `list_manifest_families`,
 the remote-folder plugin adds `get_smb_source`, and the transaction-shim plugin adds
 `get_txf_shim`, `list_txf_shim_targets`, `install_txf_shim`, `remove_txf_shim` and
-`read_txf_shim_log`). `--describe` prints it without a service.
+`read_txf_shim_log`). `--describe` prints it without a service; with `--config` it prints what
+that installation's plugins add as well.
 
 - `--pipe <name>` or `POLYMOUNT_PIPE` selects the control pipe.
-- `--read-only` registers only operations with `effect: read` (nine built in, plus plugin reads).
+- `--read-only` registers only operations with `effect: read` (thirteen built in, plus plugin reads).
 - Destructive operations (`clear_cache`, `clear_local_changes`, `apply_layer_action`,
   `release_above`, `shutdown_service`) carry `destructiveHint`.
 - `get_config` replaces stored passwords with `[redacted]`; `save_config` refuses a plaintext
   password, so it cannot be used to set one.
+- `get_version` answers for the service what the tray's About section answers about itself: version
+  and commit, installed service or development host, the program, configuration and plugin folders,
+  the .NET and WinFsp versions, and the account the service runs under. The two halves are installed
+  and updated separately, so their versions are compared rather than assumed equal.
+- `list_credentials` lists the stored accounts — name, user name, kind, the origins each may be
+  presented to, and whether the service can still read the secret — and never a secret itself.
+- `list_notices` is what a plugin wants a person told about one mount, which is usually a program
+  that cannot save on it; the tray shows the same advice as a notification. An empty list is the
+  normal answer.
 - `--config <path>` and `--plugin <dll>` load the same plugins as the service, so their operations
   become tools.
 
@@ -321,7 +418,9 @@ MCP server run as that user — so what each boundary enforces is written down i
 - **A stored credential is bound to the origin it was first used for**, and the repository root the
   server advertises must stay on the configured origin. The credential's **Servers** field — in the
   tray's credential manager — is where a second server sharing that account is named; a mount that
-  was refused because of the binding says so, with both addresses, and points there.
+  was refused because of the binding says so, with both addresses, and points there. A kind that
+  stores no secret is not bound: the client-cache credential is a reference, one record serves
+  every repository the named account can reach, and there is nothing it could leak.
 - **Secrets do not travel with the configuration.** `getConfig` answers with
   `[redacted]` in the password fields, and a save that still says `[redacted]` keeps the stored
   value.
@@ -354,6 +453,19 @@ optional token can be set in `%LOCALAPPDATA%\PolyMount\ui.json`:
 The feed may use GitHub's shape (`tag_name`, `html_url`) or a plain one (`version`, `url`), so
 pointing it at a file server needs no code change. Tags are compared as versions, not as text, and
 `v1.2.3` and `1.2.3+stamp` both read as `1.2.3`.
+
+## Which build is running
+
+The bottom of the sidebar names the release the tray was built as — `PolyMount 0.10.0` — and
+hovering it shows the whole informational version, source revision included. The sidebar's
+**About** section, beside the mount overview and the plugins, has the rest: the commit, whether
+this copy came from the setup or runs from a development tree, the .NET, Qt and WinFsp versions,
+the service's own version and program, where the configuration is, and the licence line (GPL v3
+for PolyMount; the bundled Qt is LGPL v3, and the charts are drawn with Qt Charts, which is GPL v3
+or a commercial Qt licence — the third-party notices are one click from there). **Copy
+diagnostics** puts those facts on the clipboard as `name: value` lines for a report. The service
+is installed and updated separately from the tray, so its version is listed beside the tray's
+rather than assumed equal.
 
 ## Status
 

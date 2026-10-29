@@ -1,6 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Smb;
 

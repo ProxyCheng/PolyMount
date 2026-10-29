@@ -148,6 +148,13 @@ QPushButton#linkDanger { background: transparent; border: none; color: @Muted; p
 QPushButton#linkDanger:hover { color: @DangerStrong; background: @DangerSoft; border-radius: 6px; }
 QPushButton#linkDanger:disabled { color: @Disabled; background: transparent; }
 QWidget#pluginRow:hover { background: @HoverSoft; border-radius: 8px; }
+/* A plugin's unfolded body is a sunken band inside its row, not a card of its own: the row is the
+   thing the reader clicked, and what opened belongs to it. */
+QWidget#pluginBody { background: @SurfaceSunken; border: 1px solid @BorderSoft; border-radius: 10px; }
+QLabel#panelHeading { color: @Text; font-size: 13px; font-weight: 600; }
+QLabel#rowTitle { color: @Text; font-size: 13px; font-weight: 600; }
+QLabel#detailLabel { color: @Muted; font-size: 12px; }
+QLabel#detailValue { color: @Body; font-size: 12px; }
 QPushButton#iconButton { background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 6px; }
 QPushButton#iconButton:hover { background: @HoverSoft; border-color: @Border; }
 QPushButton#iconButton:pressed { background: @PrimaryTint; }

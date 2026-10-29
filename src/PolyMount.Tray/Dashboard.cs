@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Globalization;
 using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
@@ -36,8 +36,35 @@ internal sealed class Dashboard : QWidget
     /// <summary>The workbench half of the shared page; the plugin manager is the other.</summary>
     private readonly QWidget _workbench;
     private readonly QPushButton _refresh, _start, _stop, _create;
-    private readonly QPushButton _navOverview, _navPlugins;
+    private readonly QPushButton _navOverview, _navPlugins, _navCredentials, _navAbout;
     private readonly PluginManager _plugins;
+    private readonly AboutPage _about;
+    /// <summary>The pages the loaded plugins offer, one sidebar entry each, and the layout those
+    /// entries live in. They are not places Core knows about: the list comes from the supervisor
+    /// and each page draws what its plugin hands back, so a plugin gains a destination without
+    /// this file learning what it manages.</summary>
+    private readonly Dictionary<string, (PluginPanelDescriptor Descriptor, QPushButton Button, PluginPanelPage Page)> _panelPages = new();
+    private QWidget _panelNavHost = null!;
+    private QVBoxLayout _panelNavLayout = null!;
+    private QHBoxLayout _pageRoot = null!;
+    private Task<ControlResponse>? _panelQuery;
+    private DateTime _nextPanelQuery = DateTime.MinValue;
+    /// <summary>The accounts this product keeps, as a section of the workbench.</summary>
+    private readonly CredentialManager _credentials;
+
+    /// <summary>The sidebar's destinations, as data: one entry per section, so the styling and the
+    /// section switch read the same list instead of naming each button in two more places. The
+    /// accounts entry was once a button nobody had told UpdateNav about, and it drew as a default
+    /// QPushButton — centred text, default padding — among styled ones.</summary>
+    private readonly List<(string Section, string Icon, QPushButton Button)> _nav = new();
+
+    /// <summary>What each destination shows, and what it does on the way in — reading the store
+    /// again, or the machine. One list, so adding a section is one entry here and one above.</summary>
+    private readonly List<(string Section, QWidget Page, Action? Enter)> _sections = new();
+    /// <summary>The bottom line of the sidebar: which build this is, and the way into the about
+    /// section. A button rather than a label because a label has no click, styled and painted the
+    /// way <see cref="NavItem"/> styles an entry.</summary>
+    private readonly QPushButton _version;
     private readonly QPushButton _toggleMount, _open, _disable, _clearCache, _edit, _performance, _inspect;
     private readonly QTimer _timer;
     private readonly BusyLine _busy;
@@ -54,6 +81,31 @@ internal sealed class Dashboard : QWidget
     /// reports the page it activates; this is what the two entries are painted from.</summary>
     private string _navKey = "overview";
     private DateTime _nextRefresh;
+    /// <summary>What each instance's activity curve holds, keyed by name and kept across table
+    /// rebuilds: filtering the list or a status refresh rearranges rows, and neither is a reason to
+    /// forget the minute that was measured.</summary>
+    private readonly Dictionary<string, ActivitySeries> _activity = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The cells the table is showing right now. The table owns what it is given, so this
+    /// is only what is attached — it is emptied before the rows are rebuilt rather than across it.</summary>
+    private readonly Dictionary<string, ActivityCell> _activityCells = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The last sample each instance answered with, for the sentence a hover shows.</summary>
+    private readonly Dictionary<string, MountMetrics> _activityLatest = new(StringComparer.OrdinalIgnoreCase);
+    private Task<List<MountMetrics>>? _activityTask;
+    private DateTime _nextActivitySample, _activityWarmUntil;
+    /// <summary>The top of the scale every curve in the column is drawn against, or zero while none
+    /// of them has anything to scale to.</summary>
+    private double _activityScale;
+    /// <summary>Whether the curves are being sampled at all. Starting and stopping is what keeps the
+    /// service's counters switched on for exactly as long as somebody is looking at them.</summary>
+    private bool _activityRunning;
+    /// <summary>The window each sample asks the instance for, in seconds. Ten rather than the whole
+    /// minute the curve spans: a ten-second rate moves every second instead of flattening into a
+    /// running average, it reaches its full shape ten seconds after the window opens, and ten
+    /// seconds is short enough that the counter — which only counts while somebody is watching —
+    /// has an honest answer by the time the first point is drawn.</summary>
+    private const double ActivityWindow = 10;
+    /// <summary>How wide the activity column is, and so how much room a curve gets.</summary>
+    private const int ActivityWidth = 132;
     private readonly TabWorkspace _tabs;
     private bool _quietPending;
     /// <summary>A command went out and the state that proves it took effect has not come back yet.
@@ -147,13 +199,41 @@ internal sealed class Dashboard : QWidget
         nav.AddWidget(Label("brand.subtitle", "sidebarMuted"));
         nav.AddSpacing(16);
         nav.AddWidget(Label("workspace", "sidebarMuted"));
-        // Two destinations, side by side as peers: the mounts and the capabilities they are built
-        // from. The plugins used to be a button in the heading, beside refresh and "new instance" —
-        // an action among actions, although it opens a place rather than doing something.
-        _navOverview = NavItem("overview", "drive", ShowOverview);
-        _navPlugins = NavItem("plugins.button", "plugin", ShowPlugins);
+        // Four destinations, side by side as peers: the mounts, the capabilities they are built
+        // from, the accounts those capabilities use, and what this copy is. The plugins used to be
+        // a button in the heading, beside refresh and "new instance" — an action among actions,
+        // although it opens a place rather than doing something; the accounts were a dialog reached
+        // from a menu, which cost the reader the instance they were looking at. The about page is
+        // the same kind of place, reached from here and from the version line at the bottom.
+        // What a reader comes for first: the mounts, then the accounts they use, then the
+        // capabilities they are built from, then what this copy is.
+        _navOverview = NavItem("overview", "drive", "overview", ShowOverview);
+        _navCredentials = NavItem("credentials.button", "key", "credentials", ShowCredentials);
+        _navPlugins = NavItem("plugins.button", "plugin", "plugins", ShowPlugins);
+        _navAbout = NavItem("abouts.button", "info", "about", ShowAbout);
+        // Built here with the entries it sits under, and put into the layout at the bottom: the
+        // navigation restyles itself before the sidebar is finished, and the version line is one of
+        // the things it restyles.
+        _version = new QPushButton();
+        _version.SetText(VersionLine);
+        _version.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+        _version.SetToolTip(ProductInfo.Full);
+        I18n.Bind(_version.SetAccessibleName, "abouts.button");
+        _version.Clicked += _ => ShowAbout();
+        StyleVersion();
         nav.AddWidget(_navOverview);
+        nav.AddWidget(_navCredentials);
         nav.AddWidget(_navPlugins);
+        nav.AddWidget(_navAbout);
+        // The destinations the loaded plugins add, under the ones this window ships. Empty until a
+        // plugin says it has a page, and hidden then: an empty gap in the sidebar is a promise of
+        // something that is not there.
+        _panelNavHost = new QWidget();
+        _panelNavLayout = new QVBoxLayout(_panelNavHost);
+        _panelNavLayout.SetContentsMargins(0, 0, 0, 0);
+        _panelNavLayout.SetSpacing(10);
+        _panelNavHost.Hide();
+        nav.AddWidget(_panelNavHost);
         UpdateNav("overview");
         nav.AddStretch(1);
         nav.AddWidget(Label("service.connection", "sidebarMuted"));
@@ -194,6 +274,7 @@ internal sealed class Dashboard : QWidget
             nav.AddLayout(column);
         }
         nav.AddWidget(Label("tray.keepRunning", "sidebarMuted"));
+        nav.AddWidget(_version);
         sidebarScroll.SetWidget(sidebarBody);
         var sidebarFrame = new QVBoxLayout(sidebar);
         sidebarFrame.SetContentsMargins(0, 0, 0, 0);
@@ -202,31 +283,37 @@ internal sealed class Dashboard : QWidget
 
         // The right-hand side is the section the sidebar selects: the workbench and the plugin
         // manager are two views of one page, not two pages. Both stay built; one is hidden.
+        // The frame every section shares (PageChrome). Twelve rather than eighteen between the
+        // heading, the metrics, the panels and the two status lines: those gaps are part of the
+        // page's minimum height, and the panels are what a reader came for. The panels still get
+        // every pixel the window has left over — this only decides how small a window can get
+        // before the page has to scroll.
         _workbench = new QWidget();
-        var content = new QVBoxLayout(_workbench);
-        content.SetContentsMargins(24, 20, 24, 14);
-        // Twelve rather than eighteen between the heading, the metrics, the panels and the two
-        // status lines: those gaps are part of the page's minimum height, and the panels are what a
-        // reader came for. The panels still get every pixel the window has left over — this only
-        // decides how small a window can get before the page has to scroll.
-        content.SetSpacing(12);
+        var content = PageChrome.Apply(_workbench, "dashboard.heading", "dashboard.subtitle", out var heading);
         root.AddWidget(_workbench, 1);
         _plugins = new PluginManager();
         _plugins.Hide();
         root.AddWidget(_plugins, 1);
-        var heading = new QHBoxLayout();
-        var title = new QVBoxLayout();
-        title.SetSpacing(5);
-        title.AddWidget(Label("dashboard.heading", "pageTitle"));
-        title.AddWidget(Label("dashboard.subtitle", "muted"));
-        heading.AddLayout(title, 1);
-        heading.AddStretch(1);
+        _about = new AboutPage();
+        _about.Hide();
+        root.AddWidget(_about, 1);
+        // The accounts the product keeps, as a place rather than a dialog: they are read beside the
+        // mounts that use them, and asking for them from a menu meant losing what was on screen.
+        _credentials = new CredentialManager(this, load: true, page: true);
+        _credentials.Hide();
+        root.AddWidget(_credentials, 1);
+        _pageRoot = root;
+        // The destinations and what they show, in one place each: adding a section is an entry
+        // here and one in the sidebar above, not four edits in four places.
+        _sections.Add(("overview", _workbench, null));
+        _sections.Add(("plugins", _plugins, null));
+        _sections.Add(("credentials", _credentials, _credentials.ReloadList));
+        _sections.Add(("about", _about, _about.Refresh));
         _refresh = Button("refresh", () => Refresh(), icon: "refresh");
         I18n.Bind(_refresh.SetToolTip, "refresh.tip");
         heading.AddWidget(_refresh);
         _create = Button("mount.new", NewMount, "primary", "plus");
         heading.AddWidget(_create);
-        content.AddLayout(heading);
 
         var overview = new QHBoxLayout();
         overview.SetSpacing(12);
@@ -271,9 +358,18 @@ internal sealed class Dashboard : QWidget
         _table.SetFrameShape(QFrame.Shape.NoFrame);
         _table.VerticalHeader().Hide();
         _table.HorizontalHeader().SetSectionResizeMode(0, QHeaderView.ResizeMode.Stretch);
-        for (int i = 1; i < 3; i++) _table.HorizontalHeader().SetSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents);
+        _table.HorizontalHeader().SetSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents);
+        // The activity column is the one width that is chosen rather than measured: its cells are
+        // widgets, so there is no text for the header to size them from, and a curve needs the same
+        // ninety-odd pixels whatever it is holding.
+        _table.HorizontalHeader().SetSectionResizeMode(2, QHeaderView.ResizeMode.Fixed);
+        _table.SetColumnWidth(2, ActivityWidth);
         _table.ItemSelectionChanged += SelectMount;
-        _table.CellDoubleClicked += (_, _) => OpenSelected();
+        // The activity cell takes its own double click and opens the instance's performance page
+        // with it. This is the same gesture arriving at the table instead — a cell widget that is
+        // not there for a moment, or one that lets the event through — and the answer must not be
+        // two windows: a double click on that column opens the page it is about, and nothing here.
+        _table.CellDoubleClicked += (_, column) => { if (column != 2) OpenSelected(); };
         list.AddWidget(_table, 1);
         _empty = PlainLabel("", "emptyState");
         _empty.SetAlignment(Qt.Alignment.AlignCenter);
@@ -387,6 +483,10 @@ internal sealed class Dashboard : QWidget
     {
         UpdateOverview();
         FillTable();
+        // The curves ask the theme what colour they are when they are painted, but nothing has told
+        // them the theme changed: they are children of a table whose style sheet Qt repaints, and
+        // that is not the cell's own invalidation.
+        foreach (var cell in _activityCells.Values) cell.Refresh();
         UpdateActions();
         UpdateConnection();
         UpdateNav(_navKey);
@@ -396,13 +496,16 @@ internal sealed class Dashboard : QWidget
     /// <summary>One side-navigation entry. The active state is an inline style rather than an
     /// object name because it changes at runtime and Qt only repaints an object-name change after
     /// an unpolish/polish cycle — a style sheet is the one thing a widget can take without help.</summary>
-    private static QPushButton NavItem(string key, string icon, Action action)
+    private QPushButton NavItem(string labelKey, string icon, string section, Action action)
     {
         var button = new QPushButton();
-        I18n.Bind(button.SetText, key);
+        I18n.Bind(button.SetText, labelKey);
         button.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
         button.SetIcon(TrayIcons.Get(icon, TrayTheme.Tokens.SidebarText));
         button.Clicked += _ => action();
+        // Registered here, so the styling below can never know about one entry fewer than the
+        // sidebar has.
+        _nav.Add((section, icon, button));
         return button;
     }
 
@@ -410,11 +513,26 @@ internal sealed class Dashboard : QWidget
     {
         _navKey = key;
         // Pages opened from the workspace (an instance's settings, its performance) are still the
-        // overview's work; only the plugin manager is a destination of its own.
-        bool plugins = string.Equals(key, "plugins", StringComparison.Ordinal);
-        StyleNav(_navOverview, !plugins, "drive");
-        StyleNav(_navPlugins, plugins, "plugin");
+        // overview's work; every other destination is its own. Which one is active is a comparison
+        // against the list the entries registered themselves in.
+        foreach (var entry in _nav)
+            StyleNav(entry.Button, string.Equals(key, entry.Section, StringComparison.Ordinal), entry.Icon);
+        StyleVersion();
     }
+
+    /// <summary>The version line is text that happens to be pressable: no frame, no background,
+    /// the sidebar's muted colour until the pointer is on it.</summary>
+    private void StyleVersion()
+    {
+        var palette = TrayTheme.Tokens;
+        _version.SetStyleSheet(
+            $"QPushButton {{ background: transparent; border: none; color: {palette.SidebarMuted}; text-align: left; padding: 2px 0; font-size: 11px; }}"
+            + $" QPushButton:hover {{ color: {palette.SidebarText}; }}");
+    }
+
+    /// <summary>What the bottom line of the sidebar says. The release only: the revision is in the
+    /// tooltip, where it costs nobody a second read.</summary>
+    private static string VersionLine => "PolyMount " + ProductInfo.Version;
 
     private static void StyleNav(QPushButton button, bool active, string icon)
     {
@@ -661,6 +779,20 @@ internal sealed class Dashboard : QWidget
     /// <summary>The instance detail panel on its own. The window shot cannot show it: the panel
     /// lives in the workspace, and by the time a smoke run has opened the windows it is testing,
     /// the tabs it opened are lying over it.</summary>
+    /// <summary>The about section, photographed. The window is made tall enough for the whole page
+    /// first: this is the one screenshot that is of a page rather than of a window, and a reader
+    /// looking at it wants the paths and the licence line, which are at the bottom.</summary>
+    internal void CaptureAbout(string directory)
+    {
+        QSize size = Size;
+        ShowAbout();
+        Resize(1180, 1080);
+        QCoreApplication.ProcessEvents();
+        using (var image = Grab()) image.Save(Path.Combine(directory, "about.png"));
+        Resize(size);
+        ShowOverview();
+    }
+
     internal void CaptureDetail(string directory)
     {
         _detailPanel.Layout()?.Activate();
@@ -773,6 +905,93 @@ internal sealed class Dashboard : QWidget
         bool visible = IsVisible();
         if (visible && _pending == null && (!_wasVisible || DateTime.UtcNow >= _nextRefresh)) Refresh(quiet: true);
         _wasVisible = visible;
+        PollActivity();
+        PollPanels();
+    }
+
+    /// <summary>Asks the supervisor which management pages the loaded plugins offer.
+    ///
+    /// The list, not the pages: what a page shows is asked of an instance, because a plugin's
+    /// render can read its mount. It is re-asked every half minute so a plugin enabled while the
+    /// window is open gains its destination without a restart, and it is harmless when there are
+    /// none — the answer is an empty list.
+    /// </summary>
+    private void PollPanels()
+    {
+        if (_panelQuery is { IsCompleted: true } query)
+        {
+            _panelQuery = null;
+            ControlResponse? response = null;
+            try { response = query.GetAwaiter().GetResult(); } catch (Exception) { }
+            if (response is { Ok: true }) SyncPanels(response.Panels);
+            _nextPanelQuery = DateTime.UtcNow.AddSeconds(30);
+        }
+        if (_panelQuery != null || !_connected || DateTime.UtcNow < _nextPanelQuery) return;
+        _nextPanelQuery = DateTime.UtcNow.AddSeconds(30);
+        _panelQuery = Task.Run(() =>
+        {
+            try { return SupervisorClient.Default.Send(new ControlRequest { Cmd = ControlCommands.PluginPanels }); }
+            catch (Exception ex) { return new ControlResponse { Ok = false, Error = ex.Message }; }
+        });
+    }
+
+    /// <summary>Adds a destination for a page this window did not have before, and takes one away
+    /// when the plugin it belonged to is gone. Only a panel that asked for a page of its own is a
+    /// destination here; every other one unfolds inside the plugin manager, under the row of the
+    /// plugin it belongs to, which is where a reader looks for what a plugin adds.
+    ///
+    /// What the page shows is the plugin's business; all that is decided here is that it is a
+    /// place, in the order the plugins listed them.</summary>
+    private void SyncPanels(List<PluginPanelDescriptor> panels)
+    {
+        panels = panels.Where(panel => panel.OwnPage).ToList();
+        var wanted = panels.Select(p => p.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var id in _panelPages.Keys.Where(id => !wanted.Contains(id)).ToArray())
+        {
+            var gone = _panelPages[id];
+            _panelPages.Remove(id);
+            _sections.RemoveAll(section => section.Section == PanelSection(id));
+            _nav.RemoveAll(entry => entry.Section == PanelSection(id));
+            _panelNavLayout.RemoveWidget(gone.Button);
+            gone.Button.Hide();
+            gone.Button.DeleteLater();
+            _pageRoot.RemoveWidget(gone.Page);
+            gone.Page.Hide();
+            gone.Page.DeleteLater();
+            if (_navKey == PanelSection(id)) ShowOverview();
+        }
+
+        foreach (var descriptor in panels)
+        {
+            if (_panelPages.ContainsKey(descriptor.Id)) continue;
+            var page = new PluginPanelPage(descriptor);
+            page.Hide();
+            _pageRoot.AddWidget(page, 1);
+            string section = PanelSection(descriptor.Id);
+            var button = NavItemText(descriptor.Title.Resolve(I18n.Language), descriptor.Icon, section,
+                () => OpenSection(section));
+            _panelNavLayout.AddWidget(button);
+            _sections.Add((section, page, page.Reload));
+            _panelPages[descriptor.Id] = (descriptor, button, page);
+        }
+        _panelNavHost.SetVisible(_panelPages.Count > 0);
+        UpdateNav(_navKey);
+    }
+
+    private static string PanelSection(string id) => "panel:" + id;
+
+    /// <summary>A sidebar entry whose text comes from a plugin rather than from the catalog, styled
+    /// exactly like the ones beside it: it is a place like they are, and a reader should not be able
+    /// to tell which of them this product shipped.</summary>
+    private QPushButton NavItemText(string text, string icon, string section, Action action)
+    {
+        var button = new QPushButton();
+        button.SetText(text);
+        button.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+        button.SetIcon(TrayIcons.Get(icon is { Length: > 0 } ? icon : "plugin", TrayTheme.Tokens.SidebarText));
+        button.Clicked += _ => action();
+        _nav.Add((section, icon is { Length: > 0 } ? icon : "plugin", button));
+        return button;
     }
 
     /// <summary>Whether a command is still waiting for the state it changed, now that a status has
@@ -797,7 +1016,7 @@ internal sealed class Dashboard : QWidget
         // stand, because the index is the mode and re-adding them would move the reader's choice.
         for (int index = 0; index < _theme.Count && index < ThemeKeys.Length; index++)
             _theme.SetItemText(index, T(ThemeKeys[index]));
-        _table.SetHorizontalHeaderLabels(new[] { T("column.instance"), T("state"), T("column.layers") });
+        UpdateTableHeaders();
         UpdateConnection();
         if (_connected) UpdateOverview();
         FillTable();
@@ -818,7 +1037,7 @@ internal sealed class Dashboard : QWidget
         int selected = Math.Max(0, _filter.CurrentIndex);
         _filter.BlockSignals(true);
         _filter.Clear();
-        foreach (var key in new[] { "filter.all", "state.mounted", "state.unmounted", "state.error", "state.disabled" }) _filter.AddItem(T(key));
+        foreach (var key in new[] { "filter.all", "state.mounted", "state.unmounted", "state.error", "state.disabled", "filter.active" }) _filter.AddItem(T(key));
         _filter.SetCurrentIndex(selected);
         _filter.BlockSignals(false);
     }
@@ -867,10 +1086,23 @@ internal sealed class Dashboard : QWidget
         string query = _search.Text.Trim();
         var visible = _mounts.Where(m =>
             (query.Length == 0 || $"{m.Name} {m.MountPoint}".Contains(query, StringComparison.OrdinalIgnoreCase)) &&
-            (_filter.CurrentIndex switch { 1 => m.Mounted, 2 => !m.Mounted, 3 => !string.IsNullOrWhiteSpace(m.Error), 4 => !m.Enabled, _ => true })).ToList();
+            (_filter.CurrentIndex switch
+            {
+                1 => m.Mounted,
+                2 => !m.Mounted,
+                3 => !string.IsNullOrWhiteSpace(m.Error),
+                4 => !m.Enabled,
+                // "In use" is the question the activity column answers, so the filter asks the same
+                // one of the same signal: who has touched this mount in the last couple of minutes.
+                // It is the status's own list rather than the curve, which only knows what it has
+                // been watching and would drop a row out the moment its line went quiet.
+                5 => m.Callers.Count > 0,
+                _ => true
+            })).ToList();
         bool structureChanged = !_visible.Select(m => m.Name).SequenceEqual(visible.Select(m => m.Name));
         _visible = visible;
         _filling = true;
+        if (structureChanged) DetachActivity();
         if (structureChanged) _table.SetUpdatesEnabled(false);
         if (structureChanged) _table.SetRowCount(_visible.Count);
         for (int row = 0; row < _visible.Count; row++)
@@ -883,7 +1115,11 @@ internal sealed class Dashboard : QWidget
             var state = Cell(row, 1, StateText(m));
             if (stateChanged) state.SetForeground(new QBrush(new QColor(StateColor(m))));
             state.SetToolTip(m.Error ?? StateText(m));
-            Cell(row, 2, I18n.F("layer.count", m.Providers.Count));
+            // An empty item behind the activity cell, so the row's own selection and hover are
+            // painted under it: the cell draws a curve and a number and nothing else, and what is
+            // behind it is the table's business.
+            Cell(row, 2, "");
+            AttachActivity(row, m);
             if (structureChanged) _table.SetRowHeight(row, 68);
         }
         int selected = _visible.FindIndex(m => m.Name == _selectedName);
@@ -897,6 +1133,7 @@ internal sealed class Dashboard : QWidget
         _table.SetVisible(_visible.Count > 0);
         _empty.SetVisible(_visible.Count == 0);
         SetText(_empty, T(!_connected ? "empty.offline" : _mounts.Count == 0 ? "empty.new" : "empty.search"));
+        UpdateActivitySelection();
         UpdateDetails(changed);
     }
 
@@ -905,7 +1142,348 @@ internal sealed class Dashboard : QWidget
         if (_filling) return;
         int row = _table.CurrentRow();
         _selectedName = row >= 0 && row < _visible.Count ? _visible[row].Name : null;
+        UpdateActivitySelection();
         UpdateDetails(true);
+    }
+
+    /// <summary>Gives the table a cell per instance. It is asked for on every pass rather than only
+    /// when the rows are rebuilt, and Qt treats being handed the widget it already has as a no-op,
+    /// so a row that kept its place keeps its curve without this having to know which rows did.</summary>
+    private void AttachActivity(int row, MountStatus mount) => _table.SetCellWidget(row, 2, CellFor(mount));
+
+    private ActivityCell CellFor(MountStatus mount)
+    {
+        if (_activityCells.TryGetValue(mount.Name, out var cell)) return cell;
+        cell = new ActivityCell(mount.Name, Series(mount.Name), SelectForActivity, name => OpenPerformance(name));
+        cell.SetScale(_activityScale);
+        cell.SetHint(ActivityHint(mount.Name));
+        _activityCells[mount.Name] = cell;
+        return cell;
+    }
+
+    private ActivitySeries Series(string name)
+    {
+        if (!_activity.TryGetValue(name, out var series)) _activity[name] = series = new ActivitySeries();
+        return series;
+    }
+
+    /// <summary>Hands the cell widgets back before the rows are rebuilt. The table owns what it is
+    /// given and deletes it when its cell goes away, so a wrapper kept across a rebuild would be
+    /// pointing at something Qt has already taken: the series stay — they are the minute that was
+    /// measured, not part of any row — and the cells are made again around them.</summary>
+    private void DetachActivity()
+    {
+        for (int row = 0; row < _table.RowCount; row++)
+            if (_table.CellWidget(row, 2) is not null) _table.RemoveCellWidget(row, 2);
+        _activityCells.Clear();
+    }
+
+    /// <summary>A click on a curve is a click on the row it is in: the detail panel follows it, and
+    /// the row is selected the way the table would have selected it.</summary>
+    private void SelectForActivity(string name)
+    {
+        int row = _visible.FindIndex(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (row >= 0) _table.SelectRow(row);
+    }
+
+    /// <summary>The reading under a selected row is painted in the selection's ink rather than the
+    /// secondary text's, because the surface behind it is no longer the one that colour was chosen
+    /// for.</summary>
+    private void UpdateActivitySelection()
+    {
+        foreach (var (name, cell) in _activityCells)
+            cell.SetSelected(string.Equals(name, _selectedName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Asks every mounted instance for its activity once a second, and only while this
+    /// window is showing.
+    ///
+    /// The service counts what its layers did only for as long as somebody is reading the counters
+    /// — that is what keeps a mount's own request path from paying for numbers nobody asked for —
+    /// so a curve that is on screen is exactly the reason that switch should be on, and a window
+    /// that is gone is exactly the reason it should go off again. What is asked is a ten-second
+    /// window: short enough to move, long enough to have a shape, and short enough that the first
+    /// point drawn is a rate over seconds that were really counted rather than a rate climbing out
+    /// of zero.</summary>
+    private void PollActivity()
+    {
+        bool wanted = _connected && IsVisible() && !IsMinimized() && _mounts.Exists(m => m.Mounted);
+        if (!wanted) { StopActivity(); return; }
+        if (!_activityRunning) BeginActivity();
+        // The answer to the previous second is taken here rather than in its own continuation: one
+        // thread touches the cells, and it is the one that paints them.
+        if (_activityTask is { IsCompleted: true })
+        {
+            List<MountMetrics> metrics;
+            try { metrics = _activityTask.GetAwaiter().GetResult(); }
+            catch (Exception) { metrics = new List<MountMetrics>(); }
+            _activityTask = null;
+            RecordActivity(metrics);
+        }
+        // One question at a time. A status refresh or a command is already using the same pipes —
+        // and the start-up refresh is the one that matters, because it is what makes the window say
+        // whether the service is there at all. A sample skipped here is a second the curve does not
+        // advance, which is not worth contending for.
+        if (_activityTask != null || _pending != null || DateTime.UtcNow < _nextActivitySample) return;
+        _nextActivitySample = DateTime.UtcNow.AddSeconds(1);
+        _activityTask = Task.Run(() =>
+        {
+            try { return InstanceView.Metrics(ActivityWindow); }
+            catch (Exception) { return new List<MountMetrics>(); }
+        });
+    }
+
+    private void BeginActivity()
+    {
+        _activityRunning = true;
+        // The counters only count from the moment somebody starts watching, so a sample taken now
+        // would describe the last ten seconds as an instance that was idle — it was, as far as
+        // anything was counting. The first honest point is a full window later, and until then the
+        // cells hold their zero line and say what they are waiting for.
+        _activityWarmUntil = DateTime.UtcNow.AddSeconds(ActivityWindow);
+        _nextActivitySample = DateTime.UtcNow;
+        foreach (var series in _activity.Values) series.Clear();
+        _activityLatest.Clear();
+    }
+
+    private void StopActivity()
+    {
+        if (!_activityRunning) return;
+        _activityRunning = false;
+        _activityWarmUntil = DateTime.MinValue;
+        // An answer still in flight describes a stretch nobody is watching any more; it is dropped
+        // rather than recorded, and the curves start again from nothing when the window comes back.
+        _activityTask = null;
+        foreach (var series in _activity.Values) series.Clear();
+        _activityLatest.Clear();
+        RefreshActivityCells();
+    }
+
+    private void RecordActivity(List<MountMetrics> metrics)
+    {
+        var byName = new Dictionary<string, MountMetrics>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in metrics)
+            if (!string.IsNullOrEmpty(entry.Mount)) byName[entry.Mount] = entry;
+        bool warming = DateTime.UtcNow < _activityWarmUntil;
+        foreach (var mount in _mounts.Where(m => m.Mounted))
+        {
+            var series = Series(mount.Name);
+            if (!byName.TryGetValue(mount.Name, out var entry))
+            {
+                // An instance that did not answer has no reading. It is not an idle one, and the
+                // curve is not given a zero for it: it stops where it stopped and the cell says so.
+                series.Stale = true;
+                continue;
+            }
+            series.Stale = false;
+            _activityLatest[mount.Name] = entry;
+            if (!warming) series.Add(entry.RequestCount / Math.Max(1.0, entry.MeasuredSeconds));
+        }
+        RefreshActivityCells();
+    }
+
+    private void RefreshActivityCells()
+    {
+        // One scale for the whole column: the busiest second any mounted instance has had in its
+        // window. Rounding is what keeps the scale quiet — a scale that followed the busiest second
+        // exactly would move on every reading and every curve in the list would appear to breathe.
+        //
+        // And it only moves when the peak leaves the band around it: a row that hovers at a rung
+        // would otherwise rescale the whole list whenever it crossed one. It climbs as soon as
+        // anything is above the scale — a curve drawn off the top of its own cell is worse than a
+        // rescale — and comes down only once nothing comes close to the top any more.
+        double peak = 0;
+        foreach (var mount in _mounts.Where(m => m.Mounted))
+            if (_activity.TryGetValue(mount.Name, out var series)) peak = Math.Max(peak, series.Peak());
+        if (peak > 0 && (_activityScale <= 0 || peak > _activityScale || peak < _activityScale / 1.6))
+            _activityScale = ActivityCell.NiceCeiling(peak);
+        foreach (var (name, cell) in _activityCells)
+        {
+            cell.SetScale(_activityScale);
+            cell.SetHint(ActivityHint(name));
+            cell.Refresh();
+        }
+        UpdateTableHeaders();
+    }
+
+    /// <summary>The column heads, with the activity one saying what the top of the curves is while
+    /// there is a scale to say. A sparkline has no axis; a column of them sharing one has to name
+    /// it somewhere, or "twice as tall" is a claim the reader cannot check.</summary>
+    private void UpdateTableHeaders()
+    {
+        if (_table == null) return;
+        string activity = _activityScale > 0
+            ? I18n.F("column.activity.scale", ActivityCell.Figure(_activityScale))
+            : T("column.activity");
+        var heads = new[] { T("column.instance"), T("state"), activity };
+        for (int i = 0; i < heads.Length; i++)
+        {
+            if (_table.HorizontalHeaderItem(i)?.Text() == heads[i]) continue;
+            _table.SetHorizontalHeaderLabels(heads);
+            return;
+        }
+    }
+
+    /// <summary>What a hover says about one instance: how much of the minute the curve covers, its
+    /// average and peak, and what the instance counted in the window. The first three are the
+    /// curve's own numbers, so a reader who can read neither the shape nor the colour still has
+    /// them.</summary>
+    private string ActivityHint(string name)
+    {
+        if (_activityWarmUntil > DateTime.UtcNow) return T("activity.warming");
+        if (!_activity.TryGetValue(name, out var series) || series.Count == 0) return T("activity.waiting");
+        if (series.Stale) return T("activity.stale");
+        string seconds = series.Count.ToString(I18n.Culture);
+        string average = Math.Round(series.Average()).ToString("N0", I18n.Culture);
+        string peak = Math.Round(series.Peak()).ToString("N0", I18n.Culture);
+        if (!_activityLatest.TryGetValue(name, out var entry))
+            return I18n.F("activity.tip.short", seconds, average, peak);
+        string reads = entry.TotalReads.ToString("N0", I18n.Culture);
+        string writes = entry.TotalWrites.ToString("N0", I18n.Culture);
+        string hits = Math.Round(entry.CacheHitPercent).ToString("N0", I18n.Culture);
+        return I18n.F("activity.tip", seconds, average, peak, reads, writes, hits);
+    }
+
+    /// <summary>A minute of made-up curve in every mounted instance's row, for a smoke run: the
+    /// first honest point is ten seconds away and a run is not going to wait for it, and a picture
+    /// of the feature with nothing in it is not a picture of the feature.</summary>
+    internal void SmokeActivity()
+    {
+        int instance = 0;
+        foreach (var mount in _mounts.Where(m => m.Mounted))
+        {
+            var series = Series(mount.Name);
+            series.Clear();
+            for (int i = 0; i < ActivitySeries.Capacity; i++)
+            {
+                // One instance breathes, the next is quiet and then wakes up: a reader's list has
+                // both, and a fixture where every row drew the same shape would not show that a
+                // flat line is a shape of its own.
+                double value = instance % 2 == 0
+                    ? 70 + 45 * Math.Sin(i / 5.5) + 18 * Math.Sin(i / 1.7)
+                    : i < 22 ? 0 : 55 + 30 * Math.Sin(i / 2.4);
+                series.Add(Math.Max(0, value));
+            }
+            instance++;
+        }
+        RefreshActivityCells();
+    }
+
+    /// <summary>Self-check for the activity column: what the ring holds, and what the cell paints.
+    ///
+    /// The paint half is read back from pixels because that is what the reader sees — a curve that
+    /// is in the series but not on the canvas (a wrong clip, a scale of zero, a pen with no colour)
+    /// looks exactly like a quiet instance otherwise. The pixels are compared between cells rather
+    /// than counted against the surface: a widget grabbed off-screen is painted over no background
+    /// at all, so how dark a pixel is says nothing, while whether two cells differ where they
+    /// should says everything, and neither theme can decide the result on its own.</summary>
+    internal static void VerifyActivity()
+    {
+        var series = new ActivitySeries();
+        if (series.Count != 0 || series.Latest != 0)
+            throw new InvalidOperationException("An activity series started with readings in it");
+        for (int i = 0; i < ActivitySeries.Capacity + 10; i++) series.Add(i);
+        if (series.Count != ActivitySeries.Capacity)
+            throw new InvalidOperationException($"An activity series held {series.Count} readings rather than a minute's worth");
+        if (series[0] != 10 || series.Latest != ActivitySeries.Capacity + 9)
+            throw new InvalidOperationException("An activity series did not keep its newest minute in order");
+        if (Math.Abs(series.Peak() - (ActivitySeries.Capacity + 9)) > 0.0001)
+            throw new InvalidOperationException("An activity series lost its peak with the samples that fell out of it");
+
+        using var nothing = Painted(_ => { });
+        using var quiet = Painted(s => { for (int i = 0; i < ActivitySeries.Capacity; i++) s.Add(0); });
+        using var busy = Painted(s => { for (int i = 0; i < ActivitySeries.Capacity; i++) s.Add(400); });
+        using var stale = Painted(s =>
+        {
+            for (int i = 0; i < ActivitySeries.Capacity; i++) s.Add(400);
+            s.Stale = true;
+        });
+
+        if (CurveDifference(nothing, nothing) != 0)
+            throw new InvalidOperationException("Two drawings of the same cell did not come out the same");
+        // A mounted instance with nothing asking it anything is a zero line, and the line has to be
+        // there: an empty cell and a quiet one are different things and the reader sees the
+        // difference as one of them having a graph in it at all.
+        int zeroLine = CurveDifference(nothing, quiet);
+        if (zeroLine < 40)
+            throw new InvalidOperationException($"An idle instance drew {zeroLine} pixels, so its zero line is not on the cell");
+        // Above the cell's own midline: the zero line sits below it, and the antialiasing a stroke
+        // leaves around it does not reach it either.
+        int above = Above(nothing, quiet);
+        if (above > 0)
+            throw new InvalidOperationException($"An idle instance drew {above} pixels above its zero line");
+        int curve = CurveDifference(quiet, busy);
+        if (curve < 400)
+            throw new InvalidOperationException($"A busy instance differs from an idle one by {curve} pixels, which is not a curve across the cell");
+        // A stale series keeps its shape and loses its fill: the line is still what was measured,
+        // and the cell going quiet is what says no more of it is coming.
+        int faded = CurveDifference(busy, stale);
+        if (faded < 200)
+            throw new InvalidOperationException($"An instance that stopped answering looks like one that is still going: {faded} pixels apart");
+
+        // The column's scale: every row drawn against the same top, which is the whole point of
+        // putting them in one column — a list of curves each scaled to itself answers "is this one
+        // doing anything" and says nothing about which one is doing more.
+        if (ActivityCell.NiceCeiling(0) != 1 || ActivityCell.NiceCeiling(0.4) != 1 ||
+            ActivityCell.NiceCeiling(3) != 3 || ActivityCell.NiceCeiling(70) != 75 ||
+            ActivityCell.NiceCeiling(140) != 150 || ActivityCell.NiceCeiling(4800) != 5000)
+            throw new InvalidOperationException("The shared scale does not climb in steps of 1, 1.5, 2, 3, 5 and 7.5");
+        using var top = Painted(s => { for (int i = 0; i < ActivitySeries.Capacity; i++) s.Add(400); }, 400);
+        using var quarter = Painted(s => { for (int i = 0; i < ActivitySeries.Capacity; i++) s.Add(100); }, 400);
+        int tallest = Above(nothing, top);
+        int shortest = Above(nothing, quarter);
+        if (tallest < 50)
+            throw new InvalidOperationException($"A row at the top of the shared scale drew {tallest} pixels above the midline");
+        if (shortest > 0)
+            throw new InvalidOperationException($"A row at a quarter of the shared scale drew {shortest} pixels above the midline, so the rows are not on one scale");
+    }
+
+    /// <summary>The width of the curve's half of a check cell; the number beside it is not a curve.</summary>
+    private const int CurveColumns = 78;
+
+    /// <summary>A cell built from one series and rendered off-screen, at the size a list row gives
+    /// it, against the shared scale <paramref name="scale"/> (zero: against its own peak).</summary>
+    private static QImage Painted(Action<ActivitySeries> fill, double scale = 0)
+    {
+        var series = new ActivitySeries();
+        fill(series);
+        using var cell = new ActivityCell("check", series, null, null);
+        cell.SetScale(scale);
+        cell.Resize(120, 40);
+        using var painted = cell.Grab();
+        return painted.ToImage().ConvertToFormat(QImage.Format.Format_ARGB32);
+    }
+
+    /// <summary>How many pixels of the curve's half, above the cell's midline, the two cells do not
+    /// share: what a row draws near the top of the shared scale and one near its bottom differ by.</summary>
+    private static int Above(QImage left, QImage right)
+    {
+        int rows = Math.Min(left.Height(), right.Height()) / 2;
+        int columns = Math.Min(CurveColumns, Math.Min(left.Width(), right.Width()));
+        int differing = 0;
+        for (int y = 0; y < rows; y++)
+            for (int x = 0; x < columns; x++)
+                if (!Same(left, right, x, y)) differing++;
+        return differing;
+    }
+
+    private static bool Same(QImage left, QImage right, int x, int y)
+    {
+        var a = left.PixelColor(x, y);
+        var b = right.PixelColor(x, y);
+        return a.Alpha() == b.Alpha() && a.Red() == b.Red() && a.Green() == b.Green() && a.Blue() == b.Blue();
+    }
+
+    /// <summary>How many pixels of the curve's half the two cells do not share.</summary>
+    private static int CurveDifference(QImage left, QImage right)
+    {
+        int columns = Math.Min(CurveColumns, Math.Min(left.Width(), right.Width()));
+        int rows = Math.Min(left.Height(), right.Height());
+        int differing = 0;
+        for (int y = 0; y < rows; y++)
+            for (int x = 0; x < columns; x++)
+                if (!Same(left, right, x, y)) differing++;
+        return differing;
     }
 
     private void UpdateDetails(bool changed = false)
@@ -1116,25 +1694,54 @@ internal sealed class Dashboard : QWidget
     internal PluginManager PluginPage => _plugins;
 
     /// <summary>Shows the mounts, and the workbench they are managed from.</summary>
-    internal void ShowOverview()
-    {
-        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
-        ShowSection(plugins: false);
-    }
+    internal void ShowOverview() => OpenSection("overview");
 
     /// <summary>Shows the plugin manager in the same page. The sidebar is the switch: the tab,
     /// its bar and the window are the workbench either way.</summary>
-    internal void ShowPlugins()
+    internal void ShowPlugins() => OpenSection("plugins");
+
+    /// <summary>The accounts this product keeps, in the same page as the mounts that use them.</summary>
+    internal void ShowCredentials() => OpenSection("credentials");
+
+    /// <summary>The accounts section is a section like the others: selecting it shows it and
+    /// hides the rest, and it draws the store's list rather than an empty one. Left on the
+    /// overview afterwards, which is where the run started.</summary>
+    internal void VerifyCredentialsSection()
     {
-        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
-        ShowSection(plugins: true);
+        ShowCredentials();
+        if (!_credentials.IsVisible())
+            throw new InvalidOperationException("the accounts section did not become visible");
+        if (_workbench.IsVisible() || _plugins.IsVisible() || _about.IsVisible())
+            throw new InvalidOperationException("another section stayed visible beside the accounts");
+        if (_credentials.RowCount == 0 && _credentials.EmptyReason.Length == 0)
+            throw new InvalidOperationException("the accounts section drew neither rows nor a reason");
+        ShowOverview();
     }
 
-    private void ShowSection(bool plugins)
+    /// <summary>Shows what this copy is: version, runtime, service and where everything sits. It is
+    /// the page the sidebar's version line opens, and the one a report is answered from.</summary>
+    internal void ShowAbout() => OpenSection("about");
+
+    /// <summary>The three destinations are one page with three right-hand sides. Opening one keeps
+    /// the reader's tab where it was — the sidebar moves between sections, it does not navigate.</summary>
+    private void OpenSection(string key)
     {
-        _workbench.SetVisible(!plugins);
-        _plugins.SetVisible(plugins);
-        UpdateNav(plugins ? "plugins" : "overview");
+        _tabs.Open("overview", () => _overviewPage, () => T("overview"), pinned: true);
+        ShowSection(key);
+    }
+
+    private void ShowSection(string key)
+    {
+        foreach (var section in _sections)
+        {
+            bool active = string.Equals(key, section.Section, StringComparison.Ordinal);
+            section.Page.SetVisible(active);
+            // Read again on the way in: a credential can be added by a sign-in while the window is
+            // open, and the state of the service is the one fact that moves — and this is the
+            // moment somebody is looking.
+            if (active) section.Enter?.Invoke();
+        }
+        UpdateNav(key);
     }
 
 
@@ -1255,6 +1862,36 @@ internal sealed class Dashboard : QWidget
             throw new InvalidOperationException("An instance that needs an account does not say where accounts are: " + FailureText(signed));
         if (FailureText(new MountStatus { Name = "check", Mounted = true }) != "")
             throw new InvalidOperationException("An instance with no failure has a failure paragraph");
+    }
+
+    /// <summary>The about section is a destination like the other two, and what it says has to be
+    /// this build's. Three things go wrong quietly: the section opens without the sidebar following
+    /// it, the page shows a version nobody stamped, or the version line and the page disagree about
+    /// which build is in front of the reader. Nothing here needs the service.</summary>
+    internal void VerifyAbout()
+    {
+        ShowAbout();
+        try
+        {
+            if (!_about.Visible) throw new InvalidOperationException("The about section did not open");
+            if (_workbench.Visible || _plugins.Visible)
+                throw new InvalidOperationException("Two sections are showing at once");
+            if (_about.VersionText != ProductInfo.Version)
+                throw new InvalidOperationException($"The about section says '{_about.VersionText}' where the build is '{ProductInfo.Version}'");
+            if (!_version.Text.EndsWith(ProductInfo.Version, StringComparison.Ordinal))
+                throw new InvalidOperationException($"The sidebar says '{_version.Text}' where the build is '{ProductInfo.Version}'");
+            if (!_about.ShowsRoot)
+                throw new InvalidOperationException("The about section names no program folder");
+        }
+        finally
+        {
+            // Whatever this check found, the run goes on from the page the rest of it drives: a
+            // failure here used to leave the about section showing, and the next check then
+            // reported something unrelated about the workbench it could not see.
+            ShowOverview();
+        }
+        if (_about.Visible)
+            throw new InvalidOperationException("The about section stayed open after the overview was asked for");
     }
 
     private static QWidget Panel(string name)

@@ -1,0 +1,1033 @@
+type PolyMount.Plugins.AuthRequiredException : System.Exception, System.Runtime.Serialization.ISerializable
+type PolyMount.Plugins.CacheBudgets : 
+  field System.Int32 MaxObjects static
+  field System.Int64 MetadataBytes static
+  method System.Int64 Estimate(System.String, PolyMount.Plugins.VirtualObject) static
+type PolyMount.Plugins.CacheContent : System.IDisposable
+  method PolyMount.Plugins.CacheContent Capture(System.IO.Stream) static
+  method PolyMount.Plugins.CacheContent Own(System.IO.FileStream) static
+  method System.IO.Stream Acquire()
+  method System.Void Dispose()
+  property System.Int64 Length get
+type PolyMount.Plugins.CacheLayer : PolyMount.Plugins.ILayer, PolyMount.Plugins.IObjectLayer
+  method System.Boolean TryApply(System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.ObjectChange>)
+  method System.Boolean TryGetEntry(System.String, PolyMount.Plugins.VfsEntry&)
+  method System.Boolean TryOpenRead(System.String, PolyMount.Plugins.VfsEntry&, System.IO.Stream&)
+  method System.Boolean TryReadObject(System.String, PolyMount.Plugins.VirtualObject&)
+  method System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.VfsEntry> ListOwn(System.String)
+  method System.Void Clear()
+  property System.Boolean Writable get
+  property System.String Generation get
+  property System.String Name get
+type PolyMount.Plugins.ClientCertificateCredential : PolyMount.Plugins.Credential, PolyMount.Plugins.ICertificateAuthentication, PolyMount.Plugins.IPasswordAuthentication
+  property System.Byte[] Certificate get set
+  property System.String CertificatePassword get set
+  property System.String Kind get
+  property System.String Password get set
+type PolyMount.Plugins.CompositePrediction : PolyMount.Plugins.IPredictionModel, System.IDisposable
+  method System.IDisposable Observe(System.String, System.Int64, System.Boolean)
+  method System.Void Dispose()
+  method System.Void ReportGroup(System.String, System.Boolean)
+  method System.Void Reset()
+  method System.Void SetBurstThrottle(System.Int64, System.Double)
+  method System.Void SetSpatialThrottle(System.Int64, System.Double)
+  method System.Void SetThrottle(System.Int64, System.Double)
+  property PolyMount.Plugins.PredictionModelStats Stats get
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.IPredictionModel> Models get
+type PolyMount.Plugins.Credential : 
+  property System.String Kind get
+  property System.String Username get set
+type PolyMount.Plugins.CredentialConsumers : 
+  method System.Collections.Generic.IReadOnlyList<System.String> Of(PolyMount.Plugins.Credential) static
+  property System.Collections.Generic.IReadOnlyList<System.String> All get
+type PolyMount.Plugins.CredentialFieldDescriptor : 
+  property PolyMount.Plugins.CredentialFieldKind Kind get set
+  property PolyMount.Plugins.LocalizedText Description get set
+  property PolyMount.Plugins.LocalizedText Placeholder get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean Required get set
+  property System.String DefaultValue get set
+  property System.String Path get set
+type PolyMount.Plugins.CredentialFieldKind : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.CredentialFieldKind Boolean static
+  field PolyMount.Plugins.CredentialFieldKind Secret static
+  field PolyMount.Plugins.CredentialFieldKind Text static
+  field System.Int32 value__
+type PolyMount.Plugins.CredentialInput : System.IEquatable<PolyMount.Plugins.CredentialInput>
+  method PolyMount.Plugins.CredentialInput <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.CredentialInput)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, System.String&, System.String&, System.String&, System.String&, System.Byte[]&, System.String&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&, System.Collections.Generic.IReadOnlyDictionary`2[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  property System.Byte[] Certificate get set
+  property System.Collections.Generic.IReadOnlyDictionary<System.String, System.String> Values get set
+  property System.Collections.Generic.IReadOnlyList<System.String> Origins get set
+  property System.String CertificatePassword get set
+  property System.String Id get set
+  property System.String Kind get set
+  property System.String Name get set
+  property System.String Password get set
+  property System.String Username get set
+type PolyMount.Plugins.CredentialKindDescriptor : 
+  property PolyMount.Plugins.LocalizedText Description get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Collections.Generic.List<PolyMount.Plugins.CredentialFieldDescriptor> Fields get set
+  property System.Func<System.Collections.Generic.IReadOnlyDictionary<System.String, System.String>, PolyMount.Plugins.Credential> Create get set
+  property System.String AccountField get set
+  property System.String Icon get set
+  property System.String Kind get set
+type PolyMount.Plugins.CredentialKinds : 
+  method PolyMount.Plugins.CredentialKindDescriptor Find(System.String) static
+  method System.Boolean IsBuiltIn(System.String) static
+  method System.Boolean IsKnown(System.String) static
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.CredentialKindDescriptor> All get
+type PolyMount.Plugins.CredentialOriginException : System.InvalidOperationException, System.Runtime.Serialization.ISerializable
+  property System.Collections.Generic.IReadOnlyList<System.String> Origins get
+  property System.String CredentialId get
+  property System.String CredentialName get
+  property System.String Origin get
+type PolyMount.Plugins.CredentialRecord : System.IEquatable<PolyMount.Plugins.CredentialRecord>
+  method PolyMount.Plugins.CredentialRecord <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.CredentialRecord)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, System.String&, System.String&, System.String&, System.Boolean&, System.Collections.Generic.IReadOnlyList`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  property System.Boolean Usable get set
+  property System.Collections.Generic.IReadOnlyList<System.String> Origins get set
+  property System.Collections.Generic.IReadOnlyList<System.String> UseFor get set
+  property System.String Id get set
+  property System.String Kind get set
+  property System.String Name get set
+  property System.String Username get set
+type PolyMount.Plugins.CredentialStore : 
+  method PolyMount.Plugins.Credential Check(System.String, System.String) static
+  method PolyMount.Plugins.Credential FindById(System.String) static
+  method PolyMount.Plugins.Credential Use(System.String, System.String) static
+  method PolyMount.Plugins.CredentialRecord Save(PolyMount.Plugins.CredentialInput) static
+  method System.Byte[] Protect(System.String) static
+  method System.Collections.Generic.List<PolyMount.Plugins.CredentialRecord> List() static
+  method System.String OriginOf(System.Uri) static
+  method System.String Unprotect(System.Byte[]) static
+  method System.Void RemoveCredential(System.String) static
+  property System.String Path get
+type PolyMount.Plugins.CredentialTypes : 
+  field System.String Certificate static
+  field System.String Password static
+  method System.Boolean IsKnown(System.String) static
+  property System.Collections.Generic.IReadOnlyList<System.String> All get
+type PolyMount.Plugins.CredentialedSource : 
+  method PolyMount.Plugins.Credential Resolve()
+  property System.String Origin get
+type PolyMount.Plugins.DirectoryObjectContent : PolyMount.Plugins.ObjectContent
+  method PolyMount.Plugins.ObjectContent Snapshot()
+  method System.Boolean Contains(System.ReadOnlySpan<System.Char>)
+  method System.Boolean Contains(System.String)
+  method System.Boolean TryGetEntry(System.String, PolyMount.Plugins.VfsEntry&)
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.VfsEntry> Entries get
+  property System.Int64 EstimatedMemoryBytes get
+  property System.Int64 LogicalBytes get
+type PolyMount.Plugins.FileObjectContent : PolyMount.Plugins.ObjectContent
+  method PolyMount.Plugins.CacheContent RetainBytes(System.IO.Stream)
+  method PolyMount.Plugins.ObjectContent Snapshot()
+  method System.IO.Stream OpenRead()
+  property System.Int64 EstimatedMemoryBytes get
+  property System.Int64 LogicalBytes get
+  property System.Int64 PersistenceEstimate get
+type PolyMount.Plugins.HeaderObjectContent : PolyMount.Plugins.ObjectContent
+  method PolyMount.Plugins.ObjectContent Snapshot()
+  property System.Int64 EstimatedMemoryBytes get
+  property System.Int64 LogicalBytes get
+  property System.Int64 PersistenceEstimate get
+type PolyMount.Plugins.IBearerAuthentication : 
+  property System.String Token get
+type PolyMount.Plugins.ICacheLayer : PolyMount.Plugins.ILayer, PolyMount.Plugins.IObjectLayer
+  method System.Void Invalidate()
+  method System.Void Store(System.String, System.String, PolyMount.Plugins.VfsEntry, System.IO.Stream)
+type PolyMount.Plugins.ICertificateAuthentication : 
+  property System.Byte[] Certificate get
+  property System.String CertificatePassword get
+type PolyMount.Plugins.IContentVersionCache : 
+  method System.Boolean TryOpenVersioned(System.String, PolyMount.Plugins.VfsEntry, PolyMount.Plugins.VfsEntry&, System.IO.Stream&)
+type PolyMount.Plugins.ILayer : PolyMount.Plugins.IObjectLayer
+  method System.Boolean TryGetEntry(System.String, PolyMount.Plugins.VfsEntry&)
+  method System.Boolean TryOpenRead(System.String, PolyMount.Plugins.VfsEntry&, System.IO.Stream&)
+  method System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.VfsEntry> ListOwn(System.String)
+  property System.Boolean Writable get
+  property System.String Generation get
+  property System.String Name get
+type PolyMount.Plugins.ILayerActionHandler : 
+  method System.Boolean TryApplyAction(System.String, System.String)
+type PolyMount.Plugins.ILayerPlugin : PolyMount.Plugins.IPolyMountPlugin
+type PolyMount.Plugins.ILayerStorageUsage : 
+  method PolyMount.Plugins.LayerStorageUsage GetStorageUsage()
+type PolyMount.Plugins.ILocalSource : 
+type PolyMount.Plugins.ILowerChain : 
+  method System.Boolean DeleteReparsePoint(System.String)
+  method System.Boolean SetReparsePoint(System.String, System.Byte[])
+  method System.Boolean TryFindReparsePoint(System.String, System.Int32&)
+  method System.Boolean TryGetReparsePoint(System.String, System.Byte[]&)
+  method System.Boolean TryLookup(System.String, PolyMount.Plugins.VfsEntry&, System.Boolean)
+  method System.Collections.Generic.List<PolyMount.Plugins.VfsEntry> List(System.String, System.Boolean, System.Boolean, System.Boolean)
+  method System.IO.Stream OpenRead(System.String, PolyMount.Plugins.VfsEntry&, System.Boolean)
+  method System.IO.Stream OpenWrite(System.String, System.Boolean, PolyMount.Plugins.VfsEntry&)
+  method System.Void CheckDelete(System.String)
+  method System.Void CreateDirectory(System.String)
+  method System.Void Delete(System.String)
+  method System.Void InvalidateCaches()
+  method System.Void Rename(System.String, System.String, System.Boolean)
+  property PolyMount.Plugins.IRequestTracing Tracing get
+  property System.Boolean Writable get
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.ILayer> Layers get
+  property System.String Generation get
+type PolyMount.Plugins.ILowerChainLayer : 
+  method System.Void Attach(PolyMount.Plugins.ILowerChain)
+type PolyMount.Plugins.IMountAwareLayer : 
+  method System.Void Attach(PolyMount.Plugins.ILowerChain, System.Func<System.TimeSpan>)
+  method System.Void Start()
+  method System.Void Stop()
+  property PolyMount.Plugins.LayerProgress Progress get
+type PolyMount.Plugins.INamespaceStore : 
+type PolyMount.Plugins.IObjectCache : 
+  method System.Void StoreObject(System.String, PolyMount.Plugins.VirtualObject, System.IO.Stream)
+  method System.Void TouchObject(System.String)
+type PolyMount.Plugins.IObjectLayer : 
+  method System.Boolean TryApply(System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.ObjectChange>)
+  method System.Boolean TryReadObject(System.String, PolyMount.Plugins.VirtualObject&)
+type PolyMount.Plugins.IObjectManagement : 
+  method System.Void ReleaseObject(System.String)
+type PolyMount.Plugins.IPasswordAuthentication : 
+  property System.String Password get
+  property System.String UserName get
+type PolyMount.Plugins.IPluginContext : 
+  method System.Void RegisterCacheLayer(System.String, System.Func<PolyMount.Plugins.LayerConfig, PolyMount.Plugins.LayerBuildContext, T>, System.Action<PolyMount.Plugins.LayerConfig>, PolyMount.Plugins.LayerDescriptor)
+  method System.Void RegisterCommand(System.String, System.Action<PolyMount.Plugins.PluginCommand>)
+  method System.Void RegisterControlOperation(PolyMount.Plugins.Ipc.ControlOperation)
+  method System.Void RegisterCredentialConsumer(System.String, System.Func<PolyMount.Plugins.Credential, System.Boolean>)
+  method System.Void RegisterCredentialKind(PolyMount.Plugins.CredentialKindDescriptor)
+  method System.Void RegisterLayer(System.String, System.Func<PolyMount.Plugins.LayerConfig, PolyMount.Plugins.LayerBuildContext, PolyMount.Plugins.ILayer>, System.Action<PolyMount.Plugins.LayerConfig>, PolyMount.Plugins.LayerDescriptor)
+  method System.Void RegisterNotices(System.Func<PolyMount.Plugins.IPluginInstance, System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.PluginNotice>>)
+  method System.Void RegisterPanel(PolyMount.Plugins.PluginPanel)
+  method System.Void RegisterPredictionStrategy(System.String, System.Func<PolyMount.Plugins.PredictionStrategyContext, PolyMount.Plugins.IPredictionModel>)
+  method System.Void RegisterPreset(PolyMount.Plugins.LayerPreset)
+  method System.Void RegisterSource(System.String, System.Func<PolyMount.Plugins.SourceConfig, System.String, PolyMount.Plugins.ILayer>, System.Action<PolyMount.Plugins.SourceConfig>, PolyMount.Plugins.LayerDescriptor)
+type PolyMount.Plugins.IPluginInstance : 
+  method PolyMount.Plugins.Ipc.MountStatus GetStatus()
+  property System.Collections.Generic.IReadOnlyDictionary<System.String, PolyMount.Plugins.ILayer> Layers get
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.LayerConfig> LayerConfigs get
+  property System.String Id get
+  property System.String Name get
+type PolyMount.Plugins.IPluginMetadata : 
+  property PolyMount.Plugins.LocalizedText Description get
+  property PolyMount.Plugins.LocalizedText Title get
+  property System.String Icon get
+type PolyMount.Plugins.IPolyMountPlugin : 
+  method System.Void Register(PolyMount.Plugins.IPluginContext)
+type PolyMount.Plugins.IPredictionModel : System.IDisposable
+  method System.IDisposable Observe(System.String, System.Int64, System.Boolean)
+  method System.Void ReportGroup(System.String, System.Boolean)
+  method System.Void Reset()
+  method System.Void SetBurstThrottle(System.Int64, System.Double)
+  method System.Void SetSpatialThrottle(System.Int64, System.Double)
+  method System.Void SetThrottle(System.Int64, System.Double)
+  property PolyMount.Plugins.PredictionModelStats Stats get
+type PolyMount.Plugins.IPredictionModelHost : 
+  property PolyMount.Plugins.IPredictionModel Strategy get
+type PolyMount.Plugins.IReadLaneSource : 
+  property PolyMount.Plugins.ReadLaneGate Lanes get
+type PolyMount.Plugins.IRequestScope : System.IDisposable
+  method System.Void Stage(System.String)
+type PolyMount.Plugins.IRequestTracing : 
+  method PolyMount.Plugins.IRequestScope Begin(System.String, System.String)
+  property System.Int32 ProcessId get
+type PolyMount.Plugins.IRevisionSource : PolyMount.Plugins.ILayer, PolyMount.Plugins.IObjectLayer
+  method System.Int64 HeadRevision()
+  method System.Void SetRevision(System.Int64)
+  property System.Int64 Revision get
+type PolyMount.Plugins.Ipc.BrowserLogin : 
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LoginValue> Values get set
+  property System.String CredentialId get set
+  property System.String Url get set
+type PolyMount.Plugins.Ipc.BuildInfo : 
+  property System.Boolean Dev get set
+  property System.Boolean Installed get set
+  property System.Int32 ProcessId get set
+  property System.String Account get set
+  property System.String ConfigPath get set
+  property System.String Informational get set
+  property System.String PluginsDirectory get set
+  property System.String Revision get set
+  property System.String Root get set
+  property System.String Runtime get set
+  property System.String StartedUtc get set
+  property System.String System get set
+  property System.String Version get set
+  property System.String WinFsp get set
+type PolyMount.Plugins.Ipc.ControlCommands : 
+  field System.String Build static
+  field System.String CheckSource static
+  field System.String ClearCache static
+  field System.String ClearLocalChanges static
+  field System.String Credentials static
+  field System.String DeleteCredential static
+  field System.String GetConfig static
+  field System.String ImportPlugin static
+  field System.String Instances static
+  field System.String LayerAction static
+  field System.String Logs static
+  field System.String Metrics static
+  field System.String Mount static
+  field System.String PluginNotices static
+  field System.String PluginPanel static
+  field System.String PluginPanels static
+  field System.String Plugins static
+  field System.String Probe static
+  field System.String RecordingStart static
+  field System.String RecordingStatus static
+  field System.String RecordingStop static
+  field System.String RefreshHead static
+  field System.String ReleaseAbove static
+  field System.String Reload static
+  field System.String RemovePlugin static
+  field System.String SaveConfig static
+  field System.String SaveCredential static
+  field System.String SetEnabled static
+  field System.String SetPin static
+  field System.String SetPluginEnabled static
+  field System.String Shutdown static
+  field System.String Status static
+  field System.String Unmount static
+type PolyMount.Plugins.Ipc.ControlEffect : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.Ipc.ControlEffect Destructive static
+  field PolyMount.Plugins.Ipc.ControlEffect Read static
+  field PolyMount.Plugins.Ipc.ControlEffect Write static
+  field System.Int32 value__
+type PolyMount.Plugins.Ipc.ControlOperation : System.IEquatable<PolyMount.Plugins.Ipc.ControlOperation>
+  method PolyMount.Plugins.Ipc.ControlOperation <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.Ipc.ControlOperation)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, System.String&, System.String&, PolyMount.Plugins.Ipc.ControlEffect&, System.Boolean&, System.String&, System.Func`3[[PolyMount.Plugins.Ipc.IControlLink, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null],[PolyMount.Plugins.Ipc.ToolArguments, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null],[PolyMount.Plugins.Ipc.ControlResponse, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]&, System.Func`2[[PolyMount.Plugins.Ipc.ControlResponse, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null],[System.Object, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  property PolyMount.Plugins.Ipc.ControlEffect Effect get set
+  property System.Boolean Idempotent get set
+  property System.Func<PolyMount.Plugins.Ipc.ControlResponse, System.Object> Present get set
+  property System.Func<PolyMount.Plugins.Ipc.IControlLink, PolyMount.Plugins.Ipc.ToolArguments, PolyMount.Plugins.Ipc.ControlResponse> Invoke get set
+  property System.String Description get set
+  property System.String InputSchema get set
+  property System.String Name get set
+  property System.String Title get set
+type PolyMount.Plugins.Ipc.ControlRequest : 
+  property PolyMount.Plugins.Ipc.CredentialPayload Credential get set
+  property PolyMount.Plugins.SourceConfig Source get set
+  property System.Collections.Generic.List<System.String> ExpectedLayers get set
+  property System.Double WindowSeconds get set
+  property System.Int32 Boundary get set
+  property System.Int64 Rev get set
+  property System.Nullable<System.Boolean> Enabled get set
+  property System.Nullable<System.Boolean> PluginEnabled get set
+  property System.String Action get set
+  property System.String AssemblyPath get set
+  property System.String Cmd get set
+  property System.String Config get set
+  property System.String CredentialId get set
+  property System.String Label get set
+  property System.String Layer get set
+  property System.String Name get set
+  property System.String Path get set
+  property System.String Reason get set
+  property System.String SourcePath get set
+type PolyMount.Plugins.Ipc.ControlResponse : 
+  property PolyMount.Plugins.Ipc.BrowserLogin Login get set
+  property PolyMount.Plugins.Ipc.BuildInfo Build get set
+  property PolyMount.Plugins.Ipc.ProbeResult Probe get set
+  property PolyMount.Plugins.Ipc.RecordingSessionInfo Recording get set
+  property PolyMount.Plugins.Ipc.ServiceState State get set
+  property PolyMount.Plugins.PluginPanelView Panel get set
+  property PolyMount.Plugins.SourceCheckResult Check get set
+  property System.Boolean Dev get set
+  property System.Boolean Ok get set
+  property System.Collections.Generic.List<PolyMount.Plugins.CredentialKindDescriptor> CredentialKinds get set
+  property System.Collections.Generic.List<PolyMount.Plugins.CredentialRecord> Credentials get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.InstanceEndpoint> Instances get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LogFile> Logs get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.MountMetrics> Metrics get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.MountStatus> Mounts get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.PluginFileView> PluginFiles get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.PluginView> Plugins get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerDescriptor> LayerDescriptors get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerPreset> Presets get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginNotice> Notices get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginPanelDescriptor> Panels get set
+  property System.Collections.Generic.List<System.String> CredentialConsumers get set
+  property System.Collections.Generic.List<System.String> SourceTypes get set
+  property System.Int64 Revision get set
+  property System.String Config get set
+  property System.String ConfigPath get set
+  property System.String Error get set
+  property System.String PluginDirectory get set
+  property System.String Result get set
+  property System.String SecurityWarning get set
+type PolyMount.Plugins.Ipc.CredentialPayload : 
+  property System.Collections.Generic.Dictionary<System.String, System.String> Values get set
+  property System.Collections.Generic.List<System.String> Origins get set
+  property System.String Certificate get set
+  property System.String CertificatePassword get set
+  property System.String Id get set
+  property System.String Kind get set
+  property System.String Name get set
+  property System.String Password get set
+  property System.String Username get set
+type PolyMount.Plugins.Ipc.FailureKinds : 
+  field System.String Auth static
+  field System.String Origin static
+  field System.String Startup static
+type PolyMount.Plugins.Ipc.IControlLink : 
+  method PolyMount.Plugins.Ipc.ControlResponse ForPath(System.String, PolyMount.Plugins.Ipc.ControlRequest)
+  method PolyMount.Plugins.Ipc.ControlResponse Instance(System.String, PolyMount.Plugins.Ipc.ControlRequest)
+  method PolyMount.Plugins.Ipc.ControlResponse Status()
+  method PolyMount.Plugins.Ipc.ControlResponse Supervisor(PolyMount.Plugins.Ipc.ControlRequest)
+  method System.Collections.Generic.List<PolyMount.Plugins.Ipc.MountMetrics> Metrics(System.Double, System.String)
+  method System.String OwnerOf(System.String)
+type PolyMount.Plugins.Ipc.InstanceEndpoint : 
+  property System.Int32 WorkerPid get set
+  property System.String Id get set
+  property System.String MountPoint get set
+  property System.String Name get set
+  property System.String Pipe get set
+  property System.String StartedUtc get set
+type PolyMount.Plugins.Ipc.LayerActions : 
+  field System.String DropLocal static
+  field System.String EvictCache static
+type PolyMount.Plugins.Ipc.LayerMetric : 
+  property System.Boolean Accelerating get set
+  property System.Boolean Predictive get set
+  property System.Double AccessSharePercent get set
+  property System.Double AvgCostMs get set
+  property System.Double AvgWriteCostMs get set
+  property System.Double MaxCostMs get set
+  property System.Double MaxWriteCostMs get set
+  property System.Double SharePercent get set
+  property System.Int64 AcceleratedBytes get set
+  property System.Int64 Bytes get set
+  property System.Int64 FetchedBytes get set
+  property System.Int64 HeldCount get set
+  property System.Int64 HeldUsed get set
+  property System.Int64 HeldWasted get set
+  property System.Int64 HeldWastedBytes get set
+  property System.Int64 Hits get set
+  property System.Int64 WriteBytes get set
+  property System.Int64 Writes get set
+  property System.String Color get set
+  property System.String DisplayName get set
+  property System.String Name get set
+type PolyMount.Plugins.Ipc.LayerProbe : 
+  property System.Boolean Effective get set
+  property System.Boolean Exists get set
+  property System.Boolean IsDir get set
+  property System.Boolean Manageable get set
+  property System.Boolean Shadowed get set
+  property System.Boolean Writable get set
+  property System.Int64 Size get set
+  property System.String Color get set
+  property System.String Generation get set
+  property System.String Name get set
+  property System.String State get
+  property System.String Type get set
+type PolyMount.Plugins.Ipc.LogFile : 
+  property System.Int64 Bytes get set
+  property System.String Name get set
+  property System.String Source get set
+type PolyMount.Plugins.Ipc.LoginValue : 
+  property System.String Cookie get set
+  property System.String Field get set
+type PolyMount.Plugins.Ipc.MountCaller : 
+  property System.Double SecondsAgo get set
+  property System.Int32 Pid get set
+  property System.String ImagePath get set
+  property System.String Name get set
+  property System.String StartedUtc get set
+type PolyMount.Plugins.Ipc.MountMetrics : 
+  property PolyMount.Plugins.LocalizedText PredictiveWasted get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LayerMetric> Layers get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ProcessLayerCount> Unattributed get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ProcessMetric> Processes get set
+  property System.Double AvgCostMs get set
+  property System.Double AvgWriteCostMs get set
+  property System.Double CacheHitPercent get set
+  property System.Double MeasuredSeconds get set
+  property System.Double RequestMs get set
+  property System.Double WindowSeconds get set
+  property System.Int64 LockContention get set
+  property System.Int64 RequestCount get set
+  property System.Int64 TotalReads get set
+  property System.Int64 TotalWrites get set
+  property System.String Mount get set
+type PolyMount.Plugins.Ipc.MountStatus : 
+  property PolyMount.Plugins.LocalizedText WarmupDetail get set
+  property System.Boolean Enabled get set
+  property System.Boolean Failed get set
+  property System.Boolean Mounted get set
+  property System.Boolean Recording get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.MountCaller> Callers get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ProviderInfo> Providers get set
+  property System.Int32 CacheCount get set
+  property System.Int32 Restarts get set
+  property System.Int32 WorkerPid get set
+  property System.Int64 CacheBytes get set
+  property System.Int64 CacheCapacity get set
+  property System.Int64 Revision get set
+  property System.Int64 WarmedDirectories get set
+  property System.Int64 WarmupLimit get set
+  property System.Int64 WorkingSetBytes get set
+  property System.String Error get set
+  property System.String ErrorKind get set
+  property System.String MountPoint get set
+  property System.String Name get set
+  property System.String Pipe get set
+  property System.String RecordingStartedUtc get set
+  property System.String SourceType get set
+  property System.String Url get set
+type PolyMount.Plugins.Ipc.OperationCount : 
+  property System.Double MaxMs get set
+  property System.Double TotalMs get set
+  property System.Int64 Count get set
+  property System.Int64 Over100 get set
+  property System.String Operation get set
+type PolyMount.Plugins.Ipc.PathCount : 
+  property System.Double MaxMs get set
+  property System.Double TotalMs get set
+  property System.Int64 Count get set
+  property System.String Operation get set
+  property System.String Path get set
+type PolyMount.Plugins.Ipc.PluginFileView : 
+  property System.Boolean InUse get set
+  property System.Int64 Size get set
+  property System.String FullPath get set
+  property System.String ModifiedUtc get set
+  property System.String Name get set
+  property System.String Version get set
+type PolyMount.Plugins.Ipc.PluginView : 
+  property PolyMount.Plugins.LocalizedText Description get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean Enabled get set
+  property System.Boolean HasManifest get set
+  property System.Boolean Loaded get set
+  property System.Boolean Present get set
+  property System.Collections.Generic.List<System.String> Commands get set
+  property System.Collections.Generic.List<System.String> CredentialKinds get set
+  property System.Collections.Generic.List<System.String> LayerTypes get set
+  property System.Collections.Generic.List<System.String> Operations get set
+  property System.Collections.Generic.List<System.String> Panels get set
+  property System.Collections.Generic.List<System.String> Permissions get set
+  property System.Collections.Generic.List<System.String> Presets get set
+  property System.Collections.Generic.List<System.String> Roles get set
+  property System.Collections.Generic.List<System.String> SourceTypes get set
+  property System.Collections.Generic.List<System.String> Strategies get set
+  property System.String ApiVersion get set
+  property System.String AssemblyPath get set
+  property System.String Error get set
+  property System.String FileName get set
+  property System.String FullPath get set
+  property System.String Icon get set
+  property System.String Id get set
+  property System.String Version get set
+type PolyMount.Plugins.Ipc.ProbeResult : 
+  property PolyMount.Plugins.LocalizedText PredictiveWasted get set
+  property System.Boolean Found get set
+  property System.Boolean IsDir get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.LayerProbe> Layers get set
+  property System.String EffectiveColor get set
+  property System.String EffectiveIcon get set
+  property System.String EffectiveLayer get set
+  property System.String Mount get set
+  property System.String MountPoint get set
+  property System.String Rel get set
+type PolyMount.Plugins.Ipc.ProcessLayerCost : 
+  property System.Double MaxMs get set
+  property System.Double TotalMs get set
+  property System.Int32 Pid get set
+  property System.Int64 Count get set
+  property System.Int64 Over100 get set
+  property System.String Layer get set
+  property System.String Process get set
+type PolyMount.Plugins.Ipc.ProcessLayerCount : 
+  property System.Int64 Reads get set
+  property System.Int64 Writes get set
+  property System.String Name get set
+type PolyMount.Plugins.Ipc.ProcessMetric : 
+  property System.Boolean Other get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ProcessLayerCount> ByLayer get set
+  property System.Int32 Pid get set
+  property System.Int64 ReadBytes get set
+  property System.Int64 Reads get set
+  property System.Int64 WriteBytes get set
+  property System.Int64 Writes get set
+  property System.String Color get set
+  property System.String Name get set
+type PolyMount.Plugins.Ipc.ProviderInfo : 
+  property PolyMount.Plugins.LayerStorageUsage StorageUsage get set
+  property PolyMount.Plugins.LocalizedText MemoryDetail get set
+  property PolyMount.Plugins.LocalizedText PredictionDetail get set
+  property System.Boolean Writable get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ReadLaneStat> ReadLanes get set
+  property System.Int32 BurstClosedGroups get set
+  property System.Int32 BurstGroups get set
+  property System.Int32 PredictionStreams get set
+  property System.Int32 SiblingDirectories get set
+  property System.Int64 BlockCacheHits get set
+  property System.Int64 BlockCacheMisses get set
+  property System.Int64 BlockWriteBacks get set
+  property System.Int64 BurstCompleted get set
+  property System.Int64 BurstHits get set
+  property System.Int64 BurstPreloads get set
+  property System.Int64 BurstWasted get set
+  property System.Int64 HeldBytes get set
+  property System.Int64 HeldCapacity get set
+  property System.Int64 HeldHits get set
+  property System.Int64 HeldWasted get set
+  property System.Int64 Invalidated get set
+  property System.Int64 LearnedTransitions get set
+  property System.Int64 PreloadsCompleted get set
+  property System.Int64 PreloadsStarted get set
+  property System.Int64 SiblingCompleted get set
+  property System.Int64 SiblingHits get set
+  property System.Int64 SiblingPreloads get set
+  property System.Int64 SiblingWasted get set
+  property System.Int64 SpatialCompleted get set
+  property System.Int64 SpatialHits get set
+  property System.Int64 SpatialPreloads get set
+  property System.Int64 SpatialWasted get set
+  property System.String Color get set
+  property System.String DisplayName get set
+  property System.String Generation get set
+  property System.String Name get set
+  property System.String StorageError get set
+  property System.String Type get set
+type PolyMount.Plugins.Ipc.ReadLaneStat : 
+  property System.Double WaitMs get set
+  property System.Int32 Ceiling get set
+  property System.Int32 Floor get set
+  property System.Int32 InFlight get set
+  property System.Int32 Priority get set
+  property System.Int32 Queued get set
+  property System.Int64 Promotions get set
+  property System.Int64 Requests get set
+type PolyMount.Plugins.Ipc.RecordingCounts : 
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.OperationCount> Operations get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.PathCount> Paths get set
+  property System.Collections.Generic.List<PolyMount.Plugins.Ipc.ProcessLayerCost> ProcessLayers get set
+  property System.Double MaxMs get set
+  property System.Double MsUnlisted get set
+  property System.Double TotalMs get set
+  property System.Int64 Events get set
+  property System.Int64 EventsUnlisted get set
+  property System.Int64 Over100 get set
+  property System.Int64 PathsUnlisted get set
+  property System.Int64 ProcessLayersUnlisted get set
+type PolyMount.Plugins.Ipc.RecordingSessionInfo : 
+  property PolyMount.Plugins.Ipc.RecordingCounts Counts get set
+  property System.Boolean Active get set
+  property System.String Error get set
+  property System.String Label get set
+  property System.String Mount get set
+  property System.String ServiceInstanceId get set
+  property System.String SessionId get set
+  property System.String StartedUtc get set
+  property System.String StoppedReason get set
+  property System.String StoppedUtc get set
+type PolyMount.Plugins.Ipc.ServiceState : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.Ipc.ServiceState Running static
+  field PolyMount.Plugins.Ipc.ServiceState Stopping static
+  field System.Int32 value__
+type PolyMount.Plugins.Ipc.ToolArguments : 
+  method System.Boolean Bool(System.String)
+  method System.Boolean Has(System.String)
+  method System.Collections.Generic.IReadOnlyList<System.String> StringList(System.String)
+  method System.Double Double(System.String)
+  method System.Int64 Long(System.String)
+  method System.Nullable<System.Boolean> OptionalBool(System.String)
+  method System.String Json(System.String)
+  method System.String OptionalString(System.String)
+  method System.String String(System.String)
+  property PolyMount.Plugins.Ipc.ToolArguments None get
+type PolyMount.Plugins.LayerActionDescriptor : 
+  property PolyMount.Plugins.LocalizedText Confirmation get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.String Command get set
+  property System.String Field get set
+type PolyMount.Plugins.LayerBuildContext : System.IEquatable<PolyMount.Plugins.LayerBuildContext>
+  method PolyMount.Plugins.LayerBuildContext <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.LayerBuildContext)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, System.String&, System.Func`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]]&)
+  property System.Func<System.String> LowerGeneration get set
+  property System.String State get set
+  property System.String Storage get set
+type PolyMount.Plugins.LayerConfig : 
+  property PolyMount.Plugins.SourceConfig Source get set
+  property System.Boolean Compression get set
+  property System.Boolean Enabled get set
+  property System.Collections.Generic.Dictionary<System.String, System.Text.Json.JsonElement> Parameters get set
+  property System.Int64 CacheCapacityBytes get set
+  property System.String Color get set
+  property System.String Id get set
+  property System.String Name get set
+  property System.String Path get set
+  property System.String Type get set
+type PolyMount.Plugins.LayerDescriptor : 
+  property PolyMount.Plugins.LocalizedText Description get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerActionDescriptor> Actions get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerFieldDescriptor> Fields get set
+  property System.String Icon get set
+  property System.String Type get set
+type PolyMount.Plugins.LayerFieldChoice : 
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.String Value get set
+type PolyMount.Plugins.LayerFieldDescriptor : 
+  property PolyMount.Plugins.LayerFieldKind Kind get set
+  property PolyMount.Plugins.LocalizedText Description get set
+  property PolyMount.Plugins.LocalizedText Placeholder get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean EmptyIsNull get set
+  property System.Boolean Required get set
+  property System.Boolean Trim get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerFieldChoice> Choices get set
+  property System.Int64 Scale get set
+  property System.Nullable<System.Int64> Maximum get set
+  property System.Nullable<System.Int64> Minimum get set
+  property System.String DefaultValue get set
+  property System.String Path get set
+type PolyMount.Plugins.LayerFieldKind : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.LayerFieldKind Boolean static
+  field PolyMount.Plugins.LayerFieldKind Choice static
+  field PolyMount.Plugins.LayerFieldKind Credential static
+  field PolyMount.Plugins.LayerFieldKind Integer static
+  field PolyMount.Plugins.LayerFieldKind Secret static
+  field PolyMount.Plugins.LayerFieldKind Text static
+  field System.Int32 value__
+type PolyMount.Plugins.LayerPreset : 
+  property System.Collections.Generic.Dictionary<System.String, System.String> Titles get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LayerConfig> Layers get set
+  property System.String Id get set
+type PolyMount.Plugins.LayerProgress : System.IEquatable<PolyMount.Plugins.LayerProgress>
+  method PolyMount.Plugins.LayerProgress <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.LayerProgress)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int64&, System.Int64&, PolyMount.Plugins.LocalizedText&)
+  property PolyMount.Plugins.LocalizedText Detail get set
+  property System.Int64 Completed get set
+  property System.Int64 Total get set
+type PolyMount.Plugins.LayerProperties : 
+  method System.String Read(PolyMount.Plugins.LayerConfig, PolyMount.Plugins.LayerFieldDescriptor) static
+  method System.Void Apply(PolyMount.Plugins.LayerConfig, System.Collections.Generic.IEnumerable<System.ValueTuple<PolyMount.Plugins.LayerFieldDescriptor, System.String>>) static
+type PolyMount.Plugins.LayerStorageUsage : System.IEquatable<PolyMount.Plugins.LayerStorageUsage>
+  method PolyMount.Plugins.LayerStorageUsage <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.LayerStorageUsage)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int64&, System.Int64&, System.Int32&, System.Int32&, System.Int64&, System.Int64&, System.Int64&, System.Int32&, System.Int64&, PolyMount.Plugins.LookupProfile&)
+  property PolyMount.Plugins.LookupProfile Lookups get set
+  property System.Int32 DirectoryObjects get set
+  property System.Int32 DurableObjects get set
+  property System.Int32 FileObjects get set
+  property System.Int64 CacheBytes get set
+  property System.Int64 CacheCapacity get set
+  property System.Int64 DiskBytes get set
+  property System.Int64 DurableBytes get set
+  property System.Int64 MemoryBytes get set
+  property System.Int64 ObjectBytes get set
+type PolyMount.Plugins.LocalizedText : 
+  method System.String Resolve(System.String)
+  property System.Collections.Generic.Dictionary<System.String, System.String> Values get set
+type PolyMount.Plugins.LookupProfile : System.IEquatable<PolyMount.Plugins.LookupProfile>
+  method PolyMount.Plugins.LookupProfile <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.LookupProfile)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&)
+  property System.Int64 Calls get set
+  property System.Int64 ExistsChecks get set
+  property System.Int64 ExistsUs get set
+  property System.Int64 GateWaitUs get set
+  property System.Int64 LoadUs get set
+  property System.Int64 MaxUs get set
+  property System.Int64 TotalUs get set
+type PolyMount.Plugins.ObjectChange : System.IEquatable<PolyMount.Plugins.ObjectChange>
+  method PolyMount.Plugins.ObjectChange <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.ObjectChange)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, PolyMount.Plugins.VirtualObject&, System.IO.Stream&)
+  property PolyMount.Plugins.VirtualObject Object get set
+  property System.IO.Stream Content get set
+  property System.String Path get set
+type PolyMount.Plugins.ObjectContent : 
+  method PolyMount.Plugins.CacheContent RetainBytes(System.IO.Stream)
+  method PolyMount.Plugins.ObjectContent Snapshot()
+  method System.IO.Stream OpenRead()
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.VfsEntry> Entries get
+  property System.Int64 EstimatedMemoryBytes get
+  property System.Int64 LogicalBytes get
+  property System.Int64 PersistenceEstimate get
+type PolyMount.Plugins.PasswordCredential : PolyMount.Plugins.Credential, PolyMount.Plugins.IPasswordAuthentication
+  property System.String Kind get
+  property System.String Password get set
+type PolyMount.Plugins.PluginApi : 
+  field System.String Version static
+  method System.Boolean IsCompatible(System.String) static
+  method System.ValueTuple<System.Int32, System.Int32> Parse(System.String) static
+  property System.Int32 Major get
+  property System.Int32 Minor get
+type PolyMount.Plugins.PluginApiAttribute : 
+  property System.String Version get
+type PolyMount.Plugins.PluginCommand : System.IEquatable<PolyMount.Plugins.PluginCommand>
+  method PolyMount.Plugins.PluginCommand <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.PluginCommand)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(PolyMount.Plugins.IPluginInstance&, System.String&, PolyMount.Plugins.Ipc.ControlRequest&, PolyMount.Plugins.Ipc.ControlResponse&)
+  property PolyMount.Plugins.IPluginInstance Instance get set
+  property PolyMount.Plugins.Ipc.ControlRequest Request get set
+  property PolyMount.Plugins.Ipc.ControlResponse Response get set
+  property System.String Rel get set
+type PolyMount.Plugins.PluginManifest : 
+  field System.String EmbeddedResourceName static
+  method PolyMount.Plugins.PluginManifest Read(System.String, System.String&) static
+  method System.String PathFor(System.String) static
+  property PolyMount.Plugins.LocalizedText Detail get
+  property PolyMount.Plugins.LocalizedText Title get
+  property PolyMount.Plugins.PluginRoles RoleSet get
+  property System.Collections.Generic.Dictionary<System.String, System.String> Description get set
+  property System.Collections.Generic.Dictionary<System.String, System.String> Name get set
+  property System.Collections.Generic.List<System.String> Permissions get set
+  property System.Collections.Generic.List<System.String> Roles get set
+  property System.Int32 SchemaVersion get set
+  property System.String HostRange get set
+  property System.String Icon get set
+  property System.String Id get set
+  property System.String License get set
+  property System.String Publisher get set
+type PolyMount.Plugins.PluginNotice : System.IEquatable<PolyMount.Plugins.PluginNotice>
+  method PolyMount.Plugins.PluginNotice <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.PluginNotice)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, PolyMount.Plugins.LocalizedText&, PolyMount.Plugins.LocalizedText&, PolyMount.Plugins.LocalizedText&, PolyMount.Plugins.Ipc.ControlRequest&, System.Boolean&)
+  property PolyMount.Plugins.Ipc.ControlRequest Action get set
+  property PolyMount.Plugins.LocalizedText ActionLabel get set
+  property PolyMount.Plugins.LocalizedText Body get set
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean Automatic get set
+  property System.String Id get set
+type PolyMount.Plugins.PluginPanel : System.IEquatable<PolyMount.Plugins.PluginPanel>
+  method PolyMount.Plugins.PluginPanel <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.PluginPanel)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.String&, PolyMount.Plugins.LocalizedText&, System.String&, System.Func`2[[PolyMount.Plugins.IPluginInstance, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null],[PolyMount.Plugins.PluginPanelView, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]&, System.Boolean&)
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean OwnPage get set
+  property System.Func<PolyMount.Plugins.IPluginInstance, PolyMount.Plugins.PluginPanelView> Render get set
+  property System.String Icon get set
+  property System.String Id get set
+type PolyMount.Plugins.PluginPanelAction : 
+  property PolyMount.Plugins.Ipc.ControlRequest Request get set
+  property PolyMount.Plugins.LocalizedText Confirm get set
+  property PolyMount.Plugins.LocalizedText Label get set
+  property PolyMount.Plugins.PluginPanelInput Input get set
+  property System.String Icon get set
+  property System.String Id get set
+type PolyMount.Plugins.PluginPanelDescriptor : 
+  property PolyMount.Plugins.LocalizedText Title get set
+  property System.Boolean OwnPage get set
+  property System.String Icon get set
+  property System.String Id get set
+type PolyMount.Plugins.PluginPanelFact : 
+  property PolyMount.Plugins.LocalizedText Label get set
+  property PolyMount.Plugins.LocalizedText Value get set
+type PolyMount.Plugins.PluginPanelInput : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.PluginPanelInput Directory static
+  field PolyMount.Plugins.PluginPanelInput File static
+  field PolyMount.Plugins.PluginPanelInput None static
+  field System.Int32 value__
+type PolyMount.Plugins.PluginPanelRow : 
+  property PolyMount.Plugins.LocalizedText Tooltip get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginPanelAction> Actions get set
+  property System.Collections.Generic.List<System.String> Cells get set
+  property System.String Id get set
+type PolyMount.Plugins.PluginPanelView : 
+  property PolyMount.Plugins.LocalizedText Empty get set
+  property PolyMount.Plugins.LocalizedText Error get set
+  property PolyMount.Plugins.LocalizedText Summary get set
+  property System.Collections.Generic.List<PolyMount.Plugins.LocalizedText> Columns get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginPanelAction> Actions get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginPanelFact> Facts get set
+  property System.Collections.Generic.List<PolyMount.Plugins.PluginPanelRow> Rows get set
+type PolyMount.Plugins.PluginRoleNames : 
+  field System.String Backend static
+  field System.String Frontend static
+  method System.Boolean TryParse(System.Collections.Generic.IEnumerable<System.String>, PolyMount.Plugins.PluginRoles&, System.String&) static
+  method System.Collections.Generic.IReadOnlyList<System.String> Names(PolyMount.Plugins.PluginRoles) static
+type PolyMount.Plugins.PluginRoles : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.PluginRoles Backend static
+  field PolyMount.Plugins.PluginRoles Both static
+  field PolyMount.Plugins.PluginRoles Frontend static
+  field PolyMount.Plugins.PluginRoles None static
+  field System.Int32 value__
+type PolyMount.Plugins.PredictionModelStats : System.ValueType, System.IEquatable<PolyMount.Plugins.PredictionModelStats>
+  method System.Boolean Equals(PolyMount.Plugins.PredictionModelStats)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int64&, System.Int32&, System.Int32&, System.Int32&, System.Int32&)
+  property System.Int32 ActiveStreams get set
+  property System.Int32 ClosedGroups get set
+  property System.Int32 Groups get set
+  property System.Int32 TrackedDirectories get set
+  property System.Int64 BurstCompleted get set
+  property System.Int64 BurstPredictions get set
+  property System.Int64 Completed get set
+  property System.Int64 Learned get set
+  property System.Int64 Predictions get set
+  property System.Int64 SiblingCompleted get set
+  property System.Int64 SiblingPredictions get set
+  property System.Int64 SpatialCompleted get set
+  property System.Int64 SpatialPredictions get set
+type PolyMount.Plugins.PredictionStrategyContext : System.IEquatable<PolyMount.Plugins.PredictionStrategyContext>
+  method PolyMount.Plugins.PredictionStrategyContext <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.PredictionStrategyContext)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(PolyMount.Plugins.ILowerChain&, System.String&, PolyMount.Plugins.PreloadRequest&, PolyMount.Plugins.PredictionTuning&, System.Collections.Generic.IReadOnlyDictionary`2[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Text.Json.JsonElement, System.Text.Json, Version=10.0.0.0, Culture=neutral, PublicKeyToken=cc7b13ffcd2ddd51]]&)
+  property PolyMount.Plugins.ILowerChain Lower get set
+  property PolyMount.Plugins.PredictionTuning Tuning get set
+  property PolyMount.Plugins.PreloadRequest Preload get set
+  property System.Collections.Generic.IReadOnlyDictionary<System.String, System.Text.Json.JsonElement> Parameters get set
+  property System.String ModelPath get set
+type PolyMount.Plugins.PredictionTuning : System.IEquatable<PolyMount.Plugins.PredictionTuning>
+  method PolyMount.Plugins.PredictionTuning <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.PredictionTuning)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int64&, System.Int32&, System.Int32&)
+  property System.Int32 FeedbackSamples get set
+  property System.Int32 FeedbackWindowMs get set
+  property System.Int64 MaxFileBytes get set
+type PolyMount.Plugins.PreloadOrigin : System.Enum, System.IComparable, System.IConvertible, System.IFormattable, System.ISpanFormattable
+  field PolyMount.Plugins.PreloadOrigin Burst static
+  field PolyMount.Plugins.PreloadOrigin Sibling static
+  field PolyMount.Plugins.PreloadOrigin Spatial static
+  field PolyMount.Plugins.PreloadOrigin Table static
+  field System.Byte value__
+type PolyMount.Plugins.PreloadRequest : System.MulticastDelegate, System.ICloneable, System.Runtime.Serialization.ISerializable
+  method System.Boolean EndInvoke(System.IAsyncResult)
+  method System.Boolean Invoke(System.String, System.Int64, PolyMount.Plugins.PreloadOrigin, System.String)
+  method System.IAsyncResult BeginInvoke(System.String, System.Int64, PolyMount.Plugins.PreloadOrigin, System.String, System.AsyncCallback, System.Object)
+type PolyMount.Plugins.ReadLaneGate : 
+  method PolyMount.Plugins.ReadLaneGate+Admission Begin(System.Int32)
+  method System.Collections.Generic.List<PolyMount.Plugins.Ipc.ReadLaneStat> Snapshot()
+  method System.IDisposable Enter(System.Int32)
+  property System.Int32 Capacity get
+  property System.Int32 Levels get
+type PolyMount.Plugins.ReadLaneGate+Admission : System.IDisposable
+  method System.IDisposable Admit()
+  method System.Void Dispose()
+  method System.Void Promote(System.Int32)
+  property System.Int32 Priority get
+type PolyMount.Plugins.ReadLevel : System.ValueType, System.IEquatable<PolyMount.Plugins.ReadLevel>
+  method System.Boolean Equals(PolyMount.Plugins.ReadLevel)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Int32&, System.Int32&)
+  property System.Int32 Ceiling get set
+  property System.Int32 Floor get set
+type PolyMount.Plugins.ReadPriority : 
+  field System.Int32 Demand static
+  field System.Int32 Speculative static
+  method System.IDisposable Enter(System.Int32) static
+  property System.Int32 Ambient get
+type PolyMount.Plugins.RequestTracing : 
+  method PolyMount.Plugins.IRequestScope Begin(System.String, System.String, PolyMount.Plugins.IRequestTracing) static
+  method System.Int32 ProcessOfStream(System.Int64) static
+  property PolyMount.Plugins.IRequestTracing Ambient get
+  property System.Func<PolyMount.Plugins.IRequestTracing> AmbientSource get set
+type PolyMount.Plugins.SourceCheckKinds : 
+  field System.String Auth static
+  field System.String Invalid static
+  field System.String Ok static
+  field System.String Origin static
+  field System.String Unreachable static
+type PolyMount.Plugins.SourceCheckResult : System.IEquatable<PolyMount.Plugins.SourceCheckResult>
+  method PolyMount.Plugins.SourceCheckResult <Clone>$()
+  method System.Boolean Equals(PolyMount.Plugins.SourceCheckResult)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(System.Boolean&, System.String&, System.String&, System.Int32&, System.Double&)
+  property System.Boolean Ok get set
+  property System.Double Milliseconds get set
+  property System.Int32 Entries get set
+  property System.String Kind get set
+  property System.String Message get set
+type PolyMount.Plugins.SourceConfig : 
+  property System.Boolean AllowInsecureTransport get set
+  property System.Boolean VerifyOnly get set
+  property System.Boolean Writable get set
+  property System.Collections.Generic.Dictionary<System.String, System.Text.Json.JsonElement> Parameters get set
+  property System.Int64 PinnedRevision get set
+  property System.String CredentialId get set
+  property System.String Password get set
+  property System.String Path get set
+  property System.String TrustServerCertFailures get set
+  property System.String Type get set
+  property System.String Url get set
+  property System.String Username get set
+type PolyMount.Plugins.VfsDirectoryNotEmptyException : System.IO.IOException, System.Runtime.Serialization.ISerializable
+  property System.String Rel get
+type PolyMount.Plugins.VfsEntry : 
+  property System.Boolean IsDir get set
+  property System.Boolean IsReparsePoint get set
+  property System.DateTime TimeUtc get set
+  property System.Int64 Size get set
+  property System.String ContentVersion get set
+  property System.String Name get set
+  property System.UInt32 ReparseTag get set
+type PolyMount.Plugins.VfsNameCollisionException : System.IO.IOException, System.Runtime.Serialization.ISerializable
+  property System.String Rel get
+type PolyMount.Plugins.VfsNotFoundException : System.Exception, System.Runtime.Serialization.ISerializable
+  property System.String Rel get
+type PolyMount.Plugins.VfsPath : 
+  method System.String Child(System.String, System.String) static
+  method System.String Name(System.String) static
+  method System.String Normalize(System.String) static
+  method System.String Parent(System.String) static
+type PolyMount.Plugins.VirtualObject : System.IEquatable<PolyMount.Plugins.VirtualObject>
+  method PolyMount.Plugins.VirtualObject <Clone>$()
+  method PolyMount.Plugins.VirtualObject Directory(System.String, System.Collections.Generic.IEnumerable<PolyMount.Plugins.VfsEntry>) static
+  method PolyMount.Plugins.VirtualObject HeaderOnly(PolyMount.Plugins.VfsEntry) static
+  method PolyMount.Plugins.VirtualObject Snapshot()
+  method PolyMount.Plugins.VirtualObject WithContent(PolyMount.Plugins.VfsEntry, PolyMount.Plugins.ObjectContent) static
+  method System.Boolean Equals(PolyMount.Plugins.VirtualObject)
+  method System.Boolean Equals(System.Object)
+  method System.Int32 GetHashCode()
+  method System.String ToString()
+  method System.Void Deconstruct(PolyMount.Plugins.VfsEntry&, System.Collections.Generic.IReadOnlyList`1[[PolyMount.Plugins.VfsEntry, PolyMount.Plugin.Abstractions, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]&)
+  property PolyMount.Plugins.ObjectContent Content get
+  property PolyMount.Plugins.VfsEntry Header get set
+  property System.Collections.Generic.IReadOnlyList<PolyMount.Plugins.VfsEntry> Children get set

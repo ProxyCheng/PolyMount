@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Stop','Install','Uninstall','Check')][string]$Action,
+    [ValidateSet('Stop','Install','Uninstall','Check','Discover','ApplyPlugins')][string]$Action,
     [string]$InstallDirectory,
     [switch]$UserAccount,
     # ';'-separated file names of the bundled plugins the wizard selected.
@@ -8,11 +8,21 @@ param(
     # ';'-separated file names of every bundled plugin this setup manages. Both lists are built
     # from one table in the installer script, so neither side has to enumerate a directory and
     # infer which of its contents the operator was ever asked about.
-    [string]$Managed = ''
+    [string]$Managed = '',
+    # ';'-separated file names of the plugins found in the installation that this setup does *not*
+    # ship, which the wizard's plugin page left checked. Their presence is what says the operator
+    # was asked; a run that names no -Keep (a silent install, a hand-run Install) keeps them all.
+    [string]$Keep = '',
+    # Where Discover writes what it found: one line per plugin, tab separated — file name, English
+    # name, Chinese name. The wizard reads it, because Pascal Script cannot read a manifest.
+    [string]$Output = '',
+    # The configuration the plugin decision is applied to. The setup leaves it at the default; a
+    # test points it at a scratch file rather than at the machine's own installation.
+    [string]$ConfigPath = ''
 )
 $ErrorActionPreference = 'Stop'
 $data = Join-Path $env:ProgramData 'PolyMount'
-$config = Join-Path $data 'config.json'
+$config = if ($ConfigPath) { $ConfigPath } else { Join-Path $data 'config.json' }
 $service = Get-Service -Name PolyMount -ErrorAction SilentlyContinue
 $pluginDirectory = Join-Path $InstallDirectory 'Service\plugins'
 
@@ -29,6 +39,7 @@ function Get-InstalledPlugins {
 }
 
 $managedFiles = if ($Managed) { Split-List $Managed } else { Get-InstalledPlugins }
+$keepWasGiven = $PSBoundParameters.ContainsKey('Keep')
 $selectedFiles = if ($PSBoundParameters.ContainsKey('Plugins')) { Split-List $Plugins } else { $managedFiles }
 
 function Test-PluginPresent([string]$file) {
@@ -43,6 +54,119 @@ function Get-PluginEntry([string]$file) {
 
 function ConvertTo-PluginKey([string]$path) {
     ([string]$path).Replace('\', '/').ToLowerInvariant()
+}
+
+function Get-PluginMarker([string]$path) {
+    # Whether this file says it is a plugin, and which contract it was built against, in the one
+    # place the setup can read: the assembly's version resource. A plugin is one file now, so its
+    # manifest is embedded and unreadable from here, and loading the assembly to ask is not an
+    # option — this script runs under Windows PowerShell, which cannot load a .NET 10 assembly at
+    # all, and a plugin built against another contract is exactly the assembly nobody should load.
+    # The build stamps "PolyMount plugin; contract=x.y" into the description, which is visible in
+    # Explorer's properties as well.
+    try {
+        $info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($path)
+        if ($info.Comments -match 'PolyMount plugin; contract=([0-9]+\.[0-9]+)') { $Matches[1] } else { '' }
+    } catch { '' }
+}
+
+function Test-PluginFile([string]$path) {
+    # A single-file plugin is recognised by that marker; one published with its manifest beside it
+    # -- everything built before the manifest moved inside -- is recognised the way it always was.
+    (Get-PluginMarker $path) -ne '' -or
+        (Test-Path -LiteralPath ([IO.Path]::ChangeExtension($path, $null).TrimEnd('.') + '.plugin.json'))
+}
+
+function Get-ExtraPlugins {
+    # Plugins in the installation's folder that this setup does not ship: a private or third-party
+    # plugin someone put there. A stray dependency DLL is not one, and neither is the contract
+    # assembly the host supplies.
+    if (-not (Test-Path -LiteralPath $pluginDirectory)) { return @() }
+    @(Get-ChildItem -LiteralPath $pluginDirectory -Filter '*.dll' -File | Where-Object {
+        ($managedFiles -notcontains $_.Name) -and
+        $_.Name -notlike '*.Tests.dll' -and
+        (Test-PluginFile $_.FullName)
+    } | Sort-Object Name)
+}
+
+function Get-PluginTitle([string]$file) {
+    # What the plugin calls itself, in both languages the setup speaks; the wizard picks one. A
+    # single-file plugin carries its manifest inside the assembly, where this script cannot reach
+    # it, so it is listed by file name -- which is still an answer. A manifest beside the assembly
+    # that exists but cannot be read is a broken plugin, and saying so is worth a warning.
+    $name = [IO.Path]::GetFileNameWithoutExtension($file)
+    $title = @{ En = $name; Zh = $name }
+    $sidecar = Join-Path $pluginDirectory ($name + '.plugin.json')
+    if (-not (Test-Path -LiteralPath $sidecar)) { return $title }
+    try {
+        $manifest = Get-Content -LiteralPath $sidecar -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($manifest.name.en) { $title.En = [string]$manifest.name.en }
+        if ($manifest.name.'zh-CN') { $title.Zh = [string]$manifest.name.'zh-CN' }
+    } catch {
+        Write-Warning ("Reading {0}.plugin.json failed: {1}" -f $name, $_.Exception.Message)
+    }
+    $title
+}
+
+function Get-PluginApiVersion([string]$path) {
+    # The contract a plugin records it was built against, so the wizard can say that this
+    # installation will not run it. From the version resource for a single-file plugin, and from
+    # the sidecar an earlier SDK wrote for one published before that. Empty means "no opinion" —
+    # the page lists it without a note and the tray is where the question is answered.
+    $version = Get-PluginMarker $path
+    if ($version -ne '') { return $version }
+    $sidecar = [IO.Path]::ChangeExtension($path, $null).TrimEnd('.') + '.plugin.api'
+    try {
+        if (-not (Test-Path -LiteralPath $sidecar)) { return '' }
+        # The build writes it as UTF-8, which MSBuild marks with a byte-order mark: left in, every
+        # version would read as one the setup does not ship.
+        (Get-Content -LiteralPath $sidecar -Raw).Trim().TrimStart([char]0xFEFF)
+    } catch { '' }
+}
+
+function Remove-PluginEntries([string[]]$files) {
+    # Takes the plugins' names back out of the configuration, or the host would refuse to start on
+    # an entry whose assembly is gone.
+    if ($files.Count -eq 0 -or -not (Test-Path -LiteralPath $config)) { return }
+    try { $parsed = Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json }
+    catch {
+        Write-Warning "Leaving $config alone: $($_.Exception.Message)"
+        return
+    }
+    $keys = @($files | ForEach-Object { ConvertTo-PluginKey ('plugins/' + $_) })
+    $entries = @($parsed.Plugins | Where-Object { $_ -and ($keys -notcontains (ConvertTo-PluginKey $_.AssemblyPath)) })
+    $parsed | Add-Member -NotePropertyName Plugins -NotePropertyValue @($entries) -Force
+    Save-Config ($parsed | ConvertTo-Json -Depth 20)
+}
+
+function Remove-UnkeptPlugins {
+    # A plugin this setup does not ship belongs to the operator: it stays unless the wizard showed
+    # it and the box was cleared. Nothing is inferred from a name, or from not being mentioned --
+    # which is why the test is on whether -Keep was given at all, not on whether it is empty. A
+    # cleared page sends -Keep "" and means remove; a silent install sends nothing and means keep.
+    # ($PSBoundParameters is the function's own, so the answer is taken once, at script scope.)
+    if (-not $keepWasGiven) { return }
+    $kept = @(Split-List $Keep)
+    $removed = @()
+    foreach ($plugin in Get-ExtraPlugins) {
+        if ($kept -contains $plugin.Name) { continue }
+        # The assembly and everything published beside it: a manifest left behind would name a
+        # plugin that is no longer there, and a stale pdb only confuses whoever reads the folder.
+        # (Each name is built in its own parentheses: in PowerShell the comma binds tighter than
+        # the plus, so an array of "base + suffix" written inline is not the four names it reads
+        # as -- the manifest was the casualty of exactly that.)
+        $names = @($plugin.Name)
+        foreach ($suffix in '.plugin.json', '.plugin.api', '.pdb', '.deps.json') {
+            $names += ($plugin.BaseName + $suffix)
+        }
+        foreach ($name in $names) {
+            $path = Join-Path $pluginDirectory $name
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+        }
+        $removed += $plugin.Name
+        Write-Host "Removed $($plugin.Name)"
+    }
+    Remove-PluginEntries $removed
 }
 
 function Save-Config([string]$json) {
@@ -72,7 +196,7 @@ function Set-ControlUsers {
     # every status answer, because a configuration written by a service in session 0 cannot know
     # who that user is.
     if (-not (Test-Path -LiteralPath $config)) { return }
-    try { $parsed = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
+    try { $parsed = Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json }
     catch {
         Write-Warning "Leaving $config alone: $($_.Exception.Message)"
         return
@@ -130,7 +254,7 @@ function Sync-BundledPlugins {
     # also what repairs an installation made before the plugin was bundled, whose list is empty:
     # an empty list stays empty, because the host deliberately loads nothing it was not told about.
     if (-not (Test-Path -LiteralPath $config)) { return }
-    try { $parsed = Get-Content -LiteralPath $config -Raw | ConvertFrom-Json }
+    try { $parsed = Get-Content -LiteralPath $config -Raw -Encoding UTF8 | ConvertFrom-Json }
     catch {
         # Unreadable is not ours to overwrite.
         Write-Warning "Leaving $config alone: $($_.Exception.Message)"
@@ -236,6 +360,26 @@ function Stop-HostProcesses {
 try {
     switch ($Action) {
         'Stop' { Stop-HostProcesses }
+        'Discover' {
+            # What the wizard's plugin page lists besides the plugins this setup ships. It changes
+            # nothing in the installation; the setup calls it while the reader is on that page.
+            # The fourth column is the contract the plugin was built against — the wizard only
+            # uses it to add a note, because whether the DLL stays is still the reader's call.
+            $lines = @(Get-ExtraPlugins | ForEach-Object {
+                $title = Get-PluginTitle $_.Name
+                '{0}{1}{2}{1}{3}{1}{4}' -f $_.Name, [char]9, $title.En, $title.Zh, (Get-PluginApiVersion $_.FullName)
+            })
+            if ($Output) {
+                [System.IO.File]::WriteAllLines($Output, [string[]]$lines, (New-Object System.Text.UTF8Encoding($false)))
+            } else {
+                $lines
+            }
+        }
+        'ApplyPlugins' {
+            # The plugin half of Install, on its own: apply the wizard's answer to the folder and
+            # the configuration without touching the service. Install calls the same function.
+            Remove-UnkeptPlugins
+        }
         'Check' {
             if (-not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin\winfsp-x64.dll'))) { throw 'WinFsp is missing.' }
             if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'))) { throw 'Service executable is missing.' }
@@ -256,6 +400,7 @@ try {
             Stop-HostProcesses
             New-Item -ItemType Directory -Path $data -Force | Out-Null
             if (Test-Path -LiteralPath $config) { Sync-BundledPlugins } else { Write-FreshConfig }
+            Remove-UnkeptPlugins
             Set-ControlUsers
             $exe = Join-Path $InstallDirectory 'Service\PolyMount.Service.exe'
             $binary = '"' + $exe + '" --config "' + $config + '"'

@@ -7,5 +7,5 @@
     <PackageId>PolyMount.Plugin.Testing</PackageId>
     <Description>Test provider contracts and discovery for PolyMount layer plugins.</Description>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="..\PolyMount.Plugin.Abstractions\PolyMount.Plugin.Abstractions.csproj" /></ItemGroup>
 </Project>

@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using PolyMount.Core.Ipc;
 
@@ -34,7 +34,7 @@ internal static class ServiceControl
         // the mount then cannot start). Ask the SCM; it needs an administrator and says so.
         if (ServiceInstalled()) return StartInstalled();
 
-        var exe = ServiceExePath();
+        var exe = ExePath();
         if (exe != null && File.Exists(exe))
         {
             try
@@ -100,7 +100,7 @@ internal static class ServiceControl
 
     // In the dev layout the tray and service live in sibling bin dirs; derive one path from the
     // other by name. (For an installed service, Start() falls back to sc.exe.)
-    private static string? ServiceExePath()
+    internal static string? ExePath()
     {
         var tray = Environment.ProcessPath;
         if (string.IsNullOrEmpty(tray)) return null;

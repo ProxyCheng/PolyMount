@@ -56,7 +56,7 @@ try {
 } catch {
     Write-Warning "The TxF shim's native half was not built: $($_.Exception.Message)"
 }
-& (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $payload 'Service\plugins') -Configuration Release
+& (Join-Path $PSScriptRoot 'Publish-Plugins.ps1') -Destination (Join-Path $payload 'Service\plugins') -Configuration Release -Version $Version
 & (Join-Path $PSScriptRoot 'Build-Shell.ps1') -OutputDirectory (Join-Path $payload 'Shell')
 $dependencies = Join-Path $payload 'Dependencies'
 New-Item -ItemType Directory -Path $dependencies -Force | Out-Null
@@ -141,7 +141,15 @@ try {
         Write-Host "Signed $signed payload file(s) with $signingThumbprint."
     }
 
-    $compilerArgs = @('/Qp', "/DAppVersion=$Version", "/DPlatform=$Platform", "/DPayloadDir=$payload", "/DOutputDir=$artifacts")
+    # The plugin contract this package carries, so the wizard can say that a plugin somebody
+    # installed by hand cannot run under it. Read from the project that declares it rather than
+    # from a built file: the version is a property, and the two cannot drift apart this way.
+    $contract = [xml](Get-Content -LiteralPath (Join-Path $repo 'src\PolyMount.Plugin.Abstractions\PolyMount.Plugin.Abstractions.csproj') -Raw)
+    $pluginApi = @($contract.Project.PropertyGroup | ForEach-Object { $_.PluginApiVersion } | Where-Object { $_ })[0]
+    if (-not $pluginApi) { throw 'PluginApiVersion is not declared in PolyMount.Plugin.Abstractions.csproj.' }
+
+    $compilerArgs = @('/Qp', "/DAppVersion=$Version", "/DPlatform=$Platform", "/DPayloadDir=$payload",
+        "/DOutputDir=$artifacts", "/DPluginApi=$pluginApi")
     if (Test-Path -LiteralPath $docs) {
         $docDir = Join-Path $payload 'docs'
         New-Item -ItemType Directory -Path $docDir -Force | Out-Null

@@ -22,7 +22,17 @@ $probe = Join-Path $OutputDirectory 'probe\PolyMount.TxFShim.Probe.exe'
 # the STL's mutex/condition-variable state is laid out by whichever CRT the host loaded. Nothing
 # here may depend on matching it, so the CRT is linked in. For the same reason nothing in the DLL
 # uses std::mutex or a std::thread - SRWLOCK and plain Win32 only.
-$common = "/nologo /std:c++20 /EHsc /O2 /MT /W4 /WX /utf-8 /DUNICODE /D_UNICODE"
+#
+# /Brepro writes no timestamp: the payload is compared by content when it is installed, and an
+# instrumented program holding the old file open makes the copy fail. Without this, rebuilding the
+# same source produced different bytes and an install that had nothing new to deliver failed on a
+# file somebody was running -- which is the state the plugin's own page would then have to explain.
+$common = "/nologo /std:c++20 /EHsc /O2 /MT /W4 /WX /utf-8 /Brepro /DUNICODE /D_UNICODE"
+# The launcher stays a console program: it is started by Windows in front of another program and
+# waits for that program to exit, so a console it was allocated for itself would sit on the user's
+# screen as an empty black window for the whole session. It walks away from that console instead
+# (LeaveOurOwnConsole) and keeps one the caller is using, which is where the printed lines and the
+# exit code are read from.
 $steps = @(
     "cl.exe $common `"$source\TxFShim.cpp`" /Fo`"$OutputDirectory\TxFShim.obj`" /link /DLL /OUT:`"$dll`"",
     "cl.exe $common `"$source\Launcher.cpp`" /Fo`"$OutputDirectory\Launcher.obj`" /link /SUBSYSTEM:CONSOLE /OUT:`"$exe`"",

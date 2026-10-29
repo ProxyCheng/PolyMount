@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- A puppet plugin: not shipped, not published, exists so the upgrade paths can be tested
+       against something real. It lives under tests/ so neither scripts/Publish-Plugins.ps1 (which
+       globs src/plugins) nor the setup's payload ever sees it. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <AssemblyName>PolyMount.Plugin.Puppet</AssemblyName>
+    <RootNamespace>PolyMount.Plugin.Puppet</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\PolyMount.Plugin.Abstractions\PolyMount.Plugin.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="PolyMount.Plugins" />
+  </ItemGroup>
+
+  <Import Project="..\..\..\src\PolyMount.Plugin.Sdk\targets\PolyMount.Plugin.Sdk.targets" />
+</Project>

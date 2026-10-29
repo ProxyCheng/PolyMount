@@ -2,13 +2,6 @@ using PolyMount.Layers;
 
 namespace PolyMount.Core;
 
-public sealed class LayerPreset
-{
-    public string Id { get; set; } = "";
-    public Dictionary<string, string> Titles { get; set; } = new();
-    public List<LayerConfig> Layers { get; set; } = new();
-}
-
 public static class LayerPresetRegistry
 {
     private static readonly Dictionary<string, LayerPreset> Presets = new(StringComparer.OrdinalIgnoreCase);

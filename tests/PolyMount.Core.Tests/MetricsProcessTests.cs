@@ -119,6 +119,44 @@ public class MetricsProcessTests
         Assert.IsNull(ProcessNames.Of(0), "no id is no process");
     }
 
+    /// <summary>A name is not read the same way as everything else in an answer: it comes out of a
+    /// system-wide snapshot, which any account may ask for, while the start time and the image path
+    /// mean opening the process, which works only for one that belongs to the reader. The account
+    /// the installed service runs under (LocalService) is in no descriptor of a program in a user's
+    /// session, so on the machines this ships to every caller is that case: named and not openable.
+    /// Pinned by finding a process this test cannot open and naming it anyway — a test run as an
+    /// administrator can open everything and says so instead of pretending to have checked.</summary>
+    [TestMethod]
+    public void A_process_this_account_cannot_open_is_still_named()
+    {
+        int? unreadable = null;
+        string expected = "";
+        foreach (var enumerated in System.Diagnostics.Process.GetProcesses())
+        {
+            // Idle and System are not programs anybody can be told about, and the process that means
+            // "no caller" is already the id 0 the class answers with nothing for.
+            if (enumerated.Id <= 4) continue;
+            // By id, not the object the enumeration handed out: the enumeration is a snapshot and
+            // already carries a start time, while what a name has to survive is the lookup a worker
+            // does on a pid it was told about — one it did not enumerate.
+            var process = System.Diagnostics.Process.GetProcessById(enumerated.Id);
+            try
+            {
+                _ = process.StartTime;
+            }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+            {
+                unreadable = process.Id;
+                expected = process.ProcessName;
+                break;
+            }
+        }
+        if (unreadable is null) Assert.Inconclusive("every process here belongs to this account");
+
+        Assert.AreEqual(expected, ProcessNames.Of(unreadable.Value),
+            "the name is available where the process is not");
+    }
+
     [TestMethod]
     public void A_window_is_answered_in_whole_seconds()
     {

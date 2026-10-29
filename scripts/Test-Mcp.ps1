@@ -151,11 +151,22 @@ try {
 
     $list = Send-Mcp $mcp 'tools/list' @{}
     $tools = @($list.result.tools)
-    if ($tools.Count -ne 26) { throw "expected 26 tools, got $($tools.Count)" }
+    if ($tools.Count -ne 29) { throw "expected 29 tools, got $($tools.Count)" }
     $names = @($tools | ForEach-Object { $_.name })
-    foreach ($required in @('list_instances', 'probe_path', 'save_config', 'shutdown_service', 'list_plugins')) {
+    foreach ($required in @('list_instances', 'probe_path', 'check_source', 'save_config', 'shutdown_service', 'list_plugins', 'get_version', 'list_credentials', 'list_notices')) {
         if ($names -notcontains $required) { throw "tools/list is missing $required" }
     }
+
+    # Which build is answering: the caller's own binary is a different process, so this has to come
+    # from the service, and it has to describe the process that answered rather than a file.
+    $build = Call-Tool $mcp 'get_version'
+    if ($build.result.isError) { throw ('get_version failed: ' + $build.result.content[0].text) }
+    $facts = $build.result.content[0].text | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace($facts.version)) { throw 'get_version reported no version' }
+    if ($facts.processId -ne $service.Id) { throw "get_version named pid $($facts.processId) where the supervisor is $($service.Id)" }
+    if ([string]::IsNullOrWhiteSpace($facts.account)) { throw 'get_version reported no account' }
+    if (-not (Test-Path -LiteralPath $facts.configPath)) { throw "get_version named a configuration that is not there: $($facts.configPath)" }
+    if ($facts.dev) { throw 'a supervisor started by this script is not a development host' }
 
     $instances = Call-Tool $mcp 'list_instances'
     if ($instances.result.isError) { throw ('list_instances failed: ' + $instances.result.content[0].text) }
@@ -169,8 +180,41 @@ try {
     $document = $configDocument.result.content[0].text | ConvertFrom-Json
     if ($document.Mounts[0].Name -ne 'McpSmoke') { throw 'get_config did not return the test instance' }
 
+    # The accounts and the advice are two reads that must answer even when there is nothing to
+    # report: an empty list is an answer, and an error here would read as the tool being broken.
+    $accounts = Call-Tool $mcp 'list_credentials'
+    if ($accounts.result.isError) { throw ('list_credentials failed: ' + $accounts.result.content[0].text) }
+    $held = @((($accounts.result.content[0].text) | ConvertFrom-Json).credentials)
+    # The store is the machine's, not the configuration's, so this sees whatever is really
+    # there. What has to hold anyway: an account travels with what it is called and where it
+    # may be presented, and never with its secret.
+    foreach ($entry in $held) {
+        $fields = @($entry.PSObject.Properties.Name)
+        foreach ($secret in @('password', 'certificate', 'certificatePassword', 'values')) {
+            if ($fields -contains $secret) { throw "list_credentials returned '$secret': $($entry | ConvertTo-Json -Compress)" }
+        }
+    }
+
+    # Advice is about a mount, so it is the mount's own process that answers: a disabled
+    # instance is told so in the same words every instance command uses.
+    $advice = Call-Tool $mcp 'list_notices' @{ instance = 'McpSmoke' }
+    Assert-Tool-Error $advice "instance 'McpSmoke' is not running" 'list_notices on an instance that is not running'
+
     $outside = Call-Tool $mcp 'probe_path' @{ path = 'C:\Windows\not-mounted.txt' }
     Assert-Tool-Error $outside 'no mount point contains' 'probe_path outside every mount'
+
+    # A source can be asked whether it will serve before any configuration names it. The answer is
+    # a result, refusal included: a check that fails is something the caller reads and acts on,
+    # not a tool error that reads as "the call did not work".
+    $checked = Call-Tool $mcp 'check_source' @{ type = 'dir'; path = $source }
+    if ($checked.result.isError) { throw ('check_source failed: ' + $checked.result.content[0].text) }
+    $answer = $checked.result.content[0].text | ConvertFrom-Json
+    if (-not $answer.ok -or $answer.entries -lt 1) { throw ('check_source did not report the folder it listed: ' + $checked.result.content[0].text) }
+
+    $refused = Call-Tool $mcp 'check_source' @{ type = 'nonesuch' }
+    if ($refused.result.isError) { throw 'a refused check came back as a tool error instead of a report' }
+    $report = $refused.result.content[0].text | ConvertFrom-Json
+    if ($report.ok -or $report.kind -ne 'invalid') { throw ('an unknown source type was not reported as invalid: ' + $refused.result.content[0].text) }
 
     $missing = Call-Tool $mcp 'set_instance_enabled' @{ instance = 'McpSmoke' }
     Assert-Tool-Error $missing "missing required argument 'enabled'" 'set_instance_enabled without enabled'
@@ -179,7 +223,7 @@ try {
     $readOnlyInit = Invoke-Mcp $readOnly
     if ($readOnlyInit.result.serverInfo.name -ne 'polymount') { throw 'the read-only server did not start' }
     $readOnlyTools = Send-Mcp $readOnly 'tools/list' @{}
-    if (@($readOnlyTools.result.tools).Count -ne 9) { throw "expected 9 read-only tools, got $(@($readOnlyTools.result.tools).Count)" }
+    if (@($readOnlyTools.result.tools).Count -ne 13) { throw "expected 13 read-only tools, got $(@($readOnlyTools.result.tools).Count)" }
 
     if ($Full) {
         $enabled = Call-Tool $mcp 'set_instance_enabled' @{ instance = 'McpSmoke'; enabled = $true }
@@ -212,7 +256,7 @@ try {
     $down = Call-Tool $mcp 'list_instances'
     Assert-Tool-Error $down 'not reachable' 'list_instances with the service stopped'
 
-    'MCP smoke passed: handshake, 26 tools (9 read-only), list/get/config, path errors, argument errors, service-down error.'
+    'MCP smoke passed: handshake, 29 tools (13 read-only), list/get/config, the service build, the accounts, a source check, path errors, argument errors, service-down error.'
 }
 finally {
     foreach ($client in $clients) {

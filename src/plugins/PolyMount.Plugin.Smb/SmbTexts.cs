@@ -1,5 +1,5 @@
 using System.Text.Json;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Smb;
 

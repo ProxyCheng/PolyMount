@@ -89,7 +89,7 @@ public sealed class ReadPredictionTests
         }
         using var restored = new ReadPrediction(vfs, options, model);
         Assert.AreEqual(0, restored.LearnedTransitions);
-        Assert.AreEqual(PolyMount.Core.Ipc.ControlCommands.ClearCache,
+        Assert.AreEqual(PolyMount.Plugins.Ipc.ControlCommands.ClearCache,
             LayerRegistry.Describe("prediction-cache").Actions.Single().Command);
     }
 

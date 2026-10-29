@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using PolyMount.Core;
-using PolyMount.Core.Ipc;
+using PolyMount.Plugins;
+
 
 namespace PolyMount.Plugins.TxFShim;
 
@@ -342,6 +342,105 @@ internal sealed class TxFShimService
         }
         return Status();
     }
+
+    /// <summary>The page the front end shows for this plugin: what is instrumented, and the two
+    /// things a person does about it — take one image out, or put a folder's images in.
+    ///
+    /// It is the same <see cref="Status"/> the control plane reports, shaped for a window: the
+    /// reader who noticed a program failing to save has somewhere to look that is not a registry
+    /// key. Nothing here is per mount, so the instance is not read.</summary>
+    internal PluginPanelView Panel()
+    {
+        var status = Status();
+        var view = new PluginPanelView
+        {
+            Summary = new LocalizedText(
+                status.Installed.Count == 1
+                    ? "1 program starts through the compatibility layer"
+                    : status.Installed.Count + " programs start through the compatibility layer",
+                status.Installed.Count + " 个程序经由兼容层启动"),
+            Empty = new LocalizedText(
+                "No program is started through the shim yet. Add the folder the program's executables are in.",
+                "还没有程序经由兼容层启动。把那个程序的可执行文件所在目录加进来。"),
+        };
+
+        view.Facts.Add(Fact(new LocalizedText("Native shim", "原生载荷"),
+            status.PayloadPresent
+                ? Both("deployed", "在位", " · " + status.Dll)
+                : new LocalizedText("missing: nothing can be instrumented", "缺失：无法插桩")));
+        view.Facts.Add(Fact(new LocalizedText("Hit log", "命中日志"),
+            status.LogBytes > 0
+                ? Both(Size(status.LogBytes), Size(status.LogBytes), " · " + status.Log)
+                : new LocalizedText("empty", "空")));
+        view.Facts.Add(Fact(new LocalizedText("Record and registry", "记录与注册表"),
+            status.Drift.Count == 0
+                ? new LocalizedText("agree", "一致")
+                : Both(status.Drift.Count + " disagree", status.Drift.Count + " 处不一致")));
+        foreach (var disagreement in status.Drift)
+            view.Facts.Add(Fact(new LocalizedText(disagreement.Image), new LocalizedText(disagreement.Detail)));
+
+        view.Columns.AddRange(new[]
+        {
+            new LocalizedText("Program", "程序"),
+            new LocalizedText("Path", "路径"),
+            new LocalizedText("Installed", "安装时间")
+        });
+
+        foreach (var entry in status.Installed)
+        {
+            var row = new PluginPanelRow
+            {
+                Id = entry.ImageName,
+                Cells =
+                {
+                    entry.ImageName,
+                    entry.ImagePath,
+                    Installed(entry.InstalledUtc)
+                },
+                // Why this image is here, on hover: it is the one thing about a row that a reader
+                // asks once, and it is long.
+                Tooltip = new LocalizedText("Why: " + entry.Evidence, "依据：" + entry.Evidence)
+            };
+            row.Actions.Add(new PluginPanelAction
+            {
+                Id = "remove:" + entry.ImageName,
+                Label = new LocalizedText("Stop instrumenting", "撤销"),
+                Request = new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "remove", Path = entry.ImagePath },
+                Confirm = new LocalizedText(
+                    entry.ImageName + " will start as it did before the shim was installed. A program that is "
+                    + "running now keeps the shim until it is restarted.",
+                    entry.ImageName + " 会恢复成安装兼容层之前的样子启动。正在运行的程序要保持到重启后才生效。")
+            });
+            view.Rows.Add(row);
+        }
+
+        view.Actions.Add(new PluginPanelAction
+        {
+            Id = "install",
+            Label = new LocalizedText("Add a folder…", "添加目录…"),
+            Icon = "plus",
+            Input = PluginPanelInput.Directory,
+            Request = new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "install" }
+        });
+        return view;
+    }
+
+    private static PluginPanelFact Fact(LocalizedText label, LocalizedText value) =>
+        new() { Label = label, Value = value };
+
+    /// <summary>The same words in both languages, which is what a value made of a number and a
+    /// path needs: nothing in it is a word of the interface.</summary>
+    private static LocalizedText Both(string en, string zh, string suffix = "") =>
+        new(en + suffix, zh + suffix);
+
+    private static string Installed(string utc) =>
+        DateTime.TryParse(utc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var when)
+            ? when.ToLocalTime().ToString("yyyy-MM-dd HH:mm")
+            : utc;
+
+    private static string Size(long bytes) => bytes >= 1024 * 1024
+        ? (bytes / 1024.0 / 1024.0).ToString("N1") + " MB"
+        : (bytes / 1024.0).ToString("N0") + " KB";
 
     /// <summary>The last <paramref name="lines"/> hits the injected DLL recorded.</summary>
     internal ShimLogTail Log(int lines)

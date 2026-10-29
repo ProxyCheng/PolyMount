@@ -64,6 +64,42 @@
       <translation>启用层</translation>
     </message>
     <message>
+      <source>column.activity</source>
+      <translation>活跃度</translation>
+    </message>
+    <message>
+      <source>column.activity.scale</source>
+      <translation>活跃度 ≤{0}/秒</translation>
+    </message>
+    <message>
+      <source>filter.active</source>
+      <translation>活跃</translation>
+    </message>
+    <message>
+      <source>activity.rate</source>
+      <translation>{0}/秒</translation>
+    </message>
+    <message>
+      <source>activity.warming</source>
+      <translation>正在采样，约 10 秒后出现第一条读数</translation>
+    </message>
+    <message>
+      <source>activity.waiting</source>
+      <translation>还没有读数</translation>
+    </message>
+    <message>
+      <source>activity.stale</source>
+      <translation>实例没有应答，曲线停在最后一次读数</translation>
+    </message>
+    <message>
+      <source>activity.tip.short</source>
+      <translation>最近 {0} 秒：平均 {1}/秒，峰值 {2}/秒</translation>
+    </message>
+    <message>
+      <source>activity.tip</source>
+      <translation>最近 {0} 秒：平均 {1}/秒，峰值 {2}/秒&#10;读取 {3} 次 · 写入 {4} 次 · 命中率 {5}%</translation>
+    </message>
+    <message>
       <source>layer.count</source>
       <translation>{0} 层</translation>
     </message>
@@ -750,6 +786,10 @@
       <translation>{0} 个源站</translation>
     </message>
     <message>
+      <source>credential.used.count</source>
+      <translation>被 {0} 个层使用</translation>
+    </message>
+    <message>
       <source>credential.origins.tip</source>
       <translation>可出示给：</translation>
     </message>
@@ -894,6 +934,38 @@
       <translation>由源自行提供账号。</translation>
     </message>
     <message>
+      <source>credential.check</source>
+      <translation>验证</translation>
+    </message>
+    <message>
+      <source>credential.check.tip</source>
+      <translation>现在就问一次源，看这个账户能不能打开它；不保存实例，也不需要实例已经在跑。</translation>
+    </message>
+    <message>
+      <source>credential.check.running</source>
+      <translation>正在询问源…</translation>
+    </message>
+    <message>
+      <source>credential.check.ok</source>
+      <translation>验证通过：源已应答（{0} 项，{1:0.0} 秒）</translation>
+    </message>
+    <message>
+      <source>credential.check.refused</source>
+      <translation>未通过：{0}</translation>
+    </message>
+    <message>
+      <source>credential.check.error</source>
+      <translation>无法验证：{0}</translation>
+    </message>
+    <message>
+      <source>credential.check.incomplete</source>
+      <translation>先填好源的位置（地址或文件夹），再验证账户。</translation>
+    </message>
+    <message>
+      <source>credential.check.noAnswer</source>
+      <translation>服务应答了，但没说这个源能不能用</translation>
+    </message>
+    <message>
       <source>credential.name.duplicate</source>
       <translation>已有其他凭据使用这个名称。</translation>
     </message>
@@ -908,6 +980,10 @@
     <message>
       <source>credential.password.required</source>
       <translation>请填写密码。</translation>
+    </message>
+    <message>
+      <source>credential.field.required</source>
+      <translation>请填写%1。</translation>
     </message>
     <message>
       <source>tray.exit</source>
@@ -1613,6 +1689,8 @@
     </message>
     <message><source>plugins.title</source><translation>插件</translation></message>
     <message><source>plugins.button</source><translation>插件</translation></message>
+    <message><source>credentials.button</source><translation>凭据</translation></message>
+    <message><source>credentials.button.tip</source><translation>挂载用来登录的账号</translation></message>
     <message><source>plugins.button.tip</source><translation>启用、禁用和添加插件</translation></message>
     <message><source>plugins.menu</source><translation>插件…</translation></message>
     <message><source>plugins.subtitle</source><translation>插件为 PolyMount 增加数据源、层和控制工具。</translation></message>
@@ -1633,19 +1711,29 @@
     <message><source>plugins.noneInstalled</source><translation>还没有安装任何插件。</translation></message>
     <message><source>plugins.noneInstalledHint</source><translation>把插件 DLL 放进服务的插件目录，或从任意位置导入一个文件。</translation></message>
     <message><source>plugins.noMatch</source><translation>没有匹配的插件。</translation></message>
+    <message><source>plugins.permissions</source><translation>可访问</translation></message>
+    <message><source>plugins.manifest.none</source><translation>无清单：构建于插件声明机制之前</translation></message>
+    <message><source>plugins.apiVersion</source><translation>插件契约</translation></message>
+    <message><source>plugins.roles</source><translation>运行于</translation></message>
+    <message><source>plugins.role.backend</source><translation>服务</translation></message>
+    <message><source>plugins.role.frontend</source><translation>前端（工具）</translation></message>
     <message><source>plugins.state.loaded</source><translation>已加载</translation></message>
     <message><source>plugins.state.disabled</source><translation>已禁用</translation></message>
     <message><source>plugins.state.failed</source><translation>加载失败</translation></message>
     <message><source>plugins.state.missing</source><translation>文件不存在</translation></message>
     <message><source>plugins.state.inactive</source><translation>未加载</translation></message>
+    <message><source>plugins.state.incompatible</source><translation>不兼容</translation></message>
+    <message><source>plugins.tooltip.incompatible</source><translation>该插件按契约 {0} 编译，当前版本提供 {1}；请用 PolyMount.Plugin.Abstractions {1} 重新编译后再启用。</translation></message>
     <message><source>plugins.contributions.none</source><translation>这个插件没有注册任何扩展。</translation></message>
     <message><source>plugins.summary.source</source><translation>源 {0}</translation></message>
+    <message><source>plugins.summary.credential</source><translation>凭据 {0}</translation></message>
     <message><source>plugins.summary.layer</source><translation>层 {0}</translation></message>
     <message><source>plugins.summary.preset</source><translation>预设 {0}</translation></message>
     <message><source>plugins.summary.presets</source><translation>预设 {0} 个</translation></message>
     <message><source>plugins.contributions.disabled</source><translation>启用后显示它提供的扩展。</translation></message>
     <message><source>plugins.contributions.failed</source><translation>未加载。</translation></message>
     <message><source>plugins.contributes.source</source><translation>数据源</translation></message>
+    <message><source>plugins.contributes.credential</source><translation>凭据</translation></message>
     <message><source>plugins.contributes.layer</source><translation>层</translation></message>
     <message><source>plugins.contributes.preset</source><translation>预设</translation></message>
     <message><source>plugins.contributes.strategy</source><translation>策略</translation></message>
@@ -1658,7 +1746,7 @@
     <message><source>plugins.error</source><translation>加载错误</translation></message>
     <message><source>plugins.version</source><translation>v{0}</translation></message>
     <message><source>plugins.modified</source><translation>修改于 {0}</translation></message>
-    <message><source>plugins.notice.running</source><translation>服务正在运行，插件只能查看。要调整，请先用左侧的「停止服务」停止服务。</translation></message>
+    <message><source>plugins.notice.running</source><translation>这一区在服务运行时只读：改插件集合会重启所有实例。插件自己的管理功能在下方的行里照常可用。</translation></message>
     <message><source>plugins.notice.stopped</source><translation>服务已停止。改动会保存到配置，并在下次启动时生效。</translation></message>
     <message><source>plugins.notice.noSource</source><translation>找不到服务的配置文件，这里没有可读的内容。</translation></message>
     <message><source>plugins.noSource</source><translation>服务不可用</translation></message>
@@ -1722,5 +1810,91 @@ DLL 会留在插件目录里，之后可以再加回来。</translation>
 
 {0}</translation></message>
     <message><source>notice.menu</source><translation>提醒：{0} 条待处理</translation></message>
-  </context>
+    <message><source>abouts.button</source><translation>关于</translation></message>
+    <message><source>abouts.title</source><translation>关于 PolyMount</translation></message>
+    <message><source>abouts.subtitle</source><translation>这个副本的版本、运行时与位置。</translation></message>
+    <message><source>abouts.refresh</source><translation>重新读取</translation></message>
+    <message><source>abouts.copy</source><translation>复制诊断信息</translation></message>
+    <message><source>abouts.copied</source><translation>已复制到剪贴板</translation></message>
+    <message><source>abouts.build</source><translation>这个副本</translation></message>
+    <message><source>abouts.runtime</source><translation>运行时</translation></message>
+    <message><source>abouts.service</source><translation>服务</translation></message>
+    <message><source>abouts.locations</source><translation>位置</translation></message>
+    <message><source>abouts.license</source><translation>许可与致谢</translation></message>
+    <message><source>abouts.row.version</source><translation>版本</translation></message>
+    <message><source>abouts.row.revision</source><translation>提交</translation></message>
+    <message><source>abouts.row.channel</source><translation>安装方式</translation></message>
+    <message><source>abouts.installed</source><translation>安装版</translation></message>
+    <message><source>abouts.development</source><translation>开发树</translation></message>
+    <message><source>abouts.row.dotnet</source><translation>.NET</translation></message>
+    <message><source>abouts.row.qt</source><translation>Qt</translation></message>
+    <message><source>abouts.row.winfsp</source><translation>WinFsp</translation></message>
+    <message><source>abouts.row.system</source><translation>系统</translation></message>
+    <message><source>abouts.row.state</source><translation>状态</translation></message>
+    <message><source>abouts.connected</source><translation>已连接</translation></message>
+    <message><source>abouts.disconnected</source><translation>未运行</translation></message>
+    <message><source>abouts.row.serviceVersion</source><translation>版本</translation></message>
+    <message><source>abouts.row.serviceProgram</source><translation>程序</translation></message>
+    <message><source>abouts.row.root</source><translation>程序目录</translation></message>
+    <message><source>abouts.row.config</source><translation>配置</translation></message>
+    <message><source>abouts.license.body</source><translation>PolyMount 以 GNU GPL v3 或更高版本发布；随附的 Qt 6 运行时为 LGPL v3；图表由 Qt Charts 绘制，后者是 GPL v3 或商业授权。分发构建之前请先读第三方清单。</translation></message>
+    <message><source>abouts.license.notices</source><translation>第三方清单</translation></message>
+    <message><source>abouts.license.project</source><translation>项目主页</translation></message>
+    <message><source>abouts.license.issues</source><translation>反馈问题</translation></message>
+      <message>
+      <source>login.waiting</source>
+      <translation>等待登录完成…</translation>
+    </message>
+    <message>
+      <source>login.noRuntime</source>
+      <translation>登录需要 Microsoft Edge WebView2 运行时，本机没有安装。</translation>
+    </message>
+    <message>
+      <source>panel.needsInstance</source>
+      <translation>需要至少一个运行中的实例才能回答</translation>
+    </message>
+    <message>
+      <source>panel.empty</source>
+      <translation>没有可显示的内容</translation>
+    </message>
+    <message>
+      <source>panel.confirm</source>
+      <translation>确定吗？</translation>
+    </message>
+    <message>
+      <source>panel.failed</source>
+      <translation>面板无法生成</translation>
+    </message>
+    <message>
+      <source>panel.loading</source>
+      <translation>正在读取…</translation>
+    </message>
+    <message>
+      <source>plugins.expand</source>
+      <translation>展开：这个插件做了什么、它提供什么</translation>
+    </message>
+    <message>
+      <source>plugins.collapse</source>
+      <translation>收起</translation>
+    </message>    <message>
+      <source>plugins.detail.id</source>
+      <translation>标识</translation>
+    </message>
+    <message>
+      <source>plugins.detail.file</source>
+      <translation>文件</translation>
+    </message>
+    <message>
+      <source>plugins.detail.version</source>
+      <translation>版本</translation>
+    </message>
+    <message>
+      <source>plugins.detail.adds</source>
+      <translation>提供</translation>
+    </message>
+    <message>
+      <source>plugins.manage</source>
+      <translation>管理</translation>
+    </message>
+</context>
 </TS>

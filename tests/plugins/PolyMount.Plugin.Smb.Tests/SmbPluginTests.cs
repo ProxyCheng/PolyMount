@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
@@ -11,10 +11,27 @@ public sealed class SmbPluginTests : IPluginTestProvider
 {
     public string PluginName => "smb";
 
+    /// <summary>A credential of a kind only a bearer-token source could present, for the probes
+    /// that ask a layer what it takes.</summary>
+    private sealed class TokenCredential : Credential, IBearerAuthentication
+    {
+        public override string Kind => "token-test";
+        public string Token => "";
+    }
+
+
     /// <summary>A check that cannot run here. Reported as skipped rather than passed: a test
     /// that quietly succeeded against nothing would be the one nobody notices.
     /// </summary>
     private sealed class Skip(string reason) : Exception(reason);
+
+    /// <summary>A credential that proves itself with a token and names no account: what a source
+    /// that needs a share login must refuse, by name, instead of reading empty strings.</summary>
+    private sealed class BearerCredential : Credential, IBearerAuthentication
+    {
+        public override string Kind => "bearer-test";
+        public string Token => "t";
+    }
 
     public Task<IReadOnlyList<PluginTestResult>> RunAsync(PluginTestContext context)
     {
@@ -26,6 +43,45 @@ public sealed class SmbPluginTests : IPluginTestProvider
             catch (Skip skip) { results.Add(new(PluginName, name, PluginTestOutcome.Skipped, skip.Message)); }
             catch (Exception ex) { results.Add(new(PluginName, name, PluginTestOutcome.Failed, ex.Message)); }
         }
+
+        Check("the-manifest-travels-inside-the-assembly", () =>
+        {
+            // A plugin is one file to hand out. The check copies the assembly somewhere with
+            // nothing beside it, so a manifest that was still a sidecar would not be found — and
+            // nothing is loaded to read it, which is how the host describes a plugin it must not
+            // run.
+            string folder = Path.Combine(Path.GetTempPath(), "polymount-plugin-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            try
+            {
+                string copy = Path.Combine(folder, "Lone.Plugin.dll");
+                File.Copy(typeof(SmbPlugin).Assembly.Location, copy);
+                var manifest = PluginManifest.Read(copy, out string error);
+                if (manifest == null) throw new Exception("the assembly carries no manifest: " + error);
+                if (manifest.Id != "polymount.smb") throw new Exception("unexpected manifest id: " + manifest.Id);
+            }
+            finally
+            {
+                try { Directory.Delete(folder, recursive: true); } catch (IOException) { }
+            }
+        });
+
+        Check("a-credential-that-is-not-an-account-is-refused-by-name", () =>
+        {
+            try
+            {
+                SmbLayer.AccountOf(new BearerCredential { Username = "someone" });
+                throw new Exception("a bearer token was read as an account and a password");
+            }
+            catch (InvalidOperationException ex)
+            {
+                // The sentence has to carry the two things a reader can act on: what the share
+                // needs, and which credential was refused.
+                if (!ex.Message.Contains("account and a password", StringComparison.Ordinal) ||
+                    !ex.Message.Contains("bearer-test", StringComparison.Ordinal))
+                    throw new Exception("the refusal does not say what is wrong: " + ex.Message);
+            }
+        });
 
         Check("configured-loading-and-preset", () =>
         {
@@ -53,9 +109,14 @@ public sealed class SmbPluginTests : IPluginTestProvider
             var credential = descriptor.Fields.SingleOrDefault(f => f.Path == "Source.CredentialId");
             if (credential is not { Kind: LayerFieldKind.Credential })
                 throw new Exception("The property panel offers no credential picker");
-            // A share cannot be opened with a certificate: the picker has to say so up front.
-            if (!credential.CredentialKinds.SequenceEqual(new[] { CredentialTypes.Password }))
-                throw new Exception("The credential picker accepts kinds a share cannot use");
+            // A share is opened with an account and nothing else, and the layer says so itself
+            // rather than being told which kinds exist.
+            static bool Takes(Credential presented) =>
+                CredentialConsumers.Of(presented).Contains("smb", StringComparer.OrdinalIgnoreCase);
+            if (!Takes(new PasswordCredential { Username = "alice", Password = "secret" }))
+                throw new Exception("the smb layer does not accept an account with a password");
+            if (Takes(new TokenCredential()))
+                throw new Exception("the smb layer says it can present a bearer token");
             var ttl = descriptor.Fields.SingleOrDefault(f => f.Path == "Source.Parameters.GenerationTtlSeconds");
             if (ttl is not { Kind: LayerFieldKind.Integer, Minimum: >= 1 })
                 throw new Exception("The generation refresh interval is not bounded");

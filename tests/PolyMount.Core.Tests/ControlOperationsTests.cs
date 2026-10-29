@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using PolyMount.Core;
 using PolyMount.Core.Ipc;
 
 namespace PolyMount.Core.Tests;
@@ -39,7 +40,12 @@ public sealed class ControlOperationsTests
             // own actions, not a "set": one copies bytes into the service's folder, the other
             // changes what the configuration names. Neither is spelled with one of the verbs
             // above without saying something untrue.
-            "import", "remove"
+            "import", "remove",
+            // "check" is asking something outside the service a question and reporting its answer
+            // — a source and the account offered to it. "probe" is the opposite direction: what
+            // the service's own layers make of a path it already holds. One word for both would
+            // leave a caller guessing which side is being inspected.
+            "check"
         };
 
         foreach (var operation in ControlOperations.All)
@@ -101,6 +107,25 @@ public sealed class ControlOperationsTests
         Assert.AreEqual("supervisor", link.Calls.Single());
         Assert.AreEqual(ControlCommands.Plugins, link.Requests.Single().Cmd);
 
+        // Which build the service is has to come from the service: the tray's own version is a
+        // different process, installed and updated on its own schedule.
+        link = new RecordingLink();
+        Call(link, "get_version", "{}");
+        Assert.AreEqual("supervisor", link.Calls.Single());
+        Assert.AreEqual(ControlCommands.Build, link.Requests.Single().Cmd);
+
+        // The accounts are the supervisor's file; the advice is about one mount, so the instance's
+        // own process is the one that can say whether it still applies.
+        link = new RecordingLink();
+        Call(link, "list_credentials", "{}");
+        Assert.AreEqual("supervisor", link.Calls.Single());
+        Assert.AreEqual(ControlCommands.Credentials, link.Requests.Single().Cmd);
+
+        link = new RecordingLink();
+        Call(link, "list_notices", """{"instance":"demo"}""");
+        Assert.AreEqual("instance", link.Calls.Single());
+        Assert.AreEqual(ControlCommands.PluginNotices, link.Requests.Single().Cmd);
+
         link = new RecordingLink();
         Call(link, "set_plugin_enabled", """{"path":"plugins/Example.dll","enabled":false}""");
         Assert.AreEqual("supervisor", link.Calls.Single());
@@ -116,6 +141,46 @@ public sealed class ControlOperationsTests
         Call(link, "import_plugin", """{"source":"C:\\tmp\\Example.dll"}""");
         Assert.AreEqual(ControlCommands.ImportPlugin, link.Requests.Single().Cmd);
         Assert.AreEqual("C:\\tmp\\Example.dll", link.Requests.Single().SourcePath);
+    }
+
+    [TestMethod]
+    public void The_version_is_the_answering_process_own_facts()
+    {
+        var operation = ControlOperations.Find("get_version")!;
+        var response = new ControlResponse
+        {
+            Build = new BuildInfo
+            {
+                Version = "0.9.5", Revision = "abc1234", Informational = "0.9.5+abc1234",
+                Installed = true, Root = "C:\\Program Files\\PolyMount",
+                ConfigPath = "C:\\ProgramData\\PolyMount\\config.json",
+                PluginsDirectory = "C:\\Program Files\\PolyMount\\Service\\plugins",
+                Runtime = "10.0.4", WinFsp = "2.1.25156", System = "Microsoft Windows 10.0.26200 · x64",
+                ProcessId = 4242, Account = "NT AUTHORITY\\LOCAL SERVICE",
+                StartedUtc = "2026-10-29T05:00:00.0000000Z"
+            }
+        };
+
+        string json = JsonSerializer.Serialize(operation.Present(response), Json);
+
+        StringAssert.Contains(json, "\"version\":\"0.9.5\"");
+        // The installation and the account are the two facts a caller cannot get anywhere else:
+        // the pipe client knows which build it *is*, not which build is answering.
+        StringAssert.Contains(json, "\"installed\":true");
+        StringAssert.Contains(json, "\"account\":\"NT AUTHORITY\\\\LOCAL SERVICE\"");
+        StringAssert.Contains(json, "\"configPath\":\"C:\\\\ProgramData\\\\PolyMount\\\\config.json\"");
+    }
+
+    [TestMethod]
+    public void A_release_and_its_commit_are_read_apart()
+    {
+        var (version, revision, informational) = HostEnvironment.Build(typeof(ControlOperationsTests).Assembly);
+
+        Assert.IsFalse(string.IsNullOrWhiteSpace(version), "a build has a version");
+        StringAssert.StartsWith(informational, version);
+        // A build without a source revision reports none rather than something made up.
+        if (!informational.Contains('+', StringComparison.Ordinal))
+            Assert.AreEqual("", revision);
     }
 
     [TestMethod]
@@ -342,8 +407,10 @@ public sealed class ControlOperationsTests
 
     private static string SampleArguments(string name) => name switch
     {
-        "get_instance" or "get_recording" => """{"instance":"demo"}""",
+        "get_instance" or "get_recording" or "list_notices" => """{"instance":"demo"}""",
         "probe_path" => """{"path":"D:\\demo\\a"}""",
+        // Asking a source a question needs the source named: the sample is what a caller sends.
+        "check_source" => """{"type":"dir","path":"C:\\source"}""",
         _ => "{}"
     };
 

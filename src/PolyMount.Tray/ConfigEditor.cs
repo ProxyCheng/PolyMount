@@ -1,4 +1,4 @@
-using PolyMount;
+﻿using PolyMount;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
@@ -32,6 +32,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     private AppConfig _config = new();
     private List<string> _sourceTypes = new();
     private List<LayerDescriptor> _layerDescriptors = new();
+    private List<string> _consumers = new();
     private List<CredentialRecord> _credentials = new();
     // The id each credential button currently stands for; empty is "no credential".
     private readonly Dictionary<QWidget, string> _credentialValues = new();
@@ -39,6 +40,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     // the service cannot use is said where the choice is, before a mount has to fail.
     private readonly Dictionary<QPushButton, QLabel> _credentialWarnings = new();
     private readonly Dictionary<QPushButton, QWidget> _credentialColumns = new();
+    // The "ask the source" button beside a credential, and the line its answer goes to. Only
+    // source layers get one: whether an account works is a question about a protocol.
+    private readonly Dictionary<QPushButton, (QPushButton Ask, QLabel Answer)> _credentialChecks = new();
+    private bool _checking;
+    private QPushButton? _checkTarget;
     private List<LayerPreset> _presetDefinitions = new();
     private int _current = -1;
     private LayerConfig? _layer;
@@ -347,6 +353,11 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         {
             _layer = new LayerConfig { Id = "smoke", Type = descriptor.Type };
             ShowLayer();
+            // The page can be in a tab that is not on screen, where nothing has been laid out; the
+            // size hint is what makes the panel lay its rows out so the columns can be compared.
+            _propertyPanel?.AdjustSize();
+            FormColumns.Verify(_propertyEditors.Select(editor =>
+                (editor.Field.Title.Resolve(I18n.Language), editor.Editor)));
             ((QLineEdit)_propertyEditors[0].Editor).SetText("https://smoke.invalid");
             ((QLineEdit)_propertyEditors[1].Editor).SetText(" secret ");
             ((QCheckBox)_propertyEditors[3].Editor).SetChecked(true);
@@ -375,6 +386,58 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             _layer = originalLayer;
             ShowLayer();
         }
+        SmokeCredentialCheck();
+    }
+
+    /// <summary>A credential on a source is asked about where it is chosen; a credential on
+    /// anything else is not, because "will this account work here?" is a question about a
+    /// protocol. Both halves are driven, and the answer is rendered from a made-up one — asking a
+    /// real server is not something a self-check should do.
+    /// </summary>
+    private void SmokeCredentialCheck()
+    {
+        var originalLayer = _layer;
+        const string sourceType = "ui-smoke-source";
+        var fields = new List<LayerFieldDescriptor>
+        {
+            new() { Path = "Source.Url", Title = new("Address", "Address"), Required = true },
+            new() { Path = "Source.CredentialId", Kind = LayerFieldKind.Credential,
+                Title = new("Account", "Account") }
+        };
+        _layerDescriptors.Add(new LayerDescriptor { Type = sourceType, Title = new(sourceType, sourceType), Fields = fields });
+        bool wasSource = _sourceTypes.Contains(sourceType, StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            _layer = new LayerConfig { Id = "smoke-credential", Type = sourceType };
+            ShowLayer();
+            if (_credentialChecks.Count != 0)
+                throw new InvalidOperationException("A layer that is not a source offered to verify its account");
+            _sourceTypes.Add(sourceType);
+            ShowLayer();
+            if (_credentialChecks.Count != 1)
+                throw new InvalidOperationException("A source layer offers no way to verify its account");
+            var button = _credentialChecks.Keys.Single();
+            bool enabled = _credentialChecks[button].Ask.IsEnabled();
+            ShowCheck(button, new SourceCheckResult(false, SourceCheckKinds.Auth, "the server refused this account", 0, 12));
+            var answer = _credentialChecks[button].Answer;
+            // Not IsVisible: the editor's page can be in a tab that is not on screen while this
+            // runs, which says nothing about what the row was told. IsHidden is the row's own.
+            if (answer.IsHidden() || !answer.Text.Contains("the server refused this account"))
+                throw new InvalidOperationException("The source's answer was not written under the credential");
+            if (!_credentialChecks[button].Ask.IsEnabled())
+                throw new InvalidOperationException("The verify button stayed flat after asking");
+            // An answer belongs to the settings it was about: the next edit takes it away.
+            Dirty();
+            if (!answer.IsHidden()) throw new InvalidOperationException("An answer outlived the settings it was about");
+            if (!enabled) throw new InvalidOperationException("The verify button started flat");
+        }
+        finally
+        {
+            _layerDescriptors.RemoveAll(item => item.Type == sourceType);
+            if (!wasSource) _sourceTypes.RemoveAll(type => string.Equals(type, sourceType, StringComparison.OrdinalIgnoreCase));
+            _layer = originalLayer;
+            ShowLayer();
+        }
     }
 
     private void Load()
@@ -386,7 +449,12 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             var response = SupervisorClient.Default.GetConfig();
             // The layer panel offers these by name; a service that cannot answer leaves the list
             // empty rather than failing the whole load.
-            try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+            try
+            {
+                var credentials = SupervisorClient.Default.Credentials();
+                _credentials = credentials.Credentials;
+                CredentialMarks.Learn(credentials.CredentialKinds);
+            }
             catch (Exception) { _credentials = new(); }
             return response;
         });
@@ -406,6 +474,14 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             var response = task.GetAwaiter().GetResult();
             if (!response.Ok) throw new InvalidOperationException(response.Error);
             AcceptUsage(response);
+            if (_checking)
+            {
+                _checking = false;
+                var target = _checkTarget;
+                _checkTarget = null;
+                if (target != null && response.Check is { } answer) ShowCheck(target, answer);
+                return;
+            }
             if (_clearingCache)
             {
                 _clearingCache = false;
@@ -465,12 +541,21 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             // Read before the flags are cleared: a save that failed said "load failed" because
             // this branch used to look at _saving after setting it to false.
             bool saving = _saving;
+            bool checking = _checking;
             bool operation = _layerOperation || _clearingCache;
+            // A check that never reached the service is an answer too — the line under the account
+            // is where the reader is looking, and a modal box over a question they may have asked
+            // out of curiosity would be a window scolding them for asking.
+            var checkTarget = _checkTarget;
+            _checking = false;
+            _checkTarget = null;
+            if (checking && checkTarget != null)
+                ShowCheck(checkTarget, new SourceCheckResult(false, SourceCheckKinds.Unreachable, ex.Message, 0, 0));
             if (saving) _dirty = true;
             _saving = false;
             _closeAfterSave = null;
             UpdateDocumentTitle();
-            _status.SetText(T(operation ? "operation.failed" : saving ? "save.failed" : "load.failed") + ex.Message);
+            _status.SetText(T(checking ? "operation.failed" : operation ? "operation.failed" : saving ? "save.failed" : "load.failed") + ex.Message);
             _layerOperation = false;
             _clearingCache = false;
             // The status line sits at the bottom of a window that scrolls; an action started
@@ -610,17 +695,23 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     /// to scroll: the picker behind it is where a choice is made.</summary>
     private void ShowCredential(QPushButton button, LayerFieldDescriptor field, string id)
     {
+        var record = string.IsNullOrWhiteSpace(id)
+            ? null
+            : _credentials.FirstOrDefault(item => item.Id == id);
         string? text = null;
         if (string.IsNullOrWhiteSpace(id))
         {
             text = field.Placeholder.Resolve(I18n.Language);
             if (string.IsNullOrWhiteSpace(text)) text = T("credential.none");
         }
-        else if (_credentials.FirstOrDefault(item => item.Id == id) is { } credential)
+        else if (record is { } credential)
             text = credential.Kind == CredentialTypes.Certificate
                 ? credential.Name + " · " + T("credential.kind.certificate")
                 : credential.Name + " · " + credential.Username;
         button.SetText(string.IsNullOrEmpty(text) ? T("credential.missing") : text);
+        // The same mark the picker draws beside the account it was chosen from: the row is the
+        // answer to a question asked one window ago.
+        CredentialMarks.Show(button, record);
         button.SetToolTip(field.Description.Resolve(I18n.Language));
         if (_credentialWarnings.TryGetValue(button, out var warning)) ShowCredentialWarning(warning, id);
     }
@@ -646,19 +737,86 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
     {
         // The store changes outside this window too (the tray's manager); re-read before offering
         // choices, and repaint the row so a reference to a removed credential is shown as such.
-        try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+        // Which of them this layer can present arrives with the same answer.
+        try
+        {
+            var response = SupervisorClient.Default.Credentials();
+            if (response.Ok)
+            {
+                _credentials = response.Credentials;
+                _consumers = response.CredentialConsumers;
+                CredentialMarks.Learn(response.CredentialKinds);
+            }
+        }
         catch (Exception) { }
         string current = _credentialValues.GetValueOrDefault(button, "");
         ShowCredential(button, field, current);
         string defaultText = field.Placeholder.Resolve(I18n.Language);
         if (string.IsNullOrWhiteSpace(defaultText)) defaultText = T("credential.none");
+        // A layer type that never said what it presents is unconstrained; one that did is asked,
+        // and only the records it would take are offered.
+        string? consumer = _layer != null && _consumers.Contains(_layer.Type, StringComparer.OrdinalIgnoreCase)
+            ? _layer.Type : null;
         using var picker = new CredentialPicker(this, _credentials, current, defaultText, T("credential.none.hint"),
-            accepted: field.CredentialKinds);
+            consumer: consumer);
         if (picker.Exec() != 1) return;
         _credentials = picker.Credentials;
         _credentialValues[button] = picker.SelectedId;
         ShowCredential(button, field, picker.SelectedId);
         Dirty();
+    }
+
+    /// <summary>Asks the service whether this layer's source will serve with the settings on the
+    /// page right now — the address in the field, the account picked beside it — and writes the
+    /// answer under the row. Nothing is saved and no instance has to exist: the question arrives
+    /// at the process that holds the plugins and can open the credential, and the mount the reader
+    /// would have made a minute later is where the answer used to come from.
+    ///
+    /// The draft is committed first so the check asks about what is on screen rather than about
+    /// what was loaded.</summary>
+    private void CheckCredential(QPushButton button)
+    {
+        if (_pending != null || _layer == null || !_credentialChecks.ContainsKey(button)) return;
+        try { CommitLayer(); }
+        catch (ArgumentException ex)
+        {
+            // The layer does not describe a source yet — an empty address is the ordinary case.
+            ShowCheck(button, new SourceCheckResult(false, SourceCheckKinds.Invalid, ex.Message, 0, 0));
+            return;
+        }
+        var source = _layer.Source;
+        source.Type = _layer.Type;
+        _checking = true;
+        _checkTarget = button;
+        _pending = Task.Run(() => SupervisorClient.Default.CheckSource(source));
+        _save.SetEnabled(false);
+        UpdateInstanceActions();
+        if (_credentialChecks.TryGetValue(button, out var row))
+        {
+            row.Ask.SetEnabled(false);
+            row.Answer.SetText(T("credential.check.running"));
+            row.Answer.SetStyleSheet("color: " + TrayTheme.Tokens.Muted + ";");
+            row.Answer.SetVisible(true);
+        }
+    }
+
+    /// <summary>The answer, under the row that asked. A rebuild of the panel (another layer, a
+    /// language change) takes the rows with it, so an answer that comes back to a row nobody is
+    /// looking at any more is simply dropped.</summary>
+    private void ShowCheck(QPushButton button, SourceCheckResult result)
+    {
+        if (!_credentialChecks.TryGetValue(button, out var row)) return;
+        var (text, color) = SourceCheckText.Describe(result);
+        row.Ask.SetEnabled(true);
+        row.Answer.SetText(text);
+        row.Answer.SetStyleSheet("color: " + color + ";");
+        row.Answer.SetVisible(true);
+    }
+
+    /// <summary>An answer belongs to the settings it was about, so any edit on the page ends it.</summary>
+    private void ClearChecks()
+    {
+        foreach (var (_, answer) in _credentialChecks.Values) answer.SetVisible(false);
     }
 
     private void BuildProperties()
@@ -668,6 +826,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _credentialValues.Clear();
         _credentialWarnings.Clear();
         _credentialColumns.Clear();
+        _credentialChecks.Clear();
         if (_propertyPanel != null)
         {
             _propertyLayout.RemoveWidget(_propertyPanel);
@@ -707,12 +866,32 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
                 var columnLayout = new QVBoxLayout(column);
                 columnLayout.SetContentsMargins(0, 0, 0, 0);
                 columnLayout.SetSpacing(4);
-                columnLayout.AddWidget(button);
+                // A source can be asked on the spot whether this account opens it. The answer
+                // otherwise arrives as a mount that failed, minutes later, on another page.
+                var line = new QWidget();
+                var lineLayout = new QHBoxLayout(line);
+                lineLayout.SetContentsMargins(0, 0, 0, 0);
+                lineLayout.SetSpacing(8);
+                lineLayout.AddWidget(button, 1);
+                var answer = new QLabel();
+                answer.SetWordWrap(true);
+                answer.SetVisible(false);
+                if (_sourceTypes.Contains(_layer.Type, StringComparer.OrdinalIgnoreCase))
+                {
+                    var ask = new QPushButton();
+                    I18n.Bind(ask.SetText, "credential.check");
+                    ask.SetToolTip(T("credential.check.tip"));
+                    ask.Clicked += _ => CheckCredential(button);
+                    lineLayout.AddWidget(ask);
+                    _credentialChecks[button] = (ask, answer);
+                }
+                columnLayout.AddWidget(line);
                 var warning = new QLabel();
                 warning.SetObjectName("credentialWarning");
                 warning.SetWordWrap(true);
                 warning.SetVisible(false);
                 columnLayout.AddWidget(warning);
+                columnLayout.AddWidget(answer);
                 _credentialColumns[button] = column;
                 _credentialWarnings[button] = warning;
                 ShowCredential(button, field, value);
@@ -1085,6 +1264,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         _dirty = true;
         _status.SetText(T("unsaved"));
         UpdateDocumentTitle();
+        // What a source said about an account was said about the settings it was asked with;
+        // editing any of them makes it a reply to a question nobody is asking any more.
+        ClearChecks();
     }
     private void UpdateDocumentTitle()
     {

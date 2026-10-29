@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Win32;
 using PolyMount.Core;
@@ -44,6 +44,16 @@ internal sealed class PluginManager : QWidget
     private Task<ControlResponse>? _pending;
     private string _query = "";
     private bool _offline;
+    /// <summary>What the installed list was built from the last time it was built. The five-second
+    /// poll rebuilds a row only when its plugin actually changed: a row that unfolds into a
+    /// plugin's own page must not fold itself back, and the page inside it must not be thrown away
+    /// and asked for again while somebody is reading it.</summary>
+    private string _installedFingerprint = "";
+    /// <summary>How to unfold a row, and the pages it holds, by the row's key. Registered by the row
+    /// itself so the smoke run can drive the same thing a reader clicks — a row that does not unfold
+    /// into its plugin's page is the failure worth catching, and it cannot be seen any other way.</summary>
+    private readonly Dictionary<string, Action<bool>> _unfolders = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<PluginPanelBody>> _rowPages = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>The configuration and the folders the service uses. Learned from the service while
     /// it answers, and from its registration when it does not; the plugin section edits the file
     /// itself only in that second state.</summary>
@@ -57,20 +67,8 @@ internal sealed class PluginManager : QWidget
         // A section of the workbench, not a page of its own: the sidebar stays where it is and
         // swaps the right-hand side. The outer page owns the scrolling, so this carries none of
         // its own — two scroll areas nested in one another is the kind of layout nobody can size.
-        SetObjectName("dashboard");
-        SetAttribute(Qt.WidgetAttribute.WA_StyledBackground);
-
-        var root = new QVBoxLayout(this);
-        root.SetContentsMargins(24, 20, 24, 14);
-        root.SetSpacing(12);
-
-        var header = new QHBoxLayout();
-        var titles = new QVBoxLayout();
-        titles.SetSpacing(5);
-        titles.AddWidget(Label("plugins.title", "pageTitle"));
-        titles.AddWidget(Label("plugins.subtitle", "muted"));
-        header.AddLayout(titles, 1);
-        header.AddStretch(1);
+        // The frame every section shares: background, margins, and the title with its muted line.
+        var root = PageChrome.Apply(this, "plugins.title", "plugins.subtitle", out var header);
         _refresh = IconButton("refresh", "plugins.refresh", Load);
         header.AddWidget(_refresh);
         _openFolder = TextButton("plugins.openFolder", OpenFolder, "folder");
@@ -255,6 +253,11 @@ internal sealed class PluginManager : QWidget
                 Loaded = false,
                 Version = known?.Version is { Length: > 0 } version ? version
                     : full.Length > 0 ? PluginLoader.ReadVersion(full) : "",
+                // Read from the file when the service has never described it — a fresh install
+                // whose service has not run yet is exactly when an incompatible plugin has to be
+                // visible rather than waiting for a start-up that would refuse the set.
+                ApiVersion = known?.ApiVersion is { Length: > 0 } cachedApi ? cachedApi
+                    : full.Length > 0 && File.Exists(full) ? PluginLoader.ReadApiVersion(full) : "",
                 Title = known?.Title,
                 Description = known?.Description,
                 Icon = known?.Icon ?? "",
@@ -478,19 +481,29 @@ internal sealed class PluginManager : QWidget
         _installedPanel.SetVisible(!empty);
         _search.SetVisible(!empty && installed.Count > 6);
         SetText(_installedHeading, I18n.F("plugins.installed", installed.Count));
-        Clear(_installedRows, _installedWidgets);
-        for (int i = 0; i < visible.Count; i++)
+        // Rows carry state a rebuild would lose: which ones are unfolded, and the plugin pages
+        // inside them. So they are put together only when something about the plugins — or the
+        // language, or whether this section may be edited — actually changed.
+        string fingerprint = Fingerprint(visible, canEdit);
+        if (fingerprint != _installedFingerprint)
         {
-            if (i > 0) AddSeparator(_installedRows, _installedWidgets);
-            var row = InstalledRow(visible[i], canEdit);
-            _installedWidgets.Add(row);
-            _installedRows.AddWidget(row);
-        }
-        if (visible.Count == 0 && installed.Count > 0)
-        {
-            var none = PlainLabel(T("plugins.noMatch"), "emptyState");
-            _installedWidgets.Add(none);
-            _installedRows.AddWidget(none);
+            _installedFingerprint = fingerprint;
+            Clear(_installedRows, _installedWidgets);
+            _unfolders.Clear();
+            _rowPages.Clear();
+            for (int i = 0; i < visible.Count; i++)
+            {
+                if (i > 0) AddSeparator(_installedRows, _installedWidgets);
+                var row = InstalledRow(visible[i], canEdit);
+                _installedWidgets.Add(row);
+                _installedRows.AddWidget(row);
+            }
+            if (visible.Count == 0 && installed.Count > 0)
+            {
+                var none = PlainLabel(T("plugins.noMatch"), "emptyState");
+                _installedWidgets.Add(none);
+                _installedRows.AddWidget(none);
+            }
         }
 
         // The available section exists only when there is something to offer.
@@ -551,6 +564,43 @@ internal sealed class PluginManager : QWidget
         widgets.Clear();
     }
 
+    /// <summary>Everything a row is drawn from, as one string: the plugins in order, what each one
+    /// reports about itself, the language, the scheme, and whether this section may be edited.
+    /// Equal means the rows on screen still describe the world, so nothing has to be put together
+    /// again — which is what keeps an unfolded row unfolded.</summary>
+    private static string Fingerprint(List<PluginView> plugins, bool canEdit) =>
+        string.Join("\n", plugins.Select(plugin => string.Join("|",
+            plugin.FullPath, plugin.FileName, plugin.Enabled, plugin.Loaded, plugin.Present,
+            plugin.Version, plugin.ApiVersion, plugin.Error, plugin.HasManifest,
+            string.Join(",", plugin.Panels), string.Join(",", plugin.Permissions))))
+        + "\n" + canEdit + "|" + I18n.Language + "|" + TrayTheme.Mode;
+
+    /// <summary>Where a row remembers whether it is unfolded. The file, not the plugin's name: two
+    /// installations can carry a plugin of the same name.</summary>
+    private static string ExpandedKey(PluginView plugin) => "Plugins.Expanded." + RowKey(plugin);
+
+    private static string RowKey(PluginView plugin) =>
+        plugin.FullPath.Length > 0 ? plugin.FullPath : plugin.FileName;
+
+    /// <summary>One fact about a plugin, as a label and a value in one aligned column. A wall of
+    /// "key value · key value" is read once and skipped after that; the file path is the one thing
+    /// here a reader copies.</summary>
+    private static QHBoxLayout DetailLine(string label, string value)
+    {
+        var line = new QHBoxLayout();
+        line.SetSpacing(12);
+        var name = PlainLabel(label, "detailLabel");
+        name.SetWordWrap(false);
+        name.SetMinimumWidth(96);
+        line.AddWidget(name);
+        var text = PlainLabel(value, "detailValue");
+        text.SetTextInteractionFlags(Qt.TextInteractionFlags.TextSelectableByMouse);
+        line.AddWidget(text, 1);
+        return line;
+    }
+
+    private static bool IsExpanded(PluginView plugin) => UiSettings.Get(ExpandedKey(plugin)) == "1";
+
     private QWidget InstalledRow(PluginView plugin, bool canEdit)
     {
         var row = new QWidget();
@@ -559,9 +609,27 @@ internal sealed class PluginManager : QWidget
         var column = new QVBoxLayout(row);
         column.SetContentsMargins(16, 12, 10, 12);
         column.SetSpacing(5);
+        // A plugin built against another major contract can never run here, whatever the service
+        // is doing. The row stays — it is a file on this machine and removing it is still a
+        // decision someone may take — but it is drawn as what it is: greyed, unswitchable, with
+        // the reason in the tooltip rather than only in an error the host never got far enough to
+        // report.
+        bool incompatible = IsIncompatible(plugin);
+        string incompatibleWhy = incompatible
+            ? I18n.F("plugins.tooltip.incompatible", plugin.ApiVersion, PluginApi.Version)
+            : "";
 
         var line = new QHBoxLayout();
         line.SetSpacing(10);
+        // The row unfolds into everything about the plugin: what it says it does, the file it came
+        // from, what it adds, and — when it offers any — its own management page. That is where a
+        // plugin's page lives by default; the sidebar copies are for a plugin that asked for one.
+        var disclosure = new QPushButton();
+        disclosure.SetObjectName("disclosure");
+        disclosure.SetFixedSize(18, 18);
+        disclosure.SetIconSize(new QSize(12, 12));
+        disclosure.SetCursor(new QCursor(Qt.CursorShape.PointingHandCursor));
+        line.AddWidget(disclosure);
         // The plugin's own mark, tinted by its state: one glyph tells a reader what kind of
         // extension it is and whether it is running, without a second dot beside it.
         var mark = new QLabel();
@@ -569,7 +637,7 @@ internal sealed class PluginManager : QWidget
             StateColor(plugin)).Pixmap(17, 17));
         line.AddWidget(mark);
 
-        var name = PlainLabel(DisplayName(plugin), "pluginName");
+        var name = PlainLabel(DisplayName(plugin), incompatible ? "muted" : "pluginName");
         name.SetWordWrap(false);
         line.AddWidget(name);
         if (plugin.Version.Length > 0)
@@ -582,6 +650,15 @@ internal sealed class PluginManager : QWidget
         state.SetWordWrap(false);
         state.SetStyleSheet("color: " + StateColor(plugin) + "; font-weight: 600;");
         line.AddWidget(state);
+        // What the plugin says it reaches for, in its own vocabulary (network, registry, native).
+        // A declaration rather than a restriction: it is here so that enabling a plugin is a
+        // decision someone can make with the facts in front of them.
+        if (plugin.Permissions.Count > 0)
+        {
+            var reaches = PlainLabel(T("plugins.permissions") + " " + string.Join(", ", plugin.Permissions), "muted");
+            reaches.SetWordWrap(false);
+            line.AddWidget(reaches);
+        }
         line.AddStretch(1);
 
         var remove = IconButton("trash", "plugins.remove", () => Remove(plugin));
@@ -590,15 +667,29 @@ internal sealed class PluginManager : QWidget
 
         var check = new QCheckBox();
         check.SetChecked(plugin.Enabled);
-        check.SetToolTip(T(plugin.Enabled ? "plugins.tooltip.disable" : "plugins.tooltip.enable"));
-        check.SetAccessibleName(T(plugin.Enabled ? "plugins.tooltip.disable" : "plugins.tooltip.enable"));
+        // Neither direction: this build cannot run the plugin, so there is no state to switch
+        // between. The trash button beside it is the way out — it takes the entry out of the
+        // configuration, which is what makes a service that refuses this plugin start again.
+        string checkTip = incompatible
+            ? incompatibleWhy
+            : T(plugin.Enabled ? "plugins.tooltip.disable" : "plugins.tooltip.enable");
+        check.SetToolTip(checkTip);
+        check.SetAccessibleName(checkTip);
         check.Toggled += on =>
         {
+            if (incompatible && on) { check.SetChecked(false); return; }
             if (on != plugin.Enabled) Toggle(plugin, on);
         };
-        check.SetEnabled(canEdit);
+        check.SetEnabled(canEdit && !incompatible);
         line.AddWidget(check);
         column.AddLayout(line);
+
+        // Said on the row, not only on hover: a switch that refuses to move with no visible
+        // reason reads as a bug. This is the one place that can answer "why can I not turn it
+        // on" — the installer's page only notes the mismatch, because there the decision is
+        // whether the file is kept, not whether it will load.
+        if (incompatible)
+            column.AddWidget(PlainLabel(incompatibleWhy, "errorBox"));
 
         // The second line is the plugin's work, aligned under its title rather than under the
         // icon: the row is two lines so neither has to be read at a glance, and the technical
@@ -608,8 +699,9 @@ internal sealed class PluginManager : QWidget
         {
             var detail = new QHBoxLayout();
             detail.SetContentsMargins(0, 0, 0, 0);
-            detail.AddSpacing(27);
-            var contributions = PlainLabel(summary, "pluginContribution");
+            // Aligned under the title: the disclosure and the plugin's mark sit to the left of it.
+            detail.AddSpacing(55);
+            var contributions = PlainLabel(summary, incompatible ? "muted" : "pluginContribution");
             contributions.SetWordWrap(false);
             detail.AddWidget(contributions, 1);
             column.AddLayout(detail);
@@ -618,10 +710,112 @@ internal sealed class PluginManager : QWidget
         if (!string.IsNullOrWhiteSpace(plugin.Error))
             column.AddWidget(PlainLabel(T("plugins.error") + " · " + plugin.Error, "errorBox"));
 
+        // ---- unfolded: everything about this plugin, including the page it offers -----------
+        //
+        // The body is put together the first time the row is unfolded. A collapsed row costs one
+        // button, and a row that is never opened never asks an instance for a page.
+        QWidget? body = null;
+        bool open = IsExpanded(plugin);
+        var pages = new List<PluginPanelBody>();
+
+        QWidget BuildBody()
+        {
+            // A sunken band inside the row, not a card of its own: what opened belongs to the row
+            // the reader clicked. Everything in it is aligned to one column — description, the
+            // facts about the file, then the page the plugin offers.
+            var host = new QWidget();
+            host.SetObjectName("pluginBody");
+            host.SetAttribute(Qt.WidgetAttribute.WA_StyledBackground);
+            var layout = new QVBoxLayout(host);
+            layout.SetContentsMargins(16, 12, 14, 12);
+            layout.SetSpacing(10);
+
+            if (plugin.Description?.Resolve(I18n.Language) is { Length: > 0 } description)
+                layout.AddWidget(PlainLabel(description, "muted"));
+
+            var details = new List<(string Label, string Value)>();
+            if (plugin.Id.Length > 0) details.Add((T("plugins.detail.id"), plugin.Id));
+            details.Add((T("plugins.detail.file"), plugin.FullPath));
+            if (plugin.Version.Length > 0) details.Add((T("plugins.detail.version"), plugin.Version));
+            if (plugin.ApiVersion.Length > 0) details.Add((T("plugins.apiVersion"), plugin.ApiVersion));
+            if (plugin.Roles.Count > 0)
+                details.Add((T("plugins.roles"), string.Join(" / ", plugin.Roles.Select(RoleName))));
+            if (plugin.Permissions.Count > 0)
+                details.Add((T("plugins.permissions"), string.Join(", ", plugin.Permissions)));
+            if (HasDetails(plugin)) details.Add((T("plugins.detail.adds"), ContributionText(plugin)));
+            foreach (var (label, value) in details) layout.AddLayout(DetailLine(label, value));
+
+            foreach (string id in plugin.Panels)
+            {
+                var descriptor = _catalog?.Panels.FirstOrDefault(panel =>
+                    string.Equals(panel.Id, id, StringComparison.OrdinalIgnoreCase));
+                if (descriptor == null) continue;
+                var separator = new QFrame();
+                separator.SetObjectName("pluginSeparator");
+                separator.SetFrameShape(QFrame.Shape.HLine);
+                layout.AddWidget(separator);
+
+                // A heading over a page that is called what the plugin is called would be the same
+                // words twice, so it says what the section is instead: the plugin's own management.
+                var heading = new QHBoxLayout();
+                heading.SetSpacing(8);
+                string pageTitle = descriptor.Title.Resolve(I18n.Language);
+                var mark = new QLabel();
+                mark.SetPixmap(TrayIcons.Get(descriptor.Icon is { Length: > 0 } icon ? icon : "plugin",
+                    TrayTheme.Tokens.Icon).Pixmap(14, 14));
+                heading.AddWidget(mark);
+                heading.AddWidget(PlainLabel(
+                    string.Equals(pageTitle, DisplayName(plugin), StringComparison.Ordinal)
+                        ? T("plugins.manage")
+                        : pageTitle, "panelHeading"), 1);
+                var page = new PluginPanelBody(id, flat: true);
+                var refresh = IconButton("refresh", "plugins.refresh", page.Reload);
+                heading.AddWidget(refresh);
+                layout.AddLayout(heading);
+                pages.Add(page);
+                layout.AddWidget(page);
+            }
+            return host;
+        }
+
+        void Unfold(bool on, bool foldOthers = false)
+        {
+            open = on;
+            if (on && foldOthers)
+                foreach (var other in _unfolders.Where(entry =>
+                             !string.Equals(entry.Key, RowKey(plugin), StringComparison.OrdinalIgnoreCase)))
+                    other.Value(false);
+            if (on && body == null)
+            {
+                body = BuildBody();
+                column.AddWidget(body);
+            }
+            body?.SetVisible(on);
+            disclosure.SetIcon(TrayIcons.Get(on ? "chevron-down" : "chevron-right", TrayTheme.Tokens.Icon));
+            string tip = T(on ? "plugins.collapse" : "plugins.expand");
+            disclosure.SetToolTip(tip);
+            disclosure.SetAccessibleName(tip);
+            UiSettings.Set(ExpandedKey(plugin), on ? "1" : "0");
+            if (on) foreach (var page in pages) page.Reload();
+        }
+
+        disclosure.Clicked += _ => Unfold(!open, foldOthers: true);
+        Unfold(open);
+        _unfolders[RowKey(plugin)] = on => Unfold(on);
+        _rowPages[RowKey(plugin)] = pages;
+
         // The row carries the rest on hover: what the plugin says it does, the file it came from,
         // everything it adds, and why it did not load.
         var tooltip = new List<string>();
+        if (incompatible) tooltip.Add(incompatibleWhy);
         if (plugin.Description?.Resolve(I18n.Language) is { Length: > 0 } description) tooltip.Add(description);
+        var facts = new List<string>();
+        if (plugin.Id.Length > 0) facts.Add(plugin.Id);
+        if (plugin.Roles.Count > 0)
+            facts.Add(T("plugins.roles") + " " + string.Join(" / ", plugin.Roles.Select(RoleName)));
+        if (plugin.ApiVersion.Length > 0) facts.Add(T("plugins.apiVersion") + " " + plugin.ApiVersion);
+        if (!plugin.HasManifest) facts.Add(T("plugins.manifest.none"));
+        if (facts.Count > 0) tooltip.Add(string.Join("  ·  ", facts));
         tooltip.Add(plugin.FullPath);
         if (HasDetails(plugin)) tooltip.Add(ContributionText(plugin));
         if (!string.IsNullOrWhiteSpace(plugin.Error)) tooltip.Add(plugin.Error);
@@ -629,9 +823,18 @@ internal sealed class PluginManager : QWidget
         return row;
     }
 
+    /// <summary>The role in the reader's language: a plugin's code runs in the servers (where a
+    /// layer or a source lives) or in a front-end (where a tool runs), or both.</summary>
+    private static string RoleName(string role) => role switch
+    {
+        PluginRoleNames.Backend => T("plugins.role.backend"),
+        PluginRoleNames.Frontend => T("plugins.role.frontend"),
+        _ => role
+    };
+
     private static bool HasDetails(PluginView plugin) =>
         plugin.SourceTypes.Count > 0 || plugin.LayerTypes.Count > 0 || plugin.Presets.Count > 0 ||
-        plugin.Strategies.Count > 0 || plugin.Operations.Count > 0;
+        plugin.Strategies.Count > 0 || plugin.Operations.Count > 0 || plugin.CredentialKinds.Count > 0;
 
     /// <summary>What the plugin calls itself, or the file name when it does not say. A plugin
     /// that only has a name can still be found by it.</summary>
@@ -696,12 +899,24 @@ internal sealed class PluginManager : QWidget
             parts.Add(I18n.F("plugins.summary.layer", string.Join(", ", plugin.LayerTypes)));
         if (plugin.Presets.Count == 1) parts.Add(I18n.F("plugins.summary.preset", plugin.Presets[0]));
         else if (plugin.Presets.Count > 1) parts.Add(I18n.F("plugins.summary.presets", plugin.Presets.Count));
+        // A credential kind is something a plugin adds just as a layer or a preset is: the row
+        // says so, or a plugin whose whole contribution is a way of signing in reads as one that
+        // adds nothing.
+        if (plugin.CredentialKinds.Count > 0)
+            parts.Add(I18n.F("plugins.summary.credential", string.Join(", ", plugin.CredentialKinds)));
         if (parts.Count == 0) return "";
         return string.Join(" · ", parts.Take(3)) + (parts.Count > 3 ? " …" : "");
     }
 
+    /// <summary>Whether the plugin was built against a plugin contract this build cannot run. Read
+    /// from the version the file records, so it is answered for a plugin the service has never
+    /// loaded — disabled, or refused before its code ran.</summary>
+    internal static bool IsIncompatible(PluginView plugin) =>
+        plugin.ApiVersion.Length > 0 && !PluginApi.IsCompatible(plugin.ApiVersion);
+
     private string StateKey(PluginView plugin) =>
         !plugin.Present ? "plugins.state.missing"
+        : IsIncompatible(plugin) ? "plugins.state.incompatible"
         : !plugin.Enabled ? "plugins.state.disabled"
         : _offline ? "plugins.state.pending"
         : plugin.Loaded ? "plugins.state.loaded"
@@ -741,6 +956,7 @@ internal sealed class PluginManager : QWidget
         Add("plugins.contributes.layer", plugin.LayerTypes);
         Add("plugins.contributes.preset", plugin.Presets);
         Add("plugins.contributes.strategy", plugin.Strategies);
+        Add("plugins.contributes.credential", plugin.CredentialKinds);
         Add("plugins.contributes.tool", plugin.Operations);
         return parts.Count == 0 ? T("plugins.contributions.none") : string.Join("  ·  ", parts);
     }
@@ -895,6 +1111,65 @@ internal sealed class PluginManager : QWidget
 
     // ---- smoke ----------------------------------------------------------------------------
 
+    /// <summary>
+    /// The rule that keeps a plugin from being switched on when this build cannot run it: a row
+    /// built from a fixture, because no machine is required to have an incompatible plugin for
+    /// the rule to be checked. Two directions, and they are not symmetric — off cannot become on,
+    /// while on can become off, or a service that refuses to start would have no way back from
+    /// this window.
+    /// </summary>
+    private void VerifyIncompatibleRow()
+    {
+        PluginView Foreign(bool enabled) => new()
+        {
+            AssemblyPath = "PolyMount.Plugin.Foreign.dll",
+            FileName = "PolyMount.Plugin.Foreign.dll",
+            FullPath = Path.Combine(Path.GetTempPath(), "PolyMount.Plugin.Foreign.dll"),
+            Enabled = enabled,
+            Present = true,
+            ApiVersion = (PluginApi.Major - 1) + ".0"
+        };
+
+        var off = Foreign(false);
+        if (!IsIncompatible(off))
+            throw new InvalidOperationException("a plugin built against another contract was not recognised as incompatible");
+        if (StateKey(off) != "plugins.state.incompatible")
+            throw new InvalidOperationException("an incompatible plugin is labelled '" + StateKey(off) + "'");
+
+        var offRow = InstalledRow(off, canEdit: true);
+        try
+        {
+            var switchOff = offRow.FindChild<QCheckBox>();
+            if (switchOff == null)
+                throw new InvalidOperationException("the plugin row has no switch to check");
+            if (switchOff.IsEnabled())
+                throw new InvalidOperationException("an incompatible plugin can be switched on");
+            if (!switchOff.ToolTip.Contains(PluginApi.Version, StringComparison.Ordinal))
+                throw new InvalidOperationException("the switch does not say which contract this build provides: " + switchOff.ToolTip);
+        }
+        finally { offRow.DeleteLater(); }
+
+        var on = Foreign(true);
+        var onRow = InstalledRow(on, canEdit: true);
+        try
+        {
+            // Neither direction is a state to switch between: an incompatible plugin can be
+            // neither enabled nor disabled here, and the row says why in words rather than only
+            // on hover. Removing it — the button beside the switch — is what clears the entry.
+            var switchOn = onRow.FindChild<QCheckBox>();
+            if (switchOn is not { } onCheck || onCheck.IsEnabled())
+                throw new InvalidOperationException("an incompatible plugin can be switched in this window");
+            if (!Reads(onRow, I18n.F("plugins.tooltip.incompatible", on.ApiVersion, PluginApi.Version)))
+                throw new InvalidOperationException("the row does not say why the plugin is unavailable");
+        }
+        finally { onRow.DeleteLater(); }
+    }
+
+    /// <summary>Whether any label in the row reads exactly this. The reason has to be visible, so
+    /// the check is against what the row draws and not against the tooltip alone.</summary>
+    private static bool Reads(QWidget row, string text) =>
+        row.FindChildren<QLabel>().Any(label => string.Equals(label.Text, text, StringComparison.Ordinal));
+
     /// <summary>What a smoke run checks: the section read a list, drew a row per configured
     /// plugin, and matches the state it is in — read-only with the service running, editable when
     /// it is stopped. The contents are the service's or the configuration's; what is checked here
@@ -902,6 +1177,7 @@ internal sealed class PluginManager : QWidget
     /// does.</summary>
     internal void SmokeVerify()
     {
+        VerifyIncompatibleRow();
         if (_catalog == null)
             throw new InvalidOperationException("the plugin section has neither a service nor a configuration to read");
         if (_catalog.Plugins.Count == 0)
@@ -920,6 +1196,81 @@ internal sealed class PluginManager : QWidget
             throw new InvalidOperationException("no configured plugin reports as loaded");
         if (_import.IsEnabled())
             throw new InvalidOperationException("the import button is enabled while the service is running");
+        VerifyUnfold();
+    }
+
+    /// <summary>Unfolds one row and waits for the page inside it to arrive. Shared by the smoke run
+    /// and the screenshot, because both need the same thing: the row opened, and the page a reader
+    /// would see actually filled in.</summary>
+    private bool UnfoldAndWait(PluginView plugin)
+    {
+        if (!_unfolders.TryGetValue(RowKey(plugin), out var unfold)) return false;
+        unfold(true);
+        var deadline = DateTime.UtcNow.AddSeconds(8);
+        while (DateTime.UtcNow < deadline)
+        {
+            QCoreApplication.ProcessEvents();
+            if (_rowPages.TryGetValue(RowKey(plugin), out var pages) && pages.Count > 0
+                && pages[0].View != null && !pages[0].Busy)
+                return true;
+            System.Threading.Thread.Sleep(25);
+        }
+        return _rowPages.TryGetValue(RowKey(plugin), out var loaded) && loaded.Count > 0
+            && loaded[0].View != null && !loaded[0].Busy;
+    }
+
+    /// <summary>Puts a row back the way the reader left it after a check or a picture has disturbed
+    /// it: neither may decide for somebody which rows are open.</summary>
+    private void Restore(PluginView plugin, bool wasOpen)
+    {
+        if (_unfolders.TryGetValue(RowKey(plugin), out var unfold)) unfold(wasOpen);
+        UiSettings.Set(ExpandedKey(plugin), wasOpen ? "1" : "0");
+    }
+
+    /// <summary>The plugin section, photographed with a plugin's page unfolded: the picture of this
+    /// page that shows what it is for. Only when a plugin offers a page — otherwise it is a picture
+    /// of a list.</summary>
+    internal void Capture(string path)
+    {
+        var plugin = _catalog?.Plugins.FirstOrDefault(entry => entry.Loaded && entry.Panels.Count > 0);
+        bool wasOpen = plugin != null && IsExpanded(plugin);
+        try
+        {
+            if (plugin != null) UnfoldAndWait(plugin);
+            Layout()?.Activate();
+            QCoreApplication.ProcessEvents();
+            using var image = Grab();
+            image.Save(path);
+        }
+        finally
+        {
+            if (plugin != null) Restore(plugin, wasOpen);
+        }
+    }
+
+    /// <summary>A row unfolds into the plugin's own details and the page it offers. Checked against
+    /// whichever installed plugin offers one — a machine where none does has nothing to check — and
+    /// put back the way the reader left it, because this run must not decide for them which rows are
+    /// open.</summary>
+    private void VerifyUnfold()
+    {
+        var plugin = _catalog?.Plugins.FirstOrDefault(entry => entry.Loaded && entry.Panels.Count > 0);
+        if (plugin == null) return;
+        if (!_unfolders.ContainsKey(RowKey(plugin)))
+            throw new InvalidOperationException("a plugin that offers a page has no row to unfold");
+        bool wasOpen = IsExpanded(plugin);
+        try
+        {
+            if (_rowPages.TryGetValue(RowKey(plugin), out var drawn) && drawn.Count > 0 && !drawn[0].IsVisible())
+                throw new InvalidOperationException("the unfolded page is not visible");
+            if (!UnfoldAndWait(plugin))
+                throw new InvalidOperationException(
+                    $"{DisplayName(plugin)} offers {plugin.Panels.Count} page(s) and no page came back: " +
+                    (_rowPages.TryGetValue(RowKey(plugin), out var pages) && pages.Count > 0
+                        ? pages[0].LastError ?? "no reason reported"
+                        : "unfolding the row drew none"));
+        }
+        finally { Restore(plugin, wasOpen); }
     }
 
     // ---- small builders -----------------------------------------------------------------

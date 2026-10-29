@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "polymount.smb",
+  "name": { "en": "Remote folder", "zh-CN": "远程文件夹" },
+  "description": {
+    "en": "Reads a folder shared by another Windows machine, with the account this service presents. Nothing is installed on that machine: a share the account may read is the whole setup.",
+    "zh-CN": "读取另一台 Windows 机器共享的文件夹，使用本服务提供的账号。那台机器上不需要装任何东西：给它一个可读的共享即可。"
+  },
+  "icon": "folder",
+  "publisher": "PolyMount",
+  "license": "MIT",
+  "permissions": ["network"],
+  "host": ">=0.9.5"
+}

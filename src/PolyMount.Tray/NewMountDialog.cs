@@ -1,4 +1,4 @@
-using PolyMount.Core;
+﻿using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
@@ -28,7 +28,7 @@ internal sealed class NewMountDialog : QDialog
     private readonly QListWidget _cards;
     private readonly QPushButton _back, _cancel, _next;
     private readonly QTimer _timer;
-    private readonly List<(LayerPreset? Preset, QListWidgetItem Item, QWidget Card)> _choices = new();
+    private readonly List<(LayerPreset? Preset, QListWidgetItem Item, QWidget Card, QLabel Mark)> _choices = new();
     private readonly List<QLabel> _errors = new();
 
     private AppConfig _config;
@@ -40,6 +40,7 @@ internal sealed class NewMountDialog : QDialog
     private LayerPreset? _selected;
     private LayerDescriptor? _source;
     private string _sourceType = "";
+    private List<string> _consumers = new();
     private string? _loadError;
     private QWidget? _formBody;
     private LayerPreset? _formPreset;
@@ -48,9 +49,13 @@ internal sealed class NewMountDialog : QDialog
     private readonly List<(LayerFieldDescriptor Field, QLineEdit Edit, QLabel Error)> _values = new();
     private readonly Dictionary<string, (QPushButton Button, QLabel Error, LayerFieldDescriptor Field)> _credentialRows = new();
     private readonly Dictionary<QPushButton, string> _credentialValues = new();
+    // What asks a source whether the account beside it works, and where its answer is written.
+    private readonly Dictionary<QPushButton, (QPushButton Ask, QLabel Answer)> _credentialChecks = new();
     private readonly List<(QWidget Editor, QLabel Error, string Message)> _problems = new();
     private bool _nameTyped, _locationTyped, _filling, _form, _saving, _loading;
     private Task<ControlResponse>? _pending;
+    private Task<ControlResponse>? _check;
+    private QPushButton? _checkTarget;
     private MountProfile? _profile;
     private string _root = NewMountDraft.DefaultRoot;
 
@@ -157,7 +162,12 @@ internal sealed class NewMountDialog : QDialog
             var response = SupervisorClient.Default.GetConfig();
             // The accounts every credential row offers. A service that cannot answer leaves the
             // list empty rather than failing the whole window.
-            try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+            try
+            {
+                var credentials = SupervisorClient.Default.Credentials();
+                _credentials = credentials.Credentials;
+                CredentialMarks.Learn(credentials.CredentialKinds);
+            }
             catch (Exception) { _credentials = new(); }
             return response;
         });
@@ -173,43 +183,76 @@ internal sealed class NewMountDialog : QDialog
 
     private void Complete()
     {
-        if (_pending is not { IsCompleted: true }) return;
-        var task = _pending;
-        _pending = null;
-        _timer.Stop();
+        // The check and the commit are different questions and can both be in flight; each is
+        // answered where it was asked, and the tick keeps running until neither is.
+        if (_check is { IsCompleted: true } check)
+        {
+            var target = _checkTarget;
+            _check = null;
+            _checkTarget = null;
+            FinishCheck(check, target);
+        }
+        if (_pending is { IsCompleted: true } task)
+        {
+            _pending = null;
+            // The tick stops here rather than at the end: the load answers by returning, and a
+            // timer that outlived its work would go on asking an idle page every 100 ms.
+            if (_check == null) _timer.Stop();
+            try
+            {
+                var response = task.GetAwaiter().GetResult();
+                if (!response.Ok) throw new InvalidOperationException(response.Error);
+                if (_loading)
+                {
+                    if (response.Config == null) throw new InvalidOperationException("Empty configuration");
+                    _config = AppConfig.FromJson(response.Config);
+                    _descriptors = response.LayerDescriptors;
+                    _presets = response.Presets;
+                    _sourceTypes = response.SourceTypes;
+                    Ready();
+                    return;
+                }
+                // The service accepted the configuration and is starting the instance.
+                if (_profile is { } profile)
+                {
+                    string? parent = Path.GetDirectoryName(profile.MountPoint);
+                    if (!string.IsNullOrWhiteSpace(parent)) UiSettings.Set("MountRoot", parent);
+                    Created = profile.Name;
+                }
+                Accept();
+            }
+            catch (Exception ex)
+            {
+                bool loading = _loading;
+                _loading = false;
+                _saving = false;
+                if (loading) _loadError = I18n.F("newmount.loadFailed", ex.Message);
+                else ShowStatus(I18n.F("newmount.createFailed", ex.Message), true);
+                UpdateSubtitle();
+                UpdateButtons();
+            }
+        }
+        if (_pending == null && _check == null) _timer.Stop();
+    }
+
+    /// <summary>The answer to "does this account work here?", written under the row that asked.
+    /// A check that never reached the service is a sentence of its own rather than an exception:
+    /// the question was optional, and the page has to be usable either way.</summary>
+    private void FinishCheck(Task<ControlResponse> task, QPushButton? target)
+    {
+        if (target == null) return;
+        SourceCheckResult result;
         try
         {
             var response = task.GetAwaiter().GetResult();
-            if (!response.Ok) throw new InvalidOperationException(response.Error);
-            if (_loading)
-            {
-                if (response.Config == null) throw new InvalidOperationException("Empty configuration");
-                _config = AppConfig.FromJson(response.Config);
-                _descriptors = response.LayerDescriptors;
-                _presets = response.Presets;
-                _sourceTypes = response.SourceTypes;
-                Ready();
-                return;
-            }
-            // The service accepted the configuration and is starting the instance.
-            if (_profile is { } profile)
-            {
-                string? parent = Path.GetDirectoryName(profile.MountPoint);
-                if (!string.IsNullOrWhiteSpace(parent)) UiSettings.Set("MountRoot", parent);
-                Created = profile.Name;
-            }
-            Accept();
+            result = response.Check ?? new SourceCheckResult(false, SourceCheckKinds.Unreachable,
+                response.Error ?? I18n.T("credential.check.noAnswer"), 0, 0);
         }
         catch (Exception ex)
         {
-            bool loading = _loading;
-            _loading = false;
-            _saving = false;
-            if (loading) _loadError = I18n.F("newmount.loadFailed", ex.Message);
-            else ShowStatus(I18n.F("newmount.createFailed", ex.Message), true);
-            UpdateSubtitle();
-            UpdateButtons();
+            result = new SourceCheckResult(false, SourceCheckKinds.Unreachable, ex.Message, 0, 0);
         }
+        ShowCheck(target, result);
     }
 
     /// <summary>The first page: one card per preset, and last the way to the editor for a reader
@@ -221,19 +264,41 @@ internal sealed class NewMountDialog : QDialog
         foreach (var preset in _presets)
         {
             var descriptor = NewMountDraft.SourceDescriptor(preset, _descriptors, _sourceTypes);
+            var (glyph, color) = Mark(preset);
             AddCard(preset,
                 preset.Titles.GetValueOrDefault(I18n.Language) ?? preset.Titles.GetValueOrDefault("en") ?? preset.Id,
                 descriptor?.Description.Resolve(I18n.Language) ?? "",
-                Needs(NewMountDraft.Essentials(descriptor)), Chain(preset));
+                Needs(NewMountDraft.Essentials(descriptor)), Chain(preset), glyph, color);
         }
-        AddCard(null, T("newmount.custom.title"), T("newmount.custom.description"), T("newmount.needs.none"), "");
+        var (customGlyph, customColor) = Mark(null);
+        AddCard(null, T("newmount.custom.title"), T("newmount.custom.description"), T("newmount.needs.none"), "",
+            customGlyph, customColor);
         // The first preset is the one the dialog recommends by standing behind it: a reader who
         // agrees can press Next, and one who does not clicks another card.
         if (_cards.Count > 0) _cards.SetCurrentRow(0);
         SelectionChanged();
     }
 
-    private void AddCard(LayerPreset? preset, string title, string description, string needs, string chain)
+    /// <summary>What a card is marked with: the glyph the source it mounts declares, in the colour
+    /// that type is drawn in everywhere else in the window. Three presets whose only difference was
+    /// a sentence of description read as one card repeated — the mark is what tells them apart
+    /// before any of the words do.
+    ///
+    /// A preset that mounts no source is a chain and is marked as one; the card that is not a
+    /// preset at all — the way to the editor — is marked in the muted ink, because a protocol's
+    /// colour there would claim it mounts something.</summary>
+    private (string Glyph, string Color) Mark(LayerPreset? preset)
+    {
+        const string fallback = "layers";
+        if (preset == null) return (fallback, TrayTheme.Tokens.Muted);
+        if (NewMountDraft.SourceLayer(preset.Layers, _sourceTypes) is not { } source)
+            return (fallback, LayerColors.Resolve(preset.Id, null));
+        string icon = NewMountDraft.Descriptor(source.Type, _descriptors)?.Icon ?? "";
+        return (icon.Length > 0 ? icon : fallback, LayerColors.Resolve(source.Type, null));
+    }
+
+    private void AddCard(LayerPreset? preset, string title, string description, string needs, string chain,
+        string glyph, string color)
     {
         var item = new QListWidgetItem();
         item.SetData((int)Qt.ItemDataRole.UserRole, preset?.Id ?? "");
@@ -243,26 +308,44 @@ internal sealed class NewMountDialog : QDialog
         // The card is the row's painting, not a control of its own: clicks belong to the list, so
         // one click selects and the keyboard still works.
         card.SetAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents);
-        var layout = new QVBoxLayout(card);
+        var layout = new QHBoxLayout(card);
         layout.SetContentsMargins(14, 11, 14, 11);
-        layout.SetSpacing(3);
+        layout.SetSpacing(12);
+        // The mark is laid on a wash of its own colour rather than left as a bare stroke: at this
+        // size a 22-pixel line drawing on a card is a smudge, and the tint is what a reader sees
+        // from across the list. The colour is the one the type has everywhere else, lifted for a
+        // dark scheme the way every other drawing of it is.
+        var ink = TrayTheme.Series(color);
+        var mark = new QLabel();
+        mark.SetObjectName("presetMark");
+        mark.SetPixmap(TrayIcons.Get(glyph, ink.Name()).Pixmap(new QSize(22, 22)));
+        mark.SetFixedSize(34, 34);
+        // Centred, because a QLabel draws its pixmap at the alignment it was born with —
+        // AlignLeft — so the glyph otherwise sits against the left edge of its own square.
+        mark.SetAlignment(Qt.Alignment.AlignCenter);
+        mark.SetStyleSheet("background: rgba(" + ink.Red() + "," + ink.Green() + "," + ink.Blue() +
+            ",42); border-radius: 9px;");
+        layout.AddWidget(mark);
+        var copy = new QVBoxLayout();
+        copy.SetSpacing(3);
         var head = new QLabel(title);
         head.SetObjectName("pickerCardTitle");
-        layout.AddWidget(head);
+        copy.AddWidget(head);
         foreach (string line in new[] { description, needs })
         {
             if (line.Length == 0) continue;
             var label = new QLabel(line);
             label.SetObjectName("muted");
             label.SetWordWrap(true);
-            layout.AddWidget(label);
+            copy.AddWidget(label);
         }
+        layout.AddLayout(copy, 1);
         if (chain.Length > 0) card.SetToolTip(I18n.F("newmount.chain", chain));
         _cards.SetItemWidget(item, card);
         // A row with a widget is not sized from that widget; without a hint its height comes from
         // the item's empty text and the card is clipped.
         item.SetSizeHint(new QSize(0, Math.Max(card.SizeHint.Height(), preset == null ? 62 : 84)));
-        _choices.Add((preset, item, card));
+        _choices.Add((preset, item, card, mark));
     }
 
     private string Needs(List<LayerFieldDescriptor> fields) => fields.Count == 0
@@ -345,6 +428,7 @@ internal sealed class NewMountDialog : QDialog
         _values.Clear();
         _credentialRows.Clear();
         _credentialValues.Clear();
+        _credentialChecks.Clear();
         _errors.Clear();
         _nameTyped = _locationTyped = false;
         _name = _location = _driver = null;
@@ -380,9 +464,27 @@ internal sealed class NewMountDialog : QDialog
                 _credentialValues[button] = "";
                 ShowCredential(button, field, "");
                 button.Clicked += _ => ChooseCredential(button, field);
-                form.AddRow(title, Field(button, out var credentialError,
-                    hint: field.Description.Resolve(I18n.Language)));
+                // Beside the account, the one question a first instance cannot answer any other
+                // way: whether the account the reader just picked is accepted by the address they
+                // just typed. The alternative is to save the instance and read a failure on the
+                // dashboard a minute later.
+                var ask = new QPushButton();
+                I18n.Bind(ask.SetText, "credential.check");
+                ask.SetToolTip(T("credential.check.tip"));
+                ask.Clicked += _ => CheckCredential(button);
+                var line = new QWidget();
+                var lineLayout = new QHBoxLayout(line);
+                lineLayout.SetContentsMargins(0, 0, 0, 0);
+                lineLayout.SetSpacing(8);
+                lineLayout.AddWidget(button, 1);
+                lineLayout.AddWidget(ask);
+                var answer = new QLabel();
+                answer.SetWordWrap(true);
+                answer.SetVisible(false);
+                form.AddRow(title, Field(line, out var credentialError,
+                    hint: field.Description.Resolve(I18n.Language), extra: answer));
                 _credentialRows[field.Path] = (button, credentialError, field);
+                _credentialChecks[button] = (ask, answer);
                 continue;
             }
             var edit = new QLineEdit();
@@ -475,8 +577,10 @@ internal sealed class NewMountDialog : QDialog
     }
 
     /// <summary>An editor and the line that says what is wrong with it, which is where the reader
-    /// is looking rather than at the bottom of the window.</summary>
-    private QWidget Field(QWidget editor, out QLabel error, string? hint = null)
+    /// is looking rather than at the bottom of the window. <paramref name="extra"/> is a line of
+    /// the field's own — today, what a source said about the account — and sits above the error so
+    /// that a refusal from the source and a refusal from this page do not share one line.</summary>
+    private QWidget Field(QWidget editor, out QLabel error, string? hint = null, QLabel? extra = null)
     {
         var column = new QWidget();
         var layout = new QVBoxLayout(column);
@@ -492,6 +596,7 @@ internal sealed class NewMountDialog : QDialog
             note.SetWordWrap(true);
             layout.AddWidget(note);
         }
+        if (extra != null) layout.AddWidget(extra);
         error = new QLabel();
         error.SetObjectName("fieldError");
         error.SetWordWrap(true);
@@ -505,6 +610,8 @@ internal sealed class NewMountDialog : QDialog
     {
         if (_filling) return;
         if (_driver == null || edit.Handle != _driver.Handle) return;
+        // An answer was about one address; another address is another question.
+        ClearChecks();
         if (!_nameTyped) SetName(NewMountDraft.NameFromSource(edit.Text));
         else if (!_locationTyped) SetLocation(NewMountDraft.SuggestMountPoint(_root, _name?.Text ?? "", TakenPoints()));
     }
@@ -554,38 +661,134 @@ internal sealed class NewMountDialog : QDialog
     /// made.</summary>
     private void ShowCredential(QPushButton button, LayerFieldDescriptor field, string id)
     {
+        var record = string.IsNullOrWhiteSpace(id)
+            ? null
+            : _credentials.FirstOrDefault(item => item.Id == id);
         string text = T("credential.none");
         if (!string.IsNullOrWhiteSpace(id))
-        {
-            var record = _credentials.FirstOrDefault(item => item.Id == id);
             text = record == null ? T("credential.missing")
                 : record.Kind == CredentialTypes.Certificate ? record.Name + " · " + T("credential.kind.certificate")
                 : record.Name + " · " + record.Username;
-        }
         else if (field.Placeholder.Resolve(I18n.Language) is { Length: > 0 } placeholder) text = placeholder;
         button.SetText(text);
+        // The mark the picker drew beside the account this row stands for.
+        CredentialMarks.Show(button, record);
         button.SetToolTip(field.Description.Resolve(I18n.Language));
     }
 
     private void ChooseCredential(QPushButton button, LayerFieldDescriptor field)
     {
-        try { _credentials = SupervisorClient.Default.Credentials().Credentials; }
+        try
+        {
+            var response = SupervisorClient.Default.Credentials();
+            if (response.Ok)
+            {
+                _credentials = response.Credentials;
+                _consumers = response.CredentialConsumers;
+                CredentialMarks.Learn(response.CredentialKinds);
+            }
+        }
         catch (Exception) { }
         string current = _credentialValues.GetValueOrDefault(button, "");
         ShowCredential(button, field, current);
         string defaultText = field.Placeholder.Resolve(I18n.Language);
         if (string.IsNullOrWhiteSpace(defaultText)) defaultText = T("credential.none");
+        // Every field on this page belongs to the source layer, so what that layer can present is
+        // the filter; a type that never said is unconstrained.
+        string? consumer = _consumers.Contains(_sourceType, StringComparer.OrdinalIgnoreCase) ? _sourceType : null;
         var picker = new CredentialPicker(this, _credentials, current, defaultText, T("credential.none.hint"),
-            accepted: field.CredentialKinds);
+            consumer: consumer);
         try
         {
             if (picker.Exec() != 1) return;
             _credentials = picker.Credentials;
             _credentialValues[button] = picker.SelectedId;
             ShowCredential(button, field, picker.SelectedId);
+            // The answer under the row was about the account that was chosen before; it is not
+            // about this one, so it goes.
+            ClearChecks();
         }
         finally { picker.DeleteLater(); }
     }
+
+    /// <summary>Asks the service whether the source this page describes will serve with the account
+    /// beside it. It runs off the UI thread — a source on the far end of a network answers in its
+    /// own time, and a window that waited for it would look hung — and the answer is collected by
+    /// the same tick that collects a save, so nothing here touches a widget after the page is gone.
+    /// </summary>
+    private void CheckCredential(QPushButton button)
+    {
+        if (_check != null || _saving || _loading) return;
+        var (source, problem) = PageSource();
+        if (source == null)
+        {
+            ShowCheck(button, new SourceCheckResult(false, SourceCheckKinds.Invalid,
+                problem ?? T("credential.check.incomplete"), 0, 0));
+            return;
+        }
+        _checkTarget = button;
+        if (_credentialChecks.TryGetValue(button, out var row))
+        {
+            row.Ask.SetEnabled(false);
+            row.Answer.SetText(T("credential.check.running"));
+            row.Answer.SetStyleSheet("color: " + TrayTheme.Tokens.Muted + ";");
+            row.Answer.SetVisible(true);
+        }
+        _check = Task.Run(() => SupervisorClient.Default.CheckSource(source));
+        _timer.Start(100);
+    }
+
+    private void ClearChecks()
+    {
+        foreach (var (_, answer) in _credentialChecks.Values) answer.SetVisible(false);
+    }
+
+    private void ShowCheck(QPushButton button, SourceCheckResult result)
+    {
+        if (!_credentialChecks.TryGetValue(button, out var row)) return;
+        var (text, color) = SourceCheckText.Describe(result);
+        row.Ask.SetEnabled(true);
+        row.Answer.SetText(text);
+        row.Answer.SetStyleSheet("color: " + color + ";");
+        row.Answer.SetVisible(true);
+    }
+
+    /// <summary>The source the page describes right now: the same composition the commit button
+    /// writes, so what is checked is what would be saved. Null with a sentence when the page cannot
+    /// describe one yet — the address is still empty, or the source's own validation refuses it.
+    /// </summary>
+    private (SourceConfig? Source, string? Problem) PageSource()
+    {
+        if (_selected == null) return (null, T("credential.check.incomplete"));
+        MountProfile profile;
+        try
+        {
+            profile = NewMountDraft.Create(_selected, _name?.Text.Trim() ?? "", _location?.Text.Trim() ?? "",
+                _values.Select(value => (value.Field, value.Edit.Text))
+                    .Concat(_credentialRows.Values.Select(row => (row.Field, _credentialValues.GetValueOrDefault(row.Button, "")))),
+                _descriptors, _sourceTypes);
+        }
+        catch (ArgumentException)
+        {
+            // A required value is missing, and a source cannot be asked anything without it. The
+            // page says which one under that field when the reader presses Create; here the
+            // sentence below the account is the one that fits.
+            return (null, T("credential.check.incomplete"));
+        }
+        if (NewMountDraft.SourceLayer(profile.GetLayers(), _sourceTypes) is not { } layer)
+            return (null, T("credential.check.incomplete"));
+        var source = layer.Source;
+        source.Type = layer.Type;
+        return (source, null);
+    }
+
+    /// <summary>Every field this page put in its form — the values the preset asked for, the
+    /// accounts, the name and the place — for the column check a window's self-check makes
+    /// (see <see cref="FormColumns"/>).</summary>
+    internal IEnumerable<(string Title, QWidget Field)> FormRows =>
+        _values.Select(value => (value.Field.Title.Resolve(I18n.Language), (QWidget)value.Edit))
+            .Concat(_credentialRows.Values.Select(row => (row.Field.Title.Resolve(I18n.Language), (QWidget)row.Button)))
+            .Concat(new (string, QWidget)[] { (T("newmount.name"), _name!), (T("newmount.location"), _location!) });
 
     private IEnumerable<string> TakenNames() => _config.Mounts.Select(m => m.Name);
     private IEnumerable<string> TakenPoints() => _config.Mounts.Select(m => m.MountPoint);
@@ -775,6 +978,17 @@ internal sealed class NewMountDialog : QDialog
         {
             if (dialog._choices.Count < 2)
                 throw new InvalidOperationException("The gallery offered no preset to choose");
+            // Every card carries a mark, and the marks tell the cards apart: three presets whose
+            // only difference was a sentence of description read as one card repeated, which is
+            // what the marks are for.
+            foreach (var choice in dialog._choices)
+            {
+                var pixmap = choice.Mark.Pixmap;
+                if (pixmap == null) throw new InvalidOperationException("A card in the gallery carries no mark");
+            }
+            if (dialog._choices.Select(choice => choice.Mark.StyleSheet).Distinct().Count() <
+                Math.Min(2, dialog._choices.Count))
+                throw new InvalidOperationException("Every card in the gallery is marked the same way");
             // The last card is the way to the editor, not a preset.
             if (dialog._choices[^1].Preset != null)
                 throw new InvalidOperationException("The gallery's last card is a preset, not the way to the editor");
@@ -803,6 +1017,9 @@ internal sealed class NewMountDialog : QDialog
             }
             if (dialog._source != null && dialog._driver == null)
                 throw new InvalidOperationException("The second page asked nothing about the source");
+            // One label column and one field column: a field that starts somewhere else is what
+            // "the text and the box do not line up" looks like.
+            FormColumns.Verify(dialog.FormRows);
             // The address names the instance and the place while the reader leaves both alone.
             if (dialog._driver != null)
             {
@@ -824,6 +1041,64 @@ internal sealed class NewMountDialog : QDialog
                 if (!dialog._location.Text.EndsWith(expected, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException(
                         $"The mount point '{dialog._location.Text}' does not follow the name '{expected}'");
+            }
+            // The account is asked about where it is chosen: the button beside the row, and the
+            // line under it the answer goes to. The answer is rendered from a made-up one — a
+            // real check is a network round trip to somewhere this run has no business reaching —
+            // and the sentence it produces is the service's own, unaltered.
+            if (dialog._credentialRows.Count > 0)
+            {
+                var credentialButton = dialog._credentialRows.Values.First().Button;
+                var credentialField = dialog._credentialRows.Values.First().Field;
+                // A row that names an account wears that account's mark, the one the picker drew.
+                // The picture the reader checks is the capture below; this is the fact the picture
+                // would only show if it were taken.
+                if (credentialButton.Icon.IsNull())
+                    throw new InvalidOperationException(
+                        "A credential field with no account has no mark, so its text moves when one is chosen");
+                dialog._credentials.Add(new CredentialRecord("fixture", "TortoiseSVN (alice)", "alice", "svn-cached"));
+                CredentialMarks.Learn(new[]
+                {
+                    new CredentialKindDescriptor
+                    {
+                        Kind = "svn-cached", Title = new LocalizedText("Subversion cache", "Subversion 缓存"),
+                        Icon = "tortoise"
+                    }
+                });
+                dialog.ShowCredential(credentialButton, credentialField, "fixture");
+                QCoreApplication.ProcessEvents();
+                if (capture != null)
+                {
+                    using var image = dialog.Grab();
+                    image.Save(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(capture) ?? "",
+                        System.IO.Path.GetFileNameWithoutExtension(capture) + "-credential.png"));
+                }
+                dialog.ShowCredential(credentialButton, credentialField, "");
+                if (!dialog._credentialChecks.TryGetValue(credentialButton, out var checkRow))
+                    throw new InvalidOperationException("A credential row offers no way to verify it");
+                dialog.ShowCheck(credentialButton,
+                    new SourceCheckResult(false, SourceCheckKinds.Auth, "the server refused this account", 0, 12));
+                if (!checkRow.Answer.IsVisible() || !checkRow.Answer.Text.Contains("the server refused this account"))
+                    throw new InvalidOperationException("The source's answer was not written under the credential");
+                if (!checkRow.Ask.IsEnabled())
+                    throw new InvalidOperationException("The verify button stayed flat after asking");
+                // A page with nothing to ask says so instead of asking: an address is what a source
+                // check is a question about.
+                var address = dialog._values
+                    .First(value => string.Equals(value.Field.Path, "Source.Url", StringComparison.OrdinalIgnoreCase));
+                string kept = address.Edit.Text;
+                string name = dialog._name!.Text;
+                address.Edit.SetText("");
+                dialog.CheckCredential(credentialButton);
+                string expected = I18n.F("credential.check.error", I18n.T("credential.check.incomplete"));
+                if (dialog._check != null)
+                    throw new InvalidOperationException("A check with no address still went to the service");
+                if (!checkRow.Answer.IsVisible() || checkRow.Answer.Text != expected)
+                    throw new InvalidOperationException(
+                        "A page with no address did not say it could not be checked: '" + checkRow.Answer.Text + "'");
+                address.Edit.SetText(kept);
+                if (dialog._name!.Text != name)
+                    throw new InvalidOperationException("Putting the address back named the instance something else");
             }
             if (!dialog.Check() || dialog._profile == null)
                 throw new InvalidOperationException("A filled page did not compose a profile");

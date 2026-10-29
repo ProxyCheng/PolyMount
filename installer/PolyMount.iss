@@ -13,6 +13,12 @@
 #ifndef Platform
   #define Platform "win-x64"
 #endif
+; The plugin contract this package carries, passed by the build. Only ever used to say, beside a
+; plugin this setup does not ship, that the two cannot run together — the page still lets the
+; reader keep or drop the file, because that is the only decision it takes.
+#ifndef PluginApi
+  #define PluginApi ""
+#endif
 
 [Setup]
 AppId={{91D38E86-5EF4-4512-BC23-4B1481A758B7}
@@ -154,11 +160,15 @@ chinesesimplified.PluginSvn=Subversion (SVN) 仓库
 chinesesimplified.PluginSmb=其他机器共享的文件夹（SMB）
 chinesesimplified.PluginTxFShim=需要事务打开的程序（按目录启用）
 english.PluginPageCaption=Plugins
-english.PluginPageDescription=Choose which of PolyMount's bundled plugins to install.
+english.PluginPageDescription=Choose which plugins this installation offers. Plugins already installed that this setup does not ship are listed after them; clear one to remove it.
 english.PluginPageSubCaption=
+english.PluginExtra=%1 (installed separately)
+english.PluginIncompatible=  — incompatible: built against plugin contract %1, this installation provides %2
+chinesesimplified.PluginIncompatible=  ——不兼容：按插件契约 %1 编译，本安装提供 %2
 chinesesimplified.PluginPageCaption=插件
-chinesesimplified.PluginPageDescription=选择要安装的 PolyMount 插件。
+chinesesimplified.PluginPageDescription=选择这次安装提供哪些插件。已经装好、但不随本安装包分发的插件列在后面；取消勾选即删除。
 chinesesimplified.PluginPageSubCaption=
+chinesesimplified.PluginExtra=%1（单独安装）
 english.AutoStart=Start the tray at Windows sign-in
 english.OriginBadges=Show source badges in Explorer
 english.UserAccount=Run the service as this Windows account (reuses your saved SVN sign-in)
@@ -186,6 +196,11 @@ const
 
 var
   PluginPage: TInputOptionWizardPage;
+  { The plugins found in an existing installation that this setup does not ship, in the order the
+    page lists them after its own. Discovered once, when the page is first shown -- the directory
+    is only settled by then. }
+  ExtraFiles: TStringList;
+  ExtrasLoaded: Boolean;
   RestartExplorerAfterInstall: Boolean;
   ReplaceShellDll: Boolean;
 
@@ -195,6 +210,7 @@ begin
     it (a silent install, the overlay task unchecked, no earlier registration), so copying is the
     default and only an identical copy turns it off. }
   ReplaceShellDll := True;
+  ExtraFiles := TStringList.Create;
   Result := True;
 end;
 
@@ -317,8 +333,86 @@ begin
   end;
 end;
 
+{ Declared before the page that uses it: Pascal Script reads top to bottom, and the plugin page
+  asks the host script what it found long before the calls that install anything are defined. }
+function HostActionTo(Action: String; Installed: Boolean; OutputFile: String): Boolean; forward;
+
+function JoinExtraPlugins(SelectedOnly: Boolean): String;
+var
+  I, Index: Integer;
+begin
+  Result := '';
+  for I := 0 to ExtraFiles.Count - 1 do
+  begin
+    Index := PluginCount + I;
+    if (not SelectedOnly) or (PluginPage = nil) or PluginPage.Values[Index] then
+    begin
+      if Result <> '' then Result := Result + ';';
+      Result := Result + ExtraFiles[I];
+    end;
+  end;
+end;
+
+{ The major part of a contract version: the number that has to match for a plugin to load at all.
+  A plugin built against another major cannot run here; a different minor can. }
+function ContractMajor(Version: String): String;
+var
+  P: Integer;
+begin
+  P := Pos('.', Version);
+  if P > 0 then Result := Copy(Version, 1, P - 1) else Result := Version;
+end;
+
+procedure LoadExtraPlugins();
+var
+  I, Index: Integer;
+  OutputFile: String;
+  Lines: TArrayOfString;
+  Parts: TStringList;
+  Caption: String;
+begin
+  { Once: the page is rebuilt every time it is shown, and appending again on a trip back through
+    the wizard would list the same plugin twice. }
+  if ExtrasLoaded then exit;
+  ExtrasLoaded := True;
+  if WizardSilent() then exit;
+
+  OutputFile := ExpandConstant('{tmp}\extra-plugins.txt');
+  ExtractTemporaryFile('Install-Host.ps1');
+  if not HostActionTo('Discover', False, OutputFile) then exit;
+  if not FileExists(OutputFile) then exit;
+  if not LoadStringsFromFile(OutputFile, Lines) then exit;
+
+  Parts := TStringList.Create;
+  Parts.Delimiter := #9;
+  Parts.StrictDelimiter := True;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    if Trim(Lines[I]) = '' then continue;
+    Parts.DelimitedText := Lines[I];
+    if Parts.Count < 3 then continue;
+    if ActiveLanguage = 'chinesesimplified' then Caption := Parts[2] else Caption := Parts[1];
+    { A plugin built against another major cannot run under what this setup installs, and the
+      row says so in words. The box stays checked and stays clearable: this page decides whether
+      the file is kept, not whether it will load — that answer belongs to the plugin page in the
+      tray, which can see the whole picture. }
+    if ('{#PluginApi}' <> '') and (Parts.Count >= 4) and (Parts[3] <> '') and
+       (ContractMajor(Parts[3]) <> ContractMajor('{#PluginApi}')) then
+      Caption := Caption + FmtMessage(CustomMessage('PluginIncompatible'), [Parts[3], '{#PluginApi}']);
+    Index := PluginCount + ExtraFiles.Count;
+    ExtraFiles.Add(Parts[0]);
+    PluginPage.Add(FmtMessage(CustomMessage('PluginExtra'), [Caption]));
+    { Already installed and working: keeping it is what leaving it alone means, so it starts
+      checked. Clearing the box is the only thing that ever removes it. }
+    PluginPage.Values[Index] := True;
+  end;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  { A plugin someone installed by hand joins this page rather than getting one of its own: "what
+    this installation can mount" is one question, and the answer was incomplete before. }
+  if (PluginPage <> nil) and (CurPageID = PluginPage.ID) then LoadExtraPlugins();
   { The colours appear only after Explorer has read the overlay list, and this installer must not
     restart it itself (see [Run]); the finished page says what to do instead. }
   if (CurPageID = wpFinished) and WizardIsTaskSelected('overlays') and not RestartExplorerAfterInstall then
@@ -359,17 +453,29 @@ begin
 end;
 
 function HostAction(Action: String; Installed: Boolean): Boolean;
+begin
+  Result := HostActionTo(Action, Installed, '');
+end;
+
+function HostActionTo(Action: String; Installed: Boolean; OutputFile: String): Boolean;
 var Script, Args: String; Code, Show: Integer;
 begin
   if Installed then Script := ExpandConstant('{app}\installer\Install-Host.ps1')
   else Script := ExpandConstant('{tmp}\Install-Host.ps1');
   Args := '-NoProfile -ExecutionPolicy Bypass -File "' + Script + '" -Action ' + Action +
     ' -InstallDirectory "' + ExpandConstant('{app}') + '"';
+  if Action = 'Discover' then
+    Args := Args + ' -Managed "' + JoinPluginFiles(False) + '" -Output "' + OutputFile + '"';
   if Action = 'Install' then
   begin
     if WizardIsTaskSelected('useraccount') then Args := Args + ' -UserAccount';
     Args := Args + ' -Plugins "' + JoinPluginFiles(True) + '"';
     Args := Args + ' -Managed "' + JoinPluginFiles(False) + '"';
+    { Everything the page listed is named: this setup's own plugins above, and the ones it found
+      on disk here. Naming none of the latter is how the page says they were cleared, which is the
+      only way a plugin somebody installed by hand ever gets removed. A silent install has no
+      page and is never asked, so it says nothing and nothing is removed. }
+    if not WizardSilent() then Args := Args + ' -Keep "' + JoinExtraPlugins(True) + '"';
   end;
   // Only one of these calls has something to say: the first install that asks for a service
   // account prompts for its credentials in that console. Everything else -- stopping the old

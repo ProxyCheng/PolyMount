@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using PolyMount.Core;
@@ -362,18 +362,9 @@ internal static class StatsExport
         catch { return "unknown"; }
     }
 
-    /// <summary>The WinFsp build the mount runs against. Read from the install location rather
-    /// than from configuration, which the service owns and the tray only sees through status.</summary>
-    private static string WinFspVersion()
-    {
-        try
-        {
-            string path = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "WinFsp", "bin", "winfsp-x64.dll");
-            return System.Diagnostics.FileVersionInfo.GetVersionInfo(path).FileVersion ?? "unknown";
-        }
-        catch { return "unknown"; }
-    }
+    /// <summary>The WinFsp build the mount runs against, which the about page shows too: one reader
+    /// of the install location, so the bundle and the page cannot disagree.</summary>
+    private static string WinFspVersion() => ProductInfo.WinFsp;
 
     /// <summary>What the service process had spent when the window was captured — the one figure
     /// the window cannot show, since its charts describe PolyMount's own bookkeeping rather than

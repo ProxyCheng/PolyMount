@@ -20,7 +20,7 @@ internal static class InstanceCommands
         ControlCommands.SetPin or ControlCommands.RefreshHead or ControlCommands.ClearCache
         or ControlCommands.ClearLocalChanges or ControlCommands.RecordingStart
         or ControlCommands.RecordingStatus or ControlCommands.RecordingStop
-        or ControlCommands.PluginNotices;
+        or ControlCommands.PluginNotices or ControlCommands.PluginPanel;
 
     /// <summary>Whether the command addresses the instance by a local path rather than by name.
     /// A path is what a window opened from Explorer has, and which instance it belongs to is read
@@ -66,6 +66,9 @@ internal static class InstanceCommands
                 break;
             case ControlCommands.PluginNotices:
                 response.Notices = PluginNotices.Collect(instance).ToList();
+                break;
+            case ControlCommands.PluginPanel:
+                response.Panel = PluginPanels.Render(request.Action ?? "", instance);
                 break;
             default:
                 if (PluginCommands.TryApply(new PluginCommand(instance, rel, request, response))) break;

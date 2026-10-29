@@ -8,8 +8,20 @@ using Serilog.Sinks.Async;
 namespace PolyMount.Core;
 
 /// <summary>Bounded background request tracing, including operations that have not returned.</summary>
-public sealed class RequestDiagnostics : IDisposable
+public sealed class RequestDiagnostics : IDisposable, IRequestTracing
 {
+    /// <summary>Where the plugin contract reads the ambient scope from. Installed once, here,
+    /// rather than kept in a second slot: the scope below is written on every request and must
+    /// not be written twice.</summary>
+    static RequestDiagnostics() => RequestTracing.AmbientSource = () => Current.Value;
+
+    /// <summary>The owner as a scope's parent. A layer that was handed this tracing asks it for a
+    /// scope, which inherits both the owner and whichever scope is ambient right now.</summary>
+    IRequestScope? IRequestTracing.Begin(string operation, string? path) => Begin(operation, path ?? "", this);
+
+    /// <summary>The caller the ambient scope answers to, or 0 outside one.</summary>
+    int IRequestTracing.ProcessId => Current.Value?.ProcessId ?? 0;
+
     /// <summary>What both channels print for a scope's own line.</summary>
     private const string LineTemplate =
         "{Kind:l} id={RequestId} parent={ParentId} thread={ThreadId} pid={ProcessId} op={Operation:l} path='{Path:l}' elapsedMs={ElapsedMs} stage='{Stage:l}'";
@@ -203,7 +215,7 @@ public sealed class RequestDiagnostics : IDisposable
         }
     }
 
-    public sealed class Scope : IDisposable
+    public sealed class Scope : IRequestScope, IRequestTracing
     {
         internal readonly RequestDiagnostics _owner;
         private readonly Scope? _parent;
@@ -218,6 +230,8 @@ public sealed class RequestDiagnostics : IDisposable
         private int _finished;
         internal long Id { get; }
         internal int ProcessId { get; }
+        IRequestScope? IRequestTracing.Begin(string operation, string? path) => Begin(operation, path ?? "", _owner);
+        int IRequestTracing.ProcessId => ProcessId;
         internal bool Trace { get; }
         /// <summary>Whole milliseconds, for the thresholds and the lines a scope writes about
         /// itself. Truncated on purpose: those are read by a person.</summary>

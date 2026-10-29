@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "polymount.puppet",
+  "name": { "en": "Puppet plugin", "zh-CN": "傀儡插件" },
+  "description": {
+    "en": "A plugin used by tests to stand in for one installed by hand.",
+    "zh-CN": "供测试使用的插件，用来代替手工安装的第三方插件。"
+  },
+  "icon": "plugin",
+  "publisher": "PolyMount tests",
+  "license": "MIT",
+  "permissions": ["filesystem"],
+  "roles": ["backend"],
+  "host": ">=0.9.5"
+}

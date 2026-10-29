@@ -8,7 +8,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Xml;
 using System.Xml.Linq;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -112,10 +112,10 @@ internal sealed class SvnHttpClient : ISvnBackend
         };
     }
 
-    public long GetHeadRevision(RequestDiagnostics? diagnostics = null)
+    public long GetHeadRevision(IRequestTracing? tracing = null)
     {
         var (root, _) = Repository();
-        using var request = RequestDiagnostics.Begin("SVN.info", root, diagnostics);
+        using var request = RequestTracing.Begin("SVN.info", root, tracing);
         // The youngest revision belongs to the repository's baseline, which the version-
         // controlled configuration points at (`!svn/bln/<rev>`). Asking the plain root for its
         // version-name — what this used to do — asks the wrong resource: a server may forbid the
@@ -146,11 +146,11 @@ internal sealed class SvnHttpClient : ISvnBackend
             : null;
     }
 
-    public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
+    public IReadOnlyList<SvnEntry> List(long rev, string rel, IRequestTracing? tracing = null)
     {
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
-        using var request = RequestDiagnostics.Begin("SVN.list", url, diagnostics);
+        using var request = RequestTracing.Begin("SVN.list", url, tracing);
         var document = PropFind(url, "1", ListingBody);
         // A directory never contains a child with its own name, so the collection that
         // WebDAV returns first can be dropped by name whatever form its href takes.
@@ -160,11 +160,11 @@ internal sealed class SvnHttpClient : ISvnBackend
         return entries;
     }
 
-    public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
+    public SvnEntry? Info(long rev, string rel, IRequestTracing? tracing = null)
     {
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
-        using var request = RequestDiagnostics.Begin("SVN.info", url, diagnostics);
+        using var request = RequestTracing.Begin("SVN.info", url, tracing);
         // Depth 0 describes the resource itself. The same body as a listing: WebDAV returns the
         // requested properties either way, and only the number of responses differs.
         var found = ParseEntry(PropFind(url, "0", ListingBody), PathOf(url));
@@ -172,11 +172,11 @@ internal sealed class SvnHttpClient : ISvnBackend
         return found;
     }
 
-    public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
+    public void CatToFile(long rev, string rel, string dest, IRequestTracing? tracing = null)
     {
         var (root, prefix) = Repository();
         var url = ResourceUrl(root, prefix, rev, rel);
-        using var request = RequestDiagnostics.Begin("SVN.cat", url, diagnostics);
+        using var request = RequestTracing.Begin("SVN.cat", url, tracing);
         using var timeout = new CancellationTokenSource(BodyTimeout);
         using var message = new HttpRequestMessage(HttpMethod.Get, url);
         using var response = Send(message, url, rel, timeout.Token);

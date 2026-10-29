@@ -1,6 +1,6 @@
 using System.Globalization;
 using System.IO.Enumeration;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Smb;
 
@@ -67,12 +67,23 @@ public sealed class SmbLayer : ILayer, IDisposable
         {
             var credential = CredentialStore.FindById(config.CredentialId)
                 ?? throw new InvalidOperationException("the credential this layer names no longer exists; choose another in the layer's settings");
-            return (credential.Username, credential.Password);
+            return AccountOf(credential);
         }
         if (!string.IsNullOrWhiteSpace(config.Username))
             return (config.Username, config.Password ?? string.Empty);
         return (string.Empty, string.Empty);
     }
+
+    /// <summary>A share is opened with an account and a password, and nothing else. Asking the
+    /// credential for that capability — instead of reading two fields off it — is what turns "a
+    /// bearer token was chosen here" into this sentence rather than into a connection attempt
+    /// with empty strings.</summary>
+    internal static (string Username, string Password) AccountOf(Credential credential) =>
+        credential is IPasswordAuthentication account
+            ? (account.UserName, account.Password)
+            : throw new InvalidOperationException("the credential '" + credential.Username
+                + "' cannot open a share: a remote folder needs an account and a password, and this one is a '"
+                + credential.Kind + "' credential; choose one of the account credentials in the layer's settings");
 
     public string Name => TypeName;
     public bool Writable => false;

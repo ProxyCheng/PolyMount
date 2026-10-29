@@ -116,7 +116,7 @@ public sealed class NamespaceResidencyTests
 
         // The index admits none of the rows, so clearing has to ask the table for every
         // blob it is about to orphan. Naming 40,000 paths in one `IN (...)` is a variable
-        // count SQLite refuses (demo's cache reported "too many SQL variables").
+        // count SQLite refuses (G83's cache reported "too many SQL variables").
         var bounded = new ObjectDatabase(temp.Sub("db"), false, recoverable: true, metadataBudget: 1);
         Assert.AreEqual(0, bounded.Records.Count, "this test needs an index that holds nothing");
         bounded.Clear();

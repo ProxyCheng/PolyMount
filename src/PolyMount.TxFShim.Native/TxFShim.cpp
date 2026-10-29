@@ -185,14 +185,21 @@ void PatchImportTable(HMODULE module)
     auto base = (BYTE*)module;
     auto dos = (IMAGE_DOS_HEADER*)base;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return;
+    if (dos->e_lfanew <= 0 || dos->e_lfanew > 0x10000) return;
     auto nt = (IMAGE_NT_HEADERS*)(base + dos->e_lfanew);
     if (nt->Signature != IMAGE_NT_SIGNATURE) return;
+    // A 64-bit shim only ever sees 64-bit images; anything else here is not an image at all.
+    if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return;
 
     auto& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (directory.VirtualAddress == 0 || directory.Size == 0) return;
+    // Walking an RVA needs the RVA to lie inside the image. A mapping that is not an image (see
+    // LoadLibraryExW_Hook) answers with file offsets, and reading them as addresses faults.
+    if (directory.VirtualAddress + directory.Size > nt->OptionalHeader.SizeOfImage) return;
 
+    auto end = (IMAGE_IMPORT_DESCRIPTOR*)(base + directory.VirtualAddress + directory.Size);
     for (auto descriptor = (IMAGE_IMPORT_DESCRIPTOR*)(base + directory.VirtualAddress);
-         descriptor->Name != 0; descriptor++)
+         descriptor < end && descriptor->Name != 0; descriptor++)
     {
         // Only the loader's resolution matters here: the names live in the original thunk array.
         if (descriptor->OriginalFirstThunk == 0) continue;
@@ -248,7 +255,11 @@ void PatchLoadedModules()
 
 FARPROC WINAPI GetProcAddress_Hook(HMODULE module, LPCSTR name)
 {
-    if (name != nullptr)
+    // Two forms arrive here, and only one is a string: a name, and an ordinal packed into the
+    // pointer itself (MAKEINTRESOURCE). Reading the ordinal as a string is a fault in our own code,
+    // not in the caller's -- a host that resolves an ordinal export died at start-up with
+    // 0xc0000005 inside the comparison before this check existed.
+    if (name != nullptr && !IS_INTRESOURCE(name))
         if (FARPROC replacement = ReplacementFor(name)) return replacement;
     return RealGetProcAddress(module, name);
 }
@@ -256,7 +267,11 @@ FARPROC WINAPI GetProcAddress_Hook(HMODULE module, LPCSTR name)
 HMODULE WINAPI LoadLibraryExW_Hook(LPCWSTR path, HANDLE file, DWORD flags)
 {
     HMODULE module = RealLoadLibraryExW(path, file, flags);
-    if (module) PatchModule(module);
+    // A datafile load maps the file, not the image: its section RVAs are file offsets, so the
+    // import directory cannot be walked, and nothing is called through such a module anyway. A
+    // host that reads a DLL's resources this way is not a host this shim can or should patch.
+    const DWORD notAnImage = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE;
+    if (module && (flags & notAnImage) == 0) PatchModule(module);
     return module;
 }
 

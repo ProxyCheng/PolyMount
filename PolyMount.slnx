@@ -1,6 +1,9 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/PolyMount.Plugin.Abstractions/PolyMount.Plugin.Abstractions.csproj" />
     <Project Path="src/PolyMount.Core/PolyMount.Core.csproj" />
+    <Project Path="src/PolyMount.Plugin.Cli/PolyMount.Plugin.Cli.csproj" />
+    <Project Path="src/PolyMount.Plugin.Sdk/PolyMount.Plugin.Sdk.csproj" />
     <Project Path="src/PolyMount.Plugin.Testing/PolyMount.Plugin.Testing.csproj" />
     <Project Path="src/PolyMount.Service/PolyMount.Service.csproj" />
     <Project Path="src/PolyMount.Tray/PolyMount.Tray.csproj" />
@@ -12,6 +15,7 @@
     <Project Path="src/plugins/PolyMount.Plugin.TxFShim/PolyMount.Plugin.TxFShim.csproj" />
   </Folder>
   <Folder Name="/tests/plugins/">
+    <Project Path="tests/plugins/PolyMount.Plugin.Puppet/PolyMount.Plugin.Puppet.csproj" />
     <Project Path="tests/plugins/PolyMount.Plugin.Smb.Tests/PolyMount.Plugin.Smb.Tests.csproj" />
     <Project Path="tests/plugins/PolyMount.Plugin.Svn.Tests/PolyMount.Plugin.Svn.Tests.csproj" />
     <Project Path="tests/plugins/PolyMount.Plugin.TxFShim.Tests/PolyMount.Plugin.TxFShim.Tests.csproj" />

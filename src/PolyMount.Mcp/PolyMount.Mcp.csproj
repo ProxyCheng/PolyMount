@@ -25,4 +25,10 @@
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
 
+
+  <ItemGroup>
+    <!-- The plugin contract's namespace, imported for the whole project. -->
+    <Using Include="PolyMount.Plugins" />
+    <Using Include="PolyMount.Plugins.Ipc" />
+  </ItemGroup>
 </Project>

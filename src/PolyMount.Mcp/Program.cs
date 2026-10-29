@@ -135,7 +135,10 @@ public static class Program
         foreach (var path in pluginPaths)
             plugins.Add(new PluginConfig { AssemblyPath = Path.GetFullPath(path), Enabled = true });
         if (plugins.Count == 0) return;
-        foreach (var error in PluginLoader.LoadConfigured(plugins, baseDirectory))
+        // Front-end half only: this process serves tools, so a plugin that offers none — a source,
+        // a layer type — is not loaded here at all. It would add nothing it could be called
+        // through, and loading it costs its assembly and its Register side effects.
+        foreach (var error in PluginLoader.LoadConfigured(plugins, baseDirectory, PluginRoles.Frontend))
             Console.Error.WriteLine($"PolyMount.Mcp: plugin not loaded: {error}");
     }
 

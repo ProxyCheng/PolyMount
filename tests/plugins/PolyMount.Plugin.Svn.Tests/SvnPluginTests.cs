@@ -1,4 +1,4 @@
-using System.Net.Security;
+﻿using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Security.Cryptography.X509Certificates;
@@ -149,8 +149,8 @@ public sealed class SvnPluginTests : IPluginTestProvider
         public int InfoCount(string rel) { lock (_infos) return _infos.GetValueOrDefault(rel); }
         public int Total { get { lock (_calls) return _calls.Values.Sum(); } }
 
-        public long GetHeadRevision(RequestDiagnostics? diagnostics = null) => 1;
-        public IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null)
+        public long GetHeadRevision(IRequestTracing? tracing = null) => 1;
+        public IReadOnlyList<SvnEntry> List(long rev, string rel, IRequestTracing? tracing = null)
         {
             lock (_calls) _calls[rel] = _calls.GetValueOrDefault(rel) + 1;
             Record();
@@ -162,7 +162,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
                 IsDir = Tree.ContainsKey(rel.Length == 0 ? name : rel + "/" + name)
             }).ToArray();
         }
-        public SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null)
+        public SvnEntry? Info(long rev, string rel, IRequestTracing? tracing = null)
         {
             lock (_infos) _infos[rel] = _infos.GetValueOrDefault(rel) + 1;
             Record();
@@ -182,7 +182,7 @@ public sealed class SvnPluginTests : IPluginTestProvider
             if (child == null) throw new SvnNotFoundException(rel);
             return new SvnEntry { Name = child, IsDir = false };
         }
-        public void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null)
+        public void CatToFile(long rev, string rel, string dest, IRequestTracing? tracing = null)
         {
             lock (_cats) _cats[rel] = _cats.GetValueOrDefault(rel) + 1;
             Record();
@@ -194,6 +194,15 @@ public sealed class SvnPluginTests : IPluginTestProvider
     }
 
     public string PluginName => "svn";
+
+    /// <summary>A credential of a kind only a bearer-token source could present, for the probes
+    /// that ask a layer what it takes.</summary>
+    private sealed class TokenCredential : Credential, IBearerAuthentication
+    {
+        public override string Kind => "token-test";
+        public string Token => "";
+    }
+
 
     /// <summary>Waits for another thread to bring a condition about.</summary>
     private static bool Until(Func<bool> condition, int milliseconds = 5000)
@@ -250,6 +259,78 @@ public sealed class SvnPluginTests : IPluginTestProvider
             PluginLoader.LoadConfigured(new[] { new PluginConfig { AssemblyPath = path } }, Path.GetDirectoryName(path)!);
         });
         Check("registration", () => { if (!SourceRegistry.Contains("svn")) throw new Exception("SVN was not registered"); });
+        Check("the-client-cache-is-a-credential-kind", () =>
+        {
+            // The account TortoiseSVN saved is chosen like any other credential, so a reader sees
+            // it in the picker instead of trusting an invisible fallback.
+            var kind = CredentialKinds.Find(SubversionCacheCredential.KindName)
+                ?? throw new Exception("the svn client cache is not registered as a credential kind");
+            if (kind.Title.Values.Count == 0) throw new Exception("the credential kind has no title");
+            // The mark says which program the record belongs to: a tortoise, because this is
+            // TortoiseSVN's own cache and a list of accounts is scanned rather than read.
+            if (kind.Icon != "tortoise")
+                throw new Exception($"the client cache credential wears '{kind.Icon}', not the tortoise");
+
+            // What the layer accepts is its own answer, asked with the credential: an account, a
+            // certificate, and the client's own cache — which carries no secret and becomes an
+            // account when a repository is built. A token cannot open a repository.
+            static bool Takes(Credential credential) =>
+                CredentialConsumers.Of(credential).Contains("svn", StringComparer.OrdinalIgnoreCase);
+            if (!Takes(new PasswordCredential { Username = "alice", Password = "secret" }))
+                throw new Exception("the svn layer does not accept an account with a password");
+            if (!Takes(new ClientCertificateCredential()))
+                throw new Exception("the svn layer does not accept a client certificate");
+            if (!Takes(kind.Create(new Dictionary<string, string>())))
+                throw new Exception("the svn layer does not accept the client cache it registers");
+            if (Takes(new TokenCredential()))
+                throw new Exception("the svn layer says it can present a bearer token");
+        });
+        Check("the-client-cache-names-whose-cache", () =>
+        {
+            // The cache is always somebody's: Windows protects the saved password with the key of
+            // the account that typed it, and the account a service runs as is almost never that
+            // one. The record therefore carries an account, and a form starts it at the person
+            // filling it rather than at the service.
+            var kind = CredentialKinds.Find(SubversionCacheCredential.KindName)
+                ?? throw new Exception("the svn client cache is not registered as a credential kind");
+            if (kind.AccountField != SubversionCacheCredential.AccountField)
+                throw new Exception("the kind names no account field, so the credential list shows no account");
+            var field = kind.Fields.Single();
+            if (field.Path != SubversionCacheCredential.AccountField || field.Kind != CredentialFieldKind.Text)
+                throw new Exception("the kind's account field is not the text field it should be");
+            if (field.DefaultValue != "%USERNAME%")
+                throw new Exception("the account field does not start at the person filling the form");
+
+            var named = kind.Create(new Dictionary<string, string> { ["account"] = "alice" }) as SubversionCacheCredential
+                ?? throw new Exception("the kind did not build its own credential");
+            if (named.Account != "alice") throw new Exception("the account did not reach the credential");
+            if (kind.Create(new Dictionary<string, string>()) is not SubversionCacheCredential { Account: "" })
+                throw new Exception("a record with no account did not build one that reads this process's own cache");
+        });
+        Check("another-accounts-cache-is-located-and-borrowed", () =>
+        {
+            string me = Environment.UserName;
+            if (!WindowsUser.IsCurrent(me)) throw new Exception("this process does not recognise its own account");
+            if (WindowsUser.IsCurrent("no-such-account-" + Guid.NewGuid().ToString("N")))
+                throw new Exception("an account that does not exist was taken for this process's own");
+
+            string expected = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Subversion", "auth", "svn.simple");
+            if (!string.Equals(WindowsUser.SubversionDirectory(me), expected, StringComparison.OrdinalIgnoreCase))
+                throw new Exception("the cache was looked for somewhere else: " + WindowsUser.SubversionDirectory(me));
+
+            // The ordinary case must not take the impersonation path at all: there is no session
+            // token to take for the account this process already is.
+            if (WindowsUser.RunAs(me, () => 42) != 42) throw new Exception("running as this process's own account failed");
+
+            try
+            {
+                WindowsUser.SubversionDirectory("no-such-account-" + Guid.NewGuid().ToString("N"));
+                throw new Exception("an unknown account was accepted");
+            }
+            // The account is the thing to change, which is what the check says to the reader.
+            catch (AuthRequiredException) { }
+        });
         Check("mcp-operations", () =>
         {
             var source = ControlOperations.Find("get_svn_source")

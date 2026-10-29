@@ -1,5 +1,5 @@
 using System.Text;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -23,8 +23,20 @@ internal sealed class SvnCredentialedSource(SourceConfig source) : CredentialedS
     /// The cached credential for a repository, matched by host and port. Several realms can share
     /// a host; a realm that names the repository's own path is preferred, and otherwise the most
     /// recently written file wins, which is the one a person would have just authenticated with.
+    ///
+    /// Without an account this reads the cache of the account the process runs as, which is what
+    /// the SVN source falls back to. With one it reads that account's cache, borrowing its identity
+    /// for the length of the read — see <see cref="WindowsUser"/> for why that is the only way to
+    /// open those bytes.
     /// </summary>
-    internal static CachedCredential? FromCache(Uri repository) => FromCache(repository, CacheDirectory(), CredentialStore.Unprotect);
+    internal static CachedCredential? FromCache(Uri repository, string? account = null)
+    {
+        if (string.IsNullOrWhiteSpace(account) || WindowsUser.IsCurrent(account))
+            return FromCache(repository, CacheDirectory(), CredentialStore.Unprotect);
+
+        string directory = WindowsUser.SubversionDirectory(account);
+        return WindowsUser.RunAs(account, () => FromCache(repository, directory, CredentialStore.Unprotect));
+    }
 
     /// <summary>The same lookup over a given directory and decryptor, so the whole path — the file
     /// format, the base64 blob and the realm match — can be exercised without a real credential

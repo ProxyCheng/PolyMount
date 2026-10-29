@@ -18,6 +18,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\PolyMount.Plugin.Abstractions\PolyMount.Plugin.Abstractions.csproj" />
+    <!-- The contract's namespace is imported for the whole project: the engine implements and
+         consumes it everywhere, and naming it in ninety files would say nothing a reader of the
+         csproj cannot see here. A file that also uses the engine's own namespace needs no second
+         using for it, since that one is implicit too. -->
+    <Using Include="PolyMount.Plugins" />
+    <Using Include="PolyMount.Plugins.Ipc" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Core\OriginPalette.inc" LogicalName="PolyMount.OriginPalette" />
     <EmbeddedResource Include="Core\OverlayGlyphs.inc" LogicalName="PolyMount.OverlayGlyphs" />
     <EmbeddedResource Include="Resources\layer-texts.json" LogicalName="PolyMount.LayerTexts" />

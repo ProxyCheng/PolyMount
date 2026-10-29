@@ -21,7 +21,7 @@ public class MountPointVolumeTests
     [TestMethod]
     public void Anything_else_is_a_directory_mount_point()
     {
-        Assert.IsFalse(MountPointVolume.IsDriveLetter(@"D:\mounts\demo", out _));
+        Assert.IsFalse(MountPointVolume.IsDriveLetter(@"D:\mounts\g83", out _));
         Assert.IsFalse(MountPointVolume.IsDriveLetter(@"\\server\share", out _));
         Assert.IsFalse(MountPointVolume.IsDriveLetter("XY:", out _));
         Assert.IsFalse(MountPointVolume.IsDriveLetter("", out _));
@@ -37,7 +37,7 @@ public class MountPointVolumeTests
     [TestMethod]
     public void Directory_paths_are_absolute_and_end_with_a_separator()
     {
-        Assert.AreEqual(@"C:\mounts\demo\", MountPointVolume.DirectoryPath(@"C:\mounts\demo"));
-        Assert.AreEqual(@"C:\mounts\demo\", MountPointVolume.DirectoryPath(@"C:\mounts\demo\"));
+        Assert.AreEqual(@"C:\mounts\g83\", MountPointVolume.DirectoryPath(@"C:\mounts\g83"));
+        Assert.AreEqual(@"C:\mounts\g83\", MountPointVolume.DirectoryPath(@"C:\mounts\g83\"));
     }
 }

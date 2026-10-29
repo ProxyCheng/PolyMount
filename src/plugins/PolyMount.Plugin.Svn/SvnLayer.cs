@@ -1,5 +1,5 @@
 using System.Globalization;
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -105,7 +105,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     /// </summary>
     public static SvnLayer Create(string url, string trustFailures, string pinPath,
         string? username = null, string? password = null, SvnPrefetchOptions? prefetch = null,
-        string? credentialId = null, bool allowInsecureTransport = false)
+        string? credentialId = null, bool allowInsecureTransport = false, bool verifyOnly = false)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var repository) ||
             (repository.Scheme != Uri.UriSchemeHttp && repository.Scheme != Uri.UriSchemeHttps))
@@ -115,17 +115,56 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
                 + "authenticating the server, and the account this source resolves would travel with the request. "
                 + "Set this source's AllowInsecureTransport to accept it.", nameof(url));
         var source = new SourceConfig { Type = "svn", Url = url, TrustServerCertFailures = trustFailures,
-            Username = username, Password = password, CredentialId = credentialId ?? "" };
+            Username = username, Password = password, CredentialId = credentialId ?? "",
+            // A source built to answer "does this account work here?" enforces the credential's
+            // recorded origins without adding the address to them (see SourceCheck).
+            VerifyOnly = verifyOnly };
         // Resolved once, here: the HTTP client holds the pair for the life of the process, so no
-        // request touches the credential store. A certificate credential carries a PKCS#12 file
-        // and may also name an account; a password credential is the account alone. The source
-        // names the base type, so either fills the slot.
+        // request touches the credential store. What the transport can present is asked for as a
+        // capability rather than as a class: a certificate credential also answers the account
+        // question, and a kind this plugin has never heard of is simply one that answers neither —
+        // it is not silently read as an account with an empty password.
         var credential = new SvnCredentialedSource(source).Resolve();
-        var certificates = credential is ClientCertificateCredential { Certificate.Length: > 0 } clientCertificate
+        // "Use what the Subversion client saved": the record holds no secret, so this is where it
+        // becomes one — against this repository, because the client keys its cache by realm and a
+        // record cannot know which repository it will be used for. The cache is a Windows
+        // account's, and the record says whose: empty means the account this service runs as,
+        // which is usually not the one somebody signed in with, so a record is worth naming.
+        // Nothing found is said plainly rather than left to a 401.
+        if (credential is SubversionCacheCredential clientCache)
+        {
+            var cached = SvnCredentialedSource.FromCache(repository, clientCache.Account)
+                ?? throw new AuthRequiredException(string.IsNullOrWhiteSpace(clientCache.Account)
+                    ? "no Subversion credential is cached for " + repository.Host
+                        + " under the account this service runs as (" + ServiceAccount() + "); sign in once with "
+                        + "TortoiseSVN or the svn command line as that account, name the account on this credential, "
+                        + "or choose an account credential on this layer"
+                    : "no Subversion credential is cached for " + repository.Host + " under the Windows account '"
+                        + clientCache.Account + "'; sign in once with TortoiseSVN or the svn command line as that "
+                        + "account, or correct the account this credential names");
+            credential = new PasswordCredential { Username = cached.Username, Password = cached.Password };
+        }
+        var certificates = credential is ICertificateAuthentication { Certificate.Length: > 0 } clientCertificate
             ? SvnHttpClient.LoadClientCertificates(clientCertificate.Certificate, clientCertificate.CertificatePassword)
             : null;
-        return new(new SvnHttpClient(url, trustFailures, credential?.Username, credential?.Password, certificates),
-            pinPath, prefetch, credential?.Username);
+        var account = credential as IPasswordAuthentication;
+        // A chosen credential that offers neither way of authenticating is refused here, while the
+        // instance is being built, rather than sent as an anonymous request that the server answers
+        // with a 401 nobody can explain.
+        if (credential != null && account == null && certificates == null)
+            throw new InvalidOperationException("the credential '" + credential.Username
+                + "' cannot open a repository: SVN presents an account with its password or a client certificate, and this one is a '"
+                + credential.Kind + "' credential; choose one of those in the layer's settings");
+        return new(new SvnHttpClient(url, trustFailures, account?.UserName, account?.Password, certificates),
+            pinPath, prefetch, account?.UserName ?? credential?.Username);
+    }
+
+    /// <summary>Who this process is, in the words of the refusal above: reading another account's
+    /// Subversion cache is not possible, and "sign in" only helps if it is that account.</summary>
+    private static string ServiceAccount()
+    {
+        try { return System.Security.Principal.WindowsIdentity.GetCurrent().Name; }
+        catch (Exception) { return "this process"; }
     }
 
     public void Dispose()
@@ -147,9 +186,9 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     internal bool WaitForPrefetch(TimeSpan timeout) => _prefetch?.WaitForIdle(timeout) ?? true;
 
     /// <summary>Fetches one directory for read-ahead, reporting whether a listing was kept.
-    /// The diagnostics captured when the work was queued keep it visible in the request log,
+    /// The tracing captured when the work was queued keep it visible in the request log,
     /// which a scope-less worker thread could not otherwise be.</summary>
-    private bool FetchListing(string rel, RequestDiagnostics? diagnostics)
+    private bool FetchListing(string rel, IRequestTracing? tracing)
     {
         string key;
         lock (_gate)
@@ -159,7 +198,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
             // needs no speculative request.
             if (_memo.ContainsKey(key) || _listingRequests.ContainsKey(key)) return false;
         }
-        Listing(rel, speculative: true, diagnostics);
+        Listing(rel, speculative: true, tracing);
         lock (_gate) return _memo.ContainsKey(key);
     }
 
@@ -307,7 +346,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
             // every layer for every path (the Windows loader probes for DLLs the same way), and
             // an exception here becomes an I/O error there — which the loader treats as a broken
             // disk instead of "not this directory, keep looking".
-            try { info = _svn.Info(revision, rel, RequestDiagnostics.Ambient); }
+            try { info = _svn.Info(revision, rel, RequestTracing.Ambient); }
             catch (SvnNotFoundException) { info = null; }
         }
         if (info == null)
@@ -319,7 +358,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
             // the resolver would give — and remember it under the spelling that was asked for.
             string parent = VfsPath.Parent(rel);
             string name = VfsPath.Name(rel);
-            VfsEntry? sibling = Listing(parent, speculative: false, RequestDiagnostics.Ambient)
+            VfsEntry? sibling = Listing(parent, speculative: false, RequestTracing.Ambient)
                 .FirstOrDefault(candidate => string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
             if (sibling == null) return false;
             entry = sibling;
@@ -336,7 +375,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         return true;
     }
 
-    public IReadOnlyList<VfsEntry> ListOwn(string rel) => Listing(rel, speculative: false, RequestDiagnostics.Ambient);
+    public IReadOnlyList<VfsEntry> ListOwn(string rel) => Listing(rel, speculative: false, RequestTracing.Ambient);
 
     /// <summary>
     /// Serves one directory listing. A speculative request comes from read-ahead: it counts
@@ -344,7 +383,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
     /// level deep instead of turning a browse into a whole-tree download. It also travels in
     /// the read-ahead lane, since it runs on a worker that has no lane of its own.
     /// </summary>
-    private IReadOnlyList<VfsEntry> Listing(string rel, bool speculative, RequestDiagnostics? diagnostics)
+    private IReadOnlyList<VfsEntry> Listing(string rel, bool speculative, IRequestTracing? tracing)
     {
         using var lane = speculative ? ReadPriority.Enter(ReadPriority.Speculative) : null;
         // WinFsp and shell probes are case-insensitive; SVN URLs are not. Resolve
@@ -372,7 +411,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
                 {
                     try
                     {
-                        return _svn.List(revision, directory, diagnostics)
+                        return _svn.List(revision, directory, tracing)
                             .Select(e => new VfsEntry { Name = e.Name, IsDir = e.IsDir, Size = e.Size, TimeUtc = e.TimeUtc,
                                 ContentVersion = e.ContentVersion.Length == 0 ? null : e.ContentVersion }).ToArray();
                     }
@@ -414,7 +453,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
             children = _cascaded.Add(key) ? PendingChildren(generation, rel, list) : null;
         }
         // Queued outside the metadata lock: a speculative fetch must not delay a caller.
-        if (children != null) _prefetch!.Enqueue(revision, children, diagnostics);
+        if (children != null) _prefetch!.Enqueue(revision, children, tracing);
         _prefetch?.DemandServed();
         return list;
     }
@@ -535,7 +574,7 @@ public sealed class SvnLayer : ILayer, IRevisionSource, IReadLaneSource, IDispos
         string directory = Path.Combine(Path.GetDirectoryName(_pinPath) ?? Path.GetTempPath(), "downloads");
         Directory.CreateDirectory(directory);
         var tmp = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".tmp");
-        _svn.CatToFile(revision, rel, tmp, RequestDiagnostics.Ambient);
+        _svn.CatToFile(revision, rel, tmp, RequestTracing.Ambient);
         return tmp;
     }
 

@@ -27,6 +27,17 @@
     "en": "Which account this repository uses. Leave it unchosen to use what the Subversion client already saved for this machine. A repository behind mutual TLS uses a certificate credential.",
     "zh-CN": "这个仓库用哪个账号。不选则使用 Subversion 客户端在本机已保存的账号。要求客户端证书的仓库请选择证书类型的凭据。"
   },
+  "svn.credential.cached.title": { "en": "Subversion client cache (TortoiseSVN)", "zh-CN": "Subversion 客户端缓存（TortoiseSVN）" },
+  "svn.credential.cached.description": {
+    "en": "Uses the account TortoiseSVN or the svn command line already saved on this machine, so no password is typed into PolyMount. Name whose cache to read: Windows protects the saved password with that account's own key, so the service borrows its identity for the length of the read.",
+    "zh-CN": "使用 TortoiseSVN 或 svn 命令行在本机已保存的账号，不必在 PolyMount 里输入密码。指定读哪个账户的缓存：Windows 用该账户自己的密钥保护保存的密码，服务在读取的那一刻借用该账户的身份。"
+  },
+  "svn.credential.cached.account.title": { "en": "Windows account", "zh-CN": "Windows 账户" },
+  "svn.credential.cached.account.description": {
+    "en": "Whose TortoiseSVN cache to read, for example your own Windows account name. The cache can only be opened while that account is signed in on this machine, and only by a service running as LocalSystem. Leave it empty for the account the service runs as.",
+    "zh-CN": "读哪个账户的 TortoiseSVN 缓存，例如你登录 Windows 的账户名。只有该账户在本机处于登录状态时才能解开，且要求服务以 LocalSystem 运行。留空表示服务运行所用的账户。"
+  },
+  "svn.credential.cached.account.placeholder": { "en": "The account the service runs as", "zh-CN": "服务运行所用的账户" },
   "svn.field.prefetch.concurrency": { "en": "Listing read-ahead workers", "zh-CN": "目录预取并发数" },
   "svn.field.prefetch.concurrency.description": {
     "en": "Directories fetched ahead of demand; 0 disables read-ahead. How many of them reach the source at once is the read-ahead share below.",

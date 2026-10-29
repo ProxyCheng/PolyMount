@@ -213,7 +213,7 @@ public static class LayerRegistry
     public static void RegisterCache<T>(string type, Func<LayerConfig, LayerBuildContext, T> create,
         Action<LayerConfig>? validate, LayerDescriptor descriptor) where T : CacheLayer
     {
-        CacheLayer.AddManagementActions(descriptor);
+        CacheLayerActions.Add(descriptor);
         Register(type, (config, context) => create(config, context), validate, descriptor);
     }
     public static void Register(string type, Func<LayerConfig, LayerBuildContext, ILayer> create, Action<LayerConfig>? validate, LayerDescriptor? descriptor)
@@ -239,5 +239,3 @@ public static class LayerRegistry
         return SourceRegistry.Create(config.Source, context.State, config.Type);
     }
 }
-
-public sealed record LayerBuildContext(string Storage, string State, Func<string> LowerGeneration);

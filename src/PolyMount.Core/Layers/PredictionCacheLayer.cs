@@ -14,7 +14,7 @@ namespace PolyMount.Layers;
 /// wasted. Both are counters only — neither feeds back into the learned model.
 /// </para>
 /// </summary>
-public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWriteInvalidation, IQuietProbe, IDisposable
+public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IPredictionModelHost, IWriteInvalidation, IQuietProbe, IDisposable
 {
     private sealed class Entry(VirtualObject value, byte[]? content, long bytes, PreloadOrigin origin, long stream, string? group)
     {
@@ -120,7 +120,7 @@ public abstract class PredictionLayerBase : CacheLayer, ILowerChainLayer, IWrite
     /// <summary>Size of the speculative fetch in flight, for the usage panel.</summary>
     public long FetchBytes => Interlocked.Read(ref _fetchBytes);
 
-    public void Attach(VirtualFileSystem lower) => _modelImpl = CreateModel(lower, _modelPath);
+    public void Attach(ILowerChain lower) => _modelImpl = CreateModel(LowerChain.FileSystem(lower), _modelPath);
 
     /// <summary>The strategy this layer hosts, for a command that belongs to it: a plugin's own
     /// layer-scoped operation can read the state of the model it registered without Core having

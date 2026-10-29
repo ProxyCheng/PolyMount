@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The MSBuild half of the plugin SDK: the targets a plugin project imports. It ships no
+       assembly — what a plugin compiles against is PolyMount.Plugin.Abstractions, and what makes
+       a project a plugin is that this file is imported. NuGet imports build/<PackageId>.targets
+       by itself, so a plugin project needs one PackageReference and nothing else. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <IsPackable>true</IsPackable>
+    <PackageId>PolyMount.Plugin.Sdk</PackageId>
+    <Version>1.0.0</Version>
+    <Description>What makes a project a PolyMount plugin: stamps the contract version the code was
+      built against into the assembly, and puts the plugin's manifest beside it.</Description>
+    <DevelopmentDependency>true</DevelopmentDependency>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Packed into build/, which is where NuGet looks for a package's targets. The source folder
+         is called targets/ because .gitignore ignores any directory named build/. -->
+    <None Include="targets\PolyMount.Plugin.Sdk.targets" Pack="true" PackagePath="build\" />
+  </ItemGroup>
+</Project>

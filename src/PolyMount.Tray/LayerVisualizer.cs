@@ -24,7 +24,7 @@ internal sealed class LayerVisualizer : QWidget
     private bool _updatingBoundary;
     private Task<ControlResponse>? _pending;
     private ProbeResult? _probe;
-    private List<PolyMount.Core.LayerDescriptor> _descriptors = new();
+    private List<LayerDescriptor> _descriptors = new();
     private readonly List<QWidget> _rows = new();
 
     private LayerVisualizer(string path)

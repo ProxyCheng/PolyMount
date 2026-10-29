@@ -21,11 +21,20 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PolyMount.Core\PolyMount.Core.csproj" />
+    <!-- A real plugin, so a test can check what a process loads: it registers a layer type and
+         declares backend only. Never shipped, never published. -->
+    <ProjectReference Include="..\plugins\PolyMount.Plugin.Puppet\PolyMount.Plugin.Puppet.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="winfsp-msil">
       <HintPath>C:\Program Files (x86)\WinFsp\bin\winfsp-msil.dll</HintPath>
     </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The plugin contract's namespace, imported for the whole project. -->
+    <Using Include="PolyMount.Plugins" />
+    <Using Include="PolyMount.Plugins.Ipc" />
   </ItemGroup>
 </Project>

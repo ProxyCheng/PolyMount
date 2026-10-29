@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -21,16 +21,28 @@
          set PlatformTarget=x64 and copy the native payload next to the executable on Build and on
          Publish, so nothing else has to know where QtSharp lives. Restore reads all of them from the
          "qtsharp" source in nuget.config - run scripts/Fetch-QtSharp.ps1 first in a fresh clone. -->
-    <PackageReference Include="QtSharp.Api.win-x64" Version="0.20.1" />
+    <PackageReference Include="QtSharp.Api.win-x64" Version="0.22.0" />
     <!-- Qt Charts, bound by QtSharp.Charts. It is a package of its own because of what it wraps:
          Qt Charts is GPLv3-or-commercial where qtbase is LGPLv3, so nothing that does not draw a
          chart should inherit it. Its own targets copy the module's native glue; Qt6Charts.dll comes
          from its QtSharp.Charts.Qt6.win-x64 dependency. See NOTICE in the package and AGENTS.md
          before shipping. -->
-    <PackageReference Include="QtSharp.Charts.win-x64" Version="0.20.1" />
+    <PackageReference Include="QtSharp.Charts.win-x64" Version="0.22.0" />
+    <!-- A QWidget that hosts a WebView2 view. What needs it is a login the service cannot perform:
+         the sign-in page runs in the reader's session, and the token it leaves behind is read from
+         the view's cookie store. WebView2 is the runtime Windows already ships; the binding's own
+         package brings Microsoft.Web.WebView2 in as its dependency. This is not Qt WebEngine —
+         nothing of Qt's browser stack is shipped or loaded. -->
+    <PackageReference Include="QtSharp.WebView.win-x64" Version="0.22.0" />
     <Content Include="resources\polymount.rcc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
 
+
+  <ItemGroup>
+    <!-- The plugin contract's namespace, imported for the whole project. -->
+    <Using Include="PolyMount.Plugins" />
+    <Using Include="PolyMount.Plugins.Ipc" />
+  </ItemGroup>
 </Project>
 

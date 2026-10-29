@@ -52,6 +52,14 @@ int wmain(int argc, wchar_t** argv)
     wprintf(L"shim: %s (pid %lu)\n",
         GetModuleHandleW(L"PolyMount.TxFShim.dll") != nullptr ? L"loaded" : L"absent", GetCurrentProcessId());
 
+    // GetProcAddress takes a name or an ordinal packed into the pointer itself, and the shim hooks
+    // that call. Read as a string, the ordinal form ends the process at start-up, before any step
+    // below runs -- which is how a host that resolves an ordinal export died. What is asserted is
+    // that the call returns and the name form still resolves; an ordinal that does not exist is
+    // allowed to answer null.
+    GetProcAddress(GetModuleHandleW(L"kernel32.dll"), MAKEINTRESOURCEA(1));
+    Report(L"ordinal", GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW") != nullptr);
+
     g_transaction = CreateTransaction(nullptr, 0, 0, 0, 0, 0, nullptr);
     if (g_transaction == nullptr || g_transaction == INVALID_HANDLE_VALUE)
     {

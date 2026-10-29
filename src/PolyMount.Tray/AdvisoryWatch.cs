@@ -35,6 +35,26 @@ internal static class AdvisoryQueue
         return stop > 0 ? body[..stop] : body;
     }
 
+    /// <summary>
+    /// The notices whose action the plugin asked to have carried out without a click: automatic
+    /// ones that are in front and have not been run since they last stood. The record is emptied
+    /// of ids that are no longer in front, so a condition that clears and returns — a token that
+    /// expires again tomorrow — is acted on again rather than remembered forever. A notice that
+    /// asks for nothing is information even when it is marked automatic.
+    /// </summary>
+    internal static List<Advisory> DueForAutomatic(IReadOnlyList<Advisory> current, HashSet<string> ran)
+    {
+        ran.RemoveWhere(id => current.All(item =>
+            !string.Equals(item.Notice.Id, id, StringComparison.OrdinalIgnoreCase)));
+        var due = new List<Advisory>();
+        foreach (var item in current)
+        {
+            if (!item.Notice.Automatic || item.Notice.Action == null) continue;
+            if (ran.Add(item.Notice.Id)) due.Add(item);
+        }
+        return due;
+    }
+
     /// <summary>Which notice to announce now, if any: one that has never been announced, or one
     /// that is still unanswered and has waited long enough for a second try. A corner notification
     /// is ten seconds long and can be swallowed whole, so saying it once is not the same as being

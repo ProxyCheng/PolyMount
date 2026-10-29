@@ -6,37 +6,6 @@ namespace PolyMount.Core.Ipc;
 /// <summary>What calling an operation does to the running system. It decides the MCP annotation a
 /// client shows and how readily an agent may call it without being asked: a read is always safe,
 /// a write can be undone by writing again, and a destructive operation throws data away.</summary>
-public enum ControlEffect
-{
-    Read,
-    Write,
-    Destructive
-}
-
-/// <summary>
-/// One operation of the control plane, described once and offered to every front-end.
-///
-/// The pipe protocol is a bag of fields keyed by a command string, which is right for a transport
-/// and wrong for an API: it says nothing about which arguments a command needs, which arguments
-/// are meaningful together, or what the caller will find on the other side. This record is the
-/// answer to those questions — a stable name, a description written for someone who has never
-/// read the service, a JSON Schema for its arguments, what kind of change it makes, and the
-/// projection of the reply (a <see cref="ControlResponse"/> is a union of every command's result;
-/// an operation narrows it to the one field it produced).
-///
-/// <see cref="ControlOperations"/> is the catalog. A front-end that offers all of it (the MCP
-/// server does) needs to know nothing about the commands themselves.
-/// </summary>
-public sealed record ControlOperation(
-    string Name,
-    string Title,
-    string Description,
-    ControlEffect Effect,
-    bool Idempotent,
-    string InputSchema,
-    Func<IControlLink, ToolArguments, ControlResponse> Invoke,
-    Func<ControlResponse, object?> Present);
-
 /// <summary>
 /// The operations PolyMount offers to anything outside its own windows.
 ///
@@ -186,6 +155,40 @@ public static class ControlOperations
         {"type":"object","properties":{"path":{"type":"string","description":"The plugin's assembly path exactly as list_plugins reports it under plugins[].assemblyPath."},"enabled":{"type":"boolean","description":"Whether the plugin should contribute to the running service."}},"required":["path","enabled"]}
         """;
 
+    private const string SourceCheckSchema = """
+        {"type":"object","properties":{"type":{"type":"string","description":"Source type, as list_layer_types reports it under sourceTypes: svn, smb or dir."},"url":{"type":"string","description":"The repository URL (svn)."},"path":{"type":"string","description":"The folder or UNC path the source maps (dir, smb)."},"credential_id":{"type":"string","description":"The stored credential to present, as a layer's Source.CredentialId holds it. Omit for the account the source resolves on its own (a repository that serves anonymously, or the one its client saved)."},"trust_server_cert_failures":{"type":"string","description":"Certificate failures to accept (svn), comma separated: unknown-ca, cn-mismatch, expired, not-yet-valid, other. Empty means the certificate must verify."},"allow_insecure_transport":{"type":"boolean","description":"Accept a plain http repository (svn). Off by default: the account would travel unencrypted."},"pinned_revision":{"type":"integer","description":"Read at this revision instead of head (svn). 0 means head."},"parameters":{"type":"object","description":"The source's own parameters, as a layer's Source.Parameters holds them, for example PrefetchConcurrency (svn) or GenerationTtlSeconds (smb)."}},"required":["type"]}
+        """;
+
+    /// <summary>The source settings a check is about, from the arguments a caller gave. Nothing is
+    /// defaulted that a source could mistake for an answer: a field the call left out stays empty,
+    /// which is what a layer with that field unset holds too.</summary>
+    private static SourceConfig SourceOf(ToolArguments args)
+    {
+        var source = new SourceConfig
+        {
+            Type = args.String("type"),
+            Url = args.OptionalString("url") ?? "",
+            Path = args.OptionalString("path") ?? "",
+            CredentialId = args.OptionalString("credential_id") ?? "",
+            TrustServerCertFailures = args.OptionalString("trust_server_cert_failures") ?? "",
+            AllowInsecureTransport = args.OptionalBool("allow_insecure_transport") ?? false,
+            PinnedRevision = args.Has("pinned_revision") ? args.Long("pinned_revision") : 0
+        };
+        if (args.Has("parameters"))
+        {
+            try
+            {
+                source.Parameters = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(args.Json("parameters"))
+                    ?? new Dictionary<string, JsonElement>();
+            }
+            catch (JsonException)
+            {
+                throw new ArgumentException("argument 'parameters' must be an object of source parameters");
+            }
+        }
+        return source;
+    }
+
     // ---------------------------------------------------------------- catalog
 
     private static ControlOperation[] Build() =>
@@ -196,7 +199,10 @@ public static class ControlOperations
             + "Files under a mount point are read and written with ordinary file tools; these tools control the mounts themselves.",
             EmptySchema,
             (link, _) => link.Status(),
-            response => new { instances = Compact(response.Mounts) }),
+            // The supervisor attaches the policy warning to everything it answers, so the first
+            // question an agent asks is where it finds out that this service admits callers it
+            // cannot identify. Null when the configuration names its callers.
+            response => new { instances = Compact(response.Mounts), securityWarning = response.SecurityWarning }),
 
         ReadOnly("get_instance", "Get one instance",
             "One instance in full: its layers in order, what each holds, its cache usage, and the error it last reported. "
@@ -213,6 +219,14 @@ public static class ControlOperations
                     : new ControlResponse { Mounts = { row } };
             },
             response => response.Mounts[0]),
+
+        ReadOnly("list_notices", "Get the advice about an instance",
+            "What the instance's plugins want a person told, each with an id, a title, the body and — when the plugin offers one — "
+            + "the label of an action it will carry out. A notice is a plugin's own judgement; commonly it is a program that cannot "
+            + "save on this mount and the tool that would fix it. Empty is the normal answer.",
+            InstanceSchema,
+            (link, args) => link.Instance(args.String("instance"), new ControlRequest { Cmd = ControlCommands.PluginNotices }),
+            response => new { notices = response.Notices }),
 
         ReadOnly("get_metrics", "Get read and write analytics",
             "Read and write analytics over a recent window: per-layer hits, bytes and latency, and which processes made the requests. "
@@ -249,6 +263,21 @@ public static class ControlOperations
                 presets = response.Presets
             }),
 
+        ReadOnly("check_source", "Ask a source whether it will serve",
+            "Asks a source whether it answers with these settings, without saving a configuration or mounting anything: "
+            + "the address, the stored credential to present, and the source's own settings. It builds the source the way a mount would, "
+            + "lists its root, and reports what came back — ok, kind (auth, origin, invalid, unreachable), the message the source gave, "
+            + "how many entries it listed and how long it took. Use it before save_config when an address or an account is new to you: "
+            + "a wrong password or an unreachable host is found here instead of on a mount that fails. "
+            + "A credential may only be presented to the servers recorded for it; a check does not add the address to that list.",
+            SourceCheckSchema,
+            (link, args) => link.Supervisor(new ControlRequest
+            {
+                Cmd = ControlCommands.CheckSource,
+                Source = SourceOf(args)
+            }),
+            response => response.Check),
+
         ReadOnly("list_plugins", "List plugins",
             "The plugins the configuration names — whether each is enabled, whether it loaded, and the layer types, source types, presets and tools it adds — "
             + "plus the DLLs in the service's plugin folder that are not named yet. "
@@ -257,6 +286,14 @@ public static class ControlOperations
             (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Plugins }),
             PluginCatalog),
 
+        ReadOnly("list_credentials", "List the stored accounts",
+            "The accounts this product keeps: name, user name, kind, the origins each may be presented to, and whether the stored secret "
+            + "is still readable by this service. Never a password or a certificate — the interface does not see one, so it cannot leak "
+            + "one. Read it when an instance reports an account problem, or before writing a configuration that names a credential.",
+            EmptySchema,
+            (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Credentials }),
+            response => new { credentials = response.Credentials }),
+
         ReadOnly("list_log_files", "List diagnostics files",
             "The diagnostics files the service holds, with their sizes and absolute paths. "
             + "Request logs are sampled: they record slow requests and root requests, not every request. "
@@ -264,6 +301,15 @@ public static class ControlOperations
             EmptySchema,
             (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Logs }),
             response => new { logs = response.Logs }),
+
+        ReadOnly("get_version", "Get the service build",
+            "Which build the service is, and where it lives: version and commit, whether it is the installed service or a development host, "
+            + "the program, configuration and plugin folders, the .NET and WinFsp versions, the system, the account the service runs under, "
+            + "and when that process started. The tray's About section answers the same questions about the tray; the two halves are "
+            + "installed and updated separately, so compare this with the tray's version instead of assuming they match.",
+            EmptySchema,
+            (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Build }),
+            response => response.Build),
 
         ReadOnly("probe_path", "Inspect one path",
             "What each layer makes of one path: which layer holds it, which one wins, and which are shadowed. "
@@ -311,13 +357,6 @@ public static class ControlOperations
                 Enabled = args.OptionalBool("enabled")
                     ?? throw new ArgumentException("missing required argument 'enabled'")
             }),
-            MountsPresent),
-
-        Mutation("reload_config", "Reload the configuration",
-            "Re-reads the configuration file from disk and applies it. Use after editing the file outside these tools; save_config already reloads.",
-            EmptySchema,
-            idempotent: true,
-            (link, _) => link.Supervisor(new ControlRequest { Cmd = ControlCommands.Reload }),
             MountsPresent),
 
         Mutation("set_plugin_enabled", "Enable or disable a plugin",
@@ -424,6 +463,7 @@ public static class ControlOperations
 
         DestructiveOp("clear_cache", "Clear the cache",
             "Drops what the cache layers hold for the instance, or for one named layer. The next reads go back to the source. "
+            + "This is the whole layer or the whole instance; apply_layer_action with 'evict' drops one path instead. "
             + "Destructive: cached content has to be fetched again.",
             InstanceLayerSchema,
             idempotent: true,
@@ -449,7 +489,9 @@ public static class ControlOperations
 
         DestructiveOp("apply_layer_action", "Change one layer's answer for a path",
             "Changes what one layer says about one path. Overlay: 'dropLocal' discards the local copy and reveals the layer below. "
-            + "Cache: 'evict' forgets the cached path. Destructive: the discarded data has to be fetched or written again.",
+            + "Cache: 'evict' forgets the cached path. One path only — clear_cache and clear_local_changes are the two whole-layer "
+            + "versions, and release_above is the way to reach through several layers at once. "
+            + "Destructive: the discarded data has to be fetched or written again.",
             LayerActionSchema,
             idempotent: true,
             (link, args) =>

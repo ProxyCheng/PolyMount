@@ -262,11 +262,12 @@ public sealed class ListingWarmupLayer : CacheLayer, ICacheLayer, IWriteAwareCac
 
     /// <summary>Hands the layer the chain below it and the instance's quiet-time reading.
     /// Called once the whole chain is built, before the mount starts it.</summary>
-    public void Attach(VirtualFileSystem lower, Func<TimeSpan> idleFor)
+    public void Attach(ILowerChain lower, Func<TimeSpan> idleFor)
     {
+        var fileSystem = LowerChain.FileSystem(lower);
         lock (_gate)
         {
-            _lower = lower;
+            _lower = fileSystem;
             _idleFor = idleFor;
         }
     }

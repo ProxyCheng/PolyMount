@@ -418,7 +418,7 @@ internal sealed class ObjectDatabase
     /// <summary>Blob names of rows the resident index does not hold, read in batches.
     /// Each path is a statement variable, and SQLite refuses a statement with more of them
     /// than its build allows ("too many SQL variables"). The index is bounded, the table is
-    /// not, so a caller can hand over every row of a large store at once — clearing demo's
+    /// not, so a caller can hand over every row of a large store at once — clearing G83's
     /// cache did.</summary>
     private const int StoredBlobBatch = 500;
     private void StoredBlobs(HashSet<string> keys, HashSet<string> into)
@@ -862,7 +862,7 @@ internal sealed class ObjectDatabase
     //
     // One statement, not one per row through Apply: the index is bounded, the table is not,
     // and going through Apply asked it to name every non-resident path in a single
-    // `IN (...)` — more variables than SQLite accepts on a store the size of demo's cache.
+    // `IN (...)` — more variables than SQLite accepts on a store the size of G83's cache.
     // Collecting the blob names and emptying the table under the same lock keeps a write
     // racing with the clear whole: it either commits before (and is cleared too) or waits
     // and commits after with the blob it just wrote, which this list never saw.

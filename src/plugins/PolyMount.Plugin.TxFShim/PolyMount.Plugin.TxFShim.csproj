@@ -6,7 +6,7 @@
     <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\PolyMount.Core\PolyMount.Core.csproj" />
+    <ProjectReference Include="..\..\PolyMount.Plugin.Abstractions\PolyMount.Plugin.Abstractions.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="PolyMount.Plugin.TxFShim.Tests" />
@@ -18,4 +18,11 @@
   <ItemGroup>
     <Content Include="native\**\*" Exclude="native\probe\**;native\*.obj" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- The plugin contract's namespace, imported for the whole project. -->
+    <Using Include="PolyMount.Plugins" />
+    <Using Include="PolyMount.Plugins.Ipc" />
+  </ItemGroup>
+  <Import Project="..\..\PolyMount.Plugin.Sdk\targets\PolyMount.Plugin.Sdk.targets" />
 </Project>

@@ -3,7 +3,262 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.10.0] - 2026-10-29
+
+A plugin's own page unfolds inside the window, a mount says how busy it is, and a credential says
+what kind of secret it is.
+
+### Added
+
+- **A plugin can offer a management page, and the row it belongs to unfolds.** A plugin that
+  changes the machine — the transaction shim is the first — could put a program under itself and
+  take it out again, but only through a control-plane tool or a registry key: the product knew how
+  to do it and offered nowhere to see it, which is how a Visual Studio image stayed instrumented
+  for a day before anybody noticed. `RegisterPanel` is the plugin contract's ninth extension point
+  and the kind this product already uses elsewhere — the plugin hands back a view (a sentence,
+  named facts, a list with per-row actions, buttons for the page; each button is a whole
+  `ControlRequest`, and one that needs a file or a folder has the window ask) and the window draws
+  it without reading inside. Two commands, split along the line the product already draws:
+  `pluginPanels` lists what a process loaded, answered by the supervisor, and `pluginPanel` fills
+  one in, answered by an instance's worker — a render may read its mount. A render that throws
+  becomes the page's own error sentence, and disabling a plugin takes its page with it. The page
+  lives inside the plugin manager by default, under the plugin's own row, which unfolds into
+  everything about that plugin: what it calls itself, the file and the contract it was built
+  against, what it adds, and the page it offers. A plugin whose page is opened daily can still ask
+  for a destination of its own (`OwnPage`), and nothing ships one. Rows are rebuilt on a
+  fingerprint rather than on every poll, because a rebuild would fold an unfolded row and throw
+  away the page inside it. Contract 3.1, additive.
+
+- **The instance list shows how busy each mount is.** The workspace could say which instances
+  exist, which are mounted and how many layers each has — all configuration facts — and nothing
+  about whether anybody was using them. The third column, which held the layer count, is now a
+  sparkline: the requests each instance answered in the last minute, one point a second, the newest
+  reading beside it. What a point is measured over is a ten-second window asked for once a second
+  rather than a running total, so it moves every second and reaches its full shape after ten. A
+  click selects the row, a double click opens that instance's performance page, and the counters
+  are asked for only while the window is on screen — they fill only while somebody is watching, and
+  a closed window is exactly the reason to let them go.
+
+- **A credential row says what kind of secret it is.** The list named the kind in words, and for an
+  account with a password those words are the account's own name, so a certificate, a cached
+  Subversion password and a single sign-on token all read as the same kind of thing until one was
+  opened. Every row now carries a mark in the tray's own line icons: a key for an account with a
+  password, a shield with a check for a certificate, and for a kind a plugin describes the glyph
+  that kind names — the credential that reads TortoiseSVN's own cache wears a tortoise. A record
+  this service cannot read keeps its shape and takes the warning ink. The field in a layer's
+  settings that names an account wears the same mark as the row it was chosen from, because
+  choosing an account and reading the row back is one gesture. Which mark a kind wears is the
+  kind's own answer (`CredentialKindDescriptor.Icon`, contract 3.2 — additive, so a plugin built
+  against an earlier contract still loads and wears the generic card): a credential tied to another
+  program can wear that program's glyph instead of a picture of "some account".
+
+- **An automatic notice is carried out on sight, sign-in included.** A plugin whose credential expired asks to be put in front of a sign-in page by reporting an automatic notice; the tray sends its action at once — once per time the condition stands, forgotten when the notice stops being reported — and if the answer carries a `BrowserLogin` it opens the page in a WebView2 window, reads the named cookies out of that view's own store, and writes them into the credential the plugin named. It never learns what the values mean.
+
+
+- **The accounts are a section of the workbench.** They were a dialog reached from a menu, which cost the reader the instance they were looking at; they now sit in the sidebar beside the mounts, the plugins and the about page, with a key of their own, and read the store again each time the section is opened — a sign-in can have added one while it was hidden.
+- **A plugin can ask for a sign-in page.** The service has no window, so a credential that comes from signing in to a web page — an internal single sign-on, a cloud console — needs the tray to show the page. Two contract additions make that a plugin's decision and nobody else's: a notice may be marked `Automatic` (carry its action out on sight; the plugin is asking to be put in front of a page, not asking the reader to agree to something), and a command's answer may carry a `BrowserLogin` — the address, the credential record to fill, and which cookie fills which field. The front end shows the page, reads those cookies out of the view's own store (a token cookie is usually `HttpOnly`, which no script inside the page can see) and writes them into the record; it never learns what they mean. Contract 2.2, additive.
+- **A sign-in window, for the one thing a service cannot do itself.** The service runs in session 0
+  where no window can be shown, so a credential obtained by signing in to a web page — an internal
+  single sign-on, the way CloudDisk and Sunshine do it — has to be obtained in the tray and handed
+  back. `LoginWindow` is that window and nothing more: it loads the page it is given in a
+  WebView2-backed widget, re-reads that view's cookie store while it is open, and closes once every
+  cookie the caller named is there. It reads cookies rather than the page, because a token cookie
+  is usually `HttpOnly` — the one thing script inside the page cannot see. The window is generic:
+  which page and which cookie names come from whoever needs the login, and nothing in it knows
+  what the values mean. It uses a WebView2 profile of this product's own
+  (`%LOCALAPPDATA%\PolyMount\webview`), and says so plainly when the WebView2 runtime is missing.
+  Not yet wired to a plugin — the contract for asking for a login is the next step.
+
+### Changed
+
+- **The icon set was redrawn, and it can be looked at.** An icon set is decided by looking at
+  it, so `--render` now writes `icons.png` beside the chart cards: every glyph at the seven sizes
+  the tray asks for, on one sheet. The tray's own checks also count the ink of every name, because
+  a glyph is a handful of coordinates and one typed outside the box draws nothing at all — which
+  nobody reports, since all a reader sees is that a mark is missing. What the sheet found, and what
+  changed: the pencil cut down to a pencil (three hairline strokes beside it were noise at the
+  sixteen pixels a layer row gives), the disk cache drawn as a cylinder instead of a square with a
+  magnifier hanging off a corner, the memory chip with two rows of legs instead of a fringe on all
+  four sides, a key whose ring and two unequal teeth still read at sixteen pixels, a floppy whose
+  three parts stay apart, and a cog where a sun used to be. The Explorer badges keep their own
+  filled shapes: a sixteen-pixel overlay has no room for a 1.7-unit stroke, so they are drawn a
+  second time in `scripts\Build-Shell.ps1`, and the two stay the same *mark* rather than the same
+  drawing.
+
+- **The Qt binding moves to QtSharp 0.22.0** (from 0.20.1), which adds `QtSharp.WebView` — a
+  `QWidget` that hosts a WebView2 view, with the view's `CoreWebView2` exposed (cookies, events,
+  navigation). It is not Qt WebEngine: nothing of Qt's browser stack is shipped, and the runtime it
+  needs is the one Windows already has. No API the product used changed in the move.
+
+- **A plugin is one file.** The build published a plugin as four files — the assembly, its
+  `plugin.json`, a `.plugin.api` the setup read for the contract version, and a `.deps.json` — and
+  handing a private plugin to somebody meant handing over the set and hoping none of it was left
+  behind. The manifest is now embedded in the assembly as a resource (`PolyMount.Plugin.Manifest`,
+  read by the host out of the file's metadata, without loading it), the contract version is
+  stamped into the assembly's version resource as `PolyMount plugin; contract=<version>` — the
+  description Explorer shows in a file's properties — and the dependency file is not generated.
+  What `dotnet publish` produces is a single DLL that is copied into `plugins\`. `plugin.json`
+  stays in the source tree as what its author edits; a plugin published with the manifest beside
+  it is still read that way. The setup recognises a plugin file, and the contract it was built
+  against, from that version resource — it cannot load an assembly, and now does not need to.
+  One thing a single file cannot carry for the setup's page is the plugin's display name: the
+  wizard lists an extra plugin by file name where a sidecar manifest let it show the plugin's own.
+
+### Added
+
+- **An incompatible plugin is listed and named, and one page decides what to do about it.** A
+  plugin built against another major of the plugin contract cannot run, and neither place said so:
+  the setup's plugin page listed it as an ordinary installed plugin, and the tray's page said
+  nothing until the service had tried and failed — and for a disabled plugin nothing at all,
+  because a disabled plugin is never loaded and so was never asked. The contract version is now
+  read without loading the assembly (out of the DLL's metadata in the host, and out of a
+  one-line `.plugin.api` beside it for the setup, whose wizard runs Windows PowerShell and cannot
+  load a .NET 10 assembly at all). **The two pages now answer different questions.** The setup's
+  page decides whether the file is kept: the row keeps its box, checked by default and clearable,
+  and only gains a note saying which contract it was built against. The tray's page decides
+  whether it runs: the row says **Incompatible**, its text is greyed, its reason is written on the
+  row and in the tooltip, and its switch is disabled in both directions — removing the entry is
+  what clears a configuration the host would refuse to start with. The same reading is used when
+  the tray's section is offline, so a fresh install whose service has not started yet still shows
+  which plugins this build will refuse.
+
+- **A credential says how it authenticates as a capability, not as a password on the base class.**
+  `Credential` carried `Username` and `Password`, so every kind — a certificate, a token a plugin
+  adds — looked like a password with extra fields, and every consumer asked "which class is this?"
+  before it could use one: the SVN source tested for a certificate and otherwise fell back to the
+  pair, and the remote-folder source read the two fields straight off whatever it was given, which
+  turns a token credential into an empty account and password. A credential now declares what it
+  can do by implementing `IPasswordAuthentication`, `ICertificateAuthentication` or
+  `IBearerAuthentication`, and a source asks for the capability it needs. A credential that offers
+  neither of the two SVN or SMB can present is refused **while the instance is built**, by name,
+  instead of being sent as an anonymous request nobody can explain. `Username` stays on the base:
+  it is not a secret and not a mechanism, it is who the record is for. Breaking for plugin authors
+  — the plugin contract is now **2.0**, so a 1.x plugin is refused with that reason rather than
+  failing on a missing member; rebuild private plugins against `PolyMount.Plugin.Abstractions`
+  2.x.
+
+- **A plugin declares which processes run it.** `plugin.json` takes `"roles": ["backend"]`
+  (servers — layers, sources, commands) and `["frontend"]` (front-ends — control operations);
+  absent means both, which is what every existing plugin means. A mount's worker now loads only
+  the server half and the MCP server only the tool half, so neither carries an assembly it can
+  never call into; the service still loads everything, because the plugin list is answered from
+  its report. A role the host does not know is refused with the manifest rather than ignored.
+  `poly verify` fails when the declaration contradicts what `Register` registers.
+
+- **The control surface gained what a caller was missing and lost what it did not need.** Two
+  reads that had no tool: `list_credentials` reports the stored accounts — name, user name, kind,
+  the origins each may be presented to, and whether the service can still read the secret — which
+  is the first question when a mount fails on an account; `list_notices` reports what a plugin
+  wants a person told about one mount, which is usually a program that cannot save on it and the
+  tool that would fix it. The tray showed both and an agent could see neither. `list_instances`
+  now carries the service's `securityWarning` too, so the first call an agent makes already says
+  whether this control plane admits callers it cannot identify. `reload_config` is gone: the file
+  watcher already reloads an edit made outside these tools, and `save_config` reloads what it
+  writes, so the tool only offered a way to re-read what nothing had changed. The four ways of
+  discarding cached or local data now say in their descriptions which one a caller wants — whole
+  layer, whole overlay, one path, or a path through several layers.
+
+- **An agent can ask which build is running.** The About page answers that for the tray, but the
+  service is a different process, installed and updated on its own schedule — so an agent had no
+  way to tell an installed 0.9.4 service from the development host it had just started. One
+  read-only operation, `get_version`, now answers for the process that answers it: version and
+  commit, installed or development host, the program, configuration and plugin folders, the .NET
+  and WinFsp versions, the system, the account the service runs under, and when that process
+  started. The tray's About page and the service read the same fields from the same reader
+  (`HostEnvironment`), so the two answers cannot drift apart in wording. The contract went to
+  1.1 — additive, so a plugin built against 1.0 still loads — and its public surface baseline was
+  rewritten with it.
+
+- **The version is on screen, and a page behind it.** A build knows what it is and never said so:
+  answering "which version are you running" took a look at a file's properties sheet. The bottom
+  of the sidebar now carries the release, with the whole informational version — commit included —
+  in its tooltip, and beside the mount overview and the plugins there is a third destination,
+  **About**: the commit this build came from, whether it was put here by the setup or is a
+  development tree, the .NET, Qt and WinFsp versions, the service's own version and program, where
+  the configuration and the program live, and the licence line — GPL v3 for PolyMount, LGPL v3 for
+  the bundled Qt, GPL v3 or commercial for the Qt Charts the charts are drawn with — with the
+  third-party notices and the project's pages one click away. **Copy diagnostics** puts the same
+  facts on the clipboard as `name: value` lines in English, which is the form a report wants. The
+  service and the tray are installed and updated separately, so the two versions are listed side by
+  side rather than assumed equal. Paths too long for the window are cut in the middle and kept
+  whole in the tooltip; `--ui-smoke --checks dashboard` now asserts that the page opens, that it
+  says the version this build was stamped with, and that the sidebar line agrees.
+
+- **A plugin can add a kind of credential.** The product ships two — an account with a password,
+  and a PKCS#12 certificate for mutual TLS — and both were written into the store, the payload,
+  the tray's form and the picker separately, so a source that authenticates some other way (an
+  internal single sign-on token, a cloud identity) could not be added without changing all four
+  together. A plugin now registers a kind once (`RegisterCredentialKind`): the fields its form
+  shows, the field that names the account a reader recognises the record by, and the code that
+  turns the stored values into the credential its source presents. The values live in the same
+  DPAPI-protected store, are bound to the same origins, are chosen on a layer the same way, and
+  the tray draws the fields from the descriptor — a kind added after the tray shipped still gets a
+  form that looks native. A layer names the kinds it accepts in its descriptor's `CredentialKinds`,
+  as the built-in two already did. Disabling the plugin leaves its records intact and marked
+  unusable rather than deleting them; a password record keeps the empty kind on disk that earlier
+  files were written with, so nothing is migrated.
+
+- `poly` (`PolyMount.Plugin.Cli`): `new`, `verify`, `dev` and `pack`. `verify` calls the plugin's
+  own `Register` against a recording context and reports the manifest, the contract version and
+  what was registered.
+- A development host: `PolyMount.Service.exe --dev --plugin <path>` runs a second supervisor on its
+  own pipe (`PolyMount.Dev.*`), store and logs, loading the plugin where it was built. The
+  containment rule (a plugin must live inside the installation) is lifted only for that host, and
+  only that host may not use the installed service's pipe. `poly dev` starts it.
+- The contract and the SDK ship as NuGet packages with each release, and
+  `scripts/Fetch-PluginSdk.ps1` fills the repository's local feed from them.
+
+### Changed
+
+- **Plugins are compiled against a contract, not against the product.** The layer and source
+  contracts, the configuration and descriptor models, the plugin entry point and the control plane
+  are now one package, `PolyMount.Plugin.Abstractions` (namespace `PolyMount.Plugins`), and
+  `PolyMount.Core` references it instead of defining it. Engine types that used to appear in plugin
+  signatures have been replaced by three interfaces a plugin can be written against: `ILowerChain`
+  replaces `VirtualFileSystem`, `IPluginInstance` replaces `MountInstance`, and
+  `IRequestTracing`/`IRequestScope` replace `RequestDiagnostics`. **This is a break for any plugin
+  built before it** — including private ones — which must be rebuilt against the contract.
+
+- **Every plugin declares itself in a manifest.** `<assembly>.plugin.json` sits beside the plugin
+  and is read before anything is loaded, so a disabled plugin is named in the list, and a manifest
+  that cannot be used is a refusal. It carries the identifier, the localized name and description,
+  the icon and the permissions the plugin declares (a declaration, not a sandbox). A plugin without
+  one still loads, as a legacy plugin.
+
+- **The contract has a version, and it is checked.** The build stamps
+  `[assembly: PluginApi("1.0")]` into every plugin; the host reads it before it touches a type and
+  refuses another major — or a minor it has not reached — with both numbers and the package to
+  rebuild against, instead of a "could not load type" from somewhere deeper. A checked-in baseline
+  (`tests/PolyMount.Core.Tests/PublicApi.txt`) holds the contract's public surface.
+
+- **A plugin installed by hand survives an update, and the setup asks about it.** Two paths could
+  lose one. The update script swept every file named like a plugin that the build did not produce,
+  which is why a private plugin had to avoid a name the product uses; the setup copied its own
+  plugins over the top and never mentioned the rest. The update script now deletes only what an
+  earlier run of itself recorded in `plugins/.installed` — a plugin removed from the tree is still
+  cleaned up — and says out loud what it found that it does not own. The setup's plugin page lists
+  the plugins found in an existing installation that this setup does not ship, after its own, by
+  the name each one gives in its manifest, **checked**: clearing a box is what removes it, and a
+  silent install removes nothing. `scripts/Test-PluginUpgrade.ps1` checks all of it against a real
+  plugin (`tests/plugins/PolyMount.Plugin.Puppet`).
+
+### Fixed
+
+- **A plugin's version in the list is its release number.** Every assembly here shares one assembly
+  identity on purpose, so the version shown was always `1.0.0.0`; it is now read from the file,
+  and a release build stamps the plugins with the release number.
+
+- **Callers are named on an installed service.** A machine set up with the installer showed a row
+  per caller in the performance window's layer table as `PID <id>` instead of a program name. The
+  name was being discarded along with the rest of the answer: a name is read out of a system-wide
+  snapshot, which any account may ask for, while the process' start time and image path mean
+  opening the process — and the account the setup creates, `LocalService`, is in no descriptor of a
+  program in a user's session. One refused read dropped the whole answer, so every caller was
+  nameless while nothing was actually wrong with it. The start time is now asked separately and an
+  answer without it is kept; what it carried, the check that a reused pid is not answered with the
+  old process' name, is already covered by the minute an answer is remembered for. The
+  transaction-shim plugin stays blind on such a machine, because the image path it acts on is one
+  of the reads that do need the process to be opened.
 
 ## [0.9.4] - 2026-10-29
 

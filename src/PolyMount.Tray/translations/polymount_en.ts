@@ -64,6 +64,42 @@
       <translation>Enabled layers</translation>
     </message>
     <message>
+      <source>column.activity</source>
+      <translation>Activity</translation>
+    </message>
+    <message>
+      <source>column.activity.scale</source>
+      <translation>Activity ≤{0}/s</translation>
+    </message>
+    <message>
+      <source>filter.active</source>
+      <translation>Active</translation>
+    </message>
+    <message>
+      <source>activity.rate</source>
+      <translation>{0}/s</translation>
+    </message>
+    <message>
+      <source>activity.warming</source>
+      <translation>Sampling — the first reading arrives in about ten seconds</translation>
+    </message>
+    <message>
+      <source>activity.waiting</source>
+      <translation>No readings yet</translation>
+    </message>
+    <message>
+      <source>activity.stale</source>
+      <translation>The instance stopped answering; the curve ends at its last reading</translation>
+    </message>
+    <message>
+      <source>activity.tip.short</source>
+      <translation>Last {0} s: average {1}/s, peak {2}/s</translation>
+    </message>
+    <message>
+      <source>activity.tip</source>
+      <translation>Last {0} s: average {1}/s, peak {2}/s&#10;Reads {3} · writes {4} · hit rate {5}%</translation>
+    </message>
+    <message>
       <source>layer.count</source>
       <translation>{0} layers</translation>
     </message>
@@ -747,6 +783,10 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>{0} servers</translation>
     </message>
     <message>
+      <source>credential.used.count</source>
+      <translation>used by {0}</translation>
+    </message>
+    <message>
       <source>credential.origins.tip</source>
       <translation>May be presented to:</translation>
     </message>
@@ -891,6 +931,38 @@ The remote view changes. Local modifications are kept.</translation>
       <translation>The source provides its own account.</translation>
     </message>
     <message>
+      <source>credential.check</source>
+      <translation>Verify</translation>
+    </message>
+    <message>
+      <source>credential.check.tip</source>
+      <translation>Ask the source now whether this account opens it. Nothing is saved and no instance has to exist.</translation>
+    </message>
+    <message>
+      <source>credential.check.running</source>
+      <translation>Asking the source…</translation>
+    </message>
+    <message>
+      <source>credential.check.ok</source>
+      <translation>Verified: the source answered ({0} entries, {1:0.0} s)</translation>
+    </message>
+    <message>
+      <source>credential.check.refused</source>
+      <translation>Not accepted: {0}</translation>
+    </message>
+    <message>
+      <source>credential.check.error</source>
+      <translation>Could not verify: {0}</translation>
+    </message>
+    <message>
+      <source>credential.check.incomplete</source>
+      <translation>Fill in where the source is — its address or folder — before verifying the account.</translation>
+    </message>
+    <message>
+      <source>credential.check.noAnswer</source>
+      <translation>the service answered without saying whether the source works</translation>
+    </message>
+    <message>
       <source>credential.name.duplicate</source>
       <translation>Another credential already has this name.</translation>
     </message>
@@ -905,6 +977,10 @@ The remote view changes. Local modifications are kept.</translation>
     <message>
       <source>credential.password.required</source>
       <translation>Enter a password.</translation>
+    </message>
+    <message>
+      <source>credential.field.required</source>
+      <translation>Enter %1.</translation>
     </message>
     <message>
       <source>tray.exit</source>
@@ -1610,6 +1686,8 @@ The remote view changes. Local modifications are kept.</translation>
     </message>
     <message><source>plugins.title</source><translation>Plugins</translation></message>
     <message><source>plugins.button</source><translation>Plugins</translation></message>
+    <message><source>credentials.button</source><translation>Credentials</translation></message>
+    <message><source>credentials.button.tip</source><translation>The accounts mounts sign in with</translation></message>
     <message><source>plugins.button.tip</source><translation>Enable, disable and add plugins</translation></message>
     <message><source>plugins.menu</source><translation>Plugins…</translation></message>
     <message><source>plugins.subtitle</source><translation>Extensions add data sources, layers and control tools to PolyMount.</translation></message>
@@ -1630,19 +1708,29 @@ The remote view changes. Local modifications are kept.</translation>
     <message><source>plugins.noneInstalled</source><translation>No plugins are installed yet.</translation></message>
     <message><source>plugins.noneInstalledHint</source><translation>Copy a plugin DLL into the service's plugin folder, or import one from anywhere.</translation></message>
     <message><source>plugins.noMatch</source><translation>No plugin matches the search.</translation></message>
+    <message><source>plugins.permissions</source><translation>Can reach</translation></message>
+    <message><source>plugins.manifest.none</source><translation>No manifest: built before plugins declared what they are</translation></message>
+    <message><source>plugins.apiVersion</source><translation>Plugin contract</translation></message>
+    <message><source>plugins.roles</source><translation>Runs in</translation></message>
+    <message><source>plugins.role.backend</source><translation>the service</translation></message>
+    <message><source>plugins.role.frontend</source><translation>front-ends (tools)</translation></message>
     <message><source>plugins.state.loaded</source><translation>Loaded</translation></message>
     <message><source>plugins.state.disabled</source><translation>Disabled</translation></message>
     <message><source>plugins.state.failed</source><translation>Failed to load</translation></message>
     <message><source>plugins.state.missing</source><translation>File missing</translation></message>
     <message><source>plugins.state.inactive</source><translation>Not loaded</translation></message>
+    <message><source>plugins.state.incompatible</source><translation>Incompatible</translation></message>
+    <message><source>plugins.tooltip.incompatible</source><translation>Built against plugin contract {0}; this build provides {1}. Rebuild the plugin against PolyMount.Plugin.Abstractions {1} to use it.</translation></message>
     <message><source>plugins.contributions.none</source><translation>This plugin adds no extension points.</translation></message>
     <message><source>plugins.summary.source</source><translation>source {0}</translation></message>
+    <message><source>plugins.summary.credential</source><translation>credential {0}</translation></message>
     <message><source>plugins.summary.layer</source><translation>layer {0}</translation></message>
     <message><source>plugins.summary.preset</source><translation>preset {0}</translation></message>
     <message><source>plugins.summary.presets</source><translation>{0} presets</translation></message>
     <message><source>plugins.contributions.disabled</source><translation>Enable it to see what it adds.</translation></message>
     <message><source>plugins.contributions.failed</source><translation>Not loaded.</translation></message>
     <message><source>plugins.contributes.source</source><translation>source</translation></message>
+    <message><source>plugins.contributes.credential</source><translation>credential</translation></message>
     <message><source>plugins.contributes.layer</source><translation>layer</translation></message>
     <message><source>plugins.contributes.preset</source><translation>preset</translation></message>
     <message><source>plugins.contributes.strategy</source><translation>strategy</translation></message>
@@ -1655,7 +1743,7 @@ The remote view changes. Local modifications are kept.</translation>
     <message><source>plugins.error</source><translation>Load error</translation></message>
     <message><source>plugins.version</source><translation>v{0}</translation></message>
     <message><source>plugins.modified</source><translation>changed {0}</translation></message>
-    <message><source>plugins.notice.running</source><translation>The service is running, so plugins are read-only. Stop it with the button on the left to make changes.</translation></message>
+    <message><source>plugins.notice.running</source><translation>This section is read-only while the service runs: changing the plugin set restarts every instance. A plugin's own management, inside its row below, works as usual.</translation></message>
     <message><source>plugins.notice.stopped</source><translation>The service is stopped. Changes are saved to the configuration and take effect when it starts.</translation></message>
     <message><source>plugins.notice.noSource</source><translation>The service's configuration was not found; there is nothing to read here.</translation></message>
     <message><source>plugins.noSource</source><translation>The service is not available</translation></message>
@@ -1719,5 +1807,91 @@ The DLL stays in the plugin folder, so it can be added again later.</translation
 
 {0}</translation></message>
     <message><source>notice.menu</source><translation>Notices: {0} waiting</translation></message>
-  </context>
+    <message><source>abouts.button</source><translation>About</translation></message>
+    <message><source>abouts.title</source><translation>About PolyMount</translation></message>
+    <message><source>abouts.subtitle</source><translation>The build in front of you, what it runs on, and where it keeps things.</translation></message>
+    <message><source>abouts.refresh</source><translation>Read again</translation></message>
+    <message><source>abouts.copy</source><translation>Copy diagnostics</translation></message>
+    <message><source>abouts.copied</source><translation>Copied to the clipboard</translation></message>
+    <message><source>abouts.build</source><translation>THIS COPY</translation></message>
+    <message><source>abouts.runtime</source><translation>RUNTIME</translation></message>
+    <message><source>abouts.service</source><translation>SERVICE</translation></message>
+    <message><source>abouts.locations</source><translation>LOCATIONS</translation></message>
+    <message><source>abouts.license</source><translation>LICENCE AND CREDITS</translation></message>
+    <message><source>abouts.row.version</source><translation>Version</translation></message>
+    <message><source>abouts.row.revision</source><translation>Commit</translation></message>
+    <message><source>abouts.row.channel</source><translation>Installed as</translation></message>
+    <message><source>abouts.installed</source><translation>Setup</translation></message>
+    <message><source>abouts.development</source><translation>Development tree</translation></message>
+    <message><source>abouts.row.dotnet</source><translation>.NET</translation></message>
+    <message><source>abouts.row.qt</source><translation>Qt</translation></message>
+    <message><source>abouts.row.winfsp</source><translation>WinFsp</translation></message>
+    <message><source>abouts.row.system</source><translation>System</translation></message>
+    <message><source>abouts.row.state</source><translation>State</translation></message>
+    <message><source>abouts.connected</source><translation>Connected</translation></message>
+    <message><source>abouts.disconnected</source><translation>Not running</translation></message>
+    <message><source>abouts.row.serviceVersion</source><translation>Version</translation></message>
+    <message><source>abouts.row.serviceProgram</source><translation>Program</translation></message>
+    <message><source>abouts.row.root</source><translation>Program folder</translation></message>
+    <message><source>abouts.row.config</source><translation>Configuration</translation></message>
+    <message><source>abouts.license.body</source><translation>PolyMount is free software under the GNU GPL, version 3 or later. The Qt 6 runtime beside it is LGPL v3; the charts are drawn with Qt Charts, which is GPL v3 or a commercial Qt licence. Read the third-party notices before distributing a build.</translation></message>
+    <message><source>abouts.license.notices</source><translation>Third-party notices</translation></message>
+    <message><source>abouts.license.project</source><translation>Project page</translation></message>
+    <message><source>abouts.license.issues</source><translation>Report an issue</translation></message>
+      <message>
+      <source>login.waiting</source>
+      <translation>Waiting for sign-in...</translation>
+    </message>
+    <message>
+      <source>login.noRuntime</source>
+      <translation>Signing in needs the Microsoft Edge WebView2 runtime, which is not installed on this machine.</translation>
+    </message>
+    <message>
+      <source>panel.needsInstance</source>
+      <translation>Needs a running instance to answer</translation>
+    </message>
+    <message>
+      <source>panel.empty</source>
+      <translation>Nothing to show</translation>
+    </message>
+    <message>
+      <source>panel.confirm</source>
+      <translation>Are you sure?</translation>
+    </message>
+    <message>
+      <source>panel.failed</source>
+      <translation>The panel could not be built</translation>
+    </message>
+    <message>
+      <source>panel.loading</source>
+      <translation>Loading…</translation>
+    </message>
+    <message>
+      <source>plugins.expand</source>
+      <translation>Unfold what this plugin is and what it offers</translation>
+    </message>
+    <message>
+      <source>plugins.collapse</source>
+      <translation>Fold</translation>
+    </message>    <message>
+      <source>plugins.detail.id</source>
+      <translation>Id</translation>
+    </message>
+    <message>
+      <source>plugins.detail.file</source>
+      <translation>File</translation>
+    </message>
+    <message>
+      <source>plugins.detail.version</source>
+      <translation>Version</translation>
+    </message>
+    <message>
+      <source>plugins.detail.adds</source>
+      <translation>Provides</translation>
+    </message>
+    <message>
+      <source>plugins.manage</source>
+      <translation>Management</translation>
+    </message>
+</context>
 </TS>

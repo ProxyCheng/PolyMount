@@ -23,7 +23,11 @@ internal static class ControlEnvelope
     /// descriptors and presets are a couple of dozen kilobytes of text in two languages, only ever
     /// read by the configuration editor, and attaching them to every answer made a one-window poll
     /// cost what a whole configuration load costs.</summary>
-    public static ControlResponse New() => new();
+    /// <summary>Whether this process is a development host, so that every answer says so. Set once
+    /// at start-up; a front end shows it, and nothing acts on it.</summary>
+    public static bool Dev { get; set; }
+
+    public static ControlResponse New() => new() { Dev = Dev };
 
     /// <summary>The registries a front end needs in order to edit a configuration: which layer
     /// types exist, what each one's fields are, and the presets it can offer. Attached to the

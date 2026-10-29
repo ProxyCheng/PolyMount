@@ -4,7 +4,7 @@ using PolyMount.Layers;
 
 namespace PolyMount.Core;
 
-public sealed class MountInstance : IDisposable
+public sealed class MountInstance : IDisposable, IPluginInstance
 {
     /// <summary>Rolled by Serilog, so the reader matches the family rather than one name.</summary>
     private const string DiagnosticsLogName = "requests.log";
@@ -489,6 +489,13 @@ public sealed class MountInstance : IDisposable
     /// from. A plugin command that belongs to one of its own layers reaches it through this
     /// without Core learning what that layer is.</summary>
     public IReadOnlyDictionary<string, ILayer> Layers => _layers;
+
+    /// <summary>The instance as a plugin sees it: identity, configured layers, built layers and
+    /// status. Everything else the engine keeps — the chains, the metrics, the mount — stays
+    /// here, so a plugin cannot depend on it.</summary>
+    string IPluginInstance.Id => Profile.Id;
+    string IPluginInstance.Name => Profile.Name;
+    IReadOnlyList<LayerConfig> IPluginInstance.LayerConfigs => Profile.GetLayers();
 
     [Obsolete("Use Layers.")]
     public IReadOnlyDictionary<string, ILayer> Providers => Layers;

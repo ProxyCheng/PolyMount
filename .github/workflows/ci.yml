@@ -64,6 +64,14 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      # What happens to a plugin somebody installed by hand when the product is updated over it.
+      # Self-contained like the smoke tests: a directory under %TEMP% standing in for an
+      # installation, and tests/plugins/PolyMount.Plugin.Puppet as the plugin. No administrator,
+      # no service, no WinFsp.
+      - name: Plugin upgrade - keep, list and remove
+        shell: pwsh
+        run: ./scripts/Test-PluginUpgrade.ps1 -Configuration Release
+
       # All three are self-contained: their own configuration, their own store, a dir source and
       # a mount point under %TEMP%. What they need from the runner is the built service and WinFsp.
       - name: Smoke - one instance, its own pipe
@@ -166,6 +174,13 @@ jobs:
           Write-Host "Installer version: $version"
           ./scripts/Build-Installer.ps1 -Version $version -Rid ${{ matrix.rid }} -Platform ${{ matrix.platform }}
 
+      # The plugin SDK travels with the release for the same reason the setup does: it is how
+      # someone builds a plugin outside this repository, and it is not on nuget.org.
+      - name: Pack plugin SDK
+        run: |
+          dotnet pack src/PolyMount.Plugin.Abstractions/PolyMount.Plugin.Abstractions.csproj -c Release -o artifacts --nologo
+          dotnet pack src/PolyMount.Plugin.Sdk/PolyMount.Plugin.Sdk.csproj -c Release -o artifacts --nologo
+
       - uses: actions/upload-artifact@v4
         with:
           name: PolyMount-Setup-${{ matrix.platform }}
@@ -173,6 +188,7 @@ jobs:
             artifacts/PolyMount-*-${{ matrix.platform }}-Setup.exe
             artifacts/PolyMount-*-${{ matrix.platform }}-Setup.exe.sha256
             artifacts/PolyMount-Signing.cer
+            artifacts/PolyMount.Plugin.*.nupkg
           if-no-files-found: error
 
   # The one check that uses the product the way a reader does: a machine that has never seen it,
@@ -236,7 +252,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          assets=(artifacts/PolyMount-*-Setup.exe artifacts/PolyMount-*-Setup.exe.sha256)
+          assets=(artifacts/PolyMount-*-Setup.exe artifacts/PolyMount-*-Setup.exe.sha256 artifacts/PolyMount.Plugin.*.nupkg)
           if [ -f artifacts/PolyMount-Signing.cer ]; then assets+=(artifacts/PolyMount-Signing.cer); fi
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --title "$GITHUB_REF_NAME" --generate-notes

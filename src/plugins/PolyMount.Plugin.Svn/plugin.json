@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "polymount.svn",
+  "name": { "en": "SVN repository", "zh-CN": "SVN 仓库" },
+  "description": {
+    "en": "Reads repository objects at a pinned revision without checkout.",
+    "zh-CN": "无需 checkout，读取指定版本的仓库对象。"
+  },
+  "icon": "repository",
+  "publisher": "PolyMount",
+  "license": "MIT",
+  "permissions": ["network", "filesystem"],
+  "host": ">=0.9.5"
+}

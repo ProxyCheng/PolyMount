@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using PolyMount.Core;
-using PolyMount.Core.Ipc;
+using PolyMount.Plugins;
+
 
 namespace PolyMount.Plugins.TxFShim;
 
@@ -39,6 +39,14 @@ public sealed class TxFShimPlugin : IPolyMountPlugin, IPluginMetadata
         // cannot save on it. Core carries the notice and a front end shows it; nothing outside
         // this plugin knows what it is about.
         context.RegisterNotices(instance => Service.Notices(instance.GetStatus()));
+
+        // The management page: which images are started through the shim, and the two things a
+        // person does about it. Machine-wide, so it reads no mount.
+        context.RegisterPanel(new PluginPanel(
+            "txf-shim",
+            new LocalizedText("Transactional opens", "事务性打开"),
+            "plugin",
+            _ => Service.Panel()));
 
         context.RegisterCommand(Command, command =>
         {

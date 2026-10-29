@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime.InteropServices;
 using PolyMount.Core;
 using PolyMount.Core.Ipc;
@@ -121,8 +121,12 @@ internal static class Program
                 Console.Error.WriteLine($"--size takes WxH of at least 240x200, not '{options.Value(sizeOption)}'");
                 return 2;
             }
-            return ChartPreview.Run(options.Value(render), width, height,
+            int rendered = ChartPreview.Run(options.Value(render), width, height,
                 options.IsSet(languageOption) ? options.Value(languageOption) : null);
+            // The same directory, the same question — what does this look like. The cards are one
+            // picture; the icon set is the other.
+            if (rendered == 0) IconSheet.Run(options.Value(render));
+            return rendered;
         }
 
         // A recording driven from the command line: the page is how this is meant to be used, but
@@ -268,10 +272,99 @@ internal static class Program
             RebuildMenu();
         }
 
+        // A notice the plugin marked automatic is asking to be put in front of a sign-in page, not
+        // asking the reader to agree to something: it is carried out on sight, once per time the
+        // condition stands. What the command means is still the plugin's — this only sends it.
+        foreach (var automatic in AdvisoryQueue.DueForAutomatic(current, AutoRan))
+        {
+            try { RunAutomatic(automatic); }
+            catch (Exception ex) { Serilog.Log.Warning(ex, "an automatic notice failed: {Id}", automatic.Notice.Id); }
+        }
+
         // One corner notification per pass at most: several at once is a stack of balloons, and
         // the menu says how many are waiting anyway.
         if (AdvisoryQueue.Due(current, Announced, DateTime.UtcNow, RepeatAfter, RepeatLimit) is { } announce)
             Announce(announce);
+    }
+
+    /// <summary>Which automatic notices have been carried out since they last stood. The queue
+    /// forgets an id when it stops being reported, so a token that expires again tomorrow is
+    /// acted on again rather than remembered forever.</summary>
+    private static readonly HashSet<string> AutoRan = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Sends an automatic notice's action and does what the answer asks — today, that is a
+    /// sign-in the service cannot perform itself. Nothing is said when it fails: the notice stays
+    /// where it is, the reader can carry it out by hand, and the plugin's own follow-up notice is
+    /// what explains the outcome.
+    /// </summary>
+    private static void RunAutomatic(Advisory item)
+    {
+        if (item.Notice.Action is not { } action) return;
+        ControlResponse response;
+        try { response = InstanceDirectory.ClientFor(item.Instance).Send(action); }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "an automatic notice could not reach its instance: {Id}", item.Notice.Id);
+            return;
+        }
+        if (!response.Ok)
+        {
+            Serilog.Log.Information("an automatic notice was refused: {Id} {Error}", item.Notice.Id, response.Error);
+            return;
+        }
+        if (response.Login is { } login) ShowLogin(item, login);
+    }
+
+    /// <summary>
+    /// Shows the page a plugin asked for and writes what it leaves behind into the credential it
+    /// named. The window reads the view's own cookie store — a token cookie is `HttpOnly`, which
+    /// no script inside the page can see — and this only moves the values into the fields the
+    /// plugin named. It never learns what they mean.
+    /// </summary>
+    private static void ShowLogin(Advisory item, BrowserLogin login)
+    {
+        string title = item.Notice.Title.Resolve(I18n.Language);
+        string? error = null;
+        try
+        {
+            var record = SupervisorClient.Default.Credentials().Credentials
+                .FirstOrDefault(credential => credential.Id == login.CredentialId)
+                ?? throw new InvalidOperationException("the credential this sign-in fills no longer exists");
+            using var window = new LoginWindow(null, title, login.Url,
+                login.Values.Select(value => value.Cookie).ToArray());
+            if (window.Exec() != 1) return;
+            var captured = window.Cookies;
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var value in login.Values)
+                if (captured.TryGetValue(value.Cookie, out var text)) values[value.Field] = text;
+            var saved = SupervisorClient.Default.SaveCredential(new CredentialPayload
+            {
+                Id = record.Id,
+                Name = record.Name,
+                Kind = record.Kind,
+                Username = record.Username,
+                Values = values
+            });
+            if (!saved.Ok) throw new InvalidOperationException(saved.Error);
+            Serilog.Log.Information("sign-in completed for {Credential}", record.Name);
+        }
+        catch (Exception ex)
+        {
+            Serilog.Log.Warning(ex, "a sign-in did not complete");
+            error = ex.Message;
+        }
+        if (error != null) NoticePrompt.Tell(title, error, I18n.T("close"));
+        // Asked again at once: the plugin knows whether it is satisfied now, and its answer is the
+        // one that says what happened.
+        foreach (var followUp in _advisories?.PollNow(item.Instance) ?? Array.Empty<Advisory>())
+        {
+            if (followUp.Notice.Id == item.Notice.Id) continue;
+            if (IsNoticeDismissed(followUp.Notice.Id) || AnsweredNotices.Contains(followUp.Notice.Id)) continue;
+            Announced[followUp.Notice.Id] = (DateTime.UtcNow, 1);
+            ShowNotice(followUp);
+            return;
+        }
     }
 
     /// <summary>When each notice was last announced, and how many times.</summary>
@@ -707,6 +800,28 @@ internal static class Program
             throw new InvalidOperationException("an unanswered notice was not repeated after the wait");
         if (AdvisoryQueue.Due(new[] { one }, announced, start.AddMinutes(5), TimeSpan.FromMinutes(1), 2) != null)
             throw new InvalidOperationException("a notice was announced a third time");
+
+        // An automatic notice is carried out on sight — once, not on every pass — and is acted on
+        // again only after it has stopped being reported and come back. One that asks for nothing
+        // is information whatever it is marked.
+        var automatic = new Advisory("demo", new PluginNotice("notice:auto",
+            new LocalizedText("t"), new LocalizedText("b"), new LocalizedText("sign in"),
+            new ControlRequest { Cmd = "sso.login" }, Automatic: true));
+        var ran = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (AdvisoryQueue.DueForAutomatic(new[] { automatic }, ran).Count != 1)
+            throw new InvalidOperationException("an automatic notice was not carried out");
+        if (AdvisoryQueue.DueForAutomatic(new[] { automatic }, ran).Count != 0)
+            throw new InvalidOperationException("an automatic notice was carried out twice in a row");
+        if (AdvisoryQueue.DueForAutomatic(new[] { one }, ran).Count != 0)
+            throw new InvalidOperationException("a notice that is not automatic was carried out on sight");
+        var noAction = new Advisory("demo", new PluginNotice("notice:auto2",
+            new LocalizedText("t"), new LocalizedText("b"), Automatic: true));
+        if (AdvisoryQueue.DueForAutomatic(new[] { noAction }, ran).Count != 0)
+            throw new InvalidOperationException("a notice with no action was carried out");
+        if (AdvisoryQueue.DueForAutomatic(Array.Empty<Advisory>(), ran).Count != 0)
+            throw new InvalidOperationException("a pass that reports nothing still asked for work");
+        if (AdvisoryQueue.DueForAutomatic(new[] { automatic }, ran).Count != 1)
+            throw new InvalidOperationException("an automatic notice that came back was not carried out again");
     }
 
     /// <summary>The first instance the service is running, so a smoke run charts live data
@@ -888,8 +1003,13 @@ internal static class Program
             }
             if (ticks == 18 && capture != null)
             {
+                // The activity curves are sampled a second at a time and only become honest after a
+                // full window, so the picture is taken from a made-up minute rather than from
+                // whatever the run has watched so far.
+                dashboard.SmokeActivity();
                 dashboard.Capture(Path.Combine(capture, "dashboard.png"));
                 dashboard.CaptureDetail(capture);
+                dashboard.CaptureAbout(capture);
                 editor.Capture(Path.Combine(capture, "layers.png"));
                 // Folded page first, then folded window, then the window again with the sections
                 // opened — and the expanded window *before* the expanded page, deliberately: the
@@ -916,7 +1036,10 @@ internal static class Program
                 if (Runs("dashboard"))
                 {
                     dashboard.VerifyPickers();
+                    try { Dashboard.VerifyActivity(); } catch (Exception ex) { failure = ex.ToString(); }
                     try { dashboard.VerifyPanelsTakeTheHeight(); } catch (Exception ex) { failure = ex.ToString(); }
+                    try { dashboard.VerifyAbout(); } catch (Exception ex) { failure = ex.ToString(); }
+                    try { dashboard.VerifyCredentialsSection(); } catch (Exception ex) { failure = ex.ToString(); }
                     try { dashboard.VerifyActionsWaitForTheState(); } catch (Exception ex) { failure = ex.ToString(); }
                     try { Dashboard.VerifyFailureTexts(); } catch (Exception ex) { failure = ex.ToString(); }
                 }
@@ -944,6 +1067,10 @@ internal static class Program
                     catch (Exception ex) { failure = ex.ToString(); }
                     try { CredentialManager.Smoke(editor, capture == null ? null : Path.Combine(capture, "credentials.png")); }
                     catch (Exception ex) { failure = ex.ToString(); }
+                    // Every glyph in the set draws ink. An icon is a handful of coordinates, and one
+                    // typed outside the box draws nothing at all — which nobody reports, because
+                    // all they see is that a mark is missing.
+                    try { IconSheet.Verify(); } catch (Exception ex) { failure = ex.ToString(); }
                     editor.SmokeInteractions();
                     try { editor.VerifyPageFits(); } catch (Exception ex) { failure = ex.ToString(); }
                 }
@@ -955,7 +1082,9 @@ internal static class Program
                         var plugins = dashboard.PluginPage;
                         dashboard.ShowPlugins();
                         plugins.SmokeVerify();
-                        if (capture != null) dashboard.Capture(Path.Combine(capture, "plugins.png"));
+                        // The picture is of the page doing its job: a plugin's row unfolded with
+                        // its page inside, which the verification above has just put back.
+                        if (capture != null) plugins.Capture(Path.Combine(capture, "plugins.png"));
                     }
                     catch (Exception ex) { failure = ex.ToString(); }
                     dashboard.ShowOverview();

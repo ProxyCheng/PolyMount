@@ -18,7 +18,7 @@ public enum FileChangeKind
 }
 
 /// <summary>Ordered object resolver. Directories are complete, authoritative namespace values.</summary>
-public sealed class VirtualFileSystem
+public sealed class VirtualFileSystem : ILowerChain
 {
     private readonly List<ILayer> _layers;
     /// <summary>Raised after a mutation was applied, off the calling thread: a mount forwards
@@ -136,6 +136,9 @@ public sealed class VirtualFileSystem
     public bool Writable => _layers.Any(l => l.Writable);
     public MetricsCollector? Metrics { get; set; }
     public RequestDiagnostics? Diagnostics { get; set; }
+    /// <summary>The contract's view of the same tracing, so a layer written against the plugin
+    /// contract reaches it without knowing the engine's type.</summary>
+    IRequestTracing? ILowerChain.Tracing => Diagnostics;
     public ReadPrediction? Prediction { get; set; }
     /// <summary>The chain's generation, which every cache key is built from. It is a key rather
     /// than a checksum anyone reads: what matters is that it changes when what it covers changes,

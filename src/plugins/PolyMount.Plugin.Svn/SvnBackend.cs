@@ -1,4 +1,4 @@
-using PolyMount.Core;
+using PolyMount.Plugins;
 
 namespace PolyMount.Plugins.Svn;
 
@@ -34,7 +34,7 @@ internal sealed class SvnTransportException : Exception
 /// Repository access used by <see cref="SvnLayer"/>, implemented over the Subversion
 /// HTTP/WebDAV protocol or by invoking the svn command line client.
 /// <para>
-/// Every operation takes the diagnostics to trace into. A request served on the caller's
+/// Every operation takes the tracing to trace into. A request served on the caller's
 /// thread has an ambient scope and can pass none; read-ahead runs on a worker thread with
 /// no ambient scope, so it passes the one it captured when the work was queued.
 /// </para>
@@ -42,10 +42,10 @@ internal sealed class SvnTransportException : Exception
 internal interface ISvnBackend : IDisposable
 {
     /// <summary>Youngest revision of the repository, equivalent to <c>svn info --show-item revision</c>.</summary>
-    long GetHeadRevision(RequestDiagnostics? diagnostics = null);
+    long GetHeadRevision(IRequestTracing? tracing = null);
 
     /// <summary>Immediate children of <paramref name="rel"/> at <paramref name="rev"/>.</summary>
-    IReadOnlyList<SvnEntry> List(long rev, string rel, RequestDiagnostics? diagnostics = null);
+    IReadOnlyList<SvnEntry> List(long rev, string rel, IRequestTracing? tracing = null);
 
     /// <summary>
     /// Metadata of <paramref name="rel"/> itself at <paramref name="rev"/>, without listing its
@@ -53,8 +53,8 @@ internal interface ISvnBackend : IDisposable
     /// own data, so a caller that wants one asks for the path; <see cref="List"/> answers a
     /// whole directory and is what enumeration uses.
     /// </summary>
-    SvnEntry? Info(long rev, string rel, RequestDiagnostics? diagnostics = null);
+    SvnEntry? Info(long rev, string rel, IRequestTracing? tracing = null);
 
     /// <summary>Writes the content of <paramref name="rel"/> at <paramref name="rev"/> to <paramref name="dest"/>.</summary>
-    void CatToFile(long rev, string rel, string dest, RequestDiagnostics? diagnostics = null);
+    void CatToFile(long rev, string rel, string dest, IRequestTracing? tracing = null);
 }

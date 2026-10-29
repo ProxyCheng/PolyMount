@@ -146,8 +146,18 @@ function Publish-Project([string]$Project, [string]$Destination) {
 # how many files were moved.
 function Move-LockedFilesAside([string]$Directory) {
     if (-not (Test-Path -LiteralPath $Directory)) { return 0 }
+    # What an earlier run moved out of the way and nothing holds any more is litter. It used to be
+    # left there, and the next run renamed it again — the suffix appended to the suffix, once per
+    # run, until the name passed MAX_PATH and the publish failed with "could not find a part of the
+    # path" (measured 2026-10-29: seven runs, a 239-character name under a 61-character folder).
+    # A file a running session still holds cannot be deleted, and that is the one that stays.
+    foreach ($stale in Get-ChildItem -LiteralPath $Directory -File -Filter '*.in-use-*') {
+        try { Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction Stop } catch { }
+    }
     $moved = 0
     foreach ($file in Get-ChildItem -LiteralPath $Directory -File) {
+        # Only a name that has not been renamed before can be renamed: see above.
+        if ($file.Name -like '*.in-use-*') { continue }
         $locked = $false
         try {
             $stream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open,

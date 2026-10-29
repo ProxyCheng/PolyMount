@@ -85,13 +85,13 @@ public sealed class NewMountDraftTests
     public void The_root_prefers_what_was_remembered_then_the_convention_of_this_machine()
     {
         using var temp = new TempDir();
-        string mounted = temp.Sub("Instances", "demo");
+        string mounted = temp.Sub("Instances", "G83");
         Directory.CreateDirectory(mounted);
         Assert.AreEqual(@"D:\Chosen", NewMountDraft.SuggestRoot(@"D:\Chosen", new[] { mounted }));
         Assert.AreEqual(temp.Sub("Instances"), NewMountDraft.SuggestRoot(null, new[] { mounted }));
         // A mount point whose parent is gone says nothing about where this machine keeps them.
         Assert.AreEqual(NewMountDraft.DefaultRoot,
-            NewMountDraft.SuggestRoot(null, new[] { temp.Sub("gone", "demo") }));
+            NewMountDraft.SuggestRoot(null, new[] { temp.Sub("gone", "G83") }));
     }
 
     [TestMethod]
