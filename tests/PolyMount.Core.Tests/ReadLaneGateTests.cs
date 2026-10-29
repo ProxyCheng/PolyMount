@@ -242,23 +242,37 @@ public sealed class ReadLaneGateTests
             using (third.Admit()) { lock (order) order.Add("third"); thirdHold.Wait(TimeSpan.FromSeconds(10)); }
         });
         thirdThread.Start();
-        Assert.IsTrue(Until(() => gate.Snapshot()[Reader].Requests == 3), "the queued requests were not published");
-        Thread.Sleep(100);
-        lock (order) Assert.AreEqual(0, order.Count, "the source served more than it has capacity for");
+        try
+        {
+            Assert.IsTrue(Until(() => gate.Snapshot()[Reader].Requests == 3), "the queued requests were not published");
+            Thread.Sleep(100);
+            lock (order) Assert.AreEqual(0, order.Count, "the source served more than it has capacity for");
 
-        first.Dispose();
-        Assert.IsTrue(Until(() => { lock (order) return order.Count == 1; }), "the freed place was not handed on");
-        lock (order) Assert.AreEqual("second", order[0], "the source let a later request past the one waiting longest");
-        Assert.AreEqual(1, InFlight(gate, Reader), "the source ran two at once, or none after the hand-over");
+            first.Dispose();
+            Assert.IsTrue(Until(() => { lock (order) return order.Count == 1; }), "the freed place was not handed on");
+            lock (order) Assert.AreEqual("second", order[0], "the source let a later request past the one waiting longest");
+            Assert.AreEqual(1, InFlight(gate, Reader), "the source ran two at once, or none after the hand-over");
 
-        secondHold.Set();
-        Assert.IsTrue(Until(() => { lock (order) return order.Count == 2; }), "the second place was not handed on");
-        lock (order) Assert.AreEqual("third", order[1]);
-        Assert.AreEqual(1, InFlight(gate, Reader), "the source was not kept busy across the hand-over");
+            secondHold.Set();
+            Assert.IsTrue(Until(() => { lock (order) return order.Count == 2; }), "the second place was not handed on");
+            lock (order) Assert.AreEqual("third", order[1]);
+            Assert.AreEqual(1, InFlight(gate, Reader), "the source was not kept busy across the hand-over");
 
-        thirdHold.Set();
-        Assert.IsTrue(thirdThread.Join(TimeSpan.FromSeconds(5)));
-        Assert.AreEqual(0, InFlight(gate, Reader));
+            thirdHold.Set();
+            Assert.IsTrue(thirdThread.Join(TimeSpan.FromSeconds(5)));
+            Assert.AreEqual(0, InFlight(gate, Reader));
+        }
+        finally
+        {
+            // A failed assertion must not leave a thread waiting on an event this method is about
+            // to dispose: the ObjectDisposedException it raises on a background thread is
+            // unhandled, so it takes the test host down and the run ends with "aborted" instead of
+            // with the assertion that failed.
+            secondHold.Set();
+            thirdHold.Set();
+            secondThread.Join(TimeSpan.FromSeconds(5));
+            thirdThread.Join(TimeSpan.FromSeconds(5));
+        }
     }
 
     [TestMethod]

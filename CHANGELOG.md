@@ -5,6 +5,37 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-29
+
+The tray's own checks run without drawing a window, and the Qt binding moves to QtSharp 0.20.1.
+
+### Changed
+
+- **The Qt binding moves to QtSharp 0.20.1** (from 0.17.0). Nothing the product does changes; what
+  it is built against does. Since 0.19 a package is per platform with the RID in its id
+  (`QtSharp.Api.win-x64`), so a Windows build restores only the Windows payload, and
+  `scripts/Fetch-QtSharp.ps1` fetches the release's platform zip and unpacks it into `packages\`
+  instead of five loose packages. `QVariant` is gone from the API — item and model data cross as a
+  plain `object`, so the six `SetData(role, new QVariant(...))` call sites pass the value itself.
+  `QColor`, `QModelIndex`, `QSizePolicy`, `QTransform` and the rest of the trivially copyable Qt
+  types are C# structs rather than native handles: the twelve `using`/`Dispose()` sites on them are
+  gone, and the per-pixel colour loops on the repaint paths no longer allocate a wrapper and a
+  native object per pixel. Two behaviour notes: `Data(role)` is `object?` now (a caller that stored
+  a string still gets one back), and `QColor` equality is Qt's own, which compares across colour
+  specs.
+
+### Fixed
+
+- **The self-check draws no window.** `--ui-smoke` builds real windows, shows them and measures
+  them — that is the point of the checks and also why nobody wants to run them while working. The
+  run now selects Qt's offscreen platform before the `QApplication` exists, writing it through the C
+  runtime (the copy Qt reads) and pointing `QT_QPA_FONTDIR` at the system fonts, because the
+  offscreen platform has no font database of its own and every layout check would measure synthetic
+  rectangles. `set QT_QPA_PLATFORM=windows` still runs them on the desktop, and a build whose
+  binding has no offscreen plugin falls back to windows and says so. This needed a QtSharp fix as
+  well: its Windows package shipped `platforms/qwindows.dll` alone, so asking for offscreen found
+  no plugin and Qt aborted the process instead of drawing nothing (QtSharp 0.20.1).
+
 ## [0.9.3] - 2026-10-29
 
 A program that cannot save on a mount is mentioned before it fails, and the transaction shim can no

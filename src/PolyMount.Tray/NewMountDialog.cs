@@ -236,7 +236,7 @@ internal sealed class NewMountDialog : QDialog
     private void AddCard(LayerPreset? preset, string title, string description, string needs, string chain)
     {
         var item = new QListWidgetItem();
-        item.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(preset?.Id ?? ""));
+        item.SetData((int)Qt.ItemDataRole.UserRole, preset?.Id ?? "");
         _cards.AddItem(item);
         var card = new QWidget();
         card.SetObjectName("presetCard");

@@ -139,6 +139,30 @@ function Publish-Project([string]$Project, [string]$Destination) {
     if ($LASTEXITCODE -ne 0) { throw "Publish failed: $Project" }
 }
 
+# Files a running process holds open cannot be overwritten, but a loaded image can be renamed: every
+# file in a published folder that cannot be opened for writing is given a .in-use-<time> name, and
+# the build then writes the new one where the old one was. The process keeps the file it has open,
+# so a session that is mid-conversation keeps working and the next launch gets this build. Returns
+# how many files were moved.
+function Move-LockedFilesAside([string]$Directory) {
+    if (-not (Test-Path -LiteralPath $Directory)) { return 0 }
+    $moved = 0
+    foreach ($file in Get-ChildItem -LiteralPath $Directory -File) {
+        $locked = $false
+        try {
+            $stream = [System.IO.File]::Open($file.FullName, [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $stream.Dispose()
+        }
+        catch [System.IO.IOException], [System.UnauthorizedAccessException] { $locked = $true }
+        if (-not $locked) { continue }
+        Move-Item -LiteralPath $file.FullName -Force -ErrorAction Stop -Destination (
+            $file.FullName + '.in-use-' + (Get-Date -Format 'yyyyMMddHHmmss'))
+        $moved++
+    }
+    return $moved
+}
+
 function Start-Supervisor {
     if ($installed) { Start-Service -Name 'PolyMount' }
     else { Start-Process -FilePath $serviceExe -WorkingDirectory $serviceDir -WindowStyle Hidden | Out-Null }
@@ -301,26 +325,36 @@ try {
 
     Write-Host '[2/3] Publishing and restarting what changed...'
     if ($mcpChanged) {
-        # Published before anything is stopped: an agent session can hold the exe open, and that
-        # failure must not leave the service stopped. A session that is holding it is asked about
-        # up front instead of being discovered through MSBuild's ten copy retries: those take a
-        # second each, fill the log with the same warning ten times, and end in the same skip.
+        # The MCP server is started by agent sessions and held open for as long as they run, so it
+        # cannot be overwritten and is not ours to stop: killing it would take the tools away from
+        # a session in the middle of its work. The files a running session holds are renamed out of
+        # the way first — Windows does not let a loaded image be overwritten but does let it be
+        # renamed — so the publish writes this build where the old one was, each session keeps the
+        # one it started with, and the next launch gets this.
         Write-Host '  publishing the MCP server (nothing to restart)...'
         $agents = @(Get-Process -Name 'PolyMount.Mcp' -ErrorAction SilentlyContinue)
-        if ($agents.Count -gt 0) {
-            Write-Host ("  the MCP server is in use by {0} agent process(es): left as it is." -f $agents.Count)
-            Write-Host '  close the session using PolyMount.Mcp, then run this again to update it.'
-        }
-        else {
+        try {
+            $moved = 0
+            if ($agents.Count -gt 0) { $moved = Move-LockedFilesAside $mcpDir }
             try {
                 Publish-Project $mcpProject $mcpDir
-                if (-not (Test-Path -LiteralPath $mcpExe)) { throw 'Published MCP executable was not found.' }
-                Set-DeployedState $mcpDir $mcpState
             }
             catch {
-                Write-Warning ("  the MCP server was not updated: {0}" -f $_.Exception.Message)
-                Write-Warning '  close the agent session using PolyMount.Mcp, then run this again.'
+                # A file that was not held when we looked can be held by a session starting up.
+                if ($moved -gt 0) { throw }
+                $moved = Move-LockedFilesAside $mcpDir
+                if ($moved -eq 0) { throw }
+                Publish-Project $mcpProject $mcpDir
             }
+            if (-not (Test-Path -LiteralPath $mcpExe)) { throw 'Published MCP executable was not found.' }
+            Set-DeployedState $mcpDir $mcpState
+            if ($agents.Count -gt 0) {
+                Write-Host ("  {0} file(s) were held by {1} running session(s) and were replaced;" -f $moved, $agents.Count)
+                Write-Host '  those sessions keep the build they started with until they restart.'
+            }
+        }
+        catch {
+            Write-Warning ("  the MCP server was not updated: {0}" -f $_.Exception.Message)
         }
     }
     if ($backendChanged) {

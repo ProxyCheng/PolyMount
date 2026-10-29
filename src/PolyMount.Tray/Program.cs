@@ -21,6 +21,9 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Before the QApplication is constructed, because that is when Qt picks its platform: a
+        // self-check draws no window (see SmokePlatform), a normal run is untouched.
+        SmokePlatform.Choose(args);
         // Qt argv includes the executable name; Main(args) omits it.
         _app = new QApplication(new[] { Environment.ProcessPath ?? "PolyMount.Tray" }.Concat(args).ToArray());
         // A renamed control pipe reaches this process the way it already reaches the MCP server:

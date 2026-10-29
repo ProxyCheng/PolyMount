@@ -116,7 +116,7 @@ internal sealed class LayerPicker : QDialog
         {
             var item = new QListWidgetItem();
             item.SetSizeHint(new QSize(340, 100));
-            item.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(descriptor.Type));
+            item.SetData((int)Qt.ItemDataRole.UserRole, descriptor.Type);
             _list.AddItem(item);
             var card = new QWidget();
             card.SetObjectName("pickerCard");

@@ -14,21 +14,23 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The Qt binding (ten module assemblies, one namespace each). It brings QtSharp.Runtime (the
-         managed runtime and the native glue) and QtSharp.Qt6 (the Qt runtime DLLs and the platform
-         plugin) as dependencies; their buildTransitive props/targets set PlatformTarget=x64 and copy
-         the native payload next to the executable on Build and on Publish, so nothing else has to
-         know where QtSharp lives. Restore reads all of them from the "qtsharp" source in
-         nuget.config - run scripts/Fetch-QtSharp.ps1 first in a fresh clone. -->
-    <PackageReference Include="QtSharp.Api" Version="0.17.0" />
+    <!-- The Qt binding (ten module assemblies, one namespace each). Since QtSharp 0.19 a package is
+         per platform, with the RID in the id, so a Windows build restores only the Windows payload -
+         QtSharp.Runtime (the managed runtime and native glue) and QtSharp.Qt6 (the Qt runtime DLLs
+         and the platform plugins) come in as its dependencies. Their buildTransitive props/targets
+         set PlatformTarget=x64 and copy the native payload next to the executable on Build and on
+         Publish, so nothing else has to know where QtSharp lives. Restore reads all of them from the
+         "qtsharp" source in nuget.config - run scripts/Fetch-QtSharp.ps1 first in a fresh clone. -->
+    <PackageReference Include="QtSharp.Api.win-x64" Version="0.20.1" />
     <!-- Qt Charts, bound by QtSharp.Charts. It is a package of its own because of what it wraps:
          Qt Charts is GPLv3-or-commercial where qtbase is LGPLv3, so nothing that does not draw a
          chart should inherit it. Its own targets copy the module's native glue; Qt6Charts.dll comes
-         from its QtSharp.Charts.Qt6 dependency. See NOTICE in the package and AGENTS.md before
-         shipping. -->
-    <PackageReference Include="QtSharp.Charts" Version="0.17.0" />
+         from its QtSharp.Charts.Qt6.win-x64 dependency. See NOTICE in the package and AGENTS.md
+         before shipping. -->
+    <PackageReference Include="QtSharp.Charts.win-x64" Version="0.20.1" />
     <Content Include="resources\polymount.rcc" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="..\PolyMount.Core\PolyMount.Core.csproj" />
   </ItemGroup>
 
 </Project>
+

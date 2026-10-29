@@ -170,7 +170,7 @@ internal abstract class CredentialListDialog : QDialog
                 item.Name.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0 &&
                 item.Username.IndexOf(filter, StringComparison.OrdinalIgnoreCase) < 0) continue;
             var row = new QListWidgetItem(Describe(item));
-            row.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(item.Id));
+            row.SetData((int)Qt.ItemDataRole.UserRole, item.Id);
             UsedBy.TryGetValue(item.Id, out var usedBy);
             string detail = Describe(item);
             // Where it may be presented, spelled out: the count on the row is what makes a reader
@@ -222,7 +222,7 @@ internal abstract class CredentialListDialog : QDialog
         // A plain item, not a widget: the delegate draws one line of text at the right height on
         // every style, where a widget item kept being clipped regardless of the size hint.
         var row = new QListWidgetItem(text);
-        row.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(id));
+        row.SetData((int)Qt.ItemDataRole.UserRole, id);
         if (!string.IsNullOrEmpty(tooltip)) row.SetToolTip(tooltip);
         _list.AddItem(row);
     }

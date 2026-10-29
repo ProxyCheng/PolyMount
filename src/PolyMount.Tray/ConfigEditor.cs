@@ -278,7 +278,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var before = layers.Select(l => l.Id).ToArray();
         if (layers.Count > 1)
         {
-            using var parent = new QModelIndex();
+            var parent = new QModelIndex();
             if (!_layerList.Model().MoveRows(parent, 0, 1, parent, layers.Count))
                 throw new InvalidOperationException("Layer model refused a reorder");
             if (Current.Layers![^1].Id != before[0]) throw new InvalidOperationException("Visual layer order differs from configuration");
@@ -291,7 +291,9 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         for (int i = 0; i < layers.Count; i++)
         {
             _layerList.SetCurrentRow(i);
-            string expected = _layerList.Item(i).Data((int)Qt.ItemDataRole.UserRole).ToString();
+            // Item data crosses as a plain object since QtSharp 0.18 (there is no QVariant in the
+            // API), so the null it can be is this assertion's to name rather than the compiler's.
+            string expected = _layerList.Item(i).Data((int)Qt.ItemDataRole.UserRole) as string ?? "";
             if (_layer?.Id != expected)
                 throw new InvalidOperationException(
                     $"Selecting row {i} of the reordered stack shows '{_layer?.Id}', not '{expected}'");
@@ -536,7 +538,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
             foreach (var layer in layers)
             {
                 var item = new QListWidgetItem(LayerText(layer));
-                item.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(layer.Id));
+                item.SetData((int)Qt.ItemDataRole.UserRole, layer.Id);
                 item.SetIcon(TrayIcons.Get(Descriptor(layer.Type).Icon, LayerColor(layer)));
                 _layerList.AddItem(item);
             }
@@ -816,7 +818,7 @@ internal sealed class ConfigEditor : QWidget, ICloseGuard
         var ordered = new List<LayerConfig>();
         for (int i = 0; i < _layerList.Count; i++)
         {
-            string id = _layerList.Item(i).Data((int)Qt.ItemDataRole.UserRole).ToString();
+            string id = _layerList.Item(i).Data((int)Qt.ItemDataRole.UserRole) as string ?? "";
             ordered.Add(layers.First(l => l.Id == id));
         }
         Current.Layers = ordered;

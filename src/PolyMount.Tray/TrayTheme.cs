@@ -158,10 +158,7 @@ internal static class TrayTheme
     {
         var ink = new QColor(color);
         if (!ink.IsValid() || Tokens.SeriesLighten <= 0) return ink;
-        using var white = new QColor("#ffffff");
-        var mixed = Blend(ink, white, Tokens.SeriesLighten);
-        ink.Dispose();
-        return mixed;
+        return Blend(ink, new QColor("#ffffff"), Tokens.SeriesLighten);
     }
 
     /// <summary>Two colours mixed, <paramref name="toward"/> at <paramref name="weight"/>.</summary>
@@ -337,7 +334,7 @@ internal static class TrayTheme
         for (int y = 0; y < canvas.Height(); y++)
             for (int x = 0; x < canvas.Width(); x++)
             {
-                using var pixel = canvas.PixelColor(x, y);
+                var pixel = canvas.PixelColor(x, y);
                 if (pixel.Alpha() > 0) ink++;
             }
         return ink;

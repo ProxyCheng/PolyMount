@@ -96,7 +96,7 @@ internal sealed class PresetPicker : QDialog
         foreach (var preset in _presets)
         {
             var item = new QListWidgetItem();
-            item.SetData((int)Qt.ItemDataRole.UserRole, new QVariant(preset.Id));
+            item.SetData((int)Qt.ItemDataRole.UserRole, preset.Id);
             _list.AddItem(item);
             var card = new QWidget();
             card.SetObjectName("presetCard");

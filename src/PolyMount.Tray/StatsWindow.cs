@@ -1357,7 +1357,7 @@ internal sealed class StatsWindow : QWidget, ICloseGuard
         for (int y = 0; y < rendered.Height(); y++)
             for (int x = 0; x < rendered.Width(); x++)
             {
-                using var pixel = rendered.PixelColor(x, y);
+                var pixel = rendered.PixelColor(x, y);
                 if (pixel.Alpha() > 0 && pixel.Red() + pixel.Green() + pixel.Blue() < 720) ink++;
             }
         if (capture != null) painted.Save(capture);
@@ -3227,7 +3227,7 @@ internal sealed class PerformanceChart : QWidget
     /// already on the card rather than a layer of its own.</summary>
     private static void Style(QAreaSeries area, string color, bool hatched)
     {
-        using var fill = TrayTheme.Series(color);
+        var fill = TrayTheme.Series(color);
         fill.SetAlpha(TrayTheme.Tokens.SeriesFillAlpha);
         if (hatched)
         {
@@ -3236,7 +3236,7 @@ internal sealed class PerformanceChart : QWidget
             area.SetBrush(hatch);
         }
         else area.SetBrush(new QBrush(fill));
-        using var stroke = TrayTheme.Series(color);
+        var stroke = TrayTheme.Series(color);
         using var pen = new QPen(stroke);
         if (hatched) pen.SetStyle(Qt.PenStyle.DashLine);
         pen.SetWidthF(1.8);
@@ -3444,7 +3444,7 @@ internal sealed class PerformanceChart : QWidget
             double alpha = x >= fade ? 1 : Math.Clamp((x - left) / (fade - left), 0, 1);
             var line = slot < _edges.Count ? _edges[slot] : FreshEdge();
             line.Replace(new[] { new QPointF(x, _domain.Floor), new QPointF(x, _domain.Max) });
-            using var hairline = new QColor(marker.Color);
+            var hairline = new QColor(marker.Color);
             hairline.SetAlpha((int)(Math.Min(alpha, 0.45) * 255));
             using var pen = new QPen(hairline);
             pen.SetStyle(Qt.PenStyle.DashLine);
@@ -3460,7 +3460,7 @@ internal sealed class PerformanceChart : QWidget
             }
             var item = _notes[slot];
             item.SetText(I18n.T(marker.LabelKey));
-            using var ink = new QColor(marker.Color);
+            var ink = new QColor(marker.Color);
             ink.SetAlpha((int)(alpha * 255));
             item.SetBrush(new QBrush(ink));
             // Beside its hairline, on whichever side has room for it, and never outside the plot.
@@ -3595,7 +3595,7 @@ internal sealed class PerformanceChart : QWidget
         var (number, unit) = _unit == "B" ? ByteUnits.Split(_stats.Current) : (_stats.Current.ToString("0.##", I18n.Culture), UnitText);
         string text = hasData ? number : "—";
         p.SetFont(numberFont);
-        using var ink = TrayTheme.Series(_color);
+        var ink = TrayTheme.Series(_color);
         p.SetPen(new QPen(ink));
         p.DrawText(18, HeadlineBaseline, text);
         int headRight = 18 + numberMetrics.HorizontalAdvance(text);

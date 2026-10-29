@@ -143,7 +143,7 @@ The version becomes the setup's file name and the app version.
 | `scripts\Test-InstanceIsolation.ps1` | killing one instance's worker leaves the other instance mounted, and the supervisor restarts the dead one |
 | `scripts\Test-ObjectMount.ps1` | copy-up, delete, rename, persistence and compression, with the source left untouched |
 | `scripts\Test-Mcp.ps1` | the stdio MCP handshake, tool catalog, read calls and error paths; `-Full` also enables, mounts and unmounts an instance |
-| `PolyMount.Tray.exe --ui-smoke` | the windows, the language switch, the chart cards, the recording bar |
+| `PolyMount.Tray.exe --ui-smoke` | the windows, the language switch, the chart cards, the recording bar — drawn with Qt's offscreen platform, so the run maps no window (`set QT_QPA_PLATFORM=windows` to watch it) |
 | `PolyMount.Tray.exe --render <dir>` | draws the chart fixtures and prints the plot-area geometry; no service needed |
 
 ## Configuration
