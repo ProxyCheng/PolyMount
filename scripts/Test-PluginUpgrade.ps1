@@ -42,7 +42,14 @@ try {
         & dotnet build $project -c $Configuration --nologo -v quiet -o $PuppetDirectory | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'the puppet plugin did not build' }
     }
-    $puppetFiles = @('PolyMount.Plugin.Puppet.dll', 'PolyMount.Plugin.Puppet.plugin.json')
+    # The manifest is written here rather than taken from the build output: since contract 2.1 it
+    # is embedded in the assembly, and nothing copies the file next to it any more. A plugin
+    # installed before that change still has one, which is the state this test is about — both
+    # `Publish-Plugins.ps1` and the setup still read it, and it is where a display name comes from.
+    $puppetManifest = 'PolyMount.Plugin.Puppet.plugin.json'
+    Copy-Item -LiteralPath (Join-Path $repo 'tests\plugins\PolyMount.Plugin.Puppet\plugin.json') `
+        -Destination (Join-Path $PuppetDirectory $puppetManifest) -Force
+    $puppetFiles = @('PolyMount.Plugin.Puppet.dll', $puppetManifest)
 
     # ---------------------------------------------------------------- the update path
     Write-Host 'update (Publish-Plugins.ps1):'
@@ -91,9 +98,12 @@ try {
     # What the plugin calls itself, from its own manifest: the point is that the page shows the
     # plugin's name and not its file name, in both languages the setup speaks.
     $manifest = Get-Content -LiteralPath (Join-Path $PuppetDirectory 'PolyMount.Plugin.Puppet.plugin.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-    Check 'the line names the file and both titles' (
-        $parts.Count -eq 3 -and $parts[0] -eq 'PolyMount.Plugin.Puppet.dll' -and
-        $parts[1] -eq $manifest.name.en -and $parts[2] -eq $manifest.name.'zh-CN') ($lines -join ' | ')
+    # Four columns: the file, the two titles, and the contract it was built against — which the
+    # wizard uses to note an incompatible plugin without letting it decide whether the file stays.
+    Check 'the line names the file, both titles and its contract' (
+        $parts.Count -eq 4 -and $parts[0] -eq 'PolyMount.Plugin.Puppet.dll' -and
+        $parts[1] -eq $manifest.name.en -and $parts[2] -eq $manifest.name.'zh-CN' -and
+        $parts[3] -match '^\d+\.\d+$') ($lines -join ' | ')
     Check 'the contract and the dependency are not plugins' (-not ($lines -join "`n" -match 'Abstractions|Serilog'))
 
     # ---------------------------------------------------------------- the answer it gets
