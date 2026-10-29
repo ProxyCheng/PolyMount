@@ -1,9 +1,21 @@
 ﻿[CmdletBinding()]
-param([string]$Version = '0.20.0', [string]$Destination, [string]$Platform = 'win-x64')
+param([string]$Version, [string]$Destination, [string]$Platform = 'win-x64')
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
 if (-not $Destination) { $Destination = Join-Path $repo 'packages' }
 New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+
+# Which version to fetch is not a decision this script makes: it is whatever the tray's project
+# restores, read from its PackageReference. A default here is a second copy of the number, and it
+# drifts - 0.9.4's CI fetched 0.20.0 into a tree that asked restore for 0.20.1 and failed with
+# NU1102. An explicit -Version still wins, for trying a release the project does not name yet.
+if (-not $Version) {
+    $project = Join-Path $repo 'src\PolyMount.Tray\PolyMount.Tray.csproj'
+    $pattern = 'PackageReference\s+Include="QtSharp\.Api\.' + [regex]::Escape($Platform) + '"\s+Version="([^"]+)"'
+    $reference = Select-String -Path $project -Pattern $pattern
+    if (-not $reference) { throw "no QtSharp.Api.$Platform PackageReference in $project; pass -Version" }
+    $Version = $reference.Matches[0].Groups[1].Value
+}
 
 # The QtSharp packages are not on nuget.org: a release publishes one zip per platform, each holding
 # that platform's .nupkg files, and nuget.config points a "qtsharp" source at this folder, so restore
