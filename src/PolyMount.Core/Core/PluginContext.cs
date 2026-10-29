@@ -48,6 +48,67 @@ public interface IPluginContext
     /// reaches the instance through the control link, so the handler behind it is usually a
     /// command registered here as well.</summary>
     void RegisterControlOperation(ControlOperation operation);
+
+    /// <summary>Something this plugin wants a person told about the instance, checked whenever a
+    /// front end asks (the tray does, on a timer). What a notice means is the plugin's business:
+    /// Core carries it, a front end shows it, and the person can dismiss it for good — so a plugin
+    /// can advise about a condition only it can recognise without Core learning what that is.
+    /// </summary>
+    void RegisterNotices(Func<MountInstance, IReadOnlyList<PluginNotice>> provide);
+}
+
+/// <summary>
+/// One thing a plugin wants said about a mount, with an optional action the plugin itself will
+/// carry out.
+/// <para>
+/// <see cref="Id"/> is what a front end remembers when the reader says "don't tell me again", so it
+/// has to name the subject — one program, one condition — and not the occasion. </para>
+/// <para>
+/// <see cref="Action"/> is a command the front end sends back to the same instance when the reader
+/// accepts: the plugin decides what to ask for, and neither Core nor the window has to know what
+/// the plugin is about. A notice without one is information.
+/// </para>
+/// </summary>
+public sealed record PluginNotice(
+    string Id,
+    LocalizedText Title,
+    LocalizedText Body,
+    LocalizedText? ActionLabel = null,
+    ControlRequest? Action = null);
+
+/// <summary>The advisory providers plugins registered. A front end asks for the notices of an
+/// instance; each provider is given that instance and answers for itself.</summary>
+public static class PluginNotices
+{
+    private static readonly object Gate = new();
+    private static readonly List<Func<MountInstance, IReadOnlyList<PluginNotice>>> Providers = new();
+
+    public static void Register(Func<MountInstance, IReadOnlyList<PluginNotice>> provide)
+    {
+        ArgumentNullException.ThrowIfNull(provide);
+        lock (Gate) Providers.Add(provide);
+    }
+
+    public static bool Any { get { lock (Gate) return Providers.Count > 0; } }
+
+    /// <summary>Every notice the plugins have for this instance, in registration order. A provider
+    /// that throws is skipped: advice is not worth failing a status poll over.</summary>
+    public static IReadOnlyList<PluginNotice> Collect(MountInstance instance)
+    {
+        Func<MountInstance, IReadOnlyList<PluginNotice>>[] providers;
+        lock (Gate) providers = Providers.ToArray();
+        var notices = new List<PluginNotice>();
+        foreach (var provide in providers)
+        {
+            try { notices.AddRange(provide(instance)); }
+            catch (Exception) { /* a provider with nothing to say, or nothing it can say */ }
+        }
+        return notices;
+    }
+
+    /// <summary>Drops every provider. They all belong to plugins, so unloading is all or nothing —
+    /// the same rule as the commands, which are tracked by name because a front end names them.</summary>
+    internal static void Clear() { lock (Gate) Providers.Clear(); }
 }
 
 /// <summary>A layer whose descriptor declares actions of its own: the mount asks the layer
@@ -117,4 +178,5 @@ internal sealed class PluginContext : IPluginContext
     public void RegisterCommand(string command, Action<PluginCommand> handler) =>
         PluginCommands.Register(command, handler);
     public void RegisterControlOperation(ControlOperation operation) => ControlOperations.Register(operation);
+    public void RegisterNotices(Func<MountInstance, IReadOnlyList<PluginNotice>> provide) => PluginNotices.Register(provide);
 }

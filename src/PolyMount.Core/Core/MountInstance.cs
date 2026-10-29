@@ -8,6 +8,11 @@ public sealed class MountInstance : IDisposable
 {
     /// <summary>Rolled by Serilog, so the reader matches the family rather than one name.</summary>
     private const string DiagnosticsLogName = "requests.log";
+
+    /// <summary>How far back a status reply looks for programs that have used the mount. Wide
+    /// enough that a burst of traffic followed by a quiet spell still names them, narrow enough
+    /// that a pid Windows has since handed to something else does not outlive the return.</summary>
+    private static readonly TimeSpan CallerWindow = TimeSpan.FromMinutes(2);
     private readonly string _logPath;
     private readonly string _statePath;
     private readonly object _gate = new();
@@ -545,6 +550,30 @@ public sealed class MountInstance : IDisposable
             Recording = Vfs.Diagnostics?.Recording ?? false,
             RecordingStartedUtc = Vfs.Diagnostics?.RecordingStartedUtc
         };
+
+        // Who has used the mount lately. Answered here rather than by a metrics sample because the
+        // question has to survive nobody watching: whoever asks about a program is usually asking
+        // because something went wrong, and that is not the moment anybody opened a performance
+        // window. The path costs an open per process per minute (ProcessNames caches it), which is
+        // nothing beside the status poll this rides on.
+        if (status.Mounted && Vfs.Metrics is { } metrics)
+        {
+            long now = Environment.TickCount64 / MetricsCollector.CellMilliseconds;
+            foreach (var (pid, lastSeen) in metrics.RecentCallers(CallerWindow))
+            {
+                var entry = ProcessNames.Describe(pid);
+                status.Callers.Add(new MountCaller
+                {
+                    Pid = pid,
+                    Name = entry?.Name ?? "",
+                    ImagePath = entry?.Path ?? "",
+                    StartedUtc = entry is { StartTicks: > 0 }
+                        ? new DateTime(entry.StartTicks, DateTimeKind.Local).ToUniversalTime().ToString("O")
+                        : "",
+                    SecondsAgo = Math.Round(Math.Max(0, now - lastSeen) * MetricsCollector.CellMilliseconds / 1000.0, 1)
+                });
+            }
+        }
 
         foreach (var layer in Vfs.Layers)
         {

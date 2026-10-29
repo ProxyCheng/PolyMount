@@ -186,6 +186,7 @@ public static class PluginLoader
             PluginCommandNames.Clear();
             foreach (var operation in PluginOperationNames) ControlOperations.Unregister(operation);
             PluginOperationNames.Clear();
+            PluginNotices.Clear();
 
             var pluginContext = new PluginContext();
             var results = new List<PluginLoadResult>(configured.Count);
@@ -262,7 +263,7 @@ public static class PluginLoader
                 }
                 catch (Exception ex)
                 {
-                    string error = configuredPath + ": " + ex.Message;
+                    string error = configuredPath + ": " + Explain(ex);
                     errors.Add(error);
                     results.Add(new PluginLoadResult(configuredPath, fullPath, true, true, false, version,
                         empty, empty, empty, empty, empty, empty, error,
@@ -280,6 +281,24 @@ public static class PluginLoader
             LastReport = new PluginLoadReport(results, errors);
             return LastReport;
         }
+    }
+
+    /// <summary>A load failure in words a reader can act on. A plugin is compiled against a
+    /// particular PolyMount.Core, and the host loads its own copy: when the two are different
+    /// builds, the failure is a type that "does not exist", which reads like a broken plugin rather
+    /// than what it is — a host that was not redeployed with its plugins. The MCP server is the
+    /// usual one, because a running session holds it open and the deployment leaves it alone.</summary>
+    internal static string Explain(Exception ex)
+    {
+        if (ex is not (TypeLoadException or FileLoadException or FileNotFoundException or MissingMethodException))
+            return ex.Message;
+        string core;
+        try { core = typeof(PluginLoader).Assembly.Location; }
+        catch (Exception) { core = ""; }
+        return ex.Message
+            + " — this plugin was built against a different PolyMount.Core than the one this process loaded"
+            + (core.Length > 0 ? " (" + core + ")" : "")
+            + "; publish and restart the host and its plugins from one build";
     }
 
     /// <summary>The DLLs in the host's plugins folder that the configuration does not name. They

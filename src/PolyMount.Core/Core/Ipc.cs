@@ -142,6 +142,32 @@ public sealed class MountStatus
     // show it without asking a second question.
     public bool Recording { get; set; }
     public string? RecordingStartedUtc { get; set; }
+
+    /// <summary>The programs that opened something on this mount in the last couple of minutes,
+    /// newest first, whether or not anyone is watching the counters. It is who is using the mount,
+    /// which the counters cannot say without a reader: they only count while a window is open, and
+    /// a question asked about a program nobody is watching has no answer then. What a reader makes
+    /// of the answer is the reader's business. The worker supplies the image path because it can
+    /// open another account's process and a front end running as the reader cannot.</summary>
+    public List<MountCaller> Callers { get; set; } = new();
+}
+
+/// <summary>One program that has used a mount lately: who it is, where its image is, and when it
+/// was last seen. It is a hint for a reader — the image is what gets inspected — not a count of
+/// anything.</summary>
+public sealed class MountCaller
+{
+    public int Pid { get; set; }
+    /// <summary>The process name, or empty when the worker could not read it.</summary>
+    public string Name { get; set; } = "";
+    /// <summary>The image's own path, or empty when it could not be read. Empty is not "nothing to
+    /// worry about": a program whose image cannot be inspected is one nothing can be said about.</summary>
+    public string ImagePath { get; set; } = "";
+    /// <summary>When the process started, so a reader can tell one that predates an install from
+    /// one that will pick it up on its next start. Empty when it could not be read.</summary>
+    public string StartedUtc { get; set; } = "";
+    /// <summary>How long ago it was last seen opening something on the mount.</summary>
+    public double SecondsAgo { get; set; }
 }
 
 /// <summary>The values <see cref="MountStatus.ErrorKind"/> takes. A front-end picks its remedy from
@@ -295,6 +321,11 @@ public sealed class ControlResponse
     // Populated by the "recording*" commands.
     public RecordingSessionInfo? Recording { get; set; }
 
+    // Populated by "pluginNotices": what the plugins want said about this instance, each with the
+    // command to act on it. A front end shows them and sends the action back; Core never reads
+    // what a notice is about.
+    public List<PluginNotice> Notices { get; set; } = new();
+
     // Populated by a command a plugin registered: the payload that plugin wants its caller to
     // read, as JSON. Core does not look inside it; a front-end that offers the plugin's
     // operations hands it back unchanged.
@@ -429,6 +460,9 @@ public static class ControlCommands
     public const string RecordingStart = "recordingStart";
     public const string RecordingStatus = "recordingStatus";
     public const string RecordingStop = "recordingStop";
+    /// <summary>What the instance's plugins want a person told, and the commands to act on it.
+    /// Asked of the instance, not of the process: notices are about a mount.</summary>
+    public const string PluginNotices = "pluginNotices";
     public const string Shutdown = "shutdown";
 
     /// <summary>The one list of credentials this product keeps. Answered by the supervisor, which

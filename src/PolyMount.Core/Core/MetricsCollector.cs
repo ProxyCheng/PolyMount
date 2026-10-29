@@ -57,8 +57,7 @@ public sealed class MetricsCollector
     internal const int ProcessCellCount = 1200;
 
     private struct Cell
-    {
-        /// <summary>Which slot this cell holds, so a cell whose time has passed is recognised
+    {        /// <summary>Which slot this cell holds, so a cell whose time has passed is recognised
         /// rather than summed. Only the writer that finds it stale resets it.</summary>
         public long Slot;
         public long Reads;
@@ -244,6 +243,14 @@ public sealed class MetricsCollector
     /// the pids are the keys inside a cell, so the ring's size is the history's size and not
     /// something a busy day of short-lived tools can grow.</summary>
     private readonly ProcessRing _processes = new();
+
+    /// <summary>A pid and when it was last seen opening something, one slot per hash, kept
+    /// whether or not anyone is watching (see <see cref="Remember"/>). Small on purpose: this
+    /// answers "is this program using the mount", not "how much".</summary>
+    private const int CallerSlots = 64;
+    private readonly int[] _callerPid = new int[CallerSlots];
+    private readonly long[] _callerSeen = new long[CallerSlots];
+
     private long _lastActivityMs;
 
     /// <summary>Until when reads and writes are counted, on the coarse clock. Nobody watching means
@@ -340,9 +347,11 @@ public sealed class MetricsCollector
     {
         if (processId <= 0) return;
         long now = Environment.TickCount64;
+        long slot = _slot();
+        Remember(processId, slot);
         Volatile.Write(ref _lastActivityMs, now);
         if (now >= Volatile.Read(ref _watchedUntilMs)) return;
-        var counts = ProcessCountsFor(ShardFor(_slot()), processId);
+        var counts = ProcessCountsFor(ShardFor(slot), processId);
         if (write)
         {
             counts.Writes++;
@@ -353,6 +362,43 @@ public sealed class MetricsCollector
             counts.Reads++;
             if (bytes > 0) counts.ReadBytes += bytes;
         }
+    }
+
+    /// <summary>The same slot arithmetic as the rings, over a table a few dozen entries wide: who
+    /// has opened something on this mount lately, whether or not anyone is watching the counters.
+    ///
+    /// The counted dimension above is gated on a reader being present, because counting costs
+    /// something and nobody wants the bill for numbers nobody reads. This is the one question that
+    /// has to be answerable with no reader at all — who is using this mount — because a question
+    /// asked only once something has gone wrong arrives after the fact. A slot is a pid and a
+    /// timestamp: a couple of stores, no allocation, no dictionary, and a collision between two
+    /// pids only costs one of them its place in this table.
+    /// </summary>
+    private void Remember(int processId, long slot)
+    {
+        int index = (processId & int.MaxValue) % CallerSlots;
+        Volatile.Write(ref _callerSeen[index], slot);
+        Volatile.Write(ref _callerPid[index], processId);
+    }
+
+    /// <summary>The processes that opened something on this mount within <paramref name="within"/>,
+    /// newest first, each with the slot it was last seen in. A torn entry — a pid written over
+    /// another between two reads — is skipped rather than reported as a mixture of both.</summary>
+    internal IReadOnlyList<(int Pid, long Slot)> RecentCallers(TimeSpan within)
+    {
+        long now = _slot();
+        long window = Math.Max(1, (long)(within.TotalMilliseconds / CellMilliseconds));
+        var found = new List<(int Pid, long Slot)>();
+        for (int index = 0; index < CallerSlots; index++)
+        {
+            int pid = Volatile.Read(ref _callerPid[index]);
+            long seen = Volatile.Read(ref _callerSeen[index]);
+            if (pid <= 0 || Volatile.Read(ref _callerPid[index]) != pid) continue;
+            if (now - seen > window) continue;
+            found.Add((pid, seen));
+        }
+        found.Sort((left, right) => right.Slot.CompareTo(left.Slot));
+        return found;
     }
 
     /// <summary>What this thread has counted for one process in the cell it is in, made if it is

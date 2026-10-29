@@ -1711,5 +1711,13 @@ The DLL stays in the plugin folder, so it can be added again later.</translation
     <message><source>newmount.error.share</source><translation>A share is written \server\share, or a folder under one.</translation></message>
     <message><source>newmount.error.folder</source><translation>That folder does not exist.</translation></message>
     <message><source>newmount.source.folder</source><translation>Choose the folder to mount</translation></message>
+    <message><source>notice.later</source><translation>Not now</translation></message>
+    <message><source>notice.never</source><translation>Don’t ask again</translation></message>
+    <message><source>notice.do</source><translation>Continue</translation></message>
+    <message><source>notice.applied</source><translation>Done.</translation></message>
+    <message><source>notice.failed</source><translation>It could not be done:
+
+{0}</translation></message>
+    <message><source>notice.menu</source><translation>Notices: {0} waiting</translation></message>
   </context>
 </TS>

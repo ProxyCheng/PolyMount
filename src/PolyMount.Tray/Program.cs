@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using PolyMount.Core;
 using PolyMount.Core.Ipc;
 using QtSharp.QtCore;
 using QtSharp.QtGui;
@@ -168,6 +169,9 @@ internal static class Program
             if (reason is QSystemTrayIcon.ActivationReason.Trigger or QSystemTrayIcon.ActivationReason.DoubleClick)
                 ShowDashboard();
         };
+        // Clicking a corner notification is the only gesture it offers, so it is what opens the
+        // notice it was about — with its action, which the notification itself cannot carry.
+        _tray.MessageClicked += OnNoticeClicked;
         _tray.SetVisible(true);
 
         // Asked once, well after start-up has settled: a check that competes with the windows
@@ -190,7 +194,211 @@ internal static class Program
 
         ShowDashboard();
         OfferExplorerRestartIfTheShellExtensionWasReplaced();
+        StartAdvisoryWatch();
         return _app.Exec();
+    }
+
+    private static AdvisoryWatch? _advisories;
+    private static QTimer? _advisoryTimer;
+    private static QTimer? _advisoryCollector;
+
+
+    private const string DismissedNoticesSetting = "notices.dismissed";
+
+    /// <summary>
+    /// Asks each instance what its plugins want said, and says it.
+    ///
+    /// What a notice means is the plugin's business and none of this file's: the notice carries its
+    /// own title, body, a label for the one action it offers and the command that action sends
+    /// back. That is what lets a plugin warn about a condition only it can recognise, without the
+    /// window, or Core, learning what that condition is.
+    ///
+    /// The pass runs on its own thread: a plugin asked to answer may have to look at files, and the
+    /// event loop is not the place to wait for that.
+    /// </summary>
+    private static void StartAdvisoryWatch()
+    {
+        _advisories = new AdvisoryWatch();
+        _advisoryTimer = new QTimer();
+        _advisoryTimer.Timeout += PollAdvisories;
+        _advisoryTimer.Start(5_000);
+        // Only runs while a pass is in flight: it does nothing but ask whether the background work
+        // has finished, so what it found is shown the moment it is found. Waiting for the next poll
+        // on top of the scan would put a second delay on the one part that is already slow.
+        _advisoryCollector = new QTimer();
+        _advisoryCollector.Timeout += CollectAdvisories;
+        PollAdvisories();
+    }
+
+    private static void PollAdvisories()
+    {
+        _advisories?.Start();
+        if (_advisoryCollector is { } collector && !collector.IsActive()) collector.Start(250);
+    }
+
+    private static void CollectAdvisories()
+    {
+        if (_advisories?.Take() is not { } items) return;
+        _advisoryCollector?.Stop();
+        ShowAdvisories(items);
+    }
+
+    /// <summary>
+    /// Notices that stand right now and have not been answered. Rebuilt from every pass, so one
+    /// that stops being reported — the program exited, the plugin no longer sees it — leaves the
+    /// queue and the menu with it, rather than lingering as an action that can only fail.
+    /// </summary>
+    private static readonly List<Advisory> PendingNotices = new();
+
+    /// <summary>The notices the reader has answered in this run, "not now" included: a pass that
+    /// still reports them must not put them back in front of him.</summary>
+    private static readonly HashSet<string> AnsweredNotices = new(StringComparer.OrdinalIgnoreCase);
+
+    private static void ShowAdvisories(IReadOnlyList<Advisory> items)
+    {
+        var current = AdvisoryQueue.Current(items, IsNoticeDismissed, AnsweredNotices);
+        if (!current.Select(item => item.Notice.Id)
+                .SequenceEqual(PendingNotices.Select(item => item.Notice.Id), StringComparer.OrdinalIgnoreCase))
+        {
+            PendingNotices.Clear();
+            PendingNotices.AddRange(current);
+            RebuildMenu();
+        }
+
+        // One corner notification per pass at most: several at once is a stack of balloons, and
+        // the menu says how many are waiting anyway.
+        if (AdvisoryQueue.Due(current, Announced, DateTime.UtcNow, RepeatAfter, RepeatLimit) is { } announce)
+            Announce(announce);
+    }
+
+    /// <summary>When each notice was last announced, and how many times.</summary>
+    private static readonly Dictionary<string, (DateTime At, int Count)> Announced = new(StringComparer.OrdinalIgnoreCase);
+
+    private const int RepeatLimit = 2;
+    private static readonly TimeSpan RepeatAfter = TimeSpan.FromMinutes(1);
+
+    /// <summary>
+    /// The corner notification, which is what Windows gives a tray icon: a title, a few lines and
+    /// one gesture — it cannot carry a button. So it announces rather than asks, and what it shows
+    /// is the notice's own first paragraph; the rest of the body is for the dialog the click opens,
+    /// where there is room for it and for the decision.
+    /// </summary>
+    /// <summary>The notice the last corner notification was about: what a click on it is asking
+    /// for. The queue is ordered by who used the mount most recently, which is not the same
+    /// question — a click should open the thing that was just announced.</summary>
+    private static Advisory? LastAnnounced;
+
+    private static void Announce(Advisory item)
+    {
+        LastAnnounced = item;
+        if (_tray == null) return;
+        string body = item.Notice.Body.Resolve(I18n.Language);
+        // Logged because this is the one thing a reader may never see: a corner notification that
+        // Focus Assist swallowed, or one that came and went, leaves no trace anywhere else.
+        Serilog.Log.Information("notice announced: {Id}", item.Notice.Id);
+        _tray.ShowMessage(item.Notice.Title.Resolve(I18n.Language), AdvisoryQueue.Summary(body),
+            QSystemTrayIcon.MessageIcon.Warning, 10_000);
+    }
+
+    /// <summary>The corner notification was clicked: put the notice it was about in front of the
+    /// reader, with its action.</summary>
+    private static void OnNoticeClicked()
+    {
+        // Logged because the two failures look identical from a chair: a notification whose
+        // click never reaches this process, and one that opened a box Windows would not put in
+        // front. The log says which one happened.
+        Serilog.Log.Information("notice clicked: {Pending} pending", PendingNotices.Count);
+        ShowNewestNotice();
+    }
+
+    /// <summary>The notice a click or a menu entry is asking for: the one just announced when it
+    /// is still waiting, otherwise the program that used the mount most recently.</summary>
+    private static void ShowNewestNotice()
+    {
+        Advisory? target = LastAnnounced is { } announced
+            && PendingNotices.Any(pending => pending.Notice.Id == announced.Notice.Id)
+                ? announced
+                : PendingNotices.FirstOrDefault();
+        if (target != null) ShowNotice(target);
+    }
+
+    /// <summary>Takes one notice out of the queue once the reader has answered it — which is also
+    /// what takes it out of the tray menu.</summary>
+    private static void ResolveNotice(Advisory item)
+    {
+        AnsweredNotices.Add(item.Notice.Id);
+        if (PendingNotices.RemoveAll(pending => pending.Notice.Id == item.Notice.Id) > 0) RebuildMenu();
+    }
+
+    private static void ShowNotice(Advisory item)
+    {
+        string title = item.Notice.Title.Resolve(I18n.Language);
+        string body = item.Notice.Body.Resolve(I18n.Language);
+        Serilog.Log.Information("notice dialog: {Id}", item.Notice.Id);
+        // However this is answered, the reader has seen it: it leaves the queue and the menu,
+        // rather than waiting for a second visit that "not now" was meant to prevent.
+        try
+        {
+            if (item.Notice.Action is not { } action)
+            {
+                if (NoticePrompt.Ask(title, body, null, I18n.T("close"), I18n.T("notice.never")) == NoticePrompt.Never)
+                    DismissNotice(item.Notice);
+                return;
+            }
+
+            string label = item.Notice.ActionLabel is { } given ? given.Resolve(I18n.Language) : I18n.T("notice.do");
+            int choice = NoticePrompt.Ask(title, body, label, I18n.T("notice.later"), I18n.T("notice.never"));
+            if (choice == NoticePrompt.Never) { DismissNotice(item.Notice); return; }
+            if (choice != NoticePrompt.Accepted) return;
+            ApplyNotice(item, action, title);
+        }
+        finally { ResolveNotice(item); }
+    }
+
+    /// <summary>Sends the notice's action back to the instance that offered it. The command is the
+    /// plugin's, unchanged: a window that took it apart would have to know what the plugin is
+    /// about. What comes back is either another notice — "restart it", typically — or nothing to
+    /// add.</summary>
+    private static void ApplyNotice(Advisory item, ControlRequest action, string title)
+    {
+        ControlResponse response;
+        try { response = InstanceDirectory.ClientFor(item.Instance).Send(action); }
+        catch (Exception ex)
+        {
+            NoticePrompt.Tell(title, ex.Message, I18n.T("close"));
+            return;
+        }
+        if (!response.Ok)
+        {
+            NoticePrompt.Tell(title, I18n.F("notice.failed", response.Error ?? "refused"), I18n.T("close"));
+            return;
+        }
+        // Asked again at once rather than waited out: the plugin has an answer for a reader who
+        // just accepted, and it is usually the one that says what has to happen next.
+        foreach (var followUp in _advisories?.PollNow(item.Instance) ?? Array.Empty<Advisory>())
+        {
+            if (followUp.Notice.Id == item.Notice.Id) continue;
+            if (IsNoticeDismissed(followUp.Notice.Id) || AnsweredNotices.Contains(followUp.Notice.Id)) continue;
+            Announced[followUp.Notice.Id] = (DateTime.UtcNow, 1);
+            ShowNotice(followUp);
+            return;
+        }
+        NoticePrompt.Tell(title, I18n.T("notice.applied"), I18n.T("close"));
+    }
+
+    private static bool IsNoticeDismissed(string id) =>
+        (UiSettings.Get(DismissedNoticesSetting) ?? "")
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Contains(id, StringComparer.OrdinalIgnoreCase);
+
+    private static void DismissNotice(PluginNotice notice)
+    {
+        var ids = (UiSettings.Get(DismissedNoticesSetting) ?? "")
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Append(notice.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(id => id, StringComparer.OrdinalIgnoreCase);
+        UiSettings.Set(DismissedNoticesSetting, string.Join(";", ids));
     }
 
     /// <summary>The installer replaces a shell-extension DLL that Explorer has loaded by renaming
@@ -328,6 +536,18 @@ internal static class Program
 
         menu.AddSeparator();
 
+        // A notice the reader has not answered, for as long as it stands: the corner notification
+        // is gone in ten seconds, and a machine that is about to lose someone's save is not a
+        // thing to mention once.
+        if (PendingNotices.Count > 0)
+        {
+            var pending = menu.AddAction("");
+            BindFormat(pending.SetText, "notice.menu", PendingNotices.Count);
+            pending.SetIcon(TrayIcons.Get("alert"));
+            pending.Triggered += _ => OnNoticeClicked();
+            menu.AddSeparator();
+        }
+
         var plugins = menu.AddAction("");
         I18n.Bind(plugins.SetText, "plugins.menu");
         plugins.SetIcon(TrayIcons.Get("plugin"));
@@ -435,6 +655,55 @@ internal static class Program
         if (_dashboard is not { } reopened || ReferenceEquals(reopened, closed))
             throw new InvalidOperationException("Opening the dashboard after closing it did not build a window of its own");
         reopened.Close();
+    }
+
+    /// <summary>
+    /// The two rules the notice queue stands on, asserted rather than looked at: a notice that is
+    /// no longer reported leaves the menu (an entry whose action can only fail is worse than no
+    /// entry), and an answer outlives the passes that keep re-reporting it. A notice whose body has
+    /// no paragraph break is its own summary, which is what the corner notification would show.
+    /// </summary>
+    internal static void VerifyNotices()
+    {
+        static Advisory Make(string id, string body) => new("demo",
+            new PluginNotice(id, new LocalizedText("t"), new LocalizedText(body)));
+
+        var one = Make("notice:a", "first line\n\nsecond paragraph");
+        var two = Make("notice:b", "only one line");
+        var answered = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "notice:b" };
+        bool NothingDismissed(string _) => false;
+
+        var standing = AdvisoryQueue.Current(new[] { one, two }, NothingDismissed, answered);
+        if (standing.Count != 1 || standing[0].Notice.Id != "notice:a")
+            throw new InvalidOperationException("an answered notice was reported as standing (or the other one was dropped)");
+
+        if (AdvisoryQueue.Current(new[] { one, one }, NothingDismissed, answered).Count != 1)
+            throw new InvalidOperationException("the same notice reported twice became two entries");
+
+        if (AdvisoryQueue.Current(Array.Empty<Advisory>(), NothingDismissed, answered).Count != 0)
+            throw new InvalidOperationException("a pass that reports nothing left the queue populated");
+
+        if (AdvisoryQueue.Current(new[] { one }, _ => true, answered).Count != 0)
+            throw new InvalidOperationException("a notice the reader dismissed for good was still standing");
+
+        if (AdvisoryQueue.Summary(one.Notice.Body.Resolve("en")) != "first line")
+            throw new InvalidOperationException("the corner notification would show more than the first paragraph");
+        if (AdvisoryQueue.Summary(two.Notice.Body.Resolve("en")) != "only one line")
+            throw new InvalidOperationException("a body with one paragraph was cut instead of shown whole");
+
+        // How often a corner notification is said: once, once more after the wait, and then not
+        // again — a balloon that was missed is worth repeating, a condition that has been ignored
+        // twice is the menu's business.
+        var announced = new Dictionary<string, (DateTime At, int Count)>(StringComparer.OrdinalIgnoreCase);
+        var start = new DateTime(2026, 10, 27, 12, 0, 0, DateTimeKind.Utc);
+        if (AdvisoryQueue.Due(new[] { one }, announced, start, TimeSpan.FromMinutes(1), 2)?.Notice.Id != "notice:a")
+            throw new InvalidOperationException("a notice that has never been announced was not announced");
+        if (AdvisoryQueue.Due(new[] { one }, announced, start.AddSeconds(10), TimeSpan.FromMinutes(1), 2) != null)
+            throw new InvalidOperationException("a notice was announced again immediately");
+        if (AdvisoryQueue.Due(new[] { one }, announced, start.AddMinutes(1), TimeSpan.FromMinutes(1), 2)?.Notice.Id != "notice:a")
+            throw new InvalidOperationException("an unanswered notice was not repeated after the wait");
+        if (AdvisoryQueue.Due(new[] { one }, announced, start.AddMinutes(5), TimeSpan.FromMinutes(1), 2) != null)
+            throw new InvalidOperationException("a notice was announced a third time");
     }
 
     /// <summary>The first instance the service is running, so a smoke run charts live data
@@ -749,6 +1018,7 @@ internal static class Program
                     "stats.reads", "stats.writes", "stats.readBytes", "stats.writeBytes",
                     "stats.readLatency", "stats.writeLatency",
                     "stats.reconcile.bytes", "record.process",
+                    "notice.later", "notice.never", "notice.do", "notice.applied", "notice.failed", "notice.menu",
                     "disable", "disable.done", "disable.tip", "enable.tip", "confirm.disable",
                     "stats.section.layers", "stats.section.layers.summary",
                     "stats.section.process.summary", "stats.section.account", "stats.section.account.summary" })
@@ -792,6 +1062,8 @@ internal static class Program
             if (ticks == 56 && Runs("workspace"))
             {
                 try { VerifyDashboardReopens(); }
+                catch (Exception ex) { failure = ex.ToString(); }
+                try { VerifyNotices(); }
                 catch (Exception ex) { failure = ex.ToString(); }
             }
             if (ticks >= 60)

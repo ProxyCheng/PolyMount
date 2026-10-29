@@ -1714,5 +1714,13 @@ DLL 会留在插件目录里，之后可以再加回来。</translation>
     <message><source>newmount.error.share</source><translation>共享路径形如 \服务器\共享名，或它下面的文件夹。</translation></message>
     <message><source>newmount.error.folder</source><translation>这个目录不存在。</translation></message>
     <message><source>newmount.source.folder</source><translation>选择要挂载的文件夹</translation></message>
+    <message><source>notice.later</source><translation>稍后</translation></message>
+    <message><source>notice.never</source><translation>不再提醒</translation></message>
+    <message><source>notice.do</source><translation>继续</translation></message>
+    <message><source>notice.applied</source><translation>已完成。</translation></message>
+    <message><source>notice.failed</source><translation>没有做成：
+
+{0}</translation></message>
+    <message><source>notice.menu</source><translation>提醒：{0} 条待处理</translation></message>
   </context>
 </TS>

@@ -5,6 +5,67 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-29
+
+A program that cannot save on a mount is mentioned before it fails, and the transaction shim can no
+longer stop a program from starting.
+
+### Added
+
+- **A program that cannot save on a mount is mentioned before it fails.** A transactional open is
+  refused by the kernel before any file-system callback runs, so it leaves no trace in a request
+  log, a recording or a metric: all a person sees is an engine that will not save, and the action
+  that fixes it lives in another window, applied to a directory they were never told about. A mount
+  now reports which programs opened something on it lately — a small always-on table beside the
+  counters that only fill while somebody is watching, because the question has to be answerable
+  when no window is open — and a plugin can raise a notice about one of them: a title, a body, one
+  action label and the control request that action sends. Core carries it and the tray shows it as
+  a corner notification; neither learns what it is about, so another plugin can advise about
+  something else without a window changing. "Don't ask again" is remembered per user, and pressing
+  the action asks the plugin again at once, which is how the second sentence ("restart it") comes
+  back. The transaction-shim plugin is the first to use it, with the same rule its install uses,
+  and `install_txf_shim` now also takes a single executable — a running program is named by its own
+  image, and its folder's other executables were never asked about.
+
+### Changed
+
+- The installer build takes its platform as a parameter (`-Rid` and `-Platform` in
+  `Build-Installer.ps1`, one matrix entry per platform in CI). Today's output is named and built
+  exactly as before; a second architecture can be published beside it without touching the script.
+
+### Fixed
+
+- **The transaction shim cannot keep a program from starting.** Its launcher — the Image File
+  Execution Options debugger the plugin installs — killed the child when it could not instrument it,
+  and reported the wrong error when it could not start one: the code it read had already been
+  overwritten by the launcher's own write to its log. It also assumed its first argument was an
+  image path, which is only true when the caller's command line starts with one — a program spawned
+  with `lpApplicationName` and an arguments-only command line arrived as a bare argument and was
+  never started at all (an engine's shader compiler, whose absence left the editor rendering
+  without shaders). The launcher now tries the command line as well as the first token, starts the
+  program without the shim rather than not at all, records the command line it was handed, and a
+  payload that changed is replaced when the plugin is installed again instead of being left in
+  place.
+- **A plugin that fails to load because its host is older says so.** A plugin is compiled against a
+  particular `PolyMount.Core` and the host loads its own copy, so a host that was not redeployed
+  with its plugins fails with "Could not load type …" — which reads like a broken plugin. The
+  deployment leaves the MCP server alone while a session holds it open, so this is the state it
+  lands in. The load result now names the mismatch and what to do about it.
+- **A click on a corner notification opens the notification it was about.** The queue is ordered by
+  who used the mount most recently and a click took the last entry, so with two programs waiting
+  the balloon for the newer one opened the older one — the one thing a click should never do. What
+  the last notification was about is remembered now, and the tray menu entry opens the same one.
+- **A notice's box is on top.** The click that opens one lands on the shell's notification, so
+  Windows never makes this process the foreground one and the box could open behind everything the
+  reader had in front of them. It is shown topmost instead, the taskbar entry flashes while it is
+  up, and both halves of that failure — a click that never arrives, a box opened out of sight — are
+  logged, because from a chair they look the same.
+- **An unanswered notice is said once more, a minute later**, at most twice: a corner notification
+  lasts ten seconds and Focus Assist can swallow it whole. After that it is the tray menu's job,
+  which keeps it for as long as the condition stands.
+- **A notice is announced when its scan ends**, not on the poll after it: a program that touched
+  the mount waited up to a minute to be mentioned.
+
 ## [0.9.2] - 2026-10-27
 
 An instance that cannot start stops being restarted and says why, and a credential's servers can

@@ -189,4 +189,23 @@ public sealed class PluginExtensionTests
         Assert.IsNull(report.Plugins[1].Error);
         Assert.AreEqual(2, PluginLoader.LastReport.Plugins.Count);
     }
+
+    [TestMethod]
+    public void A_plugin_built_against_another_core_says_so()
+    {
+        // The failure a stale host produces: the plugin references a Core type its host does not
+        // have, so the load fails with "Could not load type ..." and reads like a broken plugin.
+        // What it is, is a host that was not redeployed with its plugins — the MCP server, held
+        // open by a running session, is the usual one.
+        string explained = PluginLoader.Explain(
+            new TypeLoadException("Could not load type 'PolyMount.Core.PluginNotice' from assembly 'PolyMount.Core'"));
+        StringAssert.Contains(explained, "Could not load type 'PolyMount.Core.PluginNotice'");
+        StringAssert.Contains(explained, "built against a different PolyMount.Core");
+        StringAssert.Contains(explained, "restart the host and its plugins from one build");
+
+        // Everything else is reported as it came: the advice would be wrong for a plugin whose own
+        // parameters are bad.
+        string plain = PluginLoader.Explain(new InvalidOperationException("unknown layer type 'nope'"));
+        Assert.AreEqual("unknown layer type 'nope'", plain);
+    }
 }

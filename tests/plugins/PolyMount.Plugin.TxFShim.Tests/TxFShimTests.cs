@@ -96,21 +96,54 @@ public sealed class TxFShimTests : IPluginTestProvider
             }
             finally { Directory.Delete(temp, recursive: true); }
 
-            // The engine this was written for, when this machine has it: its launchers import one
-            // runtime DLL and that DLL resolves the APIs at run time, so the evidence has to be
-            // the quoted name rather than an import.
-            const string engine = @"D:\demo\messiah\Engine\Binaries\Win64";
-            if (!Directory.Exists(engine)) throw new Skip($"no engine binaries at '{engine}'");
-            var scan = TargetDiscovery.Scan(engine);
-            if (scan.Targets.Count == 0) throw new Exception("no engine image was recognized");
-            if (!scan.Targets.Any(t =>
-                    t.Evidence.Contains("Messiah_x64h.dll", StringComparison.OrdinalIgnoreCase) &&
-                    t.Evidence.Contains("at run time", StringComparison.Ordinal)))
-                throw new Exception("the engine's runtime DLL was not recognized through its quoted API names: "
-                    + string.Join("; ", scan.Targets.Select(t => t.ImageName + " = " + t.Evidence)));
-            if (scan.Targets.Any(t => !t.ImageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
-                throw new Exception("something that is not an executable became a target");
+            // The two rules the engine taught, on fixtures rather than on the engine: an image that
+            // does not import a transactional API but names one at run time is still a target, and
+            // so is an image that loads a DLL beside it which names one. The engine used to be the
+            // fixture for both; on 2026-10-28 it stopped naming the API altogether, because the
+            // FileManager now downgrades a transactional open itself, and a test that fails when
+            // the program it watches gets fixed is a test of the program, not of the scanner.
+            string quotedDirectory = TempDirectory();
+            try
+            {
+                // ASCII, because that is what the scanner looks for (a managed literal would be
+                // UTF-16 and would never match).
+                File.WriteAllText(Path.Combine(quotedDirectory, "quoted.exe"),
+                    "no import table here; this image resolves CreateFileTransactedW at run time");
+                var quoted = TargetDiscovery.Scan(quotedDirectory);
+                if (!quoted.Targets.Any(t => t.ImageName == "quoted.exe" && t.Evidence.Contains("at run time", StringComparison.Ordinal)))
+                    throw new Exception("an image that names a transactional API at run time was not recognized: "
+                        + string.Join("; ", quoted.Targets.Select(t => t.ImageName + " = " + t.Evidence)));
+
+                // Beside the image: a real loader with one of its imported modules next to it, and
+                // that module naming the API. This is the engine's shape without the engine.
+                string? cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                if (File.Exists(cmd))
+                {
+                    string besideDirectory = TempDirectory();
+                    try
+                    {
+                        File.Copy(cmd, Path.Combine(besideDirectory, "loader.exe"));
+                        string module = PortableExecutable.Read(cmd).Modules.First();
+                        File.WriteAllText(Path.Combine(besideDirectory, module),
+                            "no import table here; this module resolves CreateFileTransactedW at run time");
+                        var beside = TargetDiscovery.Scan(besideDirectory);
+                        if (!beside.Targets.Any(t =>
+                                t.ImageName == "loader.exe" &&
+                                t.Evidence.Contains("loads " + module, StringComparison.OrdinalIgnoreCase) &&
+                                t.Evidence.Contains("at run time", StringComparison.Ordinal)))
+                            throw new Exception("an image whose beside-DLL names a transactional API was not recognized: "
+                                + string.Join("; ", beside.Targets.Select(t => t.ImageName + " = " + t.Evidence)));
+                        if (beside.Targets.Any(t => !t.ImageName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
+                            throw new Exception("something that is not an executable became a target");
+                    }
+                    finally { Directory.Delete(besideDirectory, recursive: true); }
+                }
+            }
+            finally { Directory.Delete(quotedDirectory, recursive: true); }
         });
+
+        Check("install-one-image", SingleImageInstall);
+        Check("notices", Notices);
 
         Check("install-refuses-without-payload", () =>
         {
@@ -128,6 +161,57 @@ public sealed class TxFShimTests : IPluginTestProvider
                 { refused = true; }
                 if (!refused) throw new Exception("install proceeded with nothing for the Debugger value to point at");
                 if (registry.Writes != 0) throw new Exception("a refused install still wrote to the registry");
+            }
+            finally { Directory.Delete(temp, recursive: true); }
+        });
+
+        Check("install-replaces-a-changed-payload", () =>
+        {
+            string temp = TempDirectory();
+            string payload = TempDirectory();
+            try
+            {
+                File.WriteAllBytes(Path.Combine(payload, "PolyMount.TxFShim.dll"), new byte[] { 1 });
+                File.WriteAllBytes(Path.Combine(payload, "PolyMount.TxFShim.exe"), new byte[] { 1 });
+                var registry = new FakeImageFileExecutionOptions();
+                var service = new TxFShimService(temp, registry, ScanOf(OneTarget()), payloadSource: payload);
+                service.Install(@"D:\engine");
+
+                // The plugin ships a new launcher. Installing again is what carries it to a machine
+                // that already has the old one, and every instrumented program runs this file: a
+                // deploy that only filled in a missing copy would fix nothing that is already there.
+                File.WriteAllBytes(Path.Combine(payload, "PolyMount.TxFShim.exe"), new byte[] { 2, 2 });
+                service.Install(@"D:\engine");
+                if (File.ReadAllBytes(service.PayloadLauncher).Length != 2)
+                    throw new Exception("a changed launcher was left in place by the next install");
+
+                var unchanged = File.GetLastWriteTimeUtc(service.PayloadDll);
+                service.Install(@"D:\engine");
+                if (File.GetLastWriteTimeUtc(service.PayloadDll) != unchanged)
+                    throw new Exception("a payload that had not changed was rewritten");
+            }
+            finally
+            {
+                Directory.Delete(temp, recursive: true);
+                Directory.Delete(payload, recursive: true);
+            }
+        });
+
+        Check("install-keeps-an-installed-payload-when-the-plugin-ships-none", () =>
+        {
+            // A build without the C++ toolchain publishes the plugin without its native half, and
+            // a clone of the repository is exactly that: no native\ folder. An installation that
+            // already has the payload keeps working, which is the state the plugin tests run in.
+            string temp = TempDirectory();
+            try
+            {
+                DeployPayload(temp);
+                var registry = new FakeImageFileExecutionOptions();
+                var service = new TxFShimService(temp, registry, ScanOf(OneTarget()),
+                    payloadSource: Path.Combine(temp, "no-native-here"));
+                var status = service.Install(@"D:\engine");
+                if (!status.PayloadPresent) throw new Exception("an installed payload was reported missing");
+                if (status.Installed.Count != 1) throw new Exception("the install wrote nothing for the image");
             }
             finally { Directory.Delete(temp, recursive: true); }
         });
@@ -260,7 +344,95 @@ public sealed class TxFShimTests : IPluginTestProvider
         return Task.FromResult<IReadOnlyList<PluginTestResult>>(results);
     }
 
+    /// <summary>The one-image install is what a reminder about a running program uses: the path it
+    /// knows is the running image's, and its folder's other executables were not asked about.</summary>
+    private static void SingleImageInstall()
+    {
+        string temp = TempDirectory();
+        try
+        {
+            var registry = new FakeImageFileExecutionOptions();
+            var editor = new ShimTarget(@"D:\engine\Editor.exe", "Editor.exe", "loads Messiah_x64h.dll, which resolves CreateFileTransactedW at run time");
+            var other = new ShimTarget(@"D:\engine\Other.exe", "Other.exe", "imports CreateFileTransactedW");
+            var service = new TxFShimService(temp, registry, ScanOf(new[] { editor, other }),
+                inspect: InspectOf(editor, other));
+            DeployPayload(temp);
+
+            var status = service.Install(editor.ImagePath);
+            if (status.Installed.Count != 1)
+                throw new Exception($"installing one image took {status.Installed.Count}: a program's siblings were not asked about");
+            if (status.Installed[0].ImageName != "Editor.exe") throw new Exception("the wrong image was recorded: " + status.Installed[0].ImageName);
+            if (status.Installed[0].Root != @"D:\engine") throw new Exception("the record does not name the folder it came from: " + status.Installed[0].Root);
+            if (registry.Launcher("Other.exe") != null) throw new Exception("installing one image instrumented another");
+
+            // An image that reaches nothing is refused rather than recorded as instrumented.
+            bool refused = false;
+            try { service.Install(@"D:\engine\Plain.exe"); }
+            catch (InvalidOperationException) { refused = true; }
+            if (!refused) throw new Exception("an image with no transactional API was installed anyway");
+        }
+        finally { Directory.Delete(temp, recursive: true); }
+    }
+
+    /// <summary>What a front end is told: a running program that would fail on the mount, with the
+    /// command that fixes it — and, once it has been fixed, that this particular process predates
+    /// the fix and has to be restarted.</summary>
+    private static void Notices()
+    {
+        string temp = TempDirectory();
+        try
+        {
+            var registry = new FakeImageFileExecutionOptions();
+            // The image has to exist: what its bytes say is injected here, but whether there is a
+            // file to look at is read from the disk, the way the real answer is.
+            string image = Path.Combine(temp, "Editor.exe");
+            File.WriteAllText(image, "not an image");
+            var editor = new ShimTarget(image, "Editor.exe", "resolves CreateFileTransactedW at run time");
+            var service = new TxFShimService(temp, registry, ScanOf(new[] { editor }), inspect: InspectOf(editor));
+            DeployPayload(temp);
+
+            var status = new MountStatus
+            {
+                Name = "demo",
+                Mounted = true,
+                MountPoint = @"D:\demo",
+                Callers = { new MountCaller { Pid = 4242, Name = "Editor", ImagePath = editor.ImagePath, SecondsAgo = 3 } }
+            };
+
+            var notices = service.Notices(status);
+            if (notices.Count != 1) throw new Exception($"expected one notice, got {notices.Count}");
+            if (!notices[0].Id.Contains("Editor.exe", StringComparison.OrdinalIgnoreCase))
+                throw new Exception("the notice does not name the program it is about: " + notices[0].Id);
+            if (notices[0].Action is not { Cmd: "txf.shim", Action: "install" })
+                throw new Exception("the notice does not carry the command that would fix it");
+            if (notices[0].Action!.Path != editor.ImagePath)
+                throw new Exception("the action names a different image: " + notices[0].Action!.Path);
+
+            // Instrumented, but the process was already running when that happened: the shim is
+            // injected at start-up, so this one still fails and has to be told to restart.
+            service.Install(editor.ImagePath);
+            status.Callers[0].StartedUtc = DateTime.UtcNow.AddMinutes(-5).ToString("O");
+            notices = service.Notices(status);
+            if (notices.Count != 1) throw new Exception($"expected a restart notice, got {notices.Count}");
+            if (notices[0].Action != null) throw new Exception("a restart notice should not offer an action");
+
+            // Started after the install: nothing to say.
+            status.Callers[0].StartedUtc = DateTime.UtcNow.AddMinutes(5).ToString("O");
+            if (service.Notices(status).Count != 0) throw new Exception("an instrumented, freshly started program was still reported");
+
+            // A mount that is not running has no callers to advise about.
+            status.Mounted = false;
+            if (service.Notices(status).Count != 0) throw new Exception("a mount that is not mounted produced a notice");
+        }
+        finally { Directory.Delete(temp, recursive: true); }
+    }
+
     private static Func<string, TargetDiscovery.Result> ScanOf(IReadOnlyList<ShimTarget> targets) => _ => new TargetDiscovery.Result(targets, Array.Empty<string>());
+
+    /// <summary>An inspection that answers for the paths a test names, and for nothing else —
+    /// which is what a real one does for an image that reaches no transactional API.</summary>
+    private static Func<string, ShimTarget?> InspectOf(params ShimTarget[] targets) => image =>
+        targets.FirstOrDefault(target => string.Equals(target.ImagePath, image, StringComparison.OrdinalIgnoreCase));
 
     private static IReadOnlyList<ShimTarget> OneTarget() => new[]
     {

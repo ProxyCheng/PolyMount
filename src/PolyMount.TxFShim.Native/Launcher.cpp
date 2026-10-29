@@ -21,9 +21,20 @@
 //    thread second is a race the program wins when it is short: a probe that finishes in two
 //    milliseconds reports no shim at all.
 //
-// Injection failing is fatal on purpose. Starting the program without the shim is what produces the
-// state this plugin exists to remove -- a program that runs for ten minutes and then cannot save,
-// with nothing in any log to say why. A launch that fails loudly is a state someone can fix.
+// Injection failing is not fatal. The shim exists to make a transactional open succeed on a volume
+// that cannot accept one; a program that runs without it is in exactly the state it was in before
+// this plugin was installed -- it saves through the APIs it can use and fails the way it always
+// did -- while a program that never starts is a regression the compatibility layer must not cause.
+// (0.9.2 and earlier killed the child instead. An engine's shader compiler, spawned with an
+// arguments-only command line, was killed on every launch and the editor rendered without shaders.)
+// The launcher says what it did in launcher.log, and the program starts either way.
+//
+// What the launcher is handed is the target's command line, not a path. Image File Execution
+// Options prepends this executable to the command line the caller passed, so argv[1] is that
+// command line's first token: the image path for the ordinary `CreateProcess(nullptr, "app.exe ...")`
+// call, and an ordinary argument for a caller that passed the image through lpApplicationName with
+// an arguments-only command line. Both shapes are tried below, because the second one is a legitimate
+// call and used to fail here with PATH_NOT_FOUND.
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -43,7 +54,7 @@ using NtCreateThreadEx_t = LONG(NTAPI*)(HANDLE*, ACCESS_MASK, LPVOID, HANDLE, LP
 /// <summary>What the launcher did, next to the shim's own log. A launcher that fails silently is
 /// the hardest state to diagnose: the program runs, and the only symptom is the error the shim
 /// exists to prevent.</summary>
-void Trace(const wchar_t* message, DWORD detail)
+void Trace(const std::wstring& message)
 {
     wchar_t directory[MAX_PATH];
     DWORD length = GetEnvironmentVariableW(L"ProgramData", directory, ARRAYSIZE(directory));
@@ -54,16 +65,44 @@ void Trace(const wchar_t* message, DWORD detail)
     HANDLE handle = CreateFileW(file, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
         OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE) return;
-    wchar_t line[1024];
-    int written = swprintf_s(line, L"pid=%lu %s (detail %lu)\r\n", GetCurrentProcessId(), message, detail);
+    wchar_t line[2048];
+    int written = swprintf_s(line, L"pid=%lu %s\r\n", GetCurrentProcessId(), message.c_str());
     if (written > 0)
     {
-        char utf8[2048];
+        char utf8[4096];
         int bytes = WideCharToMultiByte(CP_UTF8, 0, line, written, utf8, sizeof(utf8), nullptr, nullptr);
         DWORD ignored = 0;
         if (bytes > 0) WriteFile(handle, utf8, (DWORD)bytes, &ignored, nullptr);
     }
     CloseHandle(handle);
+}
+
+/// <summary>One line, with the code the caller captured. The code is passed in rather than read
+/// here on purpose: opening the log sets the thread's last error to ERROR_ALREADY_EXISTS, and a
+/// GetLastError() taken after that call is the log's answer, not the failure's.</summary>
+void Trace(const wchar_t* message, DWORD detail)
+{
+    std::wstring line = message;
+    line += L" (detail ";
+    line += std::to_wstring(detail);
+    line += L')';
+    Trace(line);
+}
+
+/// <summary>Starts the child as a debuggee, which is what keeps the Debugger value from applying to
+/// this one call (see the top of the file). The command line is copied because CreateProcessW is
+/// allowed to write to it.</summary>
+bool CreateChild(const wchar_t* application, const std::wstring& commandLine, PROCESS_INFORMATION* process, DWORD* error)
+{
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    std::wstring mutableCommandLine = commandLine;
+    if (CreateProcessW(application, mutableCommandLine.data(), nullptr, nullptr, FALSE,
+            DEBUG_ONLY_THIS_PROCESS, nullptr, nullptr, &startup, process))
+        return true;
+    *error = GetLastError();
+    Trace(application == nullptr ? L"create failed (command line)" : L"create failed (first token)", *error);
+    return false;
 }
 
 void AppendArgument(std::wstring& out, const wchar_t* argument)
@@ -231,24 +270,35 @@ int wmain(int argc, wchar_t** argv)
     }
     dll += L'\\';
     dll += ShimDll;
-    if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES)
-    {
-        fwprintf(stderr, L"PolyMount.TxFShim: '%s' is missing; refusing to start without it\n", dll.c_str());
-        return 4;
-    }
+    // A missing payload is not a reason to keep the program from starting: it runs the way it did
+    // before this plugin was installed, and the log says why it is not instrumented.
+    bool payloadPresent = GetFileAttributesW(dll.c_str()) != INVALID_FILE_ATTRIBUTES;
+    if (!payloadPresent) Trace(L"payload missing; starting without the shim", 0);
 
     std::wstring commandLine;
     for (int index = 1; index < argc; index++) AppendArgument(commandLine, argv[index]);
+    Trace(std::wstring(L"received: ") + GetCommandLineW());
 
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    if (!CreateProcessW(argv[1], commandLine.data(), nullptr, nullptr, FALSE,
-            DEBUG_ONLY_THIS_PROCESS, nullptr, nullptr, &startup, &process))
+    // A token that is not a file here is the lpApplicationName caller's first argument: the image
+    // path never reached this process, so the command line is the only thing left to start.
+    bool firstTokenIsImage = GetFileAttributesW(argv[1]) != INVALID_FILE_ATTRIBUTES;
+    if (!firstTokenIsImage) Trace(L"the first token is not an image; starting the command line", 0);
+    DWORD firstError = ERROR_FILE_NOT_FOUND;
+    if (!firstTokenIsImage || !CreateChild(argv[1], commandLine, &process, &firstError))
     {
-        Trace(L"create failed", GetLastError());
-        fwprintf(stderr, L"PolyMount.TxFShim: cannot start '%s' (error %lu)\n", argv[1], GetLastError());
-        return 5;
+        // The first token is not an image this process can start: the caller passed its image
+        // through lpApplicationName, so what arrived here is its first argument. The command line
+        // is then the thing to start -- that is also the shape where the token is a bare name that
+        // only resolves through the search path, which lpApplicationName does not use.
+        DWORD secondError = 0;
+        if (!CreateChild(nullptr, commandLine, &process, &secondError))
+        {
+            Trace(L"giving up: no image to start", secondError);
+            fwprintf(stderr, L"PolyMount.TxFShim: cannot start '%s' (error %lu; the command line gave %lu)\n",
+                argv[1], firstError, secondError);
+            return 5;
+        }
     }
     Trace(L"created child", process.dwProcessId);
 
@@ -257,6 +307,7 @@ int wmain(int argc, wchar_t** argv)
 
     bool injected = false;
     bool onTarget = false;
+    bool detached = false;
     HANDLE entryThread = nullptr;
     LPVOID entryAddress = nullptr;
     BYTE entryByte = 0;
@@ -270,11 +321,13 @@ int wmain(int argc, wchar_t** argv)
         {
             // The debuggee is stopped before its loader has run, so this is where a breakpoint at
             // the entry point can be placed.
-            if (BreakAtEntryPoint(event.u.CreateProcessInfo.lpBaseOfImage, process.hProcess,
+            if (payloadPresent && BreakAtEntryPoint(event.u.CreateProcessInfo.lpBaseOfImage, process.hProcess,
                     &entryAddress, &entryByte))
                 WriteProcessMemory(process.hProcess, entryAddress, "\xCC", 1, nullptr);
             entryThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, FALSE, event.dwThreadId);
             ContinueDebugEvent(event.dwProcessId, event.dwThreadId, DBG_CONTINUE);
+            // With no shim to load there is nothing to wait for: let the program go now.
+            if (!payloadPresent) break;
             continue;
         }
 
@@ -307,7 +360,7 @@ int wmain(int argc, wchar_t** argv)
             // suspended first: the library has to be in place before the first instruction.
             if (suspend != nullptr) suspend(process.hProcess);
             ContinueDebugEvent(event.dwProcessId, event.dwThreadId, DBG_CONTINUE);
-            DebugActiveProcessStop(process.dwProcessId);
+            detached = DebugActiveProcessStop(process.dwProcessId) != FALSE;
 
             if (prepared)
             {
@@ -334,15 +387,22 @@ int wmain(int argc, wchar_t** argv)
 
     if (entryThread != nullptr) CloseHandle(entryThread);
     Trace(onTarget ? L"entry breakpoint reached" : L"entry breakpoint missed", 0);
-    Trace(injected ? L"injected" : L"injection failed", GetLastError());
+    if (payloadPresent) Trace(injected ? L"injected" : L"injection failed", 0);
 
     if (!injected)
     {
-        fwprintf(stderr, L"PolyMount.TxFShim: could not instrument '%s'; not starting it\n", argv[1]);
-        TerminateProcess(process.hProcess, 1);
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        return 6;
+        // Not instrumented -- but it starts. Detaching is what lets a program run when the debugger
+        // that was going to instrument it decides it cannot: a debuggee dies with its debugger, so
+        // a launcher that gave up without this would kill the child just as surely as the
+        // TerminateProcess this replaces.
+        if (!detached)
+        {
+            DWORD detachError = 0;
+            if (!DebugActiveProcessStop(process.dwProcessId)) detachError = GetLastError();
+            Trace(L"detached", detachError);
+        }
+        if (resume != nullptr) resume(process.hProcess);
+        fwprintf(stderr, L"PolyMount.TxFShim: started '%s' without the compatibility layer\n", argv[1]);
     }
 
     CloseHandle(process.hThread);

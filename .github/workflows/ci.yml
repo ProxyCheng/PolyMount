@@ -86,10 +86,20 @@ jobs:
             -Full
 
   package:
-    name: Package installer
-    runs-on: windows-latest
+    name: Package installer (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     needs: build
     if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        # One entry per platform. The setup's file name carries `platform`, so several entries
+        # can publish side by side in one release. A win-arm64 entry also needs an ARM64 runner
+        # and the matching toolchain (shell extension, WinFsp package, Inno architecture flags).
+        include:
+          - platform: win-x64
+            runner: windows-latest
+            rid: win-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -154,14 +164,14 @@ jobs:
             $version = "0.0.0.$($env:GITHUB_RUN_NUMBER)"
           }
           Write-Host "Installer version: $version"
-          ./scripts/Build-Installer.ps1 -Version $version
+          ./scripts/Build-Installer.ps1 -Version $version -Rid ${{ matrix.rid }} -Platform ${{ matrix.platform }}
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PolyMount-Setup
+          name: PolyMount-Setup-${{ matrix.platform }}
           path: |
-            artifacts/PolyMount-*-Setup.exe
-            artifacts/PolyMount-*-Setup.exe.sha256
+            artifacts/PolyMount-*-${{ matrix.platform }}-Setup.exe
+            artifacts/PolyMount-*-${{ matrix.platform }}-Setup.exe.sha256
             artifacts/PolyMount-Signing.cer
           if-no-files-found: error
 
@@ -169,10 +179,16 @@ jobs:
   # the real setup, and what is left behind. WinFsp is deliberately not installed beforehand so
   # the setup's own dependency step is exercised too.
   install-test:
-    name: Install and verify
-    runs-on: windows-latest
+    name: Install and verify (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
     needs: package
     if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win-x64
+            runner: windows-latest
     # The script bounds its own waits; this is the backstop for anything it cannot see, so a stuck
     # installation fails in minutes instead of holding a runner until the six-hour limit. A hung
     # install test skips the release job, which is how 0.8.0 and 0.8.1 were never published.
@@ -182,13 +198,13 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: PolyMount-Setup
+          name: PolyMount-Setup-${{ matrix.platform }}
           path: artifacts
 
       - name: Install, install over the top, uninstall
         shell: pwsh
         run: |
-          $setup = Get-ChildItem artifacts/PolyMount-*-Setup.exe | Select-Object -First 1
+          $setup = Get-ChildItem "artifacts/PolyMount-*-${{ matrix.platform }}-Setup.exe" | Select-Object -First 1
           Write-Host "Testing $($setup.Name)"
           ./scripts/Test-Installed.ps1 -Setup $setup.FullName
 
@@ -210,8 +226,11 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: PolyMount-Setup
+          # Every platform the package matrix produced, flattened into one directory: the release
+          # page shows one flat asset list, and each asset already names its platform.
+          pattern: PolyMount-Setup-*
           path: artifacts
+          merge-multiple: true
 
       - name: Create the release
         env:

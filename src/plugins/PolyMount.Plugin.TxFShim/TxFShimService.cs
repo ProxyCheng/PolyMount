@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PolyMount.Core;
+using PolyMount.Core.Ipc;
 
 namespace PolyMount.Plugins.TxFShim;
 
@@ -53,15 +55,18 @@ internal sealed class TxFShimService
 
     private readonly IImageFileExecutionOptions _registry;
     private readonly Func<string, TargetDiscovery.Result> _scan;
+    private readonly Func<string, ShimTarget?> _inspect;
     private readonly string _payloadSource;
     private readonly object _gate = new();
 
     internal TxFShimService(string directory, IImageFileExecutionOptions registry,
-        Func<string, TargetDiscovery.Result>? scan = null, string? payloadSource = null)
+        Func<string, TargetDiscovery.Result>? scan = null, string? payloadSource = null,
+        Func<string, ShimTarget?>? inspect = null)
     {
         Directory = Path.GetFullPath(directory);
         _registry = registry;
         _scan = scan ?? TargetDiscovery.Scan;
+        _inspect = inspect ?? TargetDiscovery.Inspect;
         // The plugin's own folder is where the build puts the native half. A test supplies its own
         // so that "no payload" can be the state it tests, rather than a property of the checkout.
         _payloadSource = payloadSource
@@ -120,6 +125,115 @@ internal sealed class TxFShimService
         }
     }
 
+    /// <summary>
+    /// What this plugin wants a person told about <paramref name="instance"/>: the programs that
+    /// are using the mount and would fail to save on it, and — for one already instrumented but
+    /// started before that happened — that it needs a restart.
+    ///
+    /// This is the only form the failure takes on this side of the boundary. A transactional open
+    /// is refused by the kernel before the file system is asked (the volume's device object does
+    /// not claim transaction support, and WinFsp gives nobody a way to change that), so no request
+    /// log, recording or metric ever carries it. What is observable is who is using the mount and
+    /// what their images can do — the same rule an install uses — and that is enough to say
+    /// something before the save fails rather than after.
+    ///
+    /// The scan reads whole files, so answers are remembered per image and keyed by size and
+    /// modification time: this runs whenever a front end asks, and a directory of engine binaries
+    /// is a few hundred megabytes.
+    /// </summary>
+    internal IReadOnlyList<PluginNotice> Notices(MountStatus status)
+    {
+        if (!status.Mounted) return Array.Empty<PluginNotice>();
+
+        var notices = new List<PluginNotice>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        ShimState state;
+        lock (_gate) state = Load();
+
+        foreach (var caller in status.Callers)
+        {
+            if (caller.ImagePath.Length == 0) continue;
+            // This product's own processes use the mount to keep its stores; they are nobody's
+            // program to advise about.
+            if (caller.Name.StartsWith("PolyMount", StringComparison.OrdinalIgnoreCase)) continue;
+            string image = caller.ImagePath;
+            if (!seen.Add(image)) continue;
+            string name = Path.GetFileName(image);
+            if (name.Length == 0) continue;
+            if (Evidence(image) is not { } evidence) continue;
+
+            string? existing = _registry.Launcher(name);
+            if (existing == null)
+            {
+                notices.Add(new PluginNotice(
+                    $"txf-shim:unshimmed:{image.ToLowerInvariant()}",
+                    WindowTitle,
+                    Text(
+                        $"{name} is using the mount {status.MountPoint} and can open a file inside a transaction.\n\n" +
+                        $"This volume cannot accept a transactional open, so saving through it fails with error 6832 " +
+                        $"(the image {evidence}). Start it through the compatibility layer?\n\n" +
+                        "A program that is already running keeps the behaviour it started with until it is restarted.",
+                        $"{name} 正在使用挂载 {status.MountPoint}，并且能够在事务中打开文件。\n\n" +
+                        $"这个卷无法接受事务性打开，经由它的保存会失败（错误 6832，依据：{evidence}）。" +
+                        "要让它经由兼容层启动吗？\n\n" +
+                        "已经在运行的程序要保持到重启后才生效。"),
+                    Text("Enable compatibility", "启用兼容层"),
+                    new ControlRequest { Cmd = TxFShimPlugin.Command, Action = "install", Path = image }));
+                continue;
+            }
+
+            // Instrumented — but the shim is injected when a process starts, so one that was
+            // already running when the value was written never saw it.
+            if (!SamePath(existing, PayloadLauncher)) continue;
+            var entry = state.Entries.FirstOrDefault(e =>
+                string.Equals(e.ImageName, name, StringComparison.OrdinalIgnoreCase));
+            if (entry == null) continue;
+            if (!DateTime.TryParse(caller.StartedUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var started)) continue;
+            if (!DateTime.TryParse(entry.InstalledUtc, null, System.Globalization.DateTimeStyles.RoundtripKind, out var installed)) continue;
+            if (started >= installed) continue;
+
+            notices.Add(new PluginNotice(
+                $"txf-shim:restart:{image.ToLowerInvariant()}",
+                WindowTitle,
+                Text(
+                    $"{name} was started before the compatibility layer was enabled, so it is still running without it.\n\n" +
+                    "Restart it for the change to take effect.",
+                    $"{name} 在启用兼容层之前就已经启动，因此现在仍在没有兼容层的情况下运行。\n\n" +
+                    "请重启它，改动才会生效。")));
+        }
+        return notices;
+    }
+
+    private static readonly LocalizedText WindowTitle = new("Transactional opens", "事务性打开");
+
+    private static LocalizedText Text(string en, string zh) => new(en, zh);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, (long Size, DateTime Modified, string? Evidence)> _scans =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>What an image can do, from a remembered answer when the file has not changed since.
+    /// Null means it reaches no transactional API, or it could not be read.</summary>
+    private string? Evidence(string image)
+    {
+        long size;
+        DateTime modified;
+        try
+        {
+            var info = new FileInfo(image);
+            if (!info.Exists) return null;
+            size = info.Length;
+            modified = info.LastWriteTimeUtc;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+        if (_scans.TryGetValue(image, out var known) && known.Size == size && known.Modified == modified)
+            return known.Evidence;
+        string? evidence;
+        try { evidence = _inspect(image)?.Evidence; }
+        catch (Exception) { evidence = null; }
+        _scans[image] = (size, modified, evidence);
+        return evidence;
+    }
+
     /// <summary>What would be instrumented, without touching anything.</summary>
     internal ShimScan Scan(string root)
     {
@@ -131,7 +245,14 @@ internal sealed class TxFShimService
     }
 
     /// <summary>
-    /// Instruments every image under <paramref name="root"/> that reaches a transactional API.
+    /// Instruments every image under <paramref name="root"/> that reaches a transactional API, or
+    /// the one image when <paramref name="root"/> names an executable.
+    ///
+    /// The single-image form is what a reminder about a program that is already running uses: the
+    /// tray knows the path of the image that is using the mount, not the directory somebody would
+    /// have chosen, and instrumenting its siblings because they share a folder would be an answer
+    /// to a question nobody asked. The registry is keyed by image <em>name</em>, so the effect is
+    /// machine-wide either way; the path only decides what was looked at.
     ///
     /// Refusals are deliberate and come in two kinds. Without the native payload there is nothing
     /// for the Debugger value to point at, and an engine that cannot start is worse than one that
@@ -145,12 +266,17 @@ internal sealed class TxFShimService
         {
             DeployPayload();
             EnsureLogDirectory();
-            var scan = _scan(root);
-            if (scan.Targets.Count == 0)
+            bool oneImage = root.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+            var targets = oneImage
+                ? new[] { _inspect(root) ?? throw new InvalidOperationException(
+                    $"'{Path.GetFullPath(root)}' does not reach a transactional file API; there is nothing to instrument") }
+                : (IReadOnlyList<ShimTarget>)_scan(root).Targets;
+            if (targets.Count == 0)
                 throw new InvalidOperationException(
                     $"no image under '{Path.GetFullPath(root)}' imports a transactional file API; there is nothing to instrument");
+            string installedFrom = oneImage ? (Path.GetDirectoryName(Path.GetFullPath(root)) ?? Path.GetFullPath(root)) : Path.GetFullPath(root);
 
-            foreach (var target in scan.Targets)
+            foreach (var target in targets)
             {
                 string? existing = _registry.Launcher(target.ImageName);
                 if (existing != null && !SamePath(existing, PayloadLauncher))
@@ -160,7 +286,7 @@ internal sealed class TxFShimService
             }
 
             var state = Load();
-            foreach (var target in scan.Targets)
+            foreach (var target in targets)
             {
                 _registry.SetLauncher(target.ImageName, PayloadLauncher);
                 state.Entries.RemoveAll(e => string.Equals(e.ImageName, target.ImageName, StringComparison.OrdinalIgnoreCase));
@@ -168,7 +294,7 @@ internal sealed class TxFShimService
                 {
                     ImageName = target.ImageName,
                     ImagePath = target.ImagePath,
-                    Root = Path.GetFullPath(root),
+                    Root = installedFrom,
                     Evidence = target.Evidence,
                     InstalledUtc = DateTime.UtcNow.ToString("O"),
                     Launcher = PayloadLauncher
@@ -237,21 +363,68 @@ internal sealed class TxFShimService
     }
 
     /// <summary>Puts the native half where the registry points. The plugin's own folder is the
-    /// source, so upgrading the plugin replaces the copy on the next install.</summary>
+    /// source, and a copy that differs from what is installed replaces it — this is how a fixed
+    /// launcher reaches a machine that already has one: the payload is what instrumented programs
+    /// actually run, and a deploy that only filled in a missing file would leave the old launcher
+    /// in place for the life of the installation.</summary>
     private void DeployPayload()
     {
-        if (PayloadPresent) return;
         string source = _payloadSource;
         string sourceDll = Path.Combine(source, "PolyMount.TxFShim.dll");
         string sourceLauncher = Path.Combine(source, "PolyMount.TxFShim.exe");
         if (!File.Exists(sourceDll) || !File.Exists(sourceLauncher))
+        {
+            // What is installed is all there is: a build without the C++ toolchain publishes the
+            // plugin without its native half, and an installation that already has the payload
+            // keeps working with it. Only having nothing at all is refused — an Image File
+            // Execution Options value that points at a missing launcher keeps the instrumented
+            // program from starting at all.
+            if (PayloadPresent) return;
             throw new InvalidOperationException(
                 $"the native shim is not deployed: expected '{sourceDll}' and '{sourceLauncher}'. " +
                 "Nothing is written until those exist — an Image File Execution Options value that points at a missing " +
                 "launcher keeps the instrumented program from starting at all");
+        }
         System.IO.Directory.CreateDirectory(Directory);
-        File.Copy(sourceDll, PayloadDll, overwrite: true);
-        File.Copy(sourceLauncher, PayloadLauncher, overwrite: true);
+        CopyPayload(sourceDll, PayloadDll);
+        CopyPayload(sourceLauncher, PayloadLauncher);
+    }
+
+    /// <summary>Replaces an installed file when the plugin ships a different one. A copy that
+    /// cannot be made because the old launcher is running is reported rather than skipped: an
+    /// install that says it succeeded and left the old launcher in place is the state that is
+    /// hardest to notice.</summary>
+    private static void CopyPayload(string source, string destination)
+    {
+        try
+        {
+            if (File.Exists(destination) && SameContent(source, destination)) return;
+            File.Copy(source, destination, overwrite: true);
+        }
+        catch (IOException ex)
+        {
+            throw new InvalidOperationException(
+                $"'{Path.GetFileName(destination)}' is running or in use, so the copy this plugin ships could not replace it. " +
+                "Close the programs started through the compatibility layer and install again.", ex);
+        }
+    }
+
+    private static bool SameContent(string left, string right)
+    {
+        var one = new FileInfo(left);
+        var other = new FileInfo(right);
+        if (one.Length != other.Length) return false;
+        using var a = File.OpenRead(left);
+        using var b = File.OpenRead(right);
+        var leftBytes = new byte[64 * 1024];
+        var rightBytes = new byte[64 * 1024];
+        while (true)
+        {
+            int read = a.Read(leftBytes, 0, leftBytes.Length);
+            if (read != b.Read(rightBytes, 0, rightBytes.Length)) return false;
+            if (read == 0) return true;
+            if (!leftBytes.AsSpan(0, read).SequenceEqual(rightBytes.AsSpan(0, read))) return false;
+        }
     }
 
     /// <summary>

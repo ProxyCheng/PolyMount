@@ -10,6 +10,9 @@
 #ifndef OutputDir
   #define OutputDir "..\artifacts"
 #endif
+#ifndef Platform
+  #define Platform "win-x64"
+#endif
 
 [Setup]
 AppId={{91D38E86-5EF4-4512-BC23-4B1481A758B7}
@@ -35,7 +38,7 @@ WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 OutputDir={#OutputDir}
-OutputBaseFilename=PolyMount-{#AppVersion}-win-x64-Setup
+OutputBaseFilename=PolyMount-{#AppVersion}-{#Platform}-Setup
 UninstallDisplayIcon={app}\Tray\PolyMount.Tray.exe
 CloseApplications=yes
 RestartApplications=no

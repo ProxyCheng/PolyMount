@@ -26,8 +26,10 @@ Write-Host "probe folder: $target"
 
 # When the plugin has installed an Image File Execution Options value for the probe, every launch of
 # it - direct included - already goes through the shim, so the interesting check is that one.
+# The value is what decides this, not the key: removing an install deletes the value and leaves the
+# key behind, because the key may hold values that predate this plugin.
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\PolyMount.TxFShim.Probe.exe'
-$installed = Test-Path $ifeo
+$installed = (Get-ItemProperty -LiteralPath $ifeo -Name Debugger -ErrorAction SilentlyContinue) -ne $null
 $failures = @()
 
 if ($installed) {

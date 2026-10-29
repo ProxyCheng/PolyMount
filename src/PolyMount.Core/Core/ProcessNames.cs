@@ -3,11 +3,12 @@ using System.Diagnostics;
 
 namespace PolyMount.Core;
 
-/// <summary>What a process id is called.
+/// <summary>What a process id is called, and where its image is.
 ///
-/// Asking is expensive — opening a process and reading its name is tens of microseconds — so it is
-/// never asked on the request path: the file system records the id, and a metrics sample names the
-/// handful of processes that were in its window, about once a second.
+/// Asking is expensive — opening a process and reading its name is tens of microseconds, and its
+/// image path is another open — so it is never asked on the request path: the file system records
+/// the id, and a metrics sample names the handful of processes that were in its window, about once
+/// a second.
 ///
 /// An answer is kept for a minute rather than for ever, because Windows hands a pid out again once
 /// its process has ended: the process' own start time travels with the name, so an id that is now
@@ -17,7 +18,10 @@ namespace PolyMount.Core;
 /// </summary>
 internal static class ProcessNames
 {
-    private sealed record Entry(string Name, long StartTicks, long ResolvedAtMs);
+    /// <summary>One process as it was last read: what it is called, where its image is, and when it
+    /// started. <see cref="Path"/> is null when the image could not be read — a process of another
+    /// account, or one that ended between the two questions — which is a case and not an error.</summary>
+    internal sealed record Entry(string Name, string? Path, long StartTicks, long ResolvedAtMs, bool PathAsked);
 
     private static readonly ConcurrentDictionary<int, Entry> Known = new();
     private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(60);
@@ -29,20 +33,36 @@ internal static class ProcessNames
     /// <summary>The name of the process with this id, or null if it has never been caught alive.
     /// Never throws: a process that ended between being counted and being named is a case, not an
     /// error.</summary>
-    public static string? Of(int processId)
+    public static string? Of(int processId) => Resolve(processId, wantPath: false)?.Name;
+
+    /// <summary>The same answer with the image's own path, for the reader that has to look at the
+    /// program rather than name it. Null when the process cannot be opened or has ended.</summary>
+    internal static Entry? Describe(int processId) => Resolve(processId, wantPath: true);
+
+    private static Entry? Resolve(int processId, bool wantPath)
     {
         if (processId <= 0) return null;
         long now = Environment.TickCount64;
         Known.TryGetValue(processId, out var known);
-        if (known != null && now - known.ResolvedAtMs < Ttl.TotalMilliseconds) return known.Name;
+        bool fresh = known != null && now - known.ResolvedAtMs < Ttl.TotalMilliseconds;
+        if (fresh && (!wantPath || known!.PathAsked)) return known;
         try
         {
             using var process = Process.GetProcessById(processId);
             string name = process.ProcessName;
             long startTicks = process.StartTime.Ticks;
-            Known[processId] = new Entry(name, startTicks, now);
+            string? path = null;
+            bool asked = false;
+            if (wantPath || known is { Path: not null })
+            {
+                asked = true;
+                try { path = process.MainModule?.FileName; }
+                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) { }
+            }
+            var entry = new Entry(name, path, startTicks, now, asked);
+            Known[processId] = entry;
             if (Known.Count > Capacity) Sweep(now);
-            return name;
+            return entry;
         }
         catch (ArgumentException) { }
         catch (InvalidOperationException) { }
@@ -51,8 +71,9 @@ internal static class ProcessNames
         {
             // Readable once and not now: it keeps the name, and waits out another minute before
             // asking again.
-            Known[processId] = known with { ResolvedAtMs = now };
-            return known.Name;
+            var stale = known with { ResolvedAtMs = now };
+            Known[processId] = stale;
+            return stale;
         }
         return null;
     }

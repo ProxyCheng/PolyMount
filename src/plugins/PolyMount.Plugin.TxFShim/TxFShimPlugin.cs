@@ -35,6 +35,11 @@ public sealed class TxFShimPlugin : IPolyMountPlugin, IPluginMetadata
 
     public void Register(IPluginContext context)
     {
+        // What a person is owed without having to go looking: the programs using a mount that
+        // cannot save on it. Core carries the notice and a front end shows it; nothing outside
+        // this plugin knows what it is about.
+        context.RegisterNotices(instance => Service.Notices(instance.GetStatus()));
+
         context.RegisterCommand(Command, command =>
         {
             // The line count travels in Boundary: the wire has one integer slot, and nothing else

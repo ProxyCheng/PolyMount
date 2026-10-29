@@ -67,6 +67,11 @@ public sealed class InstanceClient : ControlClient
     public ControlResponse RecordingStatus()
         => Send(new ControlRequest { Cmd = ControlCommands.RecordingStatus });
 
+    /// <summary>What this instance's plugins want a person told, each with the command that acts
+    /// on it. Asked on a timer by a front end that means to show them.</summary>
+    public ControlResponse Notices()
+        => Send(new ControlRequest { Cmd = ControlCommands.PluginNotices });
+
     /// <summary>Takes the recording down, keeping what it counted.</summary>
     public ControlResponse RecordingStop(string reason = "stopped")
         => Send(new ControlRequest { Cmd = ControlCommands.RecordingStop, Reason = reason });

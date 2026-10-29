@@ -245,7 +245,14 @@ volume does not have, the plugin starts chosen programs through a native launche
 those calls inside the process before they reach the kernel. Enabling it installs nothing: an
 administrator names the directory whose programs should be instrumented (`install_txf_shim`), and
 only processes started afterwards are affected — a shimmed open succeeds, and a rollback no longer
-undoes the writes the program made. Writing another source means writing a plugin that registers a
+undoes the writes the program made. A program that cannot be instrumented is still started — without
+the shim, which is the behaviour it had before the plugin existed — and the launcher's log says so;
+the shim must never be the reason a program does not run. Because nothing on this side of the
+boundary ever sees that failure, the tray watches instead for the condition: a program that has been
+using a mount and whose own image can open a file inside a transaction. When one turns up
+uninstrumented it says so — with a button that instruments that one program — rather than leaving
+the save to fail unexplained.
+Writing another source means writing a plugin that registers a
 source type: reference `PolyMount.Core`, implement `IPolyMountPlugin`, and ship a DLL.
 `PolyMount.Plugin.Testing` is the test contract a plugin can ship its own tests against; the test
 projects live under `tests/plugins` and are not shipped with the production plugin.

@@ -2,6 +2,10 @@
 param(
     [ValidatePattern('^\d+\.\d+\.\d+(\.\d+)?$')][string]$Version = '0.2.0',
     [string]$Compiler,
+    # Runtime identifier the payload is published for, and the platform tag in the setup's file
+    # name. The tag defaults to the RID ("win-x64"); pass it only when the display name differs.
+    [string]$Rid = 'win-x64',
+    [string]$Platform = '',
     # Code signing. A certificate in the current user's store is named by thumbprint (an EV
     # token installs one); a PFX is imported for the duration of the build so its password never
     # reaches a command line. The environment variables are how the batch file passes them.
@@ -19,6 +23,7 @@ if ($PSBoundParameters.ContainsKey('SignPassword') -and $SignPassword) {
     Write-Warning 'The signing password was passed as a parameter and is visible on this command line; prefer POLYMOUNT_SIGN_PASSWORD.'
 }
 $repo = Split-Path $PSScriptRoot -Parent
+if (-not $Platform) { $Platform = $Rid }
 $artifacts = Join-Path $repo 'artifacts'
 $payload = Join-Path $artifacts 'installer-payload'
 if (-not $Compiler) {
@@ -34,7 +39,7 @@ if (Test-Path -LiteralPath $payload) { Remove-Item -LiteralPath $payload -Recurs
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 foreach ($project in @('Service','Tray','Mcp')) {
     $output = Join-Path $payload $project
-    & dotnet publish (Join-Path $repo "src\PolyMount.$project\PolyMount.$project.csproj") -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $output --nologo -v minimal
+    & dotnet publish (Join-Path $repo "src\PolyMount.$project\PolyMount.$project.csproj") -c Release -r $Rid --self-contained true -p:PublishSingleFile=false -p:Version=$Version -o $output --nologo -v minimal
     if ($LASTEXITCODE -ne 0) { throw "$project publish failed." }
     # The Qt binding, its native glue and the Qt runtime DLLs arrive with the QtSharp.Api package,
     # which copies them into the publish output (buildTransitive targets) - no local QtSharp clone
@@ -55,9 +60,12 @@ try {
 & (Join-Path $PSScriptRoot 'Build-Shell.ps1') -OutputDirectory (Join-Path $payload 'Shell')
 $dependencies = Join-Path $payload 'Dependencies'
 New-Item -ItemType Directory -Path $dependencies -Force | Out-Null
+$vcRedistArch = if ($Rid -eq 'win-arm64') { 'arm64' } else { 'x64' }
 foreach ($download in @(
+    # WinFsp ships one package per architecture; this entry is the x64 one. A win-arm64 matrix
+    # entry needs its own URL here as well.
     @{ File = 'winfsp.msi'; Url = 'https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi' },
-    @{ File = 'vc_redist.x64.exe'; Url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe' }
+    @{ File = "vc_redist.$vcRedistArch.exe"; Url = "https://aka.ms/vs/17/release/vc_redist.$vcRedistArch.exe" }
 )) {
     $destination = Join-Path $dependencies $download.File
     if (-not (Test-Path -LiteralPath $destination)) {
@@ -133,7 +141,7 @@ try {
         Write-Host "Signed $signed payload file(s) with $signingThumbprint."
     }
 
-    $compilerArgs = @('/Qp', "/DAppVersion=$Version", "/DPayloadDir=$payload", "/DOutputDir=$artifacts")
+    $compilerArgs = @('/Qp', "/DAppVersion=$Version", "/DPlatform=$Platform", "/DPayloadDir=$payload", "/DOutputDir=$artifacts")
     if (Test-Path -LiteralPath $docs) {
         $docDir = Join-Path $payload 'docs'
         New-Item -ItemType Directory -Path $docDir -Force | Out-Null
@@ -142,7 +150,7 @@ try {
     }
     & $Compiler @compilerArgs (Join-Path $repo 'installer\PolyMount.iss')
     if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
-    $installer = Join-Path $artifacts "PolyMount-$Version-win-x64-Setup.exe"
+    $installer = Join-Path $artifacts "PolyMount-$Version-$Platform-Setup.exe"
     if ($signTool) {
         Sign-ProductFile $installer
         & $signTool verify /pa $installer | Out-Null
